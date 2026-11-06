@@ -33,7 +33,7 @@ export function mountPostContent(invoke: Invoke, session: AiSession): { select(j
 
   function disclosure(): void {
     const { label } = PROVIDERS[session.provider()];
-    provider.textContent = `“Viết bằng AI” gửi phụ đề tiếng Việt tới ${label} bằng khóa của bạn (Cài đặt AI). “Tạo nhanh” làm ngay trên máy, không gửi gì đi.`;
+    provider.textContent = `“Viết bằng AI” gửi phụ đề tiếng Việt tới ${label} bằng khóa của bạn (Cài đặt › Tài khoản). “Tạo nhanh” làm ngay trên máy, không gửi gì đi.`;
   }
 
   function controls(): void {
@@ -183,7 +183,7 @@ export function mountPostContent(invoke: Invoke, session: AiSession): { select(j
     if (busy || !path) return;
     disclosure();
     const name = session.provider(), key = session.read(), { name: label, company } = PROVIDERS[name];
-    if (!key) { state.textContent = `Hãy lưu khóa ${label} trong “Cài đặt AI” rồi bấm lại.`; return; }
+    if (!key) { state.textContent = `Hãy lưu khóa ${label} trong “Cài đặt › Tài khoản” rồi bấm lại.`; return; }
     const token = generation, outputPath = path, source = title;
     busy = true; controls();
     state.textContent = `${label} đang viết tiêu đề, mô tả và hashtag cho 3 nền tảng…`;
@@ -197,7 +197,7 @@ export function mountPostContent(invoke: Invoke, session: AiSession): { select(j
       show(next, `Do ${label} viết từ phụ đề (đã gửi phụ đề tới ${company}). Chọn tiêu đề, sửa nếu cần rồi sao chép.`);
     } catch (error) {
       if (token !== generation) return;
-      state.textContent = isKeyError(error) ? `Khóa ${label} không hợp lệ; hãy lưu lại trong “Cài đặt AI”.` : `Không viết được bằng AI: ${String(error).slice(0, 160)}`;
+      state.textContent = isKeyError(error) ? `Khóa ${label} không hợp lệ; hãy lưu lại trong “Cài đặt › Tài khoản”.` : `Không viết được bằng AI: ${String(error).slice(0, 160)}`;
     } finally {
       if (token === generation) { busy = false; controls(); }
     }

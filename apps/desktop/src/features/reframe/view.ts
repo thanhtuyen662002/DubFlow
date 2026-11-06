@@ -23,7 +23,7 @@ export function mountReframe(invoke: Invoke, session: AiSession): { select(job: 
   let info: Info | null = null, imageUrl = "", resultPath = "", hasFrame = false;
 
   function disclosure(): void {
-    $("provider").textContent = `AI sẽ gửi tối đa 60 dòng phụ đề tiếng Việt tới ${PROVIDERS[session.provider()].label} bằng tài khoản của bạn (Cài đặt AI).`;
+    $("provider").textContent = `AI sẽ gửi tối đa 60 dòng phụ đề tiếng Việt tới ${PROVIDERS[session.provider()].label} bằng tài khoản của bạn (Cài đặt › Tài khoản).`;
   }
   function controls(): void {
     fields.disabled = busy || suggesting;
@@ -82,7 +82,7 @@ export function mountReframe(invoke: Invoke, session: AiSession): { select(job: 
     if (busy || suggesting || !path) return;
     disclosure();
     const provider = session.provider(), key = session.read();
-    if (!key) { state.textContent = `Hãy lưu khóa ${PROVIDERS[provider].name} trong Cài đặt AI.`; return; }
+    if (!key) { state.textContent = `Hãy lưu khóa ${PROVIDERS[provider].name} trong Cài đặt › Tài khoản.`; return; }
     const token = generation, outputPath = path;
     suggesting = true; controls(); state.textContent = `Đang gửi phụ đề tới ${PROVIDERS[provider].label}…`;
     try {

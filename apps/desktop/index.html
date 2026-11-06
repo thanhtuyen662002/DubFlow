@@ -1460,126 +1460,240 @@
             <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
           </button>
         </header>
-        <dl class="settings-list">
-          <div class="settings-group" role="presentation"><h3>Xử lý video</h3></div>
-          <div class="settings-row">
-            <div class="settings-text">
-              <dt><label for="remember-defaults">Ghi nhớ thiết lập lần trước</label></dt>
-              <dd>Video mới tự dùng giọng đọc, phụ đề và cách che chữ của lần dùng gần nhất. Tắt thì video mới dùng thiết lập mặc định.</dd>
-            </div>
-            <input id="remember-defaults" class="switch" type="checkbox" role="switch" checked />
-          </div>
-          <div class="settings-row">
-            <div class="settings-text">
-              <dt><label for="cpu-only">Chỉ dùng CPU</label></dt>
-              <dd>Tắt thì DubFlow tự dùng card đồ họa NVIDIA phù hợp để nhận dạng lời thoại, lồng tiếng và render video nhanh hơn. Thiết bị đang dùng hiện trong trạng thái xử lý.</dd>
-            </div>
-            <input id="cpu-only" class="switch" type="checkbox" role="switch" />
-          </div>
-          <div class="settings-row">
-            <div class="settings-text">
-              <dt><label for="thread-mode">Tài nguyên máy</label></dt>
-              <dd id="machine-summary">Đang kiểm tra cấu hình máy…</dd>
-              <dd id="thread-detail">Số luồng CPU tối đa mỗi tác vụ (render, nhận dạng lời thoại, quét chữ) được dùng.</dd>
-            </div>
-            <div class="settings-actions">
-              <select id="thread-mode" aria-describedby="thread-detail">
-                <option value="auto">Tự động theo máy</option>
-                <option value="all">Dùng toàn bộ tài nguyên</option>
-                <option value="custom">Tùy chỉnh số luồng</option>
-              </select>
-              <input id="thread-count" class="thread-count" type="number" min="1" step="1" inputmode="numeric" aria-label="Số luồng tối đa" hidden />
-            </div>
-          </div>
-          <div class="settings-group" role="presentation"><h3>Tài khoản</h3></div>
-          <div class="settings-row">
-            <div class="settings-text">
-              <dt>Tài khoản AI</dt>
-              <dd>Khóa Claude hoặc Gemini dùng cho gợi ý đăng bài, Shorts, video bán hàng, tổng hợp và phim tài liệu.</dd>
-            </div>
-            <button id="open-ai-settings" class="btn" type="button">Quản lý khóa</button>
-          </div>
-          <div class="settings-row">
-            <div class="settings-text">
-              <dt>Tài khoản Douyin</dt>
-              <dd id="douyin-account-state">Đang kiểm tra…</dd>
-            </div>
-            <div class="settings-actions">
-              <button id="douyin-login" class="btn" type="button">Đăng nhập</button>
-              <button id="douyin-logout" class="btn" type="button" hidden>Đăng xuất</button>
-            </div>
-          </div>
-          <div class="settings-group" role="presentation"><h3>Thư mục</h3></div>
-          <div class="settings-row">
-            <div class="settings-text">
-              <dt>Thư mục lưu kết quả</dt>
-              <dd><span id="output-root-label" class="settings-path" title="">Cạnh video gốc</span></dd>
-              <dd><button id="reset-output-root" class="link" type="button" hidden>Lưu cạnh video gốc</button></dd>
-            </div>
-            <button id="choose-output-root" class="btn" type="button">Đổi thư mục</button>
-          </div>
-          <div class="settings-row">
-            <div class="settings-text">
-              <dt>Thư mục lưu video tải về</dt>
-              <dd><span id="download-dir-label" class="settings-path">Videos\DubFlow Downloads</span></dd>
-            </div>
-            <div class="settings-actions">
-              <button id="reset-download-dir" class="btn" type="button" hidden>Mặc định</button>
-              <button id="choose-download-dir" class="btn" type="button">Đổi thư mục</button>
-            </div>
-          </div>
-          <div class="settings-group" role="presentation"><h3>Âm thanh khi chỉnh sửa</h3></div>
-          <div class="settings-row">
-            <div class="settings-text">
-              <dt>Kho hiệu ứng âm thanh</dt>
-              <dd id="sfx-pack-state">Đang kiểm tra…</dd>
-              <dd>Âm thanh CC0 dùng trong chế độ Âm thanh khi chỉnh sửa; chỉ tải một lần.</dd>
-            </div>
-            <button id="sfx-pack-get" class="btn" type="button">Tải về</button>
-          </div>
-          <div class="settings-row">
-            <div class="settings-text">
-              <dt>Thư mục âm thanh của bạn</dt>
-              <dd><span id="audio-folder-label" class="settings-path">Chưa chọn</span></dd>
-            </div>
-            <div class="settings-actions">
-              <button id="reset-audio-folder" class="btn" type="button" hidden>Bỏ chọn</button>
-              <button id="choose-audio-folder" class="btn" type="button">Chọn thư mục</button>
-            </div>
-          </div>
-          <div class="settings-group" role="presentation"><h3>Ứng dụng</h3></div>
-          <div id="settings-update" class="settings-row">
-            <div class="settings-text">
-              <dt>Cập nhật</dt>
-              <dd id="update-summary">DubFlow tự kiểm tra bản mới khi mở ứng dụng và mỗi 6 giờ.</dd>
-              <div id="update-card" class="update-card" hidden>
-                <strong id="update-title">Có bản mới</strong>
-                <small id="update-detail"></small>
-                <div class="update-actions">
-                  <button id="update-install" class="btn primary" type="button">Cập nhật</button>
-                  <button id="update-later" class="link" type="button">Để sau</button>
+        <div class="settings-body">
+          <nav class="settings-tabs" role="tablist" aria-orientation="vertical" aria-label="Nhóm cài đặt">
+            <button id="settings-tab-account" class="settings-tab" type="button" role="tab" data-tab="account" aria-controls="settings-pane-account" aria-selected="true">
+              <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><circle cx="12" cy="8" r="3.6" stroke="currentColor" stroke-width="1.7" fill="none"/><path d="M5 20c.8-3.6 3.6-5.6 7-5.6s6.2 2 7 5.6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" fill="none"/></svg>
+              <span>Tài khoản</span>
+            </button>
+            <button id="settings-tab-translate" class="settings-tab" type="button" role="tab" data-tab="translate" aria-controls="settings-pane-translate" aria-selected="false" tabindex="-1">
+              <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path d="M4 6h9M8.5 4v2M6 6c.6 3 2.6 5.4 5 6.6M11 6c-.6 3.4-3 6.2-6.4 7.6M13 20l3.5-8 3.5 8M14.2 17.4h4.6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+              <span>Dịch phụ đề</span>
+            </button>
+            <button id="settings-tab-processing" class="settings-tab" type="button" role="tab" data-tab="processing" aria-controls="settings-pane-processing" aria-selected="false" tabindex="-1">
+              <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" stroke="currentColor" stroke-width="1.7" fill="none"/><path d="M9.5 2.5v3.5M14.5 2.5v3.5M9.5 18v3.5M14.5 18v3.5M2.5 9.5H6M2.5 14.5H6M18 9.5h3.5M18 14.5h3.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+              <span>Xử lý &amp; máy</span>
+            </button>
+            <button id="settings-tab-folders" class="settings-tab" type="button" role="tab" data-tab="folders" aria-controls="settings-pane-folders" aria-selected="false" tabindex="-1">
+              <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2.2h7a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" fill="none"/></svg>
+              <span>Thư mục lưu</span>
+            </button>
+            <button id="settings-tab-audio" class="settings-tab" type="button" role="tab" data-tab="audio" aria-controls="settings-pane-audio" aria-selected="false" tabindex="-1">
+              <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path d="M9 17.5V5.5l10-2v12" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" fill="none"/><circle cx="6.5" cy="17.5" r="2.5" stroke="currentColor" stroke-width="1.7" fill="none"/><circle cx="16.5" cy="15.5" r="2.5" stroke="currentColor" stroke-width="1.7" fill="none"/></svg>
+              <span>Âm thanh</span>
+            </button>
+            <button id="settings-tab-storage" class="settings-tab" type="button" role="tab" data-tab="storage" aria-controls="settings-pane-storage" aria-selected="false" tabindex="-1">
+              <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><ellipse cx="12" cy="6" rx="7.5" ry="2.8" stroke="currentColor" stroke-width="1.7" fill="none"/><path d="M4.5 6v12c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8V6M4.5 12c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8" stroke="currentColor" stroke-width="1.7" fill="none"/></svg>
+              <span>Dung lượng</span>
+            </button>
+            <button id="settings-tab-update" class="settings-tab" type="button" role="tab" data-tab="update" aria-controls="settings-pane-update" aria-selected="false" tabindex="-1">
+              <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3M19.5 4v4.5H15" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+              <span>Cập nhật</span>
+            </button>
+          </nav>
+          <div class="settings-panes">
+            <section id="settings-pane-account" class="settings-pane" role="tabpanel" aria-labelledby="settings-tab-account" tabindex="0">
+              <header class="settings-pane-head">
+                <h3>Tài khoản</h3>
+                <p>Khóa AI và tài khoản Douyin DubFlow dùng thay bạn.</p>
+              </header>
+              <div class="settings-section">
+                <div class="settings-section-head">
+                  <h4>Khóa AI</h4>
+                  <label class="ai-provider">AI mặc định
+                    <select id="ai-settings-provider"></select>
+                  </label>
                 </div>
+                <p class="hint">Dùng để dịch phụ đề theo ngữ cảnh và cho gợi ý đăng bài, Shorts, video bán hàng, tổng hợp và phim tài liệu.</p>
+                <div id="ai-settings-keys" class="ai-settings-keys"></div>
+                <p id="ai-settings-note" class="hint"></p>
+                <p id="ai-settings-state" class="discover-state" role="status"></p>
               </div>
-            </div>
-            <button id="update-check" class="btn" type="button">Kiểm tra cập nhật</button>
+              <dl class="settings-list">
+                <div class="settings-row">
+                  <div class="settings-text">
+                    <dt>Tài khoản Douyin</dt>
+                    <dd id="douyin-account-state">Đang kiểm tra…</dd>
+                  </div>
+                  <div class="settings-actions">
+                    <button id="douyin-login" class="btn" type="button">Đăng nhập</button>
+                    <button id="douyin-logout" class="btn" type="button" hidden>Đăng xuất</button>
+                  </div>
+                </div>
+              </dl>
+            </section>
+            <section id="settings-pane-translate" class="settings-pane" role="tabpanel" aria-labelledby="settings-tab-translate" tabindex="0" hidden>
+              <header class="settings-pane-head">
+                <h3>Dịch phụ đề</h3>
+                <p>Cách DubFlow dịch lời thoại và xử lý từ dễ bị nền tảng hạn chế.</p>
+              </header>
+              <div class="settings-section">
+                <section class="ai-key-card ai-subs-card">
+                  <label class="gloss-toggle"><input id="ai-translate-subs" type="checkbox" checked /> Dịch phụ đề bằng AI theo ngữ cảnh</label>
+                  <p id="ai-translate-hint" class="hint"></p>
+                </section>
+                <section class="ai-key-card ai-subs-card">
+                  <label class="ai-field">Từ nhạy cảm (chính sách cộng đồng)
+                    <select id="sensitive-mode">
+                      <option value="off">Tắt</option>
+                      <option value="variant">Đổi cách viết: chết → chớt, giết → giớt (phụ đề và giọng đọc)</option>
+                      <option value="beep">Che chữ (ch*t) và bíp trong giọng đọc</option>
+                    </select>
+                  </label>
+                  <div id="sensitive-words-box" class="ai-fields" hidden>
+                    <label class="ai-field">Danh sách từ, mỗi dòng “từ = cách viết thay”
+                      <textarea id="sensitive-words" rows="7" spellcheck="false"></textarea>
+                    </label>
+                    <p class="hint">Chỉ thay đúng cả từ (“dao động” vẫn giữ nguyên). Áp dụng cho video xử lý từ giờ trở đi; bản dịch gốc để sửa vẫn giữ nguyên. <button id="sensitive-reset" class="link" type="button">Dùng danh sách mặc định</button></p>
+                  </div>
+                </section>
+              </div>
+            </section>
+            <section id="settings-pane-processing" class="settings-pane" role="tabpanel" aria-labelledby="settings-tab-processing" tabindex="0" hidden>
+              <header class="settings-pane-head">
+                <h3>Xử lý &amp; máy</h3>
+                <p>Thiết lập cho video mới và tài nguyên máy DubFlow được dùng.</p>
+              </header>
+              <dl class="settings-list">
+                <div class="settings-row">
+                  <div class="settings-text">
+                    <dt><label for="remember-defaults">Ghi nhớ thiết lập lần trước</label></dt>
+                    <dd>Video mới tự dùng giọng đọc, phụ đề và cách che chữ của lần dùng gần nhất. Tắt thì video mới dùng thiết lập mặc định.</dd>
+                  </div>
+                  <input id="remember-defaults" class="switch" type="checkbox" role="switch" checked />
+                </div>
+                <div class="settings-row">
+                  <div class="settings-text">
+                    <dt><label for="cpu-only">Chỉ dùng CPU</label></dt>
+                    <dd>Tắt thì DubFlow tự dùng card đồ họa NVIDIA phù hợp để nhận dạng lời thoại, lồng tiếng và render video nhanh hơn. Thiết bị đang dùng hiện trong trạng thái xử lý.</dd>
+                  </div>
+                  <input id="cpu-only" class="switch" type="checkbox" role="switch" />
+                </div>
+                <div class="settings-row">
+                  <div class="settings-text">
+                    <dt><label for="thread-mode">Tài nguyên máy</label></dt>
+                    <dd id="machine-summary">Đang kiểm tra cấu hình máy…</dd>
+                    <dd id="thread-detail">Số luồng CPU tối đa mỗi tác vụ (render, nhận dạng lời thoại, quét chữ) được dùng.</dd>
+                  </div>
+                  <div class="settings-actions">
+                    <select id="thread-mode" aria-describedby="thread-detail">
+                      <option value="auto">Tự động theo máy</option>
+                      <option value="all">Dùng toàn bộ tài nguyên</option>
+                      <option value="custom">Tùy chỉnh số luồng</option>
+                    </select>
+                    <input id="thread-count" class="thread-count" type="number" min="1" step="1" inputmode="numeric" aria-label="Số luồng tối đa" hidden />
+                  </div>
+                </div>
+              </dl>
+            </section>
+            <section id="settings-pane-folders" class="settings-pane" role="tabpanel" aria-labelledby="settings-tab-folders" tabindex="0" hidden>
+              <header class="settings-pane-head">
+                <h3>Thư mục lưu</h3>
+                <p>Nơi DubFlow lưu video kết quả và video tải về.</p>
+              </header>
+              <dl class="settings-list">
+                <div class="settings-row">
+                  <div class="settings-text">
+                    <dt>Thư mục lưu kết quả</dt>
+                    <dd><span id="output-root-label" class="settings-path" title="">Cạnh video gốc</span></dd>
+                    <dd><button id="reset-output-root" class="link" type="button" hidden>Lưu cạnh video gốc</button></dd>
+                  </div>
+                  <button id="choose-output-root" class="btn" type="button">Đổi thư mục</button>
+                </div>
+                <div class="settings-row">
+                  <div class="settings-text">
+                    <dt>Thư mục lưu video tải về</dt>
+                    <dd><span id="download-dir-label" class="settings-path">Videos\DubFlow Downloads</span></dd>
+                  </div>
+                  <div class="settings-actions">
+                    <button id="reset-download-dir" class="btn" type="button" hidden>Mặc định</button>
+                    <button id="choose-download-dir" class="btn" type="button">Đổi thư mục</button>
+                  </div>
+                </div>
+              </dl>
+            </section>
+            <section id="settings-pane-audio" class="settings-pane" role="tabpanel" aria-labelledby="settings-tab-audio" tabindex="0" hidden>
+              <header class="settings-pane-head">
+                <h3>Âm thanh</h3>
+                <p>Hiệu ứng và âm thanh của bạn dùng khi chỉnh sửa video.</p>
+              </header>
+              <dl class="settings-list">
+                <div class="settings-row">
+                  <div class="settings-text">
+                    <dt>Kho hiệu ứng âm thanh</dt>
+                    <dd id="sfx-pack-state">Đang kiểm tra…</dd>
+                    <dd>Âm thanh CC0 dùng trong chế độ Âm thanh khi chỉnh sửa; chỉ tải một lần.</dd>
+                  </div>
+                  <button id="sfx-pack-get" class="btn" type="button">Tải về</button>
+                </div>
+                <div class="settings-row">
+                  <div class="settings-text">
+                    <dt>Thư mục âm thanh của bạn</dt>
+                    <dd><span id="audio-folder-label" class="settings-path">Chưa chọn</span></dd>
+                  </div>
+                  <div class="settings-actions">
+                    <button id="reset-audio-folder" class="btn" type="button" hidden>Bỏ chọn</button>
+                    <button id="choose-audio-folder" class="btn" type="button">Chọn thư mục</button>
+                  </div>
+                </div>
+              </dl>
+            </section>
+            <section id="settings-pane-storage" class="settings-pane" role="tabpanel" aria-labelledby="settings-tab-storage" tabindex="0" hidden>
+              <header class="settings-pane-head">
+                <h3>Dung lượng</h3>
+                <p>Tệp tạm và bản cài cũ. Video kết quả không bao giờ bị xóa.</p>
+              </header>
+              <dl class="settings-list">
+                <div class="settings-row">
+                  <div class="settings-text">
+                    <dt>Đang dùng</dt>
+                    <dd id="storage-summary">Đang tính dung lượng…</dd>
+                  </div>
+                  <button id="open-cleanup" class="btn" type="button" aria-haspopup="dialog">Dọn dẹp…</button>
+                </div>
+                <div class="settings-row">
+                  <div class="settings-text">
+                    <dt><label for="auto-clean">Tự dọn dẹp</label></dt>
+                    <dd>Tự xóa tệp tạm của video đã xong sau 3 ngày và bản cài cũ; không bao giờ xóa video kết quả.</dd>
+                  </div>
+                  <input id="auto-clean" class="switch" type="checkbox" role="switch" checked />
+                </div>
+              </dl>
+            </section>
+            <section id="settings-pane-update" class="settings-pane" role="tabpanel" aria-labelledby="settings-tab-update" tabindex="0" hidden>
+              <header class="settings-pane-head">
+                <h3>Cập nhật</h3>
+                <p>Bản mới của DubFlow và các phiên bản đã cài trên máy.</p>
+              </header>
+              <dl class="settings-list">
+                <div id="settings-update" class="settings-row">
+                  <div class="settings-text">
+                    <dt>Bản mới</dt>
+                    <dd id="update-summary">DubFlow tự kiểm tra bản mới khi mở ứng dụng và mỗi 6 giờ.</dd>
+                    <div id="update-card" class="update-card" hidden>
+                      <strong id="update-title">Có bản mới</strong>
+                      <small id="update-detail"></small>
+                      <div class="update-actions">
+                        <button id="update-install" class="btn primary" type="button">Cập nhật</button>
+                        <button id="update-later" class="link" type="button">Để sau</button>
+                      </div>
+                    </div>
+                  </div>
+                  <button id="update-check" class="btn" type="button">Kiểm tra cập nhật</button>
+                </div>
+                <div class="settings-row">
+                  <div class="settings-text">
+                    <dt>Phiên bản đã cài</dt>
+                    <dd>Các bản cũ được giữ lại để có thể quay lại nếu bản mới gặp lỗi.</dd>
+                  </div>
+                  <button id="installed-versions" class="btn" type="button" aria-haspopup="dialog">Các bản đã cài</button>
+                </div>
+              </dl>
+            </section>
           </div>
-          <div class="settings-row">
-            <div class="settings-text">
-              <dt>Dung lượng</dt>
-              <dd id="storage-summary">Đang tính dung lượng…</dd>
-            </div>
-            <button id="open-cleanup" class="btn" type="button" aria-haspopup="dialog">Dọn dẹp…</button>
-          </div>
-          <div class="settings-row">
-            <div class="settings-text">
-              <dt><label for="auto-clean">Tự dọn dẹp</label></dt>
-              <dd>Tự xóa tệp tạm của video đã xong sau 3 ngày và bản cài cũ; không bao giờ xóa video kết quả.</dd>
-            </div>
-            <input id="auto-clean" class="switch" type="checkbox" role="switch" checked />
-          </div>
-        </dl>
+        </div>
         <footer class="settings-foot">
-          <span>Phiên bản <button id="release-version" class="link version-link" type="button" title="Các phiên bản đã cài">—</button> <span id="release-channel" class="tag"></span> · <button id="installed-versions" class="link" type="button">Các bản đã cài</button></span>
+          <span>Phiên bản <button id="release-version" class="link version-link" type="button" title="Các phiên bản đã cài">—</button> <span id="release-channel" class="tag"></span></span>
           <span class="settings-stats">Hàng đợi: <span id="stat-running">0</span> đang chạy · <span id="stat-done">0</span> hoàn tất · <span id="stat-failed">0</span> lỗi</span>
         </footer>
       </div>
@@ -1645,47 +1759,6 @@
         <div id="douyin-view" class="douyin-view"><span>Đang mở douyin.com…</span></div>
       </div>
     </div>
-    <div id="ai-settings-dialog" class="review" role="dialog" aria-modal="true" aria-labelledby="ai-settings-title" hidden>
-      <div class="review-panel post-panel ai-settings-panel">
-        <header class="review-head">
-          <div>
-            <h2 id="ai-settings-title">Cài đặt AI</h2>
-            <p class="subtitle">Khóa dùng để dịch phụ đề theo ngữ cảnh và cho các tính năng AI: gợi ý đăng bài, Shorts, video bán hàng, tổng hợp và phim tài liệu</p>
-          </div>
-          <button id="ai-settings-close" class="icon-btn" type="button" aria-label="Đóng">
-            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
-          </button>
-        </header>
-        <div class="ai-settings-body">
-          <label class="ai-provider">AI mặc định
-            <select id="ai-settings-provider"></select>
-          </label>
-          <div id="ai-settings-keys" class="ai-settings-keys"></div>
-          <section class="ai-key-card ai-subs-card">
-            <label class="gloss-toggle"><input id="ai-translate-subs" type="checkbox" checked /> Dịch phụ đề bằng AI theo ngữ cảnh</label>
-            <p id="ai-translate-hint" class="hint"></p>
-          </section>
-          <section class="ai-key-card ai-subs-card">
-            <label class="ai-field">Từ nhạy cảm (chính sách cộng đồng)
-              <select id="sensitive-mode">
-                <option value="off">Tắt</option>
-                <option value="variant">Đổi cách viết: chết → chớt, giết → giớt (phụ đề và giọng đọc)</option>
-                <option value="beep">Che chữ (ch*t) và bíp trong giọng đọc</option>
-              </select>
-            </label>
-            <div id="sensitive-words-box" class="ai-fields" hidden>
-              <label class="ai-field">Danh sách từ, mỗi dòng “từ = cách viết thay”
-                <textarea id="sensitive-words" rows="7" spellcheck="false"></textarea>
-              </label>
-              <p class="hint">Chỉ thay đúng cả từ (“dao động” vẫn giữ nguyên). Áp dụng cho video xử lý từ giờ trở đi; bản dịch gốc để sửa vẫn giữ nguyên. <button id="sensitive-reset" class="link" type="button">Dùng danh sách mặc định</button></p>
-            </div>
-          </section>
-          <p id="ai-settings-note" class="hint"></p>
-          <p id="ai-settings-state" class="discover-state" role="status"></p>
-        </div>
-      </div>
-    </div>
-
     <div id="blur-dialog" class="review" role="dialog" aria-modal="true" aria-labelledby="blur-title" hidden>
       <div class="review-panel blur-panel">
         <header class="review-head">
