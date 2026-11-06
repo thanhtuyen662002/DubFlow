@@ -238,14 +238,17 @@ export function shortDate(seconds: number): string {
 }
 
 /** The finished videos of the runs, newest run first, at most `limit`. */
-export function recentVideos(runs: readonly ProductRun[], limit: number): Array<{ outputPath: string; displayName: string; meta: string }> {
-  const videos: Array<{ outputPath: string; displayName: string; meta: string }> = [];
+/** One finished video of an earlier run; `run` and `runName` are its run's folder and name (for deleting the run). */
+export type RecentVideo = { outputPath: string; displayName: string; meta: string; run: string; runName: string };
+
+export function recentVideos(runs: readonly ProductRun[], limit: number): RecentVideo[] {
+  const videos: RecentVideo[] = [];
   for (const run of runs) {
     for (const video of run.status?.videos ?? []) {
       if (!video.ok || !video.path || videos.length >= limit) continue;
       const seconds = video.duration_ms ? `${Math.round(video.duration_ms / 1000)} giây` : "";
       videos.push({ outputPath: video.path, displayName: `${run.name || "Video bán hàng"} · video ${video.index}`,
-        meta: [seconds, shortDate(run.created)].filter(Boolean).join(" · ") });
+        meta: [seconds, shortDate(run.created)].filter(Boolean).join(" · "), run: run.dir, runName: run.name || "Video bán hàng" });
     }
   }
   return videos;
