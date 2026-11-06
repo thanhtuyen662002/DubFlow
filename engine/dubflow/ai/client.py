@@ -23,7 +23,7 @@ import time
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 ANTHROPIC_VERSION = "2023-06-01"
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
@@ -161,9 +161,38 @@ def make_route(provider: str, key: str, *, model: str | None = None, base_url: s
     return Route(provider, chosen, base, key)
 
 
+MAX_REDIRECTS = 3
+
+
+def _origin(url: str) -> tuple[str, str, int | None]:
+    parts = urlsplit(url)
+    port = parts.port or {"https": 443, "http": 80}.get(parts.scheme)
+    return parts.scheme.lower(), (parts.hostname or "").lower(), port
+
+
+class _SameOriginRedirects(HTTPRedirectHandler):
+    """Follows a redirect only to the same scheme, host and port, at most MAX_REDIRECTS times.
+
+    urllib's default handler copies every header (Authorization, x-api-key,
+    x-goog-api-key) to wherever a server redirects, so a redirect to another origin
+    would hand the user's key to it. Such a redirect fails closed as the 3xx itself.
+    """
+
+    max_redirections = MAX_REDIRECTS
+    max_repeats = MAX_REDIRECTS
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001 - urllib's signature
+        if _origin(newurl) != _origin(req.full_url):
+            return None
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_OPENER = build_opener(_SameOriginRedirects)
+
+
 def _urllib(request: Request, timeout: float) -> tuple[int, Mapping[str, str], bytes]:
     try:
-        with urlopen(request, timeout=timeout) as response:  # noqa: S310 - https or a local server, checked above
+        with _OPENER.open(request, timeout=timeout) as response:  # https or a local server, checked above
             return response.status, dict(response.headers.items()), response.read(MAX_RESPONSE_BYTES)
     except HTTPError as error:
         return error.code, dict(error.headers.items()) if error.headers else {}, error.read(MAX_RESPONSE_BYTES)
@@ -213,6 +242,8 @@ def _http_error(route: Route, status: int, headers: Mapping[str, str], body: byt
         return AiError("BALANCE", f"Tài khoản {name} hết số dư hoặc hạn mức ({status}): {detail}", status=status)
     if status == 404 or re.search(r"model.*(not.*found|does not exist|not exist|invalid)|unknown model", detail, re.I):
         return AiError("MODEL", f"{name} không có model “{route.model}” ({status}): {detail}", status=status)
+    if 300 <= status <= 399:
+        return AiError("INVALID", f"{name} chuyển hướng sang địa chỉ khác ({status}); DubFlow không gửi khóa theo. Hãy kiểm tra địa chỉ máy chủ.", status=status)
     if status == 429:
         return AiError("LIMIT", f"Đã vượt giới hạn số lần gọi {name}; hãy chờ một phút rồi thử lại.", status=status, retry_after=_retry_after(headers, payload))
     if 500 <= status <= 599:
