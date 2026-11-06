@@ -153,7 +153,7 @@ def script_brief(run: Path) -> dict[str, Any]:
             "graphic_types": ["METRIC_CALLOUT", "LOWER_THIRD"],
             "sources": [{"source_id": item.id, "title": item.title, "duration": contexts[item.id].get("duration")} for item in spec.sources],
             "source_lines": "\n".join(lines), "quantity_facts": "\n".join(facts) or "(none found)",
-            "format": {"project_title": "string", "target_Coordinates_3D": "{lat, lng, location_name} or null",
+            "format": {"project_title": "string", "target_Coordinates_3D": "{lat, lng, location_name} of the exact site (the building or plant itself, 4 decimal places, not the city centre) or null",
                        "chapters": "[{chapter_type, recommended_bgm_mood, scenes: [{narration_text, matched_source_refs, visual_search_tags, "
                                    "on_screen_graphic, ambient_sfx_tag, acknowledged_numbers?}]}]"}}
 

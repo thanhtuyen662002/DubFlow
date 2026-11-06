@@ -77,7 +77,7 @@ export function chapterRequest(project: ScriptProject, chapter: ChapterType, con
       project: { title: cleanString(project.title, 120), topic: cleanString(project.topic, 600) },
       chapter: { type: chapter, purpose: PURPOSE[chapter], target_seconds: chapterTargetSeconds(project.targetMinutes, chapter),
         word_budget: chapterWordBudget(project.targetMinutes, chapter) },
-      ...(chapter === "HOOK" ? { also_return: "project_title: a YouTube-style English title (at most 100 characters); target_Coordinates_3D: the site's coordinates only when the sources name the place, else null" } : {}),
+      ...(chapter === "HOOK" ? { also_return: "project_title: a YouTube-style English title (at most 100 characters); target_Coordinates_3D: the exact site's coordinates (the building or plant itself, 4 decimal places, not the city centre) only when the sources name the place, else null" } : {}),
       moods: MOODS, ambient_sfx_tags: AMBIENT_SFX,
       source_lines: sourceLines(contexts).join("\n"),
       quantity_facts: quantityLines(contexts).join("\n") || "(none found)",
