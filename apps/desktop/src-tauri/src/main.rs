@@ -1254,7 +1254,13 @@ async fn fetch_url(app: tauri::AppHandle, url: String, mut title: Option<String>
     // details are read through douyin.com in DubFlow's browser first. Any
     // failure here leaves the link to the service's own attempt.
     if source::provider_for(&url) == Ok("douyin") {
-        if let Ok((page, desc)) = read_douyin_video(&app, &url).await {
+        // A new visitor's first page sometimes shows Douyin's own server
+        // error; the page opened again normally reads it.
+        let mut read = read_douyin_video(&app, &url).await;
+        if read.is_err() {
+            read = read_douyin_video(&app, &url).await;
+        }
+        if let Ok((page, desc)) = read {
             url = page;
             // A pasted link has no title of its own; the video's caption is.
             if title.as_deref().is_none_or(|title| title.trim().is_empty()) {
