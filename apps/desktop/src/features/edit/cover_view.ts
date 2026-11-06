@@ -12,7 +12,7 @@ import { formatClock, MAIN, outputToSource, parseClock, type Edit } from "./mode
 import { cueOutputTime } from "./subtitles.ts";
 import type { CoverHooks } from "./subtitles_view.ts";
 import {
-  activeRegions, COVER_MODES, COVER_SWATCHES, coverDocument, coverSummary, even, groupAuto, LEGACY_COVER_STYLE, loadCover, MAX_MANUAL,
+  activeRegions, COVER_MODES, COVER_SWATCHES, coverDocument, coverSummary, detachGroup, even, groupAuto, LEGACY_COVER_STYLE, loadCover, MAX_MANUAL,
   mosaicCells, nextMoment, normalizeCoverStyle, rectBetween, regionOn, sameCover, stretchDraws, uncoveredMoments,
   type AutoGroup, type AutoRegion, type CoverDirection, type CoverDocument, type CoverMode as Mode, type CoverState, type CoverStyle,
   type ManualRegion, type Rect, type Region,
@@ -113,6 +113,7 @@ export function mountCover(context: CoverContext): CoverEditor {
   const missedButton = $<HTMLButtonElement>("#cover-missed");
   const fixButton = $<HTMLButtonElement>("#cover-fix");
   const deleteButton = $<HTMLButtonElement>("#cover-delete");
+  const editButton = $<HTMLButtonElement>("#cover-edit");
   const scratch = document.createElement("canvas");
   const patch = document.createElement("canvas");
 
@@ -127,7 +128,9 @@ export function mountCover(context: CoverContext): CoverEditor {
   let drawing = false;
   /** The cover is on screen (a main-video moment with the preview layer shown). */
   let shown = false;
-  type Drag = { pointer: number; x: number; y: number; handle: DragHandle; start: Rect; target: "manual" | "fixed"; id?: string; moved: boolean };
+  /** A press on a region outline: "auto" is a detected line, turned into a drawn region once it really moves. */
+  type Target = "manual" | "fixed" | "auto";
+  type Drag = { pointer: number; x: number; y: number; handle: DragHandle; start: Rect; target: Target; id?: string; moved: boolean; picked: boolean };
   let drag: Drag | null = null;
   let sketch: { pointer: number; from: { x: number; y: number }; rect: Rect | null } | null = null;
 
@@ -239,29 +242,58 @@ export function mountCover(context: CoverContext): CoverEditor {
     return node;
   }
 
-  function editable(node: HTMLDivElement, target: "manual" | "fixed", id?: string): void {
+  /**
+   * Any outline can be pressed and dragged at once: the body moves it, the
+   * handles (shown on the selected one) resize it. A detected line becomes a
+   * drawn region the moment it moves, so it keeps every option a drawn one has.
+   */
+  function editable(node: HTMLDivElement, target: Target, id: string | undefined, chosen: boolean): void {
     node.classList.add("editable");
     node.dataset.handle = "move";
-    node.title = "Kéo để di chuyển, kéo các góc để đổi cỡ";
-    for (const handle of HANDLES) {
-      const knob = element("span", `cover-handle ${handle}`);
-      knob.dataset.handle = handle;
-      node.append(knob);
+    node.title = target === "auto" ? "Kéo để di chuyển, kéo các góc để đổi cỡ (vùng sẽ thành vùng che riêng)" : "Kéo để di chuyển, kéo các góc để đổi cỡ";
+    if (chosen) {
+      for (const handle of HANDLES) {
+        const knob = element("span", `cover-handle ${handle}`);
+        knob.dataset.handle = handle;
+        node.append(knob);
+      }
     }
+    const rectOf = (kind: Target, key: string | undefined): Rect | undefined => !state ? undefined
+      : kind === "fixed" ? state.fixed ?? undefined
+      : kind === "manual" ? manualOf(key ?? "")
+      : groups.find((group) => group.key === key)?.rect;
     node.addEventListener("pointerdown", (event) => {
-      if (event.button !== 0 || !state) return;
+      if (event.button !== 0 || !state || drawing) return;
       event.preventDefault();
       event.stopPropagation();
-      const rect = target === "fixed" ? state.fixed : manualOf(id ?? "");
+      const rect = rectOf(target, id);
       if (!rect) return;
       try { node.setPointerCapture(event.pointerId); } catch { /* A pointer that already ended. */ }
       const handle = ((event.target as HTMLElement).dataset.handle ?? "move") as DragHandle;
-      drag = { pointer: event.pointerId, x: event.clientX, y: event.clientY, handle, start: { x: rect.x, y: rect.y, w: rect.w, h: rect.h }, target, id, moved: false };
+      drag = { pointer: event.pointerId, x: event.clientX, y: event.clientY, handle, start: { x: rect.x, y: rect.y, w: rect.w, h: rect.h }, target, id, moved: false, picked: !chosen };
+      if (!chosen) selection = target === "fixed" ? { kind: "fixed" } : target === "manual" ? { kind: "manual", id: id ?? "" } : { kind: "auto", key: id ?? "" };
     });
     node.addEventListener("pointermove", (event) => {
       if (!drag || event.pointerId !== drag.pointer || !state) return;
+      const dx = event.clientX - drag.x, dy = event.clientY - drag.y;
+      // A click that wobbles a pixel only selects.
+      if (!drag.moved && Math.hypot(dx, dy) < 3) return;
       const layer = boxes.getBoundingClientRect();
-      const next = dragRegion(drag.start, drag.handle, (event.clientX - drag.x) / Math.max(1, layer.width), (event.clientY - drag.y) / Math.max(1, layer.height));
+      const next = dragRegion(drag.start, drag.handle, dx / Math.max(1, layer.width), dy / Math.max(1, layer.height));
+      if (drag.target === "auto") {
+        const group = groups.find((candidate) => candidate.key === drag!.id);
+        const region = group ? detachGroup(state, group, detected, makeId) : null;
+        if (!region) {
+          drag = null;
+          showHint(`Đã đủ ${MAX_MANUAL} vùng che tự vẽ: xóa bớt một vùng để chỉnh vùng này`);
+          return;
+        }
+        drag.target = "manual";
+        drag.id = region.id;
+        selection = { kind: "manual", id: region.id };
+        node.classList.remove("auto", "off");
+        node.classList.add("manual", "selected");
+      }
       drag.moved = true;
       if (drag.target === "fixed") state.fixed = next;
       else {
@@ -273,9 +305,9 @@ export function mountCover(context: CoverContext): CoverEditor {
     });
     const end = (event: PointerEvent): void => {
       if (!drag || event.pointerId !== drag.pointer) return;
-      const moved = drag.moved;
+      const refresh = drag.moved || drag.picked;
       drag = null;
-      if (moved) changed();
+      if (refresh) changed();
     };
     node.addEventListener("pointerup", end);
     node.addEventListener("pointercancel", end);
@@ -294,8 +326,9 @@ export function mountCover(context: CoverContext): CoverEditor {
     }
     const ms = seconds === null ? null : seconds * 1000;
     const on = (region: Region): boolean => ms !== null && regionOn(region, ms);
+    // A line switched off (or turned into a drawn region) shows again only when picked in the list.
     const visible = groups.filter((group) => (selection?.kind === "auto" && selection.key === group.key)
-      || (ms !== null && group.indices.some((index) => { const region = byIndex.get(index); return !!region && on(region); })));
+      || (ms !== null && !state!.disabled.has(group.indices[0]) && group.indices.some((index) => { const region = byIndex.get(index); return !!region && on(region); })));
     const key = JSON.stringify([selection, visible.map((group) => group.key), [...state.disabled].length, state.fixed,
       state.manual.map((region) => [region, on(region)]), sketch?.rect ?? null]);
     if (key === boxesKey) return;
@@ -305,30 +338,27 @@ export function mountCover(context: CoverContext): CoverEditor {
       const off = state.disabled.has(group.indices[0]);
       const chosen = selection?.kind === "auto" && selection.key === group.key;
       const node = boxNode(group.rect, `auto${chosen ? " selected" : ""}${off ? " off" : ""}`, chosen ? (off ? "Tự phát hiện · đang tắt" : "Tự phát hiện") : "");
-      node.addEventListener("pointerdown", (event) => { event.stopPropagation(); select({ kind: "auto", key: group.key }, false); });
-      node.addEventListener("click", (event) => event.stopPropagation());
+      editable(node, "auto", group.key, chosen);
       nodes.push(node);
     }
     if (state.fixed) {
       const chosen = selection?.kind === "fixed";
       const node = boxNode(state.fixed, `fixed${chosen ? " selected" : ""}`, chosen ? "Che cố định cả video" : "");
-      if (chosen) editable(node, "fixed");
-      else node.addEventListener("pointerdown", (event) => { event.stopPropagation(); select({ kind: "fixed" }, false); });
+      editable(node, "fixed", undefined, chosen);
       nodes.push(node);
     }
     state.manual.forEach((region, index) => {
       const chosen = selection?.kind === "manual" && selection.id === region.id;
       if (!chosen && !on(region)) return;
       const node = boxNode(region, `manual${chosen ? " selected" : ""}${on(region) ? "" : " idle"}`, chosen ? `Vùng che ${index + 1}` : "");
-      if (chosen) editable(node, "manual", region.id);
-      else node.addEventListener("pointerdown", (event) => { event.stopPropagation(); select({ kind: "manual", id: region.id }, false); });
+      editable(node, "manual", region.id, chosen);
       nodes.push(node);
     });
     if (sketch?.rect) nodes.push(boxNode(sketch.rect, "manual selected sketch", ""));
     boxes.replaceChildren(...nodes);
     // Unselected regions show only an outline: say how to get their handles back.
-    if (!drawing) showHint(!selection && nodes.some((node) => !node.classList.contains("auto"))
-      ? "Bấm vào vùng che để đổi cỡ hoặc di chuyển · Esc để bỏ chọn" : null);
+    if (!drawing) showHint(!selection && nodes.length
+      ? "Kéo vùng che để di chuyển · bấm chọn rồi kéo góc để đổi cỡ · Esc để bỏ chọn" : null);
   }
 
   /** Redraw the outlines on the next frame even when nothing they show changed. */
@@ -608,13 +638,17 @@ export function mountCover(context: CoverContext): CoverEditor {
     const meta = $("#cover-selected-meta");
     $("#cover-span-field").hidden = !region;
     fixButton.hidden = !group;
-    deleteButton.hidden = !region && !fixed;
+    editButton.hidden = !group;
+    deleteButton.hidden = !region && !fixed && !group;
     if (group) {
       const off = state.disabled.has(group.indices[0]);
       title.textContent = `Tự phát hiện · ${(names.get(group.key) ?? "")}`;
       meta.textContent = `${group.indices.length} lần xuất hiện, từ ${formatClock(group.first / 1000)}. ${off
-        ? "Đang tắt: chữ gốc ở dải này sẽ không được che." : "Bật/tắt bằng công tắc trong danh sách."}`;
+        ? "Đang tắt: chữ gốc ở dải này sẽ không được che." : "Kéo trên video để di chuyển, kéo góc để đổi cỡ."}`;
       fixButton.disabled = !!state.fixed && sameRect(state.fixed, group.rect);
+      editButton.disabled = state.manual.length >= MAX_MANUAL;
+      deleteButton.textContent = off ? "Bật che lại" : "Bỏ che vùng này";
+      deleteButton.classList.toggle("danger", !off);
     } else if (region) {
       const index = state.manual.indexOf(region);
       title.textContent = `Vùng che ${index + 1}`;
@@ -627,10 +661,12 @@ export function mountCover(context: CoverContext): CoverEditor {
         if (document.activeElement !== endInput) endInput.value = formatClock(region.end_ms! / 1000, true);
       }
       deleteButton.textContent = "Xóa vùng che";
+      deleteButton.classList.add("danger");
     } else if (fixed) {
       title.textContent = "Che cố định cả video";
       meta.textContent = `Rộng ${percent(fixed.w)} × cao ${percent(fixed.h)}, suốt video. Kéo trên video để di chuyển, kéo góc để đổi cỡ.`;
       deleteButton.textContent = "Bỏ che cố định";
+      deleteButton.classList.add("danger");
     }
   }
 
@@ -685,11 +721,29 @@ export function mountCover(context: CoverContext): CoverEditor {
   deleteButton.addEventListener("click", () => {
     if (!state) return;
     if (selection?.kind === "manual") removeManual(selection.id);
+    else if (selection?.kind === "auto") {
+      const group = groups.find((candidate) => candidate.key === (selection as { key: string }).key);
+      if (!group) return;
+      const off = state.disabled.has(group.indices[0]);
+      for (const index of group.indices) {
+        if (off) (state.disabled as Set<number>).delete(index);
+        else (state.disabled as Set<number>).add(index);
+      }
+      changed();
+    }
     else if (selection?.kind === "fixed") {
       state.fixed = null;
       selection = null;
       changed();
     }
+  });
+  editButton.addEventListener("click", () => {
+    if (!state || selection?.kind !== "auto") return;
+    const group = groups.find((candidate) => candidate.key === (selection as { key: string }).key);
+    const region = group ? detachGroup(state, group, detected, makeId) : null;
+    if (!region) return;
+    selection = { kind: "manual", id: region.id };
+    changed();
   });
   addButton.addEventListener("click", () => setDrawing(!drawing));
 
@@ -744,7 +798,8 @@ export function mountCover(context: CoverContext): CoverEditor {
         else select(null, false);
         return true;
       }
-      if ((key === "delete" || key === "backspace") && (selection?.kind === "manual" || selection?.kind === "fixed")) {
+      const autoOff = selection?.kind === "auto" && !!state && state.disabled.has(groups.find((group) => group.key === (selection as { key: string }).key)?.indices[0] ?? -1);
+      if ((key === "delete" || key === "backspace") && selection && !autoOff) {
         deleteButton.click();
         return true;
       }

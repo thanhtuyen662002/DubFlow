@@ -1209,7 +1209,7 @@ button.job.selected { background: var(--select); }
 .edit-cover { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; }
 .edit-cover[hidden], .cover-options[hidden], .cover-selected[hidden], .cover-boxes[hidden], .cover-draw[hidden],
 #cover-color-options[hidden], #cover-mosaic-options[hidden], #cover-feather-row[hidden], #cover-span-field[hidden], #cover-times[hidden],
-#cover-blur-note[hidden], #cover-empty[hidden], #cover-missed[hidden], #cover-fix[hidden], #cover-delete[hidden], #cover-style-row[hidden] { display: none; }
+#cover-blur-note[hidden], #cover-empty[hidden], #cover-missed[hidden], #cover-fix[hidden], #cover-edit[hidden], #cover-delete[hidden], #cover-style-row[hidden] { display: none; }
 .cover-pane { display: flex; flex: 1; flex-direction: column; gap: 14px; min-height: 0; padding: 14px 16px 16px; overflow: auto; }
 /* The pane scrolls; its cards keep their height instead of being squeezed and clipped. */
 .cover-pane > *, .cover-list > * { flex-shrink: 0; }
