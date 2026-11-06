@@ -49,12 +49,12 @@ export function mountDouyinLogin(invoke: Invoke, onWindowMoved: (listener: () =>
     if (dialog.hidden) return;
     dialog.hidden = true;
     observer?.disconnect();
-    invoke("douyin_view_close").catch(() => undefined);
+    const closing = invoke("douyin_view_close").catch(() => undefined);
     if (returnFocus?.isConnected) returnFocus.focus();
     resolveOpen?.(saved);
     resolveOpen = null;
     opened = null;
-    void refreshAccount();
+    void closing.then(() => refreshAccount());
   }
 
   async function open(): Promise<boolean> {
@@ -119,18 +119,33 @@ export function mountDouyinLogin(invoke: Invoke, onWindowMoved: (listener: () =>
     return run;
   }
 
-  async function refreshAccount(): Promise<void> {
-    try {
-      const account = await invoke<{ logged_in?: boolean } | null>("douyin_account");
-      const loggedIn = account?.logged_in === true;
-      accountState.textContent = loggedIn ? "Đã đăng nhập" : "Chưa đăng nhập";
-      login.hidden = loggedIn;
-      logout.hidden = !loggedIn;
-    } catch {
-      accountState.textContent = "Chưa kiểm tra được";
-      login.hidden = false;
-      logout.hidden = true;
+  let refreshing: Promise<void> | null = null;
+  function refreshAccount(): Promise<void> {
+    // One check at a time; a check asked for meanwhile reuses it.
+    refreshing ??= checkAccount().finally(() => { refreshing = null; });
+    return refreshing;
+  }
+  async function checkAccount(): Promise<void> {
+    let failure = "";
+    // Reading cookies can fail for a moment while a Douyin page closes.
+    for (const wait of [0, 700, 1500]) {
+      if (wait) await new Promise((resolve) => setTimeout(resolve, wait));
+      try {
+        const account = await invoke<{ logged_in?: boolean } | null>("douyin_account");
+        const loggedIn = account?.logged_in === true;
+        accountState.textContent = loggedIn ? "Đã đăng nhập" : "Chưa đăng nhập";
+        accountState.title = "";
+        login.hidden = loggedIn;
+        logout.hidden = !loggedIn;
+        return;
+      } catch (error) {
+        failure = String(error).slice(0, 200);
+      }
     }
+    accountState.textContent = "Chưa kiểm tra được";
+    accountState.title = failure;
+    login.hidden = false;
+    logout.hidden = true;
   }
 
   login.addEventListener("click", () => void open());
