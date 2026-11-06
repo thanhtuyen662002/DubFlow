@@ -1313,8 +1313,7 @@ class FfmpegMediaAdapter:
         positions = [0] * len(plan.parts)
         counts = [0] * len(plan.parts)
         lock = threading.Lock()
-        threads = resources.thread_budget()
-        per_part = ["-threads", str(max(1, threads // plan.workers))] if threads else []
+        per_part = resources.part_thread_args(plan.workers)
         try:
             # Absolute times stay as in the single pass (blur and subtitle times
             # match); each part then starts at zero for the join.
@@ -1501,6 +1500,9 @@ class FfmpegMediaAdapter:
                 child.kill()
                 child.wait()
             reader.join(timeout=5)
+            for stream in (child.stdout, child.stderr):
+                if stream is not None:
+                    stream.close()
         if expired.is_set():
             raise MediaAdapterError("MEDIA_COMMAND_TIMEOUT", f"media command exceeded {self.timeout_seconds:g}s", retryable=True)
         return subprocess.CompletedProcess(command, child.returncode, "", "".join(errors))

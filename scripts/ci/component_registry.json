@@ -1325,6 +1325,7 @@
         "apps/desktop/src/features/compilation",
         "apps/desktop/src-tauri/src/main.rs",
         "apps/desktop/src-tauri/src/edit.rs",
+        "apps/desktop/src-tauri/src/edit_parts.rs",
         "apps/desktop/src-tauri/src/gpu.rs",
         "apps/desktop/src-tauri/src/sfx.rs",
         "apps/desktop/src-tauri/src/product.rs",

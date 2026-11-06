@@ -64,6 +64,13 @@ class ArgumentTests(unittest.TestCase):
 
 
 class ThreadBudgetTests(unittest.TestCase):
+    def test_parts_rendered_at_once_share_the_machine_even_when_unset(self):
+        with mock.patch.dict(os.environ, {}, clear=False), mock.patch("engine.dubflow.resources.machine_threads", return_value=12):
+            os.environ.pop("DUBFLOW_THREADS", None)
+            self.assertEqual(resources.part_thread_args(4), ["-threads", "3", "-filter_threads", "3"])
+            os.environ["DUBFLOW_THREADS"] = "4"
+            self.assertEqual(resources.part_thread_args(3), ["-threads", "1", "-filter_threads", "1"])
+
     def test_unset_keeps_each_stage_default_and_ffmpeg_auto(self):
         with mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop("DUBFLOW_THREADS", None)
