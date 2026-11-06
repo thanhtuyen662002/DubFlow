@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import re
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 from .project import DocuError, write_json
 
@@ -20,14 +20,16 @@ ANALYSIS_WIDTH = 320
 # Cuts closer than this are one flicker (a flash, a double detection). A real 0.3 s shot keeps both of its cuts, so
 # no slice is planned across it (Tier-3).
 MIN_SHOT = 0.15
-RECIPE = "scdet-320-v4"
+RECIPE = "scdet-320-v5"
 # Gradual changes scdet misses (a whip pan, a dissolve; Tier-3): tiny grey thumbnails at SLOW_FPS. At each sample
 # the picture SLOW_SPAN samples before is compared with the one SLOW_SPAN after (mean difference, % of full scale).
 # It is a transition when that change is big (SLOW_MIN) and the picture was steady on both sides: SLOW_RATIO times
 # the change within the span just before and the span just after. Walking along a corridor changes the picture all
 # the time, so it is not cut; a whip from one view to another is.
 SLOW_FPS, SLOW_SPAN, SLOW_W, SLOW_H = 5, 3, 32, 18
-SLOW_MIN, SLOW_RATIO = 12.0, 2.5
+# A hard cut also changes the picture between two steady sides: a stretch holding one is already cut there and is left
+# as it is, or every hard cut would cost two seconds of footage.
+SLOW_MIN, SLOW_RATIO = 10.0, 2.5
 _TIME = re.compile(r"lavfi\.scd\.time=([0-9]+(?:\.[0-9]+)?)")
 
 Runner = Callable[[list[str], Path, Callable[[], bool]], None]
@@ -78,15 +80,18 @@ def transitions(raw: bytes, *, minimum: float = SLOW_MIN, ratio: float = SLOW_RA
     return found
 
 
-def slow_cuts(raw: bytes, duration: float, **tuning: float) -> list[float]:
-    """Both ends of each stretch where the picture turns into another one gradually (whip pan, dissolve)."""
+def slow_cuts(raw: bytes, duration: float, hard: Sequence[float] = (), **tuning: float) -> list[float]:
+    """Both ends of each stretch where the picture turns into another one gradually (whip pan, dissolve); stretches
+    around one of the ``hard`` cuts are that cut, not a gradual change."""
     step = 1 / SLOW_FPS
     half = int(tuning.get("span", SLOW_SPAN)) / SLOW_FPS
     cuts: list[float] = []
     run: list[float] = []
     for time, _, _ in transitions(raw, **tuning) + [(float("inf"), 0.0, 0.0)]:
         if run and time - run[-1] > step * 1.5:
-            cuts += [round(max(0.0, run[0] - half), 3), round(min(duration, run[-1] + half), 3)]
+            low, high = max(0.0, run[0] - half), min(duration, run[-1] + half)
+            if not any(low <= cut <= high for cut in hard):
+                cuts += [round(low, 3), round(high, 3)]
             run = []
         run.append(time)
     return cuts
@@ -136,7 +141,8 @@ def detect(video: Path, duration: float, cache: Path, *, ffmpeg: Path, run: Runn
         raw = thumbs.read_bytes()
     except OSError:
         raw = b""
-    cuts = merge(parse(text, duration), slow_cuts(raw, duration), duration)
+    hard = parse(text, duration)
+    cuts = merge(hard, slow_cuts(raw, duration, hard), duration)
     thumbs.unlink(missing_ok=True)
     write_json(cache, {"schema_version": 1, "identity": key, "duration": duration, "cuts": cuts})
     log.unlink(missing_ok=True)

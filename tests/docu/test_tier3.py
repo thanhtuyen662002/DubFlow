@@ -396,3 +396,12 @@ class SlowCutTests(unittest.TestCase):
     def test_merge_drops_flicker(self):
         from engine.dubflow.docu import shots
         self.assertEqual(shots.merge([2.0, 5.0], [1.95, 3.0, 3.6], 10.0), [1.95, 3.0, 3.6, 5.0])
+
+
+class HardCutStretchTests(unittest.TestCase):
+    def test_a_hard_cut_is_not_cut_out_again_as_a_slow_one(self):
+        from engine.dubflow.docu import shots
+        size = shots.SLOW_W * shots.SLOW_H
+        raw = b"".join(bytes([40]) * size for _ in range(20)) + b"".join(bytes([200]) * size for _ in range(20))
+        self.assertEqual(len(shots.slow_cuts(raw, 8.0)), 2)
+        self.assertEqual(shots.slow_cuts(raw, 8.0, [4.0]), [])
