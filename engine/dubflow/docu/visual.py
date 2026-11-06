@@ -35,6 +35,12 @@ def caption_warning(source_id: str, preset: str) -> str:
     return covered if preset == "letterbox_235" else f"{covered}. Chọn khung Viền đen điện ảnh 2,35:1 để vùng che nhỏ hơn"
 
 
+def logo_first_warning(source_id: str) -> str:
+    """Framing that crops a big logo away and covers the caption band instead (Tier-3)."""
+    return (f"Logo của {source_id} quá to để làm mờ: khung hình đẩy logo ra ngoài, phụ đề gốc ở đáy được phủ dải tối "
+            "sát viền đen")
+
+
 def portrait_warning(source_id: str) -> str:
     return (f"{source_id} là video dọc: khung 16:9 chỉ giữ được một dải giữa hình, nên lát cắt chỉ lấy từ nguồn này "
             "khi không còn cảnh khác. Nên thay bằng video ngang")
@@ -56,6 +62,8 @@ def slice_json(piece: matcher.Slice) -> dict[str, Any]:
         value.update({"kind": piece.kind, "ref": piece.ref})
     if piece.crossed:
         value["crossed"] = True
+    if piece.reused:
+        value.update({"reused": True, "variation": "alt_crop"})
     return value
 
 
@@ -109,8 +117,9 @@ def apply_overrides(run_dir: Path, plan: dict[str, Any]) -> list[str]:
                 dropped += 1
                 continue
             piece.update({"source_id": source_id, "start": round(start, 3), "end": round(start + length, 3), "tier": -1})
-            # Hand-picked footage replaces a generated picture (map, data slide) too.
-            for key in ("kind", "ref", "crossed"):
+            # Footage picked by hand is the user's call: framed as planned, not as a repeat; it replaces a generated
+            # picture (map, data slide) too.
+            for key in ("reused", "variation", "kind", "ref", "crossed"):
                 piece.pop(key, None)
     return [f"{dropped} lát cắt đã thay tay không còn chỗ trong kế hoạch mới"] if dropped else []
 
@@ -358,7 +367,8 @@ def run(run_dir: Path, spec: Spec, *, ffmpeg: Path, scanner: ScannerFactory | No
             # Logos cropped away where a small move or zoom can do it (Tier-3), blurred only where it cannot.
             framing = safezone.frame_logos(band, logos, spec.cinematic_framing_preset)
             if not framing.clear:
-                warnings.append(caption_warning(source.id, spec.cinematic_framing_preset))
+                warnings.append(logo_first_warning(source.id) if safezone.framing(band, spec.cinematic_framing_preset).clear
+                                else caption_warning(source.id, spec.cinematic_framing_preset))
             portrait = safezone.is_portrait(size)
             if portrait:
                 warnings.append(portrait_warning(source.id))

@@ -295,7 +295,43 @@ def frame_logos(band: Band | None, logos: Sequence[Sequence[float]], preset: str
                 key = (round(shown(framed), 5), round(zoom - base.zoom, 4), round(abs(shift_x) + abs(shift - base.shift), 4))
                 if key < best[:3]:
                     best = (*key, framed)
-    return best[3]
+    chosen = best[3]
+    if base.clear and band is not None and any(is_heavy(chosen, logo) for logo in logos):
+        # Logo first: when keeping the caption out leaves a big logo blur, a framing that crops the logo away and
+        # lets the caption be covered by the dark strip along the bottom bar reads cleaner than a blot in the picture.
+        traded = _logo_first(band, logos, base, shown)
+        if traded is not None and shown(traded) <= LOGO_FIRST_GAIN * best[0] and caption_seen(traded, band) <= LOGO_FIRST_CAPTION:
+            return traded
+    return chosen
+
+
+# A logo-first framing must cut the logo shown to this share of the caption-first one, and show at most this much of
+# the caption band (frame fractions; covered in place by the dark strip).
+LOGO_FIRST_GAIN, LOGO_FIRST_CAPTION = 0.35, 0.11
+
+
+def caption_seen(framed: Framing, band: Band) -> float:
+    """How much of the caption band (frame fractions, top to bottom) shows in the picture."""
+    _, top, _, bottom = window(framed)
+    return max(0.0, min(bottom, band.bottom) - max(top, band.top))
+
+
+def _logo_first(band: Band, logos: Sequence[Sequence[float]], base: Framing, shown: Callable[[Framing], float]) -> Framing | None:
+    best: tuple | None = None
+    for step in range(0, 15):
+        zoom = round(base.zoom + step * 0.01, 2)
+        if zoom > MAX_ZOOM + 1e-9:
+            break
+        reach = (1 - 1 / zoom) / 2
+        for up in range(-10, 11):
+            for side in range(-10, 11):
+                framed = Framing(zoom, reach * up / 10, base.letterbox, False, reach * side / 10)
+                if any(is_heavy(framed, logo) for logo in logos):
+                    continue
+                key = (round(shown(framed), 5), round(caption_seen(framed, band), 4), zoom, abs(up) + abs(side))
+                if best is None or key < best[0]:
+                    best = (key, framed)
+    return best[1] if best else None
 
 
 def watermark_state(framed: Framing, logos: Sequence[Sequence[float]], texts: Sequence[Sequence[float]],

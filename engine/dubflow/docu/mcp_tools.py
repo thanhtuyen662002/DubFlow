@@ -211,8 +211,8 @@ def replace_clip(run: Path, scene_id: str, slice_index: int, source_id: str, sta
     if not isinstance(start, (int, float)) or start < 0 or start + length > float(source["duration"]) + 1e-3:
         raise DocuError(f"Đoạn {start}–{start + length:.3f} s nằm ngoài video {source_id} ({source['duration']} s)")
     piece.update({"source_id": source_id, "start": round(float(start), 3), "end": round(float(start) + length, 3), "tier": -1})
-    # Hand-picked footage replaces a generated picture (map, data slide) too.
-    for key in ("kind", "ref", "crossed"):
+    # Hand-picked footage is framed as planned, not as a repeat, and replaces a generated picture (map, data slide) too.
+    for key in ("reused", "variation", "kind", "ref", "crossed"):
         piece.pop(key, None)
     _publish(plan_path, plan)
     # Remembered, so a new plan (pacing, framing, a fresh scan) keeps the choice.

@@ -328,3 +328,36 @@ class RenderTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LogoFirstTests(unittest.TestCase):
+    def test_big_top_logo_is_cropped_away_and_the_caption_covered_instead(self):
+        from engine.dubflow.docu import safezone
+        band = safezone.Band(0.8083, 0.9028, 1.0)
+        logos = [[0.0, 0.0, 0.2854, 0.2367]]
+        framed = safezone.frame_logos(band, logos, "letterbox_235")
+        self.assertFalse(framed.clear, "the caption is covered in place")
+        self.assertFalse(safezone.is_heavy(framed, logos[0]))
+        self.assertLess(safezone.caption_seen(framed, band), safezone.LOGO_FIRST_CAPTION)
+
+    def test_logo_that_cannot_leave_keeps_the_caption_hidden(self):
+        from engine.dubflow.docu import safezone
+        band = safezone.Band(0.875, 0.9639, 0.9)
+        framed = safezone.frame_logos(band, [[0.0326, 0.6283, 0.1738, 0.2267]], "letterbox_235")
+        self.assertTrue(framed.clear)
+
+    def test_only_the_visible_part_of_a_logo_is_blurred(self):
+        from engine.dubflow.docu import roughcut, safezone
+        framed = safezone.Framing(1.14, -0.0614, safezone.LETTERBOX_BAR, False, 0.0614)
+        box, seen = roughcut._visible_box(framed, [0.0, 0.0, 0.2854, 0.2367])
+        self.assertEqual((box[0], box[1]), (0.0, 0.0), "runs on to the frame's edge where the picture ends")
+        self.assertLess(seen[1], 0.02, "a thin strip, not the whole box")
+
+
+class MapCentreTests(unittest.TestCase):
+    def test_site_sits_in_the_middle_of_the_mosaic(self):
+        from engine.dubflow.docu import mapgen
+        for zoom in mapgen.LEVELS:
+            x, y = mapgen.tile_position(30.3907, 114.8946, zoom)
+            x0, y0 = mapgen.origin(30.3907, 114.8946, zoom)
+            self.assertTrue(2.5 <= x - x0 <= 3.5 and 2.5 <= y - y0 <= 3.5, (zoom, x - x0, y - y0))

@@ -35,12 +35,24 @@ MIN_REF_SECONDS = 0.5
 SCRIPT_LIMIT = 4 * 1024 * 1024
 CONTEXT_LIMIT = 64 * 1024 * 1024
 # Stock AI phrasing the prompt bans (features/docu/ai.ts STORY_RULES); a scene that still uses it is marked for review.
-_CLICHES = re.compile(r"\b(delv(?:e|es|ed|ing)|testament|marvel(?:s|ed|ous)?|tapestry|in conclusion|to sum up|in summary)\b", re.IGNORECASE)
+_CLICHES = re.compile(r"\b(delv(?:e|es|ed|ing)|testament|marvel(?:s|ed|ous)?|tapestry|in conclusion|to sum up|in summary"
+                      r"|the verdict|final verdict|the bottom line|all in all|at the end of the day)\b", re.IGNORECASE)
+# A label such as "The verdict:" at the start of a sentence tells the viewer the film is ending; the last act loses it.
+_SIGNPOST = re.compile(r"(^|[.!?]\s+)(?:the |final |my )?(?:verdict|bottom line)\s*[:\u2014\u2013-]\s*", re.IGNORECASE)
 
 
 def cliches(text: str) -> list[str]:
     """The banned stock phrases in a narration, lower-cased, each once, in order."""
     return list(dict.fromkeys(match.group(1).casefold() for match in _CLICHES.finditer(text)))
+
+
+def strip_signposts(text: str) -> str:
+    """The narration without an ending label opening any of its sentences; the next word starts with a capital."""
+    return _SIGNPOST.sub(lambda match: match.group(1), text).strip() if _SIGNPOST.search(text) else text
+
+
+def _capitalise(text: str) -> str:
+    return re.sub(r"(^|[.!?]\s+)([a-z])", lambda match: match.group(1) + match.group(2).upper(), text)
 
 
 def _text(value: Any, limit: int) -> str:
@@ -142,7 +154,7 @@ def check(draft: Any, spec: Spec, contexts: dict[str, dict[str, Any]]) -> dict[s
     if unknown:
         notes.append(f"Đã bỏ {unknown} chương không rõ loại")
     chapters: list[dict[str, Any]] = []
-    total = dropped_refs = 0
+    total = dropped_refs = signposts = 0
     for kind in CHAPTERS:
         if kind not in moods:
             notes.append(f"Thiếu chương “{CHAPTER_NAMES[kind]}”")
@@ -152,6 +164,11 @@ def check(draft: Any, spec: Spec, contexts: dict[str, dict[str, Any]]) -> dict[s
             if type(raw) is not dict:
                 continue
             narration = _text(raw.get("narration_text"), MAX_NARRATION + 1)
+            if kind == "CRITICAL_EVALUATION":
+                stripped = strip_signposts(narration)
+                if stripped != narration:
+                    signposts += 1
+                    narration = _capitalise(stripped)
             if not narration:
                 continue
             if total >= MAX_SCENES:
@@ -192,6 +209,8 @@ def check(draft: Any, spec: Spec, contexts: dict[str, dict[str, Any]]) -> dict[s
                            "ambient_sfx_tag": sfx, "acknowledged_numbers": acknowledged,
                            "needs_review": bool(scene_notes), "review_notes": scene_notes, "review_numbers": flagged})
         chapters.append({"chapter_type": kind, "recommended_bgm_mood": moods[kind], "scenes": scenes})
+    if signposts:
+        notes.append(f"Đã bỏ nhãn báo kết phim (như “The verdict:”) ở đầu câu của {signposts} cảnh phần Đánh giá")
     if dropped_refs:
         notes.append(f"Đã bỏ {dropped_refs} đoạn nguồn không hợp lệ hoặc ngoài thời lượng video")
     if not total:

@@ -90,7 +90,8 @@ def tile_position(lat: float, lon: float, zoom: int) -> tuple[float, float]:
 def origin(lat: float, lon: float, zoom: int) -> tuple[int, int]:
     """The top-left tile of the GRID×GRID mosaic around the point."""
     x, y = tile_position(lat, lon, zoom)
-    return int(math.floor(x)) - GRID // 2 + 1, int(math.floor(y)) - GRID // 2 + 1
+    # Centred: the point sits between 2.5 and 3.5 tiles from the mosaic's top-left corner.
+    return int(round(x - GRID / 2)), int(round(y - GRID / 2))
 
 
 def _http(url: str, timeout: float) -> bytes:
@@ -234,6 +235,16 @@ def _level_sample(mosaic: np.ndarray, zoom: int, centre: tuple[float, float], wi
     return rows[line, x0] * (1 - fx) + rows[line, x1] * fx
 
 
+def _room(zoom: int, centre: tuple[float, float], width16: float, tilt: float, size: int) -> float:
+    """How many times over the mosaic holds the view around ``centre`` (>= 1 means no edge shows), counting the
+    wider far rows of a tilted camera."""
+    half_w = width16 / 2 ** (LEVELS[-1] - zoom) / 2 * (1 + tilt)
+    half_h = half_w * DRAW_H / DRAW_W * (1 + tilt)
+    cx, cy = centre
+    space = min(cx, size - cx) / max(half_w, 1e-6), min(cy, size - cy) / max(half_h, 1e-6)
+    return min(space) / 1.02
+
+
 def satellite_frames(mosaics: dict[int, np.ndarray], lat: float, lon: float, count: int) -> graphics.FrameSource:
     shade = graphics.vignette(0.55, DRAW_W, DRAW_H)
     centres = {}
@@ -246,15 +257,15 @@ def satellite_frames(mosaics: dict[int, np.ndarray], lat: float, lon: float, cou
     def frame(index: int) -> np.ndarray:
         width16, tilt = camera(index, count)
         # The sharpest level whose mosaic still covers the view, crossfaded with the coarser one as it takes over.
-        covering = [zoom for zoom in sorted(mosaics) if width16 / 2 ** (LEVELS[-1] - zoom) * (1 + tilt) <= size * 0.98]
-        coarse = [zoom for zoom in sorted(mosaics)]
+        coarse = sorted(mosaics)
+        room = {zoom: _room(zoom, centres[zoom], width16, tilt, size) for zoom in coarse}
+        covering = [zoom for zoom in coarse if room[zoom] >= 1.0]
         chosen = covering[-1] if covering else coarse[0]
         picture = _level_sample(mosaics[chosen], chosen, centres[chosen], width16, tilt)
         coarser = [zoom for zoom in coarse if zoom < chosen]
         if coarser:
             # How far past the switch point this level is: blend over the first 35 % of its range.
-            over = size * 0.98 / (width16 / 2 ** (LEVELS[-1] - chosen) * (1 + tilt))
-            blend = min(1.0, (over - 1) / 0.35)
+            blend = min(1.0, (room[chosen] - 1) / 0.35)
             if blend < 1:
                 other = _level_sample(mosaics[coarser[-1]], coarser[-1], centres[coarser[-1]], width16, tilt)
                 picture = other * (1 - blend) + picture * blend
@@ -276,6 +287,8 @@ def radar_frames(count: int) -> graphics.FrameSource:
 
 
 TEAL, AMBER, WHITE = "#5FE3D8", "#FAC822", "#FFFFFF"
+# A dark outline and soft drop shadow so the readouts stay legible over bright cloud and water.
+SHADE = "\\3c&H101810&\\3a&H20&\\bord3\\4c&H000000&\\4a&H60&\\shad2\\blur0.6"
 
 
 def hud_ass(lat: float, lon: float, label: str, seconds: float, bar: int, *, satellite: bool) -> str:
@@ -307,19 +320,19 @@ def hud_ass(lat: float, lon: float, label: str, seconds: float, bar: int, *, sat
     rows.append(graphics.event(0.4, end, graphics.drawing(ticks, f"\\an7\\pos(0,0)\\1c{graphics.colour(AMBER)}\\fad(300,200)"), layer=3))
     rows.append(graphics.event(0.0, end, graphics.drawing(graphics.circle(5, cx, cy), f"\\an7\\pos(0,0)\\1c{graphics.colour(AMBER)}"), layer=3))
     source = "SATELLITE RECON  //  ESRI WORLD IMAGERY" if satellite else "VECTOR CHART  //  OFFLINE"
-    rows.append(graphics.event(0.1, end, f"{{\\an7\\pos(96,{top + 12})\\fs26\\1c{graphics.colour(TEAL)}\\fad(250,200)}}{graphics.escape(source)}", "Mono", 4))
-    rows.append(graphics.event(0.5, end, f"{{\\an1\\pos(96,{bottom - 64})\\fs34\\1c{graphics.colour(AMBER)}\\fad(300,200)}}{graphics.escape(readout(lat, lon))}", "Mono", 4))
+    rows.append(graphics.event(0.1, end, f"{{\\an7\\pos(96,{top + 12})\\fs26\\1c{graphics.colour(TEAL)}{SHADE}\\fad(250,200)}}{graphics.escape(source)}", "Mono", 4))
+    rows.append(graphics.event(0.5, end, f"{{\\an1\\pos(96,{bottom - 64})\\fs34\\1c{graphics.colour(AMBER)}{SHADE}\\fad(300,200)}}{graphics.escape(readout(lat, lon))}", "Mono", 4))
     if label:
-        rows.append(graphics.event(0.8, end, f"{{\\an1\\pos(96,{bottom - 108})\\fs62\\b1\\1c{graphics.colour(WHITE)}\\fad(350,200)}}{graphics.escape(label.upper())}", "Head", 4))
-    rows.append(graphics.event(0.5, end, f"{{\\an3\\pos({WIDTH - 96},{bottom - 18})\\fs22\\1c&HC0C8C8&\\fad(300,200)}}{graphics.escape(CREDIT if satellite else 'Coordinates from the sources')}", "Mono", 4))
+        rows.append(graphics.event(0.8, end, f"{{\\an1\\pos(96,{bottom - 108})\\fs62\\b1\\1c{graphics.colour(WHITE)}{SHADE}\\fad(350,200)}}{graphics.escape(label.upper())}", "Head", 4))
+    rows.append(graphics.event(0.5, end, f"{{\\an3\\pos({WIDTH - 96},{bottom - 18})\\fs22\\1c&HC0C8C8&{SHADE}\\fad(300,200)}}{graphics.escape(CREDIT if satellite else 'Coordinates from the sources')}", "Mono", 4))
     # The altitude readout falls with the camera.
     steps = max(1, int(seconds / 0.2))
     for step in range(steps):
         width16, _ = camera(int(step / steps * seconds * FPS), int(seconds * FPS))
         metres = width16 * 156543.03 * math.cos(math.radians(lat)) / 2 ** LEVELS[-1] * 0.9
         text = f"ALT {metres / 1000:5.1f} KM" if metres >= 1000 else f"ALT {metres:5.0f} M"
-        rows.append(graphics.event(step * 0.2, min(end, (step + 1) * 0.2), f"{{\\an9\\pos({WIDTH - 96},{top + 12})\\fs28\\1c{graphics.colour(TEAL)}}}{text}", "Mono", 4))
-    rows.append(graphics.event(0.2, end, f"{{\\an9\\pos({WIDTH - 96},{top + 52})\\fs22\\1c&HA0B0B0&\\fad(250,200)}}TARGET LOCK", "Mono", 4))
+        rows.append(graphics.event(step * 0.2, min(end, (step + 1) * 0.2), f"{{\\an9\\pos({WIDTH - 96},{top + 12})\\fs28\\1c{graphics.colour(TEAL)}{SHADE}}}{text}", "Mono", 4))
+    rows.append(graphics.event(0.2, end, f"{{\\an9\\pos({WIDTH - 96},{top + 52})\\fs22\\1c&HA0B0B0&{SHADE}\\fad(250,200)}}TARGET LOCK", "Mono", 4))
     if not satellite:
         rings = " ".join(graphics.circle(r, cx, cy) for r in (120, 240, 360))
         rows.append(graphics.event(0, end, graphics.drawing(rings, f"\\an7\\pos(0,0)\\1a&HFF&\\3c{graphics.colour(TEAL)}\\3a&H90&\\bord2\\shad0"), layer=1))

@@ -19,7 +19,9 @@ slices cut from the footage its script cites. Rules, in order:
 * consecutive slices alternate sources when the candidates allow it (A/B
   interleaving); two consecutive slices from one source are at least 8 s apart
   in that source;
-* no source range is used twice in the project;
+* no source range is used twice in the project; when nothing unused is left,
+  a slice that repeats footage (the reuse tier, or more than half of it shown
+  before) is marked ``reused`` so the rough cut frames it differently;
 * footage showing big burned-in text (a Chinese title card, a giant number) is
   never used while any other footage, even reused footage, can fill the slot;
 * a source with a watermark too big to hide (``heavy``) ranks after every clean
@@ -159,6 +161,8 @@ class Slice:
     end: float
     at: float
     tier: int
+    # Footage shown earlier in the film (the reuse tier, or over half of it already used): rendered with another crop.
+    reused: bool = False
     kind: str = FOOTAGE
     ref: str = ""
     # Ran across a shot cut: only when no shot anywhere was long enough.
@@ -203,6 +207,16 @@ class _Used:
 
     def overlaps(self, source_id: str, start: float, end: float) -> bool:
         return any(start < b - EPSILON and end > a + EPSILON for a, b in self.ranges.get(source_id, ()))
+
+    def shown(self, source_id: str, start: float, end: float) -> float:
+        """The share of [start, end] that earlier slices already showed (overlaps between them counted once)."""
+        spans = sorted((max(start, a), min(end, b)) for a, b in self.ranges.get(source_id, ()) if a < end and b > start)
+        covered, reach = 0.0, start
+        for a, b in spans:
+            if b > reach:
+                covered += b - max(a, reach)
+                reach = b
+        return covered / (end - start) if end > start else 0.0
 
     def add(self, source_id: str, start: float, end: float) -> None:
         ranges = self.ranges.setdefault(source_id, [])
@@ -318,7 +332,7 @@ def plan(scenes: Sequence[Scene], sources: Iterable[Source]) -> list[tuple[Scene
         minimum = shortest(scene.max_slice)
         for seg_start, seg_end, insert in _segments(scene):
             if insert is not None:
-                piece = Slice(insert.source_id, 0.0, round(seg_end - seg_start, 3), round(seg_start, 3), 0, insert.kind, insert.ref)
+                piece = Slice(insert.source_id, 0.0, round(seg_end - seg_start, 3), round(seg_start, 3), 0, kind=insert.kind, ref=insert.ref)
                 slices.append(piece)
                 previous = None
                 continue
@@ -343,7 +357,9 @@ def plan(scenes: Sequence[Scene], sources: Iterable[Source]) -> list[tuple[Scene
                         break
                 if choice is None:
                     raise ValueError(f"no footage long enough for {scene.scene_id}")
-                piece = Slice(source_id, round(start, 3), round(end, 3), round(at, 3), tier, crossed=crossed)
+                shown = used.shown(source_id, start, end)
+                reused = shown > 0.5 or (tier == REUSED and shown > EPSILON)
+                piece = Slice(source_id, round(start, 3), round(end, 3), round(at, 3), tier, reused=reused, crossed=crossed)
                 slices.append(piece)
                 used.add(source_id, piece.start, piece.end)
                 previous = piece
