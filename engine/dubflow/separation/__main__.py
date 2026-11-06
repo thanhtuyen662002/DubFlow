@@ -1,19 +1,22 @@
 """``python -B -m engine.dubflow.separation``: Tách giọng for the editor.
 
-Separates one video's (or WAV's) sound into the pinned Spleeter accompaniment
-(``background.wav``) beside an aligned PCM copy of the source
+Separates one video's (or WAV's) sound into the accompaniment left once the
+pinned MDX-Net vocal model's voice is removed (``background.wav``) beside an aligned PCM copy of the source
 (``source.wav`` when the input is a video). The original voice is the source
 minus the accompaniment, so the editor mixes "Giọng gốc", "Nhạc nền" and the
 Vietnamese stem from these files without a third model output.
 
 Progress goes to ``<out-dir>/status.json`` (``state`` RUNNING, COMPLETED or
-FAILED, ``progress`` 0–100, ``message``); the last stdout line is that JSON.
+FAILED, ``progress`` 0–100, ``message``, and ``backend`` once COMPLETED, so the
+app offers to separate again files an older model made); the last stdout line
+is that JSON.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import shutil
 from pathlib import Path
 import sys
 import tempfile
@@ -21,7 +24,7 @@ import time
 
 from engine.dubflow.separation.production import SeparationError
 
-PROFILE = "models/manifests/production-separation-spleeter-v1.json"
+PROFILE = "models/manifests/production-separation-mdx-v1.json"
 SAMPLE_RATE = 48_000
 
 
@@ -52,10 +55,10 @@ def run(source: Path, out_dir: Path, *, app_root: Path, model_root: Path, ffmpeg
         status: Status, separate=None, ensure=None, extract=None) -> dict:
     """Separate `source` into `out_dir`; returns the final status value."""
     from engine.dubflow.models.runtime import ensure_model_profile
-    from engine.dubflow.separation import spleeter
+    from engine.dubflow.separation import mdx
     from engine.dubflow.tts.neural_vits import _child, _read_json
 
-    separate = separate or spleeter.separate_background
+    separate = separate or mdx.separate_background
     ensure = ensure or ensure_model_profile
     profile_path = app_root / PROFILE
     profile = _read_json(profile_path)
@@ -89,7 +92,9 @@ def run(source: Path, out_dir: Path, *, app_root: Path, model_root: Path, ffmpeg
         if error.code == "SEPARATION_CANCELLED":
             return _stop(status)
         raise
-    status.write(state="COMPLETED", progress=100, message="Đã tách giọng.")
+    # The older Spleeter adapter's resumable batches are scratch nobody reads now.
+    shutil.rmtree(out_dir / ".spleeter-chunks", ignore_errors=True)
+    status.write(state="COMPLETED", progress=100, message="Đã tách giọng.", backend=mdx.BACKEND)
     return status.value
 
 

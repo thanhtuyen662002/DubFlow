@@ -856,6 +856,9 @@
         "engine/dubflow/separation/spleeter.py",
         "models/manifests/production-separation-spleeter-v1.json",
         "docs/licenses/spleeter.md",
+        "engine/dubflow/separation/mdx.py",
+        "models/manifests/production-separation-mdx-v1.json",
+        "docs/licenses/uvr-mdx.md",
         "tests/separation"
       ],
       "commands": [

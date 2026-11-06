@@ -436,7 +436,7 @@ class ProductionLocalFileB2Tests(unittest.TestCase):
             self.assertEqual(Path(separated.mix_document.original_audio.path).read_bytes(), background.read_bytes())
             self.assertNotEqual(separated.final_mix_path.read_bytes(), original.final_mix_path.read_bytes())
             self.assertEqual(separated.dialogue_stem_path.read_bytes(), original.dialogue_stem_path.read_bytes())
-            self.assertEqual(separated.bed, "spleeter-2stems")
+            self.assertEqual(separated.bed, "uvr-mdx")
             self.assertEqual(separated.mix_document.source_layout, "stereo-accompaniment")
             # A later analysis cannot mutate the bed of a published generation.
             background.write_bytes(b"later candidate")

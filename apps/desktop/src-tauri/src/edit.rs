@@ -3150,6 +3150,11 @@ pub fn edit_cancel(output_path: String, kind: String) -> Result<(), String> {
 /// `source.wav` when it read a video) and its `status.json`.
 const STEMS_DIR: &str = "stems";
 
+/// The separation model whose accompaniment the editor keeps. Files an older
+/// model made (Spleeter, which left the original voice audible) can be
+/// separated again; the new file then replaces a dubbing job's own.
+const SEPARATION_BACKEND: &str = "uvr-mdx-kim-vocal-2-onnx-v1";
+
 /// Tách giọng runs, by draft folder.
 static SEPARATING: LazyLock<Mutex<std::collections::HashSet<PathBuf>>> = LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
 
@@ -3172,7 +3177,11 @@ fn stem_files(target: &Target) -> StemFiles {
     let voice = job.then(|| file(editable.join("dialogue_stem.wav"))).flatten();
     let separated = file(own.join("background.wav"));
     match job.then(|| file(editable.join("source_audio.wav"))).flatten() {
-        Some(source) => StemFiles { voice, source: Some(source), background: file(editable.join("background_stem.wav")).or(separated) },
+        Some(source) => {
+            let job_stem = file(editable.join("background_stem.wav"));
+            let background = if separated.is_some() && separated_by_current(&target.work) { separated.or(job_stem) } else { job_stem.or(separated) };
+            StemFiles { voice, source: Some(source), background }
+        }
         None => {
             let source = separated.as_ref().and_then(|_| file(own.join("source.wav")));
             StemFiles { voice, background: source.as_ref().and(separated), source }
@@ -3209,6 +3218,25 @@ fn stem_weights(levels: &StemLevels, files: &StemFiles) -> Result<Vec<(PathBuf, 
 /// Each part's level reaches 200 %.
 const MAX_STEM_LEVEL: f64 = 2.0;
 
+/// Whether Tách giọng's own output came from the current model.
+fn separated_by_current(work: &Path) -> bool {
+    let path = work.join(STEMS_DIR).join("status.json");
+    fs::read(&path).ok().filter(|bytes| bytes.len() < 64 * 1024)
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .is_some_and(|value| value["state"] == "COMPLETED" && value["backend"] == SEPARATION_BACKEND)
+}
+
+/// The accompaniment in use came from an older model: Tách giọng may run again.
+fn separation_outdated(target: &Target, files: &StemFiles) -> bool {
+    let Some(background) = &files.background else { return false };
+    if background.starts_with(target.work.join(STEMS_DIR)) {
+        return !separated_by_current(&target.work);
+    }
+    // A dubbing job's own accompaniment: its manifest names the model.
+    let manifest = crate::read_json(&target.dir.join("job_manifest.json"), 16 * 1024 * 1024).unwrap_or_else(|_| json!({}));
+    manifest["background"]["backend"] != SEPARATION_BACKEND
+}
+
 fn read_separation(work: &Path) -> Option<Value> {
     let path = work.join(STEMS_DIR).join("status.json");
     let value: Value = fs::read(&path).ok().filter(|bytes| bytes.len() < 64 * 1024).and_then(|bytes| serde_json::from_slice(&bytes).ok())?;
@@ -3231,7 +3259,7 @@ pub fn edit_stems(output_path: String, kind: String) -> Result<Value, String> {
     crate::sfx::allow_files(&listed);
     let shown = |file: &Option<PathBuf>| file.as_ref().map(|file| display_path(file));
     Ok(json!({"voice": shown(&files.voice), "source": shown(&files.source), "background": shown(&files.background),
-        "separation": read_separation(&target.work)}))
+        "separation": read_separation(&target.work), "outdated": separation_outdated(&target, &files)}))
 }
 
 /// Tách giọng: separate the main video's sound (a dubbing job's original
@@ -3240,7 +3268,7 @@ pub fn edit_stems(output_path: String, kind: String) -> Result<Value, String> {
 pub fn edit_separate(output_path: String, kind: String) -> Result<(), String> {
     let target = edit_target(&output_path, &kind)?;
     let files = stem_files(&target);
-    if files.source.is_some() && files.background.is_some() {
+    if files.source.is_some() && files.background.is_some() && !separation_outdated(&target, &files) {
         return Err(fail("Video này đã tách giọng rồi"));
     }
     let input = match (matches!(target.kind, Kind::Job), target.dir.join("editable").join("source_audio.wav")) {
@@ -4367,6 +4395,36 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
         fs::write(work.join(STEMS_DIR).join("source.wav"), b"wav").unwrap();
         let files = stem_files(&file);
         assert_eq!((files.voice, files.source.is_some(), files.background.is_some()), (None, true, true));
+        assert!(separation_outdated(&file, &stem_files(&file)), "no backend: an older model made it");
+        fs::write(work.join(STEMS_DIR).join("status.json"), json!({"state": "COMPLETED", "backend": SEPARATION_BACKEND}).to_string()).unwrap();
+        assert!(!separation_outdated(&file, &stem_files(&file)));
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_job_prefers_tach_giong_by_the_current_model_over_its_own_older_accompaniment() {
+        let base = std::env::temp_dir().join(format!("dubflow-edit-restems-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let dir = base.join("job");
+        fs::create_dir_all(dir.join("editable")).unwrap();
+        let work = work_dir(&dir);
+        let job = Target { kind: Kind::Job, main: dir.join("final_vi.mp4"), dir: dir.clone(), work: work.clone(), captions: None, store: None };
+        for name in ["dialogue_stem.wav", "source_audio.wav", "background_stem.wav"] {
+            fs::write(dir.join("editable").join(name), b"wav").unwrap();
+        }
+        let own = dir.join("editable").join("background_stem.wav");
+        assert_eq!(stem_files(&job).background, Some(own.clone()));
+        assert!(separation_outdated(&job, &stem_files(&job)), "a Spleeter job may separate again");
+        fs::write(dir.join("job_manifest.json"), json!({"background": {"backend": SEPARATION_BACKEND}}).to_string()).unwrap();
+        assert!(!separation_outdated(&job, &stem_files(&job)), "a job separated by the current model");
+        fs::remove_file(dir.join("job_manifest.json")).unwrap();
+        let stems = work.join(STEMS_DIR);
+        fs::create_dir_all(&stems).unwrap();
+        fs::write(stems.join("background.wav"), b"wav").unwrap();
+        assert_eq!(stem_files(&job).background, Some(own), "an older Tách giọng does not replace the job's own");
+        fs::write(stems.join("status.json"), json!({"state": "COMPLETED", "backend": SEPARATION_BACKEND}).to_string()).unwrap();
+        assert_eq!(stem_files(&job).background, Some(stems.join("background.wav")));
+        assert!(!separation_outdated(&job, &stem_files(&job)));
         let _ = fs::remove_dir_all(&base);
     }
 

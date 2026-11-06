@@ -500,9 +500,11 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
       return {
         voice: job ? `${dir}\\editable\\dialogue_stem.wav` : null,
         source: job ? `${dir}\\editable\\source_audio.wav` : done ? `${dir}\\.dubflow-work\\edit\\stems\\source.wav` : null,
-        background: done ? `${dir}\\.dubflow-work\\edit\\stems\\background.wav` : null,
+        // A job's own accompaniment came from the older model until Tách giọng runs again.
+        background: done ? `${dir}\\.dubflow-work\\edit\\stems\\background.wav` : job ? `${dir}\\editable\\background_stem.wav` : null,
         separation: run === undefined ? null : done ? { state: "COMPLETED", progress: 100, message: "Đã tách giọng." }
-          : { state: "RUNNING", progress, message: progress < 8 ? "Đang tải bộ tách giọng lần đầu: 31/80 MB" : "Đang tách giọng gốc khỏi nhạc nền…" },
+          : { state: "RUNNING", progress, message: progress < 8 ? "Đang tải bộ tách giọng lần đầu: 31/67 MB" : "Đang tách giọng gốc khỏi nhạc nền…" },
+        outdated: job && !done,
       } as T;
     }
     case "edit_separate": previewSeparations.set(String(args.outputPath), Date.now()); return undefined as T;
