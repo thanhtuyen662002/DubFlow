@@ -171,6 +171,9 @@ assert.equal(escapeHtml(`<a href="x">'&`), "&lt;a href=&quot;x&quot;&gt;&#39;&am
   const videos = recentVideos(runs, 5);
   assert.equal(videos.length, 1);
   assert.equal(videos[0].displayName, "Nồi · video 1");
+  // Each recent video names its run, so the whole run can be deleted from the list.
+  assert.equal(videos[0].run, runs[0].dir);
+  assert.equal(videos[0].runName, "Nồi");
   assert.match(videos[0].meta, /^30 giây · \d\d\/\d\d \d\d:\d\d$/);
   assert.equal((templateButtonsHtml().match(/data-template=/g) ?? []).length, 3);
   assert.match(templateNote("chi-chu"), /thẻ chữ/);

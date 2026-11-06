@@ -13,6 +13,7 @@ import { KEY_CLEARED, type SessionKey } from "../seo/view.ts";
 import { isKeyError, isProvider, keyHint, PROVIDER_IDS, PROVIDERS } from "../ai/provider.ts";
 import { parseVoiceCatalog } from "../voices/model.ts";
 import { confirmDialog } from "../../shell/confirm.ts";
+import { confirmDeleteProject, deleteProjectButton } from "../../shell/project_delete.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 type Script = { text: string; use: boolean };
@@ -566,10 +567,23 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
       meta.textContent = video.meta;
       const actions = document.createElement("span");
       actions.className = "product-recent-actions";
-      actions.append(...videoActions(video));
+      actions.append(...videoActions(video), deleteProjectButton(video.runName, () => void removeRun(video.run, video.runName)));
       item.append(label, meta, actions);
       return item;
     }));
+  }
+
+  /** Delete the whole run a recent video belongs to (every variant of it). */
+  async function removeRun(dir: string, name: string): Promise<void> {
+    const error = await confirmDeleteProject(invoke, "product", dir, name);
+    if (error === "") return;
+    const note = $("#product-recent-state");
+    note.textContent = error ?? `Đã chuyển “${name}” vào Thùng rác.`;
+    note.classList.toggle("ok", error === null);
+    if (error !== null) return;
+    runs = runs.filter((run) => run.dir !== dir);
+    renderRecent();
+    void loadRuns();
   }
 
   // ---- Render -------------------------------------------------------------

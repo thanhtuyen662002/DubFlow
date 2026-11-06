@@ -722,6 +722,13 @@ pub(crate) fn record_run(kind: &str, dir: &Path) {
     }
 }
 
+/// Drop the record of the run in `dir` (a project being deleted).
+pub(crate) fn forget_run(dir: &Path) {
+    if let Some(path) = crate::control_root().ok().and_then(|data| run_record(&data, dir)) {
+        let _ = fs::remove_file(path);
+    }
+}
+
 fn record_run_in(data: &Path, kind: &str, dir: &Path) -> Result<(), String> {
     let path = run_record(data, dir).ok_or_else(|| fail("Không tìm thấy thư mục kết quả"))?;
     let canonical = dir.canonicalize().map_err(|_| fail("Không tìm thấy thư mục kết quả"))?;

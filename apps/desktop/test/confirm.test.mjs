@@ -27,3 +27,12 @@ assert.equal(cycleFocus(-1, 2, true), 1);
 assert.equal(cycleFocus(0, 0, false), -1);
 
 console.log("confirm tests passed");
+
+// Deleting a project says what goes and that the user's own media stays.
+{
+  const { deleteMessage } = await import("../src/shell/project_delete.ts");
+  for (const kind of ["docu", "compilation", "product"]) {
+    assert.match(deleteMessage(kind), /Thùng rác/);
+    assert.match(deleteMessage(kind), /gốc bạn đã chọn không bị xóa/);
+  }
+}
