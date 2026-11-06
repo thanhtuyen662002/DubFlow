@@ -108,7 +108,8 @@ export type PlanScene = { scene_id: string; start: number; end: number; warnings
 export type VisualPlan = { script_sha256: string; duration: number; scenes: PlanScene[]; warnings: string[] };
 export type VisualInfo = { plan: VisualPlan | null; status: NarrationStatus | null };
 export type RenderOptions = { graphics: boolean; captions: boolean; music: "generated" | "file" | "none"; music_path: string | null; sfx: boolean };
-export type RenderStatus = NarrationStatus & { overlays?: { graphics: boolean; captions: boolean; music: string; sfx: boolean } };
+export type RenderOverlays = { graphics: boolean; captions: boolean; music: string; music_path: string | null; sfx: boolean };
+export type RenderStatus = NarrationStatus & { overlays?: RenderOverlays };
 export type RenderInfo = { video: string | null; status: RenderStatus | null; options: RenderOptions };
 /** The last CapCut export (engine/dubflow/docu/capcut_draft.py). */
 export type CapcutExport = { folder: string; name: string; clips: number; duration: number; captions: string };
@@ -423,8 +424,16 @@ export function parseRender(value: unknown): RenderInfo {
   const status = parseStatus(info?.status) as RenderStatus | null;
   const overlays = obj(obj(info?.status)?.overlays);
   if (status && overlays) status.overlays = { graphics: overlays.graphics === true, captions: overlays.captions === true, music: String(overlays.music ?? ""),
-    sfx: overlays.sfx !== false };
+    music_path: typeof overlays.music_path === "string" && overlays.music_path ? overlays.music_path : null, sfx: overlays.sfx !== false };
   return { video: typeof info?.video === "string" ? info.video : null, status, options: parseRenderOptions(info?.options) };
+}
+
+/** The draft was made with other cards, captions, music (or music file) or ambience than the ones now chosen. */
+export function renderOptionsChanged(made: RenderOverlays | undefined, chosen: RenderOptions): boolean {
+  if (!made) return false;
+  return made.graphics !== chosen.graphics || made.captions !== chosen.captions || made.sfx !== chosen.sfx
+    || (made.music !== "" && made.music !== chosen.music)
+    || (made.music === "file" && chosen.music === "file" && made.music_path !== chosen.music_path);
 }
 
 /** A plan made before the script or its narration changed. */

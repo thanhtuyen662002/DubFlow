@@ -3,7 +3,7 @@ import { confirmDialog } from "../../shell/confirm.ts";
 import {
   AMBIENT_SFX, CHAPTER_NAMES, CHAPTER_ORDER, DEFAULT_MOODS, GRAPHIC_NAMES, GRAPHIC_TYPES, MAX_NARRATION, MOODS, MOOD_NAMES, SFX_NAMES, readable, sceneName, sourceName, sourceNames,
   NARRATION_SPEEDS, acknowledge, applyFlags, buildRequest, chapterTargetSeconds, completedDocuJobs, estimatedSeconds, flattenScenes,
-  hasNarration, moveItem, narrationStale, parseCapcut, parseMcp, parseNarration, parseOpen, parseMcpActivity, parseRender, parseRenderOptions, parseRuns, parseVisual, parseVoices, planStale,
+  hasNarration, moveItem, narrationStale, parseCapcut, parseMcp, parseNarration, parseOpen, parseMcpActivity, parseRender, parseRenderOptions, parseRuns, renderOptionsChanged, parseVisual, parseVoices, planStale,
   calloutTexts, midrollHint, renumberScenes, sourceTitle, wordCount, type CapcutExport, type DocuLabel, type NarrationInfo, type NarrationVoice, type RenderInfo, type VisualInfo,
   type DocuJob, type DocuRequest, type DocuRun, type DocuScene, type DocuScript, type FramingPreset, type McpActivity, type GraphicType, type Mood, type OpenDocuRun, type SourceForm,
 } from "./model.ts";
@@ -448,12 +448,8 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
   function renderStale(): boolean {
     return Boolean(render.video) && (!visual.plan || planStale(currentScript, narration.timeline, visual.plan) || optionsChanged());
   }
-  /** The draft was made with other cards, captions, music or ambience than the ones now chosen. */
   function optionsChanged(): boolean {
-    const made = render.status?.state === "COMPLETED" ? render.status.overlays : undefined;
-    const chosen = render.options;
-    return Boolean(made) && (made!.graphics !== chosen.graphics || made!.captions !== chosen.captions || made!.sfx !== chosen.sfx
-      || (made!.music !== "" && made!.music !== chosen.music));
+    return renderOptionsChanged(render.status?.state === "COMPLETED" ? render.status.overlays : undefined, render.options);
   }
   function badge(selector: string, state: keyof typeof BADGES): void {
     const element = $(selector);

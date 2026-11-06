@@ -8,9 +8,10 @@ import unittest
 
 from engine.dubflow.docu import __main__ as cli
 from engine.dubflow.docu import intake, matcher, overlays, roughcut, script
-from engine.dubflow.docu.project import load_spec, spec_path
+from engine.dubflow.docu.project import load_spec, spec_path, work_dir, write_json
 
 from test_docu import make_run
+from test_roughcut import _project
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -95,6 +96,52 @@ class ReusedSliceTests(unittest.TestCase):
         framing = {"zoom": 1.0, "shift": 0.0}
         self.assertEqual(roughcut.video_filter(1920, 1080, framing, frames=90, ken_burns=True),
                          roughcut.video_filter(1920, 1080, framing, frames=90, ken_burns=True, reused=0))
+
+
+class LegacyProjectTests(unittest.TestCase):
+    """A 1.1.75 project (plan without ``reused``, render options without ``sfx``) loads and renders as before."""
+
+    # The receipt key of a 1.1.75 slice: a different set of fields would re-render every old slice.
+    KEY_1175 = {"recipe", "video", "start", "frames", "graph", "labels", "overlay"}
+
+    def test_old_plan_and_options_render_unchanged(self):
+        with TemporaryDirectory() as temp:
+            run, spec, plan = _project(Path(temp))
+            self.assertFalse(any("reused" in piece or "variation" in piece for scene in plan["scenes"] for piece in scene["slices"]))
+            # render_options.json exactly as 1.1.75 wrote it: no sfx field.
+            write_json(work_dir(run) / overlays.OPTIONS, {"graphics": True, "captions": False, "music": "generated", "music_path": None})
+            self.assertTrue(overlays.load_options(run)["sfx"])
+            calls = []
+
+            def runner(argv, cwd, cancelled):
+                calls.append(argv)
+                Path(cwd, Path(argv[-1]).name).write_bytes(b"mp4")
+            first = roughcut.run(run, spec, ffmpeg=Path("ffmpeg"), probe=lambda video: (1920, 1080), ffmpeg_runner=runner)
+            self.assertEqual(first["state"], "COMPLETED", first)
+            self.assertTrue(first["overlays"]["sfx"])
+            render = run / ".dubflow-work" / "render"
+            framings = {source["id"]: source["framing"] for source in plan["sources"]}
+            for index, piece in enumerate(plan["scenes"][0]["slices"], 1):
+                key = json.loads((render / f"slice-{index:04d}.json").read_text(encoding="utf-8"))["key"]
+                self.assertEqual(set(key), self.KEY_1175)
+                self.assertEqual(key["graph"], roughcut.video_filter(1920, 1080, framings[piece["source_id"]], frames=key["frames"],
+                                                                     ken_burns=True, zoom_push=roughcut.KEN_BURNS_ZOOM))
+                self.assertIn("zoompan=z='1+0.04*on/", key["graph"])
+            # Rendered again: every slice keeps its receipt.
+            calls.clear()
+            roughcut.run(run, spec, ffmpeg=Path("ffmpeg"), probe=lambda video: (1920, 1080), ffmpeg_runner=runner)
+            self.assertFalse(any(any(str(arg).startswith("slice-") for arg in argv) for argv in calls if "-ss" in argv))
+            # A repeat marked in a new plan re-renders that slice only, with the other framing.
+            plan["scenes"][0]["slices"][1].update({"reused": True, "variation": "alt_crop"})
+            write_json(run / "visual_plan.json", plan)
+            calls.clear()
+            roughcut.run(run, spec, ffmpeg=Path("ffmpeg"), probe=lambda video: (1920, 1080), ffmpeg_runner=runner)
+            sliced = [argv for argv in calls if "-ss" in argv]
+            self.assertEqual(len(sliced), 1)
+            self.assertTrue(str(sliced[0][-1]).startswith(str(render / "slice-0002.mp4")))
+            key = json.loads((render / "slice-0002.json").read_text(encoding="utf-8"))["key"]
+            self.assertEqual(key["variation"], "alt_crop")
+            self.assertIn("zoompan=z='1.0577-0.0577", key["graph"])
 
 
 class AmbienceOptionTests(unittest.TestCase):

@@ -5,7 +5,7 @@ import {
 } from "../src/features/docu/model.ts";
 import { writeChapter, writeScript } from "../src/features/docu/ai.ts";
 import { addText, createEdit } from "../src/features/edit/model.ts";
-import { calloutTexts, parseMcpActivity, parseRenderOptions } from "../src/features/docu/model.ts";
+import { calloutTexts, parseMcpActivity, parseRenderOptions, renderOptionsChanged } from "../src/features/docu/model.ts";
 
 const path = name => `D:\\Documentary\\${name}`;
 const form = { title: "Three Gorges Dam", topic: "Engineering and community impact", targetMinutes: 11,
@@ -188,9 +188,17 @@ assert.deepEqual(parseRender({ video: 5, status: { state: "?" } }), { video: nul
 // What the last render burned in, and the options for the next one.
 const burned = parseRender({ video: "D:/run/documentary.mp4", status: { state: "COMPLETED", done: 6, total: 6, message: "ok", overlays: { graphics: true, captions: false, music: "generated" } },
   options: { schema_version: 1, graphics: false, captions: true, music: "file", music_path: "D:/music/bed.mp3" } });
-assert.deepEqual(burned.status.overlays, { graphics: true, captions: false, music: "generated", sfx: true }, "a 1.1.75 status without sfx played the ambience");
+assert.deepEqual(burned.status.overlays, { graphics: true, captions: false, music: "generated", music_path: null, sfx: true }, "a 1.1.75 status without sfx played the ambience");
 assert.deepEqual(burned.options, { graphics: false, captions: true, music: "file", music_path: "D:/music/bed.mp3", sfx: true });
 assert.equal(parseRenderOptions({ sfx: false }).sfx, false, "the ambience can be turned off");
+// The draft is stale when it was made with other options, including another music file in "file" mode.
+const madeWith = (overlays) => parseRender({ status: { state: "COMPLETED", done: 1, total: 1, message: "", overlays } }).status.overlays;
+const fileA = { graphics: true, captions: false, music: "file", music_path: "D:/music/a.mp3", sfx: true };
+assert.equal(renderOptionsChanged(madeWith(fileA), parseRenderOptions(fileA)), false);
+assert.equal(renderOptionsChanged(madeWith(fileA), parseRenderOptions({ ...fileA, music_path: "D:/music/b.mp3" })), true, "another music file");
+assert.equal(renderOptionsChanged(madeWith(fileA), parseRenderOptions({ ...fileA, sfx: false })), true, "ambience turned off");
+assert.equal(renderOptionsChanged(madeWith({ graphics: true, captions: false, music: "generated" }), defaultOptions), false, "a 1.1.75 draft with default options is fresh");
+assert.equal(renderOptionsChanged(undefined, parseRenderOptions({ sfx: false })), false, "no finished draft, nothing to compare");
 assert.equal(parseRender({ status: { state: "COMPLETED", done: 1, total: 1, message: "", overlays: { sfx: false } } }).status.overlays.sfx, false);
 assert.deepEqual(parseRenderOptions({ music: "file" }), defaultOptions, "a file choice without a file falls back to the generated bed");
 assert.equal(parseOpen({ dir: "D:/run", spec: { schema_version: 1, sources: [] }, contexts, script: null }).render.video, null);
