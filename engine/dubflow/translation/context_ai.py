@@ -39,6 +39,8 @@ MAX_NOTES_CHARS = 1_200
 DUB_SYLLABLES_PER_SECOND = 4.5
 READ_SYLLABLES_PER_SECOND = 6.0
 WARNING = "AI_TRANSLATION_PARTIAL: "
+# Failures no retry can fix: the key, the balance, the model or the request itself.
+FATAL_CODES = frozenset({"KEY", "BALANCE", "MODEL", "INVALID"})
 
 
 class Cue(Protocol):
@@ -353,21 +355,26 @@ def translate_in_context(cues: Sequence[Any], route: Route, *, dubbing: bool, ca
                                          max_tokens=4000)
             _store(brief_path, brief_value)
         except AiError as failure:
-            if failure.code in {"KEY", "BALANCE", "MODEL", "INVALID"}:
+            if failure.code in FATAL_CODES:
                 # Nothing else will work either: keep every offline line.
                 return ContextResult(tuple(ordered), len(windows), 0, 0, route.model, failure.message)
             brief_value, error = None, failure.message
     brief = _brief_text(brief_value)
 
-    # 2. The windows, in order, each continuing the previous one's notes.
-    notes = ""
+    # 2. The windows, in order, each continuing the previous one's notes. A window that failed on a
+    # passing problem (network cut, server busy, time-out) is tried once more after the others, so a
+    # short outage in a two-hour video does not leave a hole of offline lines.
+    notes_after: dict[int, str] = {}
     done = from_ai = 0
     finished: dict[str, str] = {}
-    for number, window in enumerate(windows, start=1):
-        if on_progress:
-            on_progress(number - 1, len(windows))
-        start = ordered.index(window[0])
+    fatal = False
+
+    def run(number: int) -> bool:
+        nonlocal current, error, done, from_ai, fatal
+        window = windows[number - 1]
+        start = (number - 1) * WINDOW_CUES
         before = [(cue, finished.get(cue.cue_id, cue.translated_text or "")) for cue in ordered[max(0, start - CONTEXT_CUES):start]]
+        notes = next((notes_after[earlier] for earlier in range(number - 1, 0, -1) if earlier in notes_after), "")
         prompt = _window_prompt(window, before, brief, notes, dubbing=dubbing, title=title, part=number, parts=len(windows))
         path = cache_dir / f"window-{_digest({'k': key, 'p': prompt})}.json" if cache_dir else None
         value = _cached(path)
@@ -387,18 +394,30 @@ def translate_in_context(cues: Sequence[Any], route: Route, *, dubbing: bool, ca
                     _store(path, value)
             except AiError as failure:
                 error = failure.message
-                if failure.code in {"KEY", "BALANCE", "MODEL", "INVALID"}:
-                    break
-                continue
+                fatal = failure.code in FATAL_CODES
+                return False
         lines = _lines(value, window, dubbing=dubbing)
         if not lines or lacks_diacritics(list(lines.values())):
             error = error or "AI không trả về bản dịch dùng được cho một đoạn."
-            continue
+            return False
         done += 1
         from_ai += len(lines)
         finished.update(lines)
-        if isinstance(value, dict) and isinstance(value.get("ghi_chu"), str):
-            notes = value["ghi_chu"].strip()[:MAX_NOTES_CHARS]
+        notes_after[number] = value["ghi_chu"].strip()[:MAX_NOTES_CHARS] if isinstance(value, dict) and isinstance(value.get("ghi_chu"), str) else ""
+        return True
+
+    failed: list[int] = []
+    for number in range(1, len(windows) + 1):
+        if on_progress:
+            on_progress(number - 1, len(windows))
+        if not run(number):
+            failed.append(number)
+            if fatal:
+                break
+    if failed and not fatal:
+        for number in failed:
+            if not run(number) and fatal:
+                break
     # 3. One name per person: the lines that drifted ("anh ta" … "gã") brought back to the brief's choice.
     unified = _Unified({}, current)
     if finished:

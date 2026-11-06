@@ -1,5 +1,6 @@
 import io
 import json
+from http.client import IncompleteRead, RemoteDisconnected
 import os
 import unittest
 from urllib.error import URLError
@@ -126,10 +127,21 @@ class ErrorsAndRetriesTest(unittest.TestCase):
 
     def test_network_failures_and_timeouts(self):
         with self.assertRaises(AiError) as caught:
-            ask_json(make_route("openai", KEY), "s", SCHEMA, [{"text": "t"}], transport=Fake(URLError("no route")))
+            ask_json(make_route("openai", KEY), "s", SCHEMA, [{"text": "t"}], transport=Fake(*[URLError("no route")] * 3), sleep=lambda _: None)
         self.assertEqual(caught.exception.code, "NETWORK")
         fake = Fake(TimeoutError(), TimeoutError(), (200, chat('{"zh": "a"}')))
         self.assertEqual(ask_json(make_route("openai", KEY), "s", SCHEMA, [{"text": "t"}], transport=fake, sleep=lambda _: None), {"zh": "a"})
+
+    def test_a_connection_cut_mid_answer_is_retried(self):
+        # The customer's two-hour DeepSeek job: "IncompleteRead(0 bytes read)" crashed the whole video.
+        fake = Fake(IncompleteRead(b""), RemoteDisconnected("closed"), (200, chat('{"zh": "a"}')))
+        waits = []
+        self.assertEqual(ask_json(make_route("deepseek", KEY), "s", SCHEMA, [{"text": "t"}], transport=fake, sleep=waits.append), {"zh": "a"})
+        self.assertEqual(len(waits), 2)
+        with self.assertRaises(AiError) as caught:
+            ask_json(make_route("deepseek", KEY), "s", SCHEMA, [{"text": "t"}], transport=Fake(*[IncompleteRead(b"")] * 3), sleep=lambda _: None)
+        self.assertEqual(caught.exception.code, "NETWORK")
+        self.assertIn("ngắt giữa chừng", caught.exception.message)
 
     def test_a_retired_model_falls_back_to_the_providers_current_one(self):
         fake = Fake((404, {"error": {"message": "Model Not Exist"}}),
@@ -197,7 +209,9 @@ class CommandLineTest(unittest.TestCase):
         self.assertEqual(json.loads(out.getvalue()), {"ok": True, "value": {"zh": "a"}, "model": PRESETS["openai"].model})
         os.environ["DUBFLOW_AI_KEY"] = KEY
         out = io.StringIO()
-        cli.main(io.StringIO(json.dumps({"action": "models", "provider": "openai"})), out, Fake((200, {"data": [{"id": "gpt-9-mini"}]})))
+        cli.main(io.StringIO(json.dumps({"action": "models", "provider": "openai"})), out,
+                 Fake((200, {"data": [{"id": "gpt-9-mini"}, {"id": "text-embedding-9"}, {"id": "gpt-9-tts"}]})))
+        # Only chat models: the list is what the user picks from in "Cài đặt AI".
         self.assertEqual(json.loads(out.getvalue()), {"ok": True, "models": ["gpt-9-mini"], "suggested": "gpt-9-mini"})
 
     def test_failures_are_json_with_a_code(self):

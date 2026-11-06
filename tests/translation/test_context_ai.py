@@ -61,12 +61,22 @@ class ContextTranslationTest(unittest.TestCase):
         self.assertIn("Tên video: Mẹ ơi", second)
 
     def test_a_failed_window_keeps_its_offline_lines_and_is_reported(self):
-        asker = Asker([None, None, AiError("SERVER", "busy")])
+        # Brief, window 1, window 2 fails, window 3, window 2 again fails: the offline lines stay.
+        asker = Asker([None, None, AiError("SERVER", "busy"), None, AiError("SERVER", "busy")])
         result = context_ai.translate_in_context(cues(90), ROUTE, dubbing=False, asker=asker)
+        self.assertEqual(len(asker.prompts), 5)
         self.assertFalse(result.complete)
         self.assertEqual(result.windows_done, 2)
         self.assertEqual(result.cues[45].translated_text, "Xin chào 45")
         self.assertEqual(result.error, "busy")
+
+    def test_a_window_cut_by_the_network_is_tried_again_after_the_others(self):
+        asker = Asker([None, None, AiError("NETWORK", "Kết nối bị ngắt giữa chừng")])
+        result = context_ai.translate_in_context(cues(130), ROUTE, dubbing=False, asker=asker)
+        self.assertTrue(result.complete)
+        self.assertEqual((result.windows_done, result.cues_from_ai), (4, 130))
+        self.assertIn("Đây là đoạn 2/4", asker.prompts[-1])  # retried last, after windows 3 and 4
+        self.assertIn("đã tới c39", asker.prompts[-1])  # with window 1's notes, as the first time
 
     def test_a_rejected_key_stops_at_once_with_every_offline_line(self):
         asker = Asker([AiError("KEY", "Khóa DeepSeek không hợp lệ")])
