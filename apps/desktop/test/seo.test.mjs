@@ -39,7 +39,7 @@ delete globalThis.document;
 
 // Copy says where the key is kept and how to remove it, and keeps the data-sharing and billing warning.
 assert.match(KEY_HINT, /Windows Credential Manager/);
-assert.match(KEY_HINT, /Cài đặt AI/);
+assert.match(KEY_HINT, /Cài đặt › Tài khoản/);
 assert.match(KEY_HINT, /gửi tới Anthropic/);
 assert.match(KEY_HINT, /tính phí/);
 assert.match(KEY_CLEAR_LABEL, /Xóa khóa/);

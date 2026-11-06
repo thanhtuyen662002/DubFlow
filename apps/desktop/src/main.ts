@@ -1246,7 +1246,7 @@ async function startJob(job: QueueJob): Promise<void> {
     await aiRestored;
     const started = await invoke<{ output_dir: string } | null>("start_job", {
       ...startJobRequest(job, outputRoot(), cpuOnly(), rememberedSubtitleStyle(), rememberedCoverStyle()),
-      // "Dịch phụ đề bằng AI theo ngữ cảnh" and "Từ nhạy cảm" (Cài đặt AI); the host adds the saved key.
+      // "Dịch phụ đề bằng AI theo ngữ cảnh" and "Từ nhạy cảm" (Cài đặt › Tài khoản); the host adds the saved key.
       ...translationJobArgs(loadPrefs(), claudeKey, job.displayName),
     });
     // Resumes must reuse the folder the first start chose, even if the
@@ -1713,8 +1713,7 @@ const discovery = mountDiscovery(invoke, async (url, title) => { await startFetc
   const key = claudeKey.read();
   return key ? chineseKeyword(claudeKey.provider(), key, text) : null;
 });
-const aiSettings = mountAiSettings(claudeKey);
-$("#open-ai-settings").addEventListener("click", () => aiSettings.open());
+const aiSettings = mountAiSettings(claudeKey, () => openSettings("account"));
 mountSfxSettings(sfxLibrary, showError);
 /** Folders whose "DubFlow Output" may hold earlier Bán hàng and Tổng hợp runs: the chosen one and the queue's. */
 function outputRoots(): string[] {
@@ -2210,7 +2209,7 @@ $("#review-narrate").addEventListener("click", async () => {
   const { name, company } = PROVIDERS[provider];
   const key = claudeKey.read();
   if (!key) {
-    hint.textContent = `Chưa có khóa ${name}. Hãy lưu khóa trong “Cài đặt AI” rồi thử lại.`;
+    hint.textContent = `Chưa có khóa ${name}. Hãy lưu khóa trong “Cài đặt › Tài khoản” rồi thử lại.`;
     aiSettings.open();
     return;
   }
@@ -2229,7 +2228,7 @@ $("#review-narrate").addEventListener("click", async () => {
     renderReview();
     hint.textContent = `Đã viết lại ${lines.size} câu (lời thoại đã gửi tới ${company}). Đọc lại và sửa, rồi bấm “Lưu & xử lý lại”; bấm “Hoàn tác” để quay lại bản cũ.`;
   } catch (error) {
-    hint.textContent = isKeyError(error) ? `Khóa ${name} không hợp lệ; hãy lưu lại trong “Cài đặt AI”.` : `Không viết lại được: ${String(error).slice(0, 200)}`;
+    hint.textContent = isKeyError(error) ? `Khóa ${name} không hợp lệ; hãy lưu lại trong “Cài đặt › Tài khoản”.` : `Không viết lại được: ${String(error).slice(0, 200)}`;
   } finally {
     button.disabled = false;
   }
@@ -2534,6 +2533,7 @@ void invoke<ReleaseInfo>("release_info")
     $("#header-update").hidden = version === null;
     $("#header-update-label").textContent = version ? `Cập nhật ${version}` : "Cập nhật";
     $("#nav-settings").classList.toggle("has-update", version !== null);
+    $("#settings-tab-update").classList.toggle("has-update", version !== null);
     $("#update-summary").textContent = version
       ? `Đang dùng ${$("#release-version").textContent}, có bản ${version}.`
       : "DubFlow tự kiểm tra bản mới khi mở ứng dụng và mỗi 6 giờ.";
@@ -2541,20 +2541,62 @@ void invoke<ReleaseInfo>("release_info")
 $("#installed-versions").addEventListener("click", () => $("#release-version").click());
 
 // Settings dialog, opened from the rail and from the header's update button.
+// Groups are tabs on the left; the chosen one shows on the right and is remembered.
 const settingsDialog = $("#settings-dialog");
 let settingsReturnFocus: HTMLElement | null = null;
 /** The newer version found, while one is waiting to be installed. */
 let updateVersion: string | null = null;
-function openSettings(): void {
-  settingsReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+const SETTINGS_TAB_KEY = "dubflow.settingsTab.v1";
+const settingsTabs = [...document.querySelectorAll<HTMLButtonElement>("#settings-dialog .settings-tab")];
+function settingsTabOf(name: string | null): HTMLButtonElement | undefined {
+  return settingsTabs.find((tab) => tab.dataset.tab === name);
+}
+function showSettingsTab(name: string, focus = false): void {
+  const chosen = settingsTabOf(name) ?? settingsTabs[0];
+  for (const tab of settingsTabs) {
+    const on = tab === chosen;
+    tab.setAttribute("aria-selected", String(on));
+    tab.tabIndex = on ? 0 : -1;
+    const pane = document.getElementById(tab.getAttribute("aria-controls") ?? "");
+    if (pane) pane.hidden = !on;
+  }
+  if (focus) chosen.focus();
+  const pane = document.getElementById(chosen.getAttribute("aria-controls") ?? "");
+  if (pane) pane.scrollTop = 0;
+  try { window.localStorage.setItem(SETTINGS_TAB_KEY, chosen.dataset.tab ?? ""); } catch { /* opens at Tài khoản next time */ }
+}
+function rememberedSettingsTab(): string {
+  try {
+    const saved = window.localStorage.getItem(SETTINGS_TAB_KEY);
+    if (settingsTabOf(saved)) return saved as string;
+  } catch { /* first tab */ }
+  return "account";
+}
+for (const tab of settingsTabs) tab.addEventListener("click", () => showSettingsTab(tab.dataset.tab ?? "account"));
+$("#settings-dialog .settings-tabs").addEventListener("keydown", (event) => {
+  const index = settingsTabs.findIndex((tab) => tab === document.activeElement);
+  if (index < 0) return;
+  const next = event.key === "ArrowDown" ? index + 1 : event.key === "ArrowUp" ? index - 1
+    : event.key === "Home" ? 0 : event.key === "End" ? settingsTabs.length - 1 : null;
+  if (next === null) return;
+  event.preventDefault();
+  showSettingsTab(settingsTabs[(next + settingsTabs.length) % settingsTabs.length].dataset.tab ?? "account", true);
+});
+/** Opens Cài đặt at `tab`; without one, at a waiting update or the last tab used. */
+function openSettings(tab?: string): void {
+  if (settingsDialog.hidden) {
+    settingsReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    aiSettings.refresh();
+  }
   settingsDialog.hidden = false;
   $("#nav-settings").classList.add("active");
-  $("#settings-close").focus();
+  const target = tab ?? (updateVersion !== null ? "update" : rememberedSettingsTab());
+  showSettingsTab(target);
+  $<HTMLButtonElement>(`#settings-tab-${settingsTabOf(target) ? target : "account"}`).focus();
   void douyin.refreshAccount();
   storage.refreshSummary();
   // With an update waiting, Settings opens at it.
-  if (updateVersion !== null) {
-    $("#settings-update").scrollIntoView({ block: "nearest" });
+  if (target === "update" && updateVersion !== null) {
     const install = $<HTMLButtonElement>("#update-install");
     if (!$("#update-card").hidden && !install.disabled) install.focus();
   }
@@ -2565,11 +2607,11 @@ function closeSettings(): void {
   $("#nav-settings").classList.remove("active");
   if (settingsReturnFocus?.isConnected) settingsReturnFocus.focus();
 }
-$("#nav-settings").addEventListener("click", openSettings);
-$("#header-update").addEventListener("click", openSettings);
+$("#nav-settings").addEventListener("click", () => openSettings());
+$("#header-update").addEventListener("click", () => openSettings("update"));
 $("#settings-close").addEventListener("click", closeSettings);
-// Esc closes the topmost dialog: one opened from Cài đặt (keys, versions, cleanup, Douyin) before Cài đặt itself.
-const SETTINGS_CHILDREN = ["versions", "ai-settings", "cleanup", "douyin"];
+// Esc closes the topmost dialog: one opened from Cài đặt (versions, cleanup, Douyin) before Cài đặt itself.
+const SETTINGS_CHILDREN = ["versions", "cleanup", "douyin"];
 function closeTopSettingsChild(): boolean {
   for (const name of SETTINGS_CHILDREN) {
     if (!$(`#${name}-dialog`).hidden) {

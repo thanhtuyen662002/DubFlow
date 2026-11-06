@@ -180,7 +180,7 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
   const wide = new Set<string>();
   const message = (error: unknown) => String(error).slice(0, 250);
   function showProvider(): void {
-    $("provider").textContent = `Khi bấm AI, chủ đề và tối đa 60 dòng phụ đề tiếng Việt mỗi video được gửi tới ${PROVIDERS[session.provider()].company}. Dùng nhà cung cấp và khóa đã lưu trong Cài đặt AI.`;
+    $("provider").textContent = `Khi bấm AI, chủ đề và tối đa 60 dòng phụ đề tiếng Việt mỗi video được gửi tới ${PROVIDERS[session.provider()].company}. Dùng nhà cung cấp và khóa đã lưu trong Cài đặt › Tài khoản.`;
   }
   // Settings may change while this page stays visible.
   document.querySelector("#ai-settings-provider")?.addEventListener("change", showProvider);
@@ -348,7 +348,7 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
     }
     const provider = session.provider(), key = session.read();
     showProvider();
-    if (!key) { $("ai-state").textContent = "Hãy lưu khóa của nhà cung cấp trong Cài đặt AI trước."; return; }
+    if (!key) { $("ai-state").textContent = "Hãy lưu khóa của nhà cung cấp trong Cài đặt › Tài khoản trước."; return; }
     lock(true); $("ai-state").textContent = `${PROVIDERS[provider].name} đang viết nội dung…`;
     try {
       const items = [];
