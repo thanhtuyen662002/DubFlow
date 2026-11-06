@@ -11,6 +11,7 @@ mod docu;
 mod edit;
 mod package;
 mod shorts;
+mod single_instance;
 mod reframe;
 mod product;
 mod sfx;
@@ -452,7 +453,9 @@ fn install_update(app: tauri::AppHandle, path: String) -> Result<(), String> {
     if !updater::is_update_setup(&root, &setup) {
         return Err(fail("Tệp cài đặt cập nhật không hợp lệ"));
     }
-    Command::new(&setup).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()
+    // The setup starts the new version once done; it waits for this one to quit.
+    Command::new(&setup).env(single_instance::RELAUNCH_AFTER, std::process::id().to_string())
+        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()
         .map_err(|error| fail(format!("Không chạy được bộ cài: {error}")))?;
     app.exit(0);
     Ok(())
@@ -493,6 +496,8 @@ fn restart_app(app: tauri::AppHandle) -> Result<(), String> {
     }
     let mut command = Command::new(std::env::var_os("ComSpec").unwrap_or_else(|| "cmd.exe".into()));
     command.args(["/d", "/c"]).arg(&launcher).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    // The new host waits for this one to quit instead of handing over to it.
+    command.env(single_instance::RELAUNCH_AFTER, std::process::id().to_string());
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
     command.spawn().map_err(|error| fail(format!("Không khởi động lại được: {error}")))?;
@@ -1243,14 +1248,18 @@ struct FetchStarted {
 }
 
 #[tauri::command]
-async fn fetch_url(app: tauri::AppHandle, url: String, title: Option<String>, sources: tauri::State<'_, std::sync::Arc<source::Sources>>) -> Result<FetchStarted, String> {
+async fn fetch_url(app: tauri::AppHandle, url: String, mut title: Option<String>, sources: tauri::State<'_, std::sync::Arc<source::Sources>>) -> Result<FetchStarted, String> {
     let mut url = url.trim().to_owned();
     // Douyin refuses the link service's own requests, so a Douyin video's
     // details are read through douyin.com in DubFlow's browser first. Any
     // failure here leaves the link to the service's own attempt.
     if source::provider_for(&url) == Ok("douyin") {
-        if let Ok(page) = read_douyin_video(&app, &url).await {
+        if let Ok((page, desc)) = read_douyin_video(&app, &url).await {
             url = page;
+            // A pasted link has no title of its own; the video's caption is.
+            if title.as_deref().is_none_or(|title| title.trim().is_empty()) {
+                title = desc;
+            }
         }
     }
     let root = version_root()?;
@@ -1261,6 +1270,16 @@ async fn fetch_url(app: tauri::AppHandle, url: String, title: Option<String>, so
     // Exists from the start, so "Mở thư mục" works while the link downloads.
     fs::create_dir_all(&output_dir).map_err(|error| fail(format!("Không tạo được thư mục kết quả: {error}")))?;
     Ok(FetchStarted { output_dir: output_dir.to_string_lossy().into_owned(), status })
+}
+
+/// The results folder of a finished link under its title, when the title
+/// only came with the download (a pasted link).
+#[tauri::command]
+fn link_titled_output(output_dir: String, url: String, title: String, scan_id: String) -> String {
+    let current = PathBuf::from(&output_dir);
+    source::retitled_output_dir(&current, &url, &title, &scan_id)
+        .map(|dir| dir.to_string_lossy().into_owned())
+        .unwrap_or(output_dir)
 }
 
 #[tauri::command]
@@ -2052,8 +2071,9 @@ async fn page_value(webview: &tauri::Webview, script: &str) -> Option<String> {
 
 /// Open a Douyin link (a video page or a short link) in a hidden window,
 /// ask douyin.com for the video's details the way its own page does, and
-/// leave them for the link service. Returns the video page's address.
-async fn read_douyin_video(app: &tauri::AppHandle, url: &str) -> Result<String, String> {
+/// leave them for the link service. Returns the video page's address and
+/// its caption, when it has one.
+async fn read_douyin_video(app: &tauri::AppHandle, url: &str) -> Result<(String, Option<String>), String> {
     use tauri::Manager;
     let _one_at_a_time = douyin_video_lock().lock().await;
     if let Some(stale) = app.get_webview_window(DOUYIN_VIDEO) {
@@ -2084,19 +2104,28 @@ async fn read_douyin_video(app: &tauri::AppHandle, url: &str) -> Result<String, 
     let partial = folder.join(format!("douyin-{id}.json.part"));
     fs::write(&partial, detail.to_string()).and_then(|_| fs::rename(&partial, &path))
         .map_err(|error| fail(format!("Không lưu được thông tin video Douyin: {error}")))?;
-    Ok(format!("https://www.douyin.com/video/{id}"))
+    let desc = detail["desc"].as_str().and_then(|desc| source::douyin_caption(desc, &id));
+    Ok((format!("https://www.douyin.com/video/{id}"), desc))
+}
+
+/// Whether a page's `document.readyState` (as JSON) says its scripts run.
+fn page_ready(state: Option<&str>) -> bool {
+    matches!(state, Some("\"interactive\"" | "\"complete\""))
 }
 
 async fn douyin_video_detail(webview: &tauri::Webview) -> Result<(String, Value), String> {
-    // The page settles on the video's own address (short links redirect).
+    // The page reaches the video's own address (short links redirect). The
+    // id is kept as soon as the address shows it: for a new visitor the page
+    // may never finish loading and moves on to /jingxuan after a few seconds,
+    // while its scripts (which sign the request below) are already running.
     let mut id = None;
     for _ in 0..60 {
         pause(500).await;
-        if page_value(webview, "document.readyState").await.as_deref() == Some("\"complete\"") {
+        if id.is_none() {
             id = webview.url().ok().and_then(|url| source::douyin_video_id(url.as_str()));
-            if id.is_some() {
-                break;
-            }
+        }
+        if id.is_some() && page_ready(page_value(webview, "document.readyState").await.as_deref()) {
+            break;
         }
     }
     let id = id.ok_or_else(|| fail("Trang Douyin không mở được video này"))?;
@@ -2149,13 +2178,16 @@ async fn douyin_logout(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 fn main() {
+    if !single_instance::claim() {
+        return;
+    }
     #[cfg(windows)]
     configure_webview_data().expect("unable to configure DubFlow desktop profile");
     let sources = std::sync::Arc::new(source::Sources::default());
     let on_exit = std::sync::Arc::clone(&sources);
     tauri::Builder::default()
         .manage(sources)
-        .invoke_handler(tauri::generate_handler![reframe::reframe_render, reframe::reframe_status, reframe::reframe_cancel, reframe::reframe_info, shorts::shorts_render, shorts::shorts_status, shorts::shorts_cancel, package::package_video, package::package_info, package::package_status, package::package_cancel, source_credit::source_credit_get, source_credit::source_credit_set, ai_keys::ai_key_status, ai_keys::ai_key_get, ai_keys::ai_key_set, ai_keys::ai_key_delete, create_report, product::pick_product_files, product::product_image, product::product_render, product::product_status, product::product_cancel, product::product_spec, product::product_runs, product::product_backgrounds, product::product_background_add, product::product_background_delete, release_info, voice_catalog, pick_files, pick_edit_files, pick_lut, edit::edit_proxy, start_job, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, withdraw_fetch, cancel_fetch, keep_download, default_download_dir, open_folder, reveal_download, save_douyin_session, ensure_douyin_session, douyin_account, douyin_logout, douyin_view_open, douyin_view_bounds, douyin_view_close, review_clip, video_frame, allow_media, post_suggestions, discover, open_discovery, discovery_view_show, discovery_view_bounds, discovery_view_hide, discovery_view_close, discovery_view_back, discovery_view_reload, discovery_view_url, scroll_discovery, collect_discovery, translate_terms, review_speakers, check_update, download_update, install_update, list_versions, activate_version, restart_app, compilation::compilation_render, compilation::compilation_status, compilation::compilation_cancel, compilation::compilation_description, compilation::compilation_runs, docu::docu_create, docu::docu_runs, docu::docu_open, docu::docu_check_script, docu::docu_pick_file, docu::docu_voices, docu::docu_narrate, docu::docu_narration_status, docu::docu_narration_cancel, docu::docu_plan, docu::docu_plan_status, docu::docu_plan_cancel, docu::docu_cover, docu::docu_layers,
+        .invoke_handler(tauri::generate_handler![reframe::reframe_render, reframe::reframe_status, reframe::reframe_cancel, reframe::reframe_info, shorts::shorts_render, shorts::shorts_status, shorts::shorts_cancel, package::package_video, package::package_info, package::package_status, package::package_cancel, source_credit::source_credit_get, source_credit::source_credit_set, ai_keys::ai_key_status, ai_keys::ai_key_get, ai_keys::ai_key_set, ai_keys::ai_key_delete, create_report, product::pick_product_files, product::product_image, product::product_render, product::product_status, product::product_cancel, product::product_spec, product::product_runs, product::product_backgrounds, product::product_background_add, product::product_background_delete, release_info, voice_catalog, pick_files, pick_edit_files, pick_lut, edit::edit_proxy, start_job, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, link_titled_output, withdraw_fetch, cancel_fetch, keep_download, default_download_dir, open_folder, reveal_download, save_douyin_session, ensure_douyin_session, douyin_account, douyin_logout, douyin_view_open, douyin_view_bounds, douyin_view_close, review_clip, video_frame, allow_media, post_suggestions, discover, open_discovery, discovery_view_show, discovery_view_bounds, discovery_view_hide, discovery_view_close, discovery_view_back, discovery_view_reload, discovery_view_url, scroll_discovery, collect_discovery, translate_terms, review_speakers, check_update, download_update, install_update, list_versions, activate_version, restart_app, compilation::compilation_render, compilation::compilation_status, compilation::compilation_cancel, compilation::compilation_description, compilation::compilation_runs, docu::docu_create, docu::docu_runs, docu::docu_open, docu::docu_check_script, docu::docu_pick_file, docu::docu_voices, docu::docu_narrate, docu::docu_narration_status, docu::docu_narration_cancel, docu::docu_plan, docu::docu_plan_status, docu::docu_plan_cancel, docu::docu_cover, docu::docu_layers,
             docu::docu_reframe, docu::docu_render_options, docu::docu_render, docu::docu_render_status, docu::docu_render_cancel, docu::docu_capcut, docu::docu_launch_capcut, docu::docu_mcp_connection, docu::docu_mcp_activity, storage::storage_report, storage::storage_clean, storage::storage_free, edit::edit_project_load, edit::edit_library, edit::edit_file_sizes, edit::edit_project_save, edit::edit_export, edit::edit_status, edit::edit_cancel, edit::edit_stems, voice_sample, edit::edit_separate, edit::edit_separate_cancel, edit::edit_media_info, edit::edit_audio_peaks, edit::edit_lut_frame, edit::edit_save_recording, edit::edit_versions, edit::edit_version_save, edit::edit_version_load, edit::edit_version_delete, edit::edit_templates, edit::edit_template_save, edit::edit_template_load, edit::edit_template_delete, edit::edit_subtitles_load, edit::edit_subtitles_apply, sfx::sfx_status, sfx::sfx_install, sfx::sfx_path, sfx::user_audio_list, sfx::audio_info, sfx::pick_audio_folder, sfx::pick_audio_files, sfx::expand_audio_paths])
         .build(tauri::generate_context!())
         .expect("error while building DubFlow desktop host")

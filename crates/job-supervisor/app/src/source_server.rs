@@ -664,7 +664,19 @@ fn packet(work: &Path, name: &str, expected: &str) -> Result<Packet> {
     Ok(serde_json::from_slice(&raw)?)
 }
 
+/// Titles of a page's items by identity key, for the desktop's queue only;
+/// the queue database keeps no titles.
+type PageTitles = Vec<(String, String)>;
+
 fn checked_page(packet: Packet, original: &ScanRecord, page_size: usize) -> Result<PageCheckpoint> {
+    checked_page_titled(packet, original, page_size).map(|(page, _)| page)
+}
+
+fn checked_page_titled(
+    packet: Packet,
+    original: &ScanRecord,
+    page_size: usize,
+) -> Result<(PageCheckpoint, PageTitles)> {
     let (schema, job, stage, fingerprint, revision, cursor, page) = match packet {
         Packet::Page {
             schema_version,
@@ -697,6 +709,7 @@ fn checked_page(packet: Packet, original: &ScanRecord, page_size: usize) -> Resu
         return Err(invalid());
     }
     let mut items = Vec::new();
+    let mut titles = Vec::new();
     for (index, item) in page.items.into_iter().enumerate() {
         if item.schema_version != 1
             || item.identity.provider_id != original.provider_id
@@ -711,6 +724,9 @@ fn checked_page(packet: Packet, original: &ScanRecord, page_size: usize) -> Resu
             return Err(invalid());
         }
         public_url(&item.identity.canonical_url)?;
+        if let Some(title) = shown_title(&item.title, &item.identity) {
+            titles.push((item.identity.identity_key.clone(), title));
+        }
         items.push(PageItem::new(
             item.identity.identity_key,
             item.identity.source_id,
@@ -734,13 +750,38 @@ fn checked_page(packet: Packet, original: &ScanRecord, page_size: usize) -> Resu
             failure.retryable,
         ));
     }
-    Ok(PageCheckpoint {
+    Ok((PageCheckpoint {
         next_cursor: page.next_cursor,
         completed: page.completed,
         items,
         failures,
-    })
+    }, titles))
 }
+
+/// Longest title handed to the desktop, in characters.
+const MAX_SHOWN_TITLE: usize = 200;
+
+/// A title worth showing: not empty, not just the item's id or address.
+fn shown_title(title: &str, identity: &Identity) -> Option<String> {
+    let clean: String = title.chars().filter(|c| !c.is_control()).collect();
+    let clean: String = clean.trim().chars().take(MAX_SHOWN_TITLE).collect();
+    let clean = clean.trim_end();
+    let placeholder = clean.is_empty()
+        || clean == identity.source_id
+        || clean == identity.canonical_url
+        || looks_like_url(clean);
+    (!placeholder).then(|| clean.to_owned())
+}
+
+/// Whether a title is just a web address: it starts with an http(s) scheme,
+/// in any letter case (`HTTPS://host/...` too).
+fn looks_like_url(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    ["http://", "https://"].iter().any(|scheme| lower.starts_with(scheme))
+}
+
+/// Most titles remembered at once; the oldest scans are forgotten first.
+const MAX_REMEMBERED_TITLES: usize = 512;
 
 struct Spec {
     id: String,
@@ -1356,6 +1397,8 @@ struct Server {
     queue: SourceQueue,
     active: Option<Active>,
     session: Option<SessionActive>,
+    /// (scan, identity key) to title, oldest first.
+    titles: std::collections::VecDeque<((String, String), String)>,
     _owner: SourceOwner,
 }
 impl Server {
@@ -1381,6 +1424,7 @@ impl Server {
             queue,
             active: None,
             session: None,
+            titles: std::collections::VecDeque::new(),
             _owner: owner,
         })
     }
@@ -1679,7 +1723,10 @@ impl Server {
                 let total = items.len();
                 let items: Vec<Value> = items.into_iter().skip(offset).take(limit).map(|i| {
                     let public = public_url(&i.source_url).is_ok();
-                    json!({"identity_key":i.identity_key, "source_id":i.source_id, "source_url":if public {Some(i.source_url)} else {None}, "status":format!("{:?}",i.status).to_ascii_lowercase(), "retry_count":i.retry_count, "downloaded_bytes":i.downloaded_bytes, "total_bytes":i.total_bytes, "media_path":i.media_path, "content_hash":i.content_hash, "error_code":i.error_code})
+                    let title = self.titles.iter()
+                        .find(|((scan, identity), _)| *scan == scan_id && *identity == i.identity_key)
+                        .map(|(_, title)| title.clone());
+                    json!({"identity_key":i.identity_key, "title":title, "source_id":i.source_id, "source_url":if public {Some(i.source_url)} else {None}, "status":format!("{:?}",i.status).to_ascii_lowercase(), "retry_count":i.retry_count, "downloaded_bytes":i.downloaded_bytes, "total_bytes":i.total_bytes, "media_path":i.media_path, "content_hash":i.content_hash, "error_code":i.error_code})
                 }).collect();
                 json!({"event":"source_items", "scan_id":scan_id, "offset":offset, "total":total, "items":items})
             }
@@ -2221,9 +2268,20 @@ impl Server {
                     }
                 } else {
                     let original = active.original.as_ref().ok_or_else(invalid)?;
-                    let page = checked_page(document, original, active.spec.page_size)?;
-                    self.queue
-                        .checkpoint_page_checked(original, &page, super::now_ms())?
+                    let (page, titles) =
+                        checked_page_titled(document, original, active.spec.page_size)?;
+                    let record = self
+                        .queue
+                        .checkpoint_page_checked(original, &page, super::now_ms())?;
+                    let scan = active.spec.id.clone();
+                    for (identity, title) in titles {
+                        self.titles.retain(|(key, _)| key.0 != scan || key.1 != identity);
+                        self.titles.push_back(((scan.clone(), identity), title));
+                    }
+                    while self.titles.len() > MAX_REMEMBERED_TITLES {
+                        self.titles.pop_front();
+                    }
+                    record
                 };
                 // Only a checked durable commit authorizes deletion and UI update.
                 fs::remove_file(active.work.join(&checkpoint_id))?;
@@ -4249,6 +4307,45 @@ print(json.dumps({'executable':sys.executable,'prefix':sys.prefix,'worker':__fil
         let result = queue.checkpoint_page_checked(&record, &page, 3).unwrap();
         assert_eq!(result.failed_count, 1);
         assert_eq!(result.discovered_count, 1);
+    }
+
+    #[test]
+    fn page_titles_skip_placeholders_and_reach_the_item_list() {
+        let queue = SourceQueue::open_in_memory().unwrap();
+        let record = original(&queue);
+        let mut value = page_value(&record);
+        value["page"]["items"][0]["title"] = json!("  Phim  hay  ");
+        let (_, titles) = checked_page_titled(decode(value), &record, 2).unwrap();
+        assert_eq!(titles, vec![("generic:one".to_owned(), "Phim  hay".to_owned())]);
+        for placeholder in ["one", "https://example.test/one", "https://example.test/x", "HTTPS://example.test/video", "HttpS://example.test/v", "Http://example.test/v", "   "] {
+            let mut value = page_value(&record);
+            value["page"]["items"][0]["title"] = json!(placeholder);
+            let (page, titles) = checked_page_titled(decode(value), &record, 2).unwrap();
+            assert!(titles.is_empty(), "{placeholder}");
+            assert_eq!(page.items.len(), 1, "an untitled item is still kept");
+        }
+        for kept in ["Https là gì? Giải thích dễ hiểu", "Video: http và https", "【4K】Vlog"] {
+            let mut value = page_value(&record);
+            value["page"]["items"][0]["title"] = json!(kept);
+            let (_, titles) = checked_page_titled(decode(value), &record, 2).unwrap();
+            assert_eq!(titles[0].1, kept, "an ordinary title stays as written");
+        }
+        let mut value = page_value(&record);
+        value["page"]["items"][0]["title"] = json!("长".repeat(300));
+        let (_, titles) = checked_page_titled(decode(value), &record, 2).unwrap();
+        assert_eq!(titles[0].1.chars().count(), MAX_SHOWN_TITLE);
+
+        let temp = Temporary::new();
+        let mut server = download_server(&temp);
+        server.titles.push_back((("scan".into(), "generic:two".into()), "Video hai".into()));
+        server.titles.push_back((("other".into(), "generic:one".into()), "Not this scan".into()));
+        let (value, _) = server
+            .request(Request::Items { scan_id: "scan".into(), offset: 0, limit: 10 })
+            .unwrap();
+        let items = value["items"].as_array().unwrap();
+        let title = |key: &str| items.iter().find(|i| i["identity_key"] == key).unwrap()["title"].clone();
+        assert_eq!(title("generic:two"), json!("Video hai"));
+        assert_eq!(title("generic:one"), Value::Null);
     }
 
     #[test]

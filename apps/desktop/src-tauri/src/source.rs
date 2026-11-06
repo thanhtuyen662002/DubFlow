@@ -67,7 +67,23 @@ pub struct Sources {
     /// A cancelled running link whose stop request is not answered yet; a
     /// rejection naming no scan belongs to it, not to the next link.
     cancelling: Mutex<Option<String>>,
+    /// A start waits for a session save to finish (the service refuses
+    /// every request while it saves); one waiter at a time.
+    start_deferred: AtomicBool,
 }
+
+/// What `claim_next` found.
+enum Claimed {
+    /// This link was claimed; start it.
+    Start(String, FetchStatus),
+    /// A link runs, or none waits.
+    Idle,
+    /// A link waits for a session save to end.
+    AfterSave,
+}
+
+/// Longest wait for a session save before the next link starts anyway.
+const SESSION_SAVE_WAIT: std::time::Duration = std::time::Duration::from_secs(250);
 
 /// The service allows two retries in a row that bring no new bytes; each
 /// resumes the part already downloaded.
@@ -429,10 +445,15 @@ impl Sources {
             }
             "source_items" => {
                 let identity = event["items"][0]["identity_key"].as_str().map(str::to_owned);
+                let found = clean_title(event["items"][0]["title"].as_str().map(str::to_owned));
                 let mut started = false;
                 self.update(scan, |s| if s.state == "preparing" {
                     s.state = "downloading".into();
                     s.detail = None;
+                    // A pasted link learns its title from the service.
+                    if s.title.is_none() {
+                        s.title = found.clone();
+                    }
                     started = true;
                 });
                 if let (Some(identity), true) = (identity, started) {
@@ -515,28 +536,79 @@ impl Sources {
     }
 
     /// Start the next waiting link once the running one has finished.
+    /// Claim the next waiting link for a start, under the fetch and queue
+    /// locks. A session save claims the service under the same locks
+    /// (`begin_session_save`), so a start and a save never overlap: the
+    /// service refuses every request while it saves.
+    fn claim_next(&self) -> Claimed {
+        // Lock order everywhere: fetches, then queue.
+        let Ok(mut fetches) = self.fetches.lock() else { return Claimed::Idle };
+        let Ok(mut queue) = self.queue.lock() else { return Claimed::Idle };
+        if queue.current.as_ref().and_then(|scan| fetches.get(scan)).is_some_and(|s| !finished(&s.state)) {
+            return Claimed::Idle;
+        }
+        if queue.waiting.is_empty() {
+            queue.current = None;
+            return Claimed::Idle;
+        }
+        if self.session_waiting.load(Ordering::SeqCst) {
+            return Claimed::AfterSave;
+        }
+        loop {
+            queue.current = queue.waiting.pop_front();
+            let Some(next) = queue.current.clone() else { return Claimed::Idle };
+            for (place, scan) in queue.waiting.iter().enumerate() {
+                if let Some(status) = fetches.get_mut(scan) {
+                    status.queue_position = Some(place + 1);
+                }
+            }
+            let Some(status) = fetches.get_mut(&next) else { continue };
+            status.state = "preparing".into();
+            status.queue_position = None;
+            status.detail = Some("Đang khởi động dịch vụ tải…".into());
+            status.started_at_ms = Some(now_ms());
+            return Claimed::Start(next, status.clone());
+        }
+    }
+
+    /// Claim the service for a session save, unless a link holds it.
+    fn begin_session_save(&self) -> Result<(), String> {
+        let fetches = self.fetches.lock().map_err(|_| fail("fetch table lock poisoned"))?;
+        let queue = self.queue.lock().map_err(|_| fail("link queue lock poisoned"))?;
+        if queue.current.as_ref().and_then(|scan| fetches.get(scan)).is_some_and(|s| !finished(&s.state)) {
+            return Err(fail("Đang tải một link nên chưa lưu được phiên. Hãy đợi link tải xong rồi bấm lại."));
+        }
+        self.session_waiting.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+
+    /// Let the service go after a session save; a link that waited for it starts.
+    fn end_session_save(self: &Arc<Self>) {
+        self.session_waiting.store(false, Ordering::SeqCst);
+        self.pump();
+    }
+
     fn pump(self: &Arc<Self>) {
         loop {
-            // Lock order everywhere: fetches, then queue.
-            let (next, status) = {
-                let Ok(mut fetches) = self.fetches.lock() else { return };
-                let Ok(mut queue) = self.queue.lock() else { return };
-                if queue.current.as_ref().and_then(|scan| fetches.get(scan)).is_some_and(|s| !finished(&s.state)) {
+            let (next, status) = match self.claim_next() {
+                Claimed::Start(next, status) => (next, status),
+                Claimed::Idle => return,
+                Claimed::AfterSave => {
+                    // Normally the save's end starts the link; this waiter is
+                    // the bound in case the save never reports back.
+                    if !self.start_deferred.swap(true, Ordering::SeqCst) {
+                        let sources = Arc::clone(self);
+                        thread::spawn(move || {
+                            let deadline = std::time::Instant::now() + SESSION_SAVE_WAIT;
+                            while sources.session_waiting.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+                                thread::sleep(std::time::Duration::from_millis(200));
+                            }
+                            sources.start_deferred.store(false, Ordering::SeqCst);
+                            sources.pump();
+                        });
+                    }
                     return;
                 }
-                queue.current = queue.waiting.pop_front();
-                let Some(next) = queue.current.clone() else { return };
-                for (place, scan) in queue.waiting.iter().enumerate() {
-                    if let Some(status) = fetches.get_mut(scan) {
-                        status.queue_position = Some(place + 1);
-                    }
-                }
-                let Some(status) = fetches.get_mut(&next) else { continue };
-                status.state = "preparing".into();
-                status.queue_position = None;
-                status.detail = Some("Đang khởi động dịch vụ tải…".into());
-                status.started_at_ms = Some(now_ms());
-                (next, status.clone())
             };
             let launch = self.launch.lock().ok().and_then(|launch| launch.clone());
             let started = match launch {
@@ -625,27 +697,22 @@ impl Sources {
         self.ensure_started(supervisor, root, data)
     }
 
-    /// A link the service is running right now.
-    fn link_running(&self) -> bool {
-        self.queue.lock().ok().and_then(|queue| queue.current.clone())
-            .is_some_and(|scan| self.status(&scan).is_some_and(|s| !finished(&s.state)))
-    }
-
     /// Store a provider session in the service's protected (DPAPI) store and
     /// wait for its receipt. Blocking: call from a worker thread.
     pub fn save_session(self: &Arc<Self>, provider: &str, cookie: String, expires_at: u64,
                         supervisor: &Path, root: &Path, data: &Path) -> Result<(), String> {
         let _one_at_a_time = self.session_gate.lock().map_err(|_| fail("session gate poisoned"))?;
-        // The service refuses session work while a link runs.
-        if self.link_running() {
-            return Err(fail("Đang tải một link nên chưa lưu được phiên. Hãy đợi link tải xong rồi bấm lại."));
-        }
-        self.ensure_started(supervisor, root, data)?;
-        *self.session.lock().map_err(|_| fail("session lock poisoned"))? = None;
-        self.session_waiting.store(true, Ordering::SeqCst);
-        let result = self.send(json!({"command":"session_save", "provider_id":provider, "headers":{"Cookie":cookie}, "expires_at":expires_at}))
+        // The service refuses session work while a link runs, and every
+        // request while it saves: the claim keeps links from starting.
+        self.begin_session_save()?;
+        let result = self.ensure_started(supervisor, root, data)
+            .and_then(|_| {
+                *self.session.lock().map_err(|_| fail("session lock poisoned"))? = None;
+                Ok(())
+            })
+            .and_then(|_| self.send(json!({"command":"session_save", "provider_id":provider, "headers":{"Cookie":cookie}, "expires_at":expires_at})))
             .and_then(|_| self.session_receipt(provider));
-        self.session_waiting.store(false, Ordering::SeqCst);
+        self.end_session_save();
         result
     }
 
@@ -697,6 +764,54 @@ fn session_result(provider: &str, event: &Value) -> Result<(), String> {
 pub fn link_output_dir(url: &str, title: Option<&str>, scan: &str) -> Result<PathBuf, String> {
     let profile = std::env::var_os("USERPROFILE").ok_or_else(|| fail("USERPROFILE is unavailable"))?;
     Ok(PathBuf::from(profile).join("Videos").join("DubFlow Output").join(format!("{} - vi", link_folder_name(url, title))).join(scan))
+}
+
+/// A Douyin caption worth using as a link's title: not empty, not just the
+/// video's id and not a web address (any letter case).
+/// It is cleaned the way every link title is (`clean_title`) before the
+/// checks, so what is checked is what is shown.
+pub fn douyin_caption(desc: &str, id: &str) -> Option<String> {
+    let caption = clean_title(Some(desc.to_owned()))?;
+    let lower = caption.to_ascii_lowercase();
+    let placeholder = caption == id || lower.starts_with("http://") || lower.starts_with("https://");
+    (!placeholder).then_some(caption)
+}
+
+/// The results folder of a link that only learned its title while it
+/// downloaded: its untitled folder (still empty) moves to the titled name.
+/// Any other folder (already titled, chosen elsewhere, or with files in it)
+/// stays where it is.
+pub fn retitled_output_dir(current: &Path, url: &str, title: &str, scan: &str) -> Result<PathBuf, String> {
+    let profile = std::env::var_os("USERPROFILE").ok_or_else(|| fail("USERPROFILE is unavailable"))?;
+    retitled_output_in(&PathBuf::from(profile).join("Videos").join("DubFlow Output"), current, url, title, scan)
+}
+
+fn retitled_output_in(output: &Path, current: &Path, url: &str, title: &str, scan: &str) -> Result<PathBuf, String> {
+    let named = |title: Option<&str>| output.join(format!("{} - vi", link_folder_name(url, title))).join(scan);
+    let (untitled, titled) = (named(None), named(Some(title)));
+    if current != untitled || titled == untitled || titled.exists() {
+        return Ok(current.to_path_buf());
+    }
+    // Only an empty folder moves, and only a missing one is made afresh;
+    // anything unreadable (a file in its place, no access) stays as it is.
+    let missing = match fs::read_dir(current).map(|mut entries| entries.next().is_none()) {
+        Ok(true) => false,
+        Ok(false) => return Ok(current.to_path_buf()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Err(_) => return Ok(current.to_path_buf()),
+    };
+    let parent = titled.parent().ok_or_else(|| fail("results folder has no parent"))?;
+    fs::create_dir_all(parent).map_err(|error| fail(format!("Không tạo được thư mục kết quả: {error}")))?;
+    if !missing {
+        fs::rename(current, &titled).map_err(|error| fail(format!("Không đổi tên được thư mục kết quả: {error}")))?;
+        // The untitled `<id> - vi` folder goes too once nothing else is in it.
+        if let Some(old) = current.parent() {
+            let _ = fs::remove_dir(old);
+        }
+    } else {
+        fs::create_dir_all(&titled).map_err(|error| fail(format!("Không tạo được thư mục kết quả: {error}")))?;
+    }
+    Ok(titled)
 }
 
 fn link_folder_name(url: &str, title: Option<&str>) -> String {
@@ -943,6 +1058,124 @@ mod tests {
         *sources.cancelling.lock().unwrap() = Some("running".into());
         sources.on_event(&json!({"event":"source_error", "code":"SOURCE_REQUEST_REJECTED"}));
         assert_eq!(sources.status("third").unwrap().state, "preparing");
+    }
+
+    #[test]
+    fn a_link_waits_for_a_session_save_before_it_starts() {
+        let sources = Arc::new(Sources::default());
+        queued(&sources, "next", "queued");
+        sources.queue.lock().unwrap().waiting.push_back("next".into());
+        // A save that begins first keeps the link from starting.
+        sources.begin_session_save().unwrap();
+        sources.pump();
+        sources.pump();
+        assert_eq!(sources.status("next").unwrap().state, "queued", "nothing starts while the session is saved");
+        assert!(sources.queue.lock().unwrap().current.is_none());
+        // The save's end starts it (and it fails here: no service runs in a test).
+        sources.end_session_save();
+        assert!(sources.status("next").unwrap().started_at_ms.is_some());
+    }
+
+    #[test]
+    fn a_save_never_begins_once_a_link_has_been_claimed() {
+        let sources = Arc::new(Sources::default());
+        queued(&sources, "next", "queued");
+        sources.queue.lock().unwrap().waiting.push_back("next".into());
+        // pump's claim happens first (a save that starts after pump's check).
+        assert!(matches!(sources.claim_next(), Claimed::Start(scan, _) if scan == "next"));
+        assert!(sources.begin_session_save().is_err(), "the claimed link holds the service");
+        assert!(!sources.session_waiting.load(Ordering::SeqCst));
+        // Once it has finished, a save may begin, and then nothing else is claimed.
+        sources.update("next", |s| s.state = "done".into());
+        queued(&sources, "later", "queued");
+        sources.queue.lock().unwrap().waiting.push_back("later".into());
+        sources.begin_session_save().unwrap();
+        assert!(matches!(sources.claim_next(), Claimed::AfterSave));
+    }
+
+    #[test]
+    fn a_start_and_a_save_racing_never_both_win() {
+        for round in 0..500 {
+            let sources = Arc::new(Sources::default());
+            let scan = format!("r{round}");
+            queued(&sources, &scan, "queued");
+            sources.queue.lock().unwrap().waiting.push_back(scan.clone());
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+            let (a, b) = (Arc::clone(&sources), Arc::clone(&barrier));
+            let starter = thread::spawn(move || {
+                b.wait();
+                matches!(a.claim_next(), Claimed::Start(..))
+            });
+            barrier.wait();
+            let saved = sources.begin_session_save().is_ok();
+            let started = starter.join().unwrap();
+            assert!(started != saved, "round {round}: exactly one of start ({started}) and save ({saved}) wins");
+        }
+    }
+
+    #[test]
+    fn a_pasted_link_takes_the_title_the_service_found() {
+        let sources = Arc::new(Sources::default());
+        queued(&sources, "pasted", "preparing");
+        queued(&sources, "named", "preparing");
+        sources.update("named", |s| s.title = Some("Tên từ Khám phá".into()));
+        for scan in ["pasted", "named"] {
+            sources.on_event(&json!({"event":"source_items", "scan_id":scan, "items":[{"identity_key":"bilibili:x", "title":"  【4K】Video hay  "}]}));
+        }
+        assert_eq!(sources.status("pasted").unwrap().title.as_deref(), Some("【4K】Video hay"));
+        assert_eq!(sources.status("named").unwrap().title.as_deref(), Some("Tên từ Khám phá"), "a known title is kept");
+        queued(&sources, "untitled", "preparing");
+        sources.on_event(&json!({"event":"source_items", "scan_id":"untitled", "items":[{"identity_key":"bilibili:y", "title":null}]}));
+        let status = sources.status("untitled").unwrap();
+        assert_eq!((status.state.as_str(), status.title), ("downloading", None));
+    }
+
+    #[test]
+    fn a_douyin_caption_is_a_title_only_when_it_says_something() {
+        let id = "7699053575086918966";
+        assert_eq!(douyin_caption("  2026年火爆全网的短剧，剧情惊艳口碑炸裂，你还没看？ ", id).as_deref(), Some("2026年火爆全网的短剧，剧情惊艳口碑炸裂，你还没看？"));
+        for placeholder in ["", "   \n", id, " 7699053575086918966 ", "7699\u{0}053575086918966", "HTTPS://example.test/video", "h\u{0}TtPs://example.test/video", "Http://x.test", "https://www.douyin.com/video/1"] {
+            assert_eq!(douyin_caption(placeholder, id), None, "{placeholder:?}");
+        }
+        assert!(douyin_caption("Https là gì #giaitri", id).is_some(), "an ordinary caption that mentions https stays");
+    }
+
+    #[test]
+    fn an_untitled_results_folder_takes_the_title_once_known() {
+        let output = std::env::temp_dir().join(format!("dubflow-retitle-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&output);
+        let url = "https://www.bilibili.com/video/BV1LHxQ6gELU";
+        let untitled = output.join("BV1LHxQ6gELU - vi").join("link-1");
+        fs::create_dir_all(&untitled).unwrap();
+        let moved = retitled_output_in(&output, &untitled, url, "Video hay: tập 1", "link-1").unwrap();
+        assert_eq!(moved, output.join("Video-hay-tập-1 - vi").join("link-1"));
+        assert!(moved.is_dir() && !untitled.exists());
+        assert!(!output.join("BV1LHxQ6gELU - vi").exists(), "the empty untitled folder is gone");
+        // Already titled: nothing moves.
+        assert_eq!(retitled_output_in(&output, &moved, url, "Tên khác", "link-1").unwrap(), moved);
+        // An untitled folder that already holds files stays, and so do its siblings.
+        let busy = output.join("BV1LHxQ6gELU - vi").join("link-2");
+        fs::create_dir_all(&busy).unwrap();
+        fs::write(busy.join("ket-qua.mp4"), "x").unwrap();
+        fs::create_dir_all(output.join("BV1LHxQ6gELU - vi").join("link-3")).unwrap();
+        assert_eq!(retitled_output_in(&output, &busy, url, "Video hay", "link-2").unwrap(), busy);
+        let third = output.join("BV1LHxQ6gELU - vi").join("link-3");
+        let moved3 = retitled_output_in(&output, &third, url, "Video hay", "link-3").unwrap();
+        assert_eq!(moved3, output.join("Video-hay - vi").join("link-3"));
+        assert!(busy.join("ket-qua.mp4").is_file(), "the shared untitled folder keeps other links");
+        // A folder that is missing is created under the titled name.
+        let gone = output.join("BV1LHxQ6gELU - vi").join("link-4");
+        let made = retitled_output_in(&output, &gone, url, "Video hay", "link-4").unwrap();
+        assert!(made.is_dir() && made.ends_with(Path::new("Video-hay - vi").join("link-4")));
+        // A file where the folder should be is left alone, never moved.
+        let file = output.join("BV1LHxQ6gELU - vi").join("link-6");
+        fs::write(&file, "not a folder").unwrap();
+        assert_eq!(retitled_output_in(&output, &file, url, "Video hay", "link-6").unwrap(), file);
+        assert!(file.is_file() && !output.join("Video-hay - vi").join("link-6").exists());
+        // A title that names the folder the same way changes nothing.
+        let same = output.join("BV1LHxQ6gELU - vi").join("link-5");
+        assert_eq!(retitled_output_in(&output, &same, url, "  ", "link-5").unwrap(), same);
+        fs::remove_dir_all(&output).unwrap();
     }
 
     #[test]
