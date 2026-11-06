@@ -43,7 +43,7 @@ export function fetchMessage(status: FetchStatus, nowMs: number): string {
     case "queued":
       return status.queue_position && status.queue_position > 1
         ? `Đang chờ: còn ${status.queue_position - 1} link phía trước`
-        : "Đang chờ link trước tải xong";
+        : status.detail ?? "Đang chờ link trước tải xong";
     case "preparing":
       return `${status.detail ?? "Đang phân tích link…"}${elapsed}`;
     case "downloading":

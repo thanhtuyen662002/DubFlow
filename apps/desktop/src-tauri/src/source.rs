@@ -83,6 +83,8 @@ enum Claimed {
 }
 
 /// Longest wait for a session save before the next link starts anyway.
+/// What the first waiting link says while a login session is being saved.
+const SAVING_SESSION: &str = "Đang chờ lưu xong phiên đăng nhập…";
 const SESSION_SAVE_WAIT: std::time::Duration = std::time::Duration::from_secs(250);
 
 /// The service allows two retries in a row that bring no new bytes; each
@@ -552,6 +554,10 @@ impl Sources {
             return Claimed::Idle;
         }
         if self.session_waiting.load(Ordering::SeqCst) {
+            // Say why the first link waits: no link runs, a login is saved.
+            if let Some(status) = queue.waiting.front().and_then(|scan| fetches.get_mut(scan)) {
+                status.detail = Some(SAVING_SESSION.into());
+            }
             return Claimed::AfterSave;
         }
         loop {
@@ -1070,6 +1076,7 @@ mod tests {
         sources.pump();
         sources.pump();
         assert_eq!(sources.status("next").unwrap().state, "queued", "nothing starts while the session is saved");
+        assert_eq!(sources.status("next").unwrap().detail.as_deref(), Some(SAVING_SESSION), "the row says it waits for the save");
         assert!(sources.queue.lock().unwrap().current.is_none());
         // The save's end starts it (and it fails here: no service runs in a test).
         sources.end_session_save();
