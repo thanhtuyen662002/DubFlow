@@ -886,6 +886,12 @@ def _translation_settings(config: WorkerConfig, warnings: list[str]) -> Translat
     return TranslationSettings(route, sensitive, " ".join(title.split())[:200])
 
 
+def _placement_seconds(point: Mapping[str, Any]) -> float:
+    """A time point of dubbing_placement.json in seconds (ticks and the time base are written as decimal strings)."""
+    base = point["time_base"]
+    return int(point["ticks"]) * int(base["numerator"]) / int(base["denominator"])
+
+
 def _beep_flagged_words(b2_audio: Any, spoken: Sequence[TextCue], policy: SensitivePolicy | None,
                         warnings: list[str]) -> tuple[Path, Path] | None:
     """Beeped copies of the final mix and the dialogue stem, or None when nothing is beeped."""
@@ -912,8 +918,7 @@ def _beep_flagged_words(b2_audio: Any, spoken: Sequence[TextCue], policy: Sensit
         if placement is not None and Path(placement).is_file():
             for window in json.loads(Path(placement).read_text(encoding="utf-8")).get("windows", []):
                 start, end = window["slot_start"], window["render_window_end"]
-                windows.append({"id": window["cue_id"], "start": start["ticks"] * start["time_base"]["numerator"] / start["time_base"]["denominator"],
-                                "end": end["ticks"] * end["time_base"]["numerator"] / end["time_base"]["denominator"]})
+                windows.append({"id": window["cue_id"], "start": _placement_seconds(start), "end": _placement_seconds(end)})
         else:
             for phrase, cue_ids in members.items():
                 cues = [by_id[cue_id] for cue_id in cue_ids if cue_id in by_id]
@@ -1931,6 +1936,11 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
             kept = len(result.cues) - result.cues_from_ai
             if result.complete and kept:
                 warnings.append(f"{context_ai.WARNING}{kept}/{len(result.cues)} câu AI không dịch được nên giữ bản dịch offline.")
+            if result.unify_pending:
+                # The windows are fine but some lines may still call a person two ways: retried next run.
+                stored_input = translation_input + ":partial"
+                warnings.append(f"{context_ai.WARNING}{result.unify_pending} câu chưa soát được cách gọi nhân vật cho thống nhất: "
+                                f"{result.unify_error or 'lỗi không rõ'}")
             if not result.complete:
                 # Not marked done: the next run retries the failed windows (the rest are cached).
                 stored_input = translation_input + ":partial"
