@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
 import {
-  askJson, checkProvider, configureHostAi, createAiSession, hostRequest, isKeyError, isProvider, PROVIDER_IDS, PROVIDERS,
+  askJson, checkProvider, noRedirectFetch, configureHostAi, createAiSession, hostRequest, isKeyError, isProvider, PROVIDER_IDS, PROVIDERS,
 } from "../src/features/ai/provider.ts";
 import { DEFAULT_SENSITIVE_WORDS, formatWordList, normalizePrefs, parseWordList, translationJobArgs } from "../src/features/ai/translation_prefs.ts";
 
@@ -62,5 +63,34 @@ assert.equal(translationJobArgs({ ...prefs, aiTranslation: false }, fake("gemini
 assert.deepEqual(translationJobArgs(prefs, fake("custom", null, { baseUrl: "http://localhost:1234/v1", model: "m" }), "").aiTranslation,
   { provider: "custom", model: "m", baseUrl: "http://localhost:1234/v1" });
 assert.equal(translationJobArgs({ ...prefs, sensitiveMode: "off" }, fake("gemini", "…1"), "").sensitiveWords, null);
+
+// Claude and Gemini are fetched from the webview: a redirect fails instead of carrying the key along.
+const seen = [];
+await noRedirectFetch(async (url, init) => { seen.push(init); return { ok: true }; })("https://api.anthropic.com/v1/messages",
+  { headers: { "x-api-key": "test-only" }, redirect: "follow" });
+assert.equal(seen[0].redirect, "error");
+assert.equal(seen[0].headers["x-api-key"], "test-only");
+const geminiCalls = [];
+await askJson("gemini", "test-only-gemini", request, async (url, init) => {
+  geminiCalls.push(init);
+  return { ok: true, status: 200, json: async () => ({ candidates: [{ finishReason: "STOP", content: { parts: [{ text: "{\"x\":\"ok\"}" }] } }] }) };
+});
+assert.equal(geminiCalls[0].redirect, "error");
+
+// With real fetch and two local servers: the second origin never receives either key.
+const received = [];
+const other = createServer((req, res) => { received.push(req.headers); res.end("{}"); });
+await new Promise((resolve) => other.listen(0, "127.0.0.1", resolve));
+const first = createServer((req, res) => {
+  res.writeHead(307, { location: `http://127.0.0.1:${other.address().port}/stolen` });
+  res.end();
+});
+await new Promise((resolve) => first.listen(0, "127.0.0.1", resolve));
+const base = `http://127.0.0.1:${first.address().port}`;
+await assert.rejects(noRedirectFetch()(`${base}/v1/messages`, { method: "POST", headers: { "x-api-key": "test-only-claude" }, body: "{}" }));
+await assert.rejects(askJson("gemini", "test-only-gemini", request, (url, init) => fetch(`${base}/gemini`, init)));
+assert.deepEqual(received, []);
+first.close();
+other.close();
 
 console.log("ai providers ok");

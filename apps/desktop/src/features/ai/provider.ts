@@ -181,9 +181,17 @@ export type Part = { text: string } | { image: { mediaType: "image/jpeg"; data: 
 /** `language` is the answer's language: Vietnamese (the default) or English, which skips the Vietnamese-diacritics guard. */
 export type JsonRequest = { system: string; schema: Record<string, unknown>; parts: Part[]; effort: "low" | "medium"; language?: "vi" | "en" };
 
+/**
+ * fetch that refuses every redirect: on a cross-origin redirect Fetch strips only
+ * Authorization, so x-api-key would follow it. The Claude SDK uses this one.
+ */
+export function noRedirectFetch(send: typeof fetch = (...args) => fetch(...args)): typeof fetch {
+  return ((input: RequestInfo | URL, init?: RequestInit) => send(input, { ...init, redirect: "error" })) as typeof fetch;
+}
+
 async function askClaude(key: string, request: JsonRequest): Promise<unknown> {
   // The key belongs to the user of this desktop app and stays on this machine.
-  const client = new Anthropic({ apiKey: key, dangerouslyAllowBrowser: true });
+  const client = new Anthropic({ apiKey: key, dangerouslyAllowBrowser: true, fetch: noRedirectFetch() });
   const response = await client.beta.messages.create({
     model: CLAUDE_MODEL,
     max_tokens: 16000,
@@ -277,6 +285,8 @@ async function askGeminiOnce(key: string, request: JsonRequest, send: typeof fet
     response = await send(geminiEndpoint(model), {
       // Covers the answer's body too: a stalled download times out like a stalled request.
       signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
+      // A redirect would carry x-goog-api-key to its target (Fetch strips only Authorization): fail instead.
+      redirect: "error",
       method: "POST",
       // The key travels in a header, never in the URL.
       headers: { "content-type": "application/json", "x-goog-api-key": key },
