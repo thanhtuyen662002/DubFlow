@@ -5,6 +5,7 @@ import { connectDesktopShell, type DesktopShellModel } from "./shell/desktop_she
 import { confirmDialog } from "./shell/confirm.ts";
 import { mountLayoutPanels, refitPanels, resetPanels } from "./shell/layout_panels.ts";
 import { mountListTools } from "./shell/list_tools.ts";
+import { mountNamedHeading, mountRenames } from "./shell/names.ts";
 import { PREVIEW_EDIT_LIBRARY, previewInvoke } from "./shell/preview_invoke.ts";
 import { createVoiceSampler } from "./features/voices/sample.ts";
 import { QueueController, type QueueJob, type SnapshotStorage } from "./features/queue/model.ts";
@@ -1906,6 +1907,10 @@ mountListTools(document.querySelector("#queue-col"), "#queue-list", "video", "T�
 mountListTools(document.querySelector("#product-list"), "#product-runs", "video", "Tìm theo tên");
 mountListTools(document.querySelector("#compilation-col"), "#compilation-runs", "video", "Tìm theo tên");
 mountListTools(document.querySelector(".docu-col"), "#docu-runs", "dự án", "Tìm dự án theo tên");
+// Đổi tên: every list, the Chỉnh sửa cards and the open video's heading show the user's own names.
+for (const id of ["#media-list", "#queue-list", "#product-runs", "#compilation-runs", "#docu-runs"]) mountRenames(document.querySelector(id));
+mountRenames(document.querySelector("#edit-view"), ".el-title");
+for (const id of ["#media-name", "#detail-name", "#compilation-name", "#docu-project-name", "#product-player-title"]) mountNamedHeading(document.querySelector(id));
 /** The Chỉnh sửa screen's list: finished videos of every page and videos on the computer (Issue #497). */
 const editLibrary = mountEditLibrary(invoke, {
   jobs: () => queue.getSnapshot().jobs.filter((job) => job.status.state === "COMPLETED" && job.outputPath)

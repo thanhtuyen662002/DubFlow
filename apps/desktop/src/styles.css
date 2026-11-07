@@ -2351,3 +2351,13 @@ body.settings-open .rail-item.active:not(#nav-settings)::before { display: none;
 .tabs button { height: 47px; }
 .queue-screen.editing .player-head { height: 62px; }
 .queue-col-head { box-sizing: border-box; height: 48px; margin-bottom: 10px; padding: 0 16px; border-bottom: 1px solid var(--line); }
+
+/* Đổi tên: a pencil on each row (shown on hover or when selected) and an inline text box. */
+.queue-list li, .el-card { position: relative; }
+.rename-btn { position: absolute; top: 7px; right: 6px; width: 26px; height: 26px; border-radius: 7px; background: oklch(0.22 0.010 260); color: var(--text-2); opacity: 0; }
+.queue-list li:hover > .rename-btn, .queue-list li:focus-within > .rename-btn, .queue-list li.selected > .rename-btn, .queue-list li:has(.selected) > .rename-btn { opacity: 1; }
+.queue-list li:has(.project-delete) > .rename-btn { right: 34px; }
+.rename-btn:hover { color: var(--text); background: oklch(0.27 0.012 260); }
+.el-card > .rename-btn { top: 10px; right: 10px; }
+.el-card:hover > .rename-btn, .el-card:focus-within > .rename-btn { opacity: 1; }
+.rename-input { width: 100%; height: 26px; padding: 0 8px; border: 1px solid var(--accent); border-radius: 6px; background: var(--canvas); color: var(--text); font: inherit; font-weight: 600; outline: none; }
