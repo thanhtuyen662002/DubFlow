@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { describeProduct, MAX_SOURCE_CHARS, normalizeInfo, normalizeScripts, readParts } from "../src/features/product/ai.ts";
 import {
   addMedia, addPaths, backgroundBox, buildRequest, coverOverflow, dragFocus, focusKey, moveItem, parseBackgroundMemory, parseBackgrounds,
-  keepsVoice, parseFeatures, parseProductSpec, parseRuns, parseStatus, photosToRead, readForm, recentVideos, TEMPLATES, toBase64, videoMedia,
+  keepsVoice, parseFeatures, parseProductSpec, parseRuns, parseStatus, photosToRead, readForm, runRow, TEMPLATES, toBase64, videoMedia,
 } from "../src/features/product/model.ts";
 import { backgroundHint, captionAt, templateButtonsHtml, templateNote } from "../src/features/product/look.ts";
 import { anchorStyle, ASS_EM, captionChunks, cardTexts, cardTimes, inkStyle, LAYOUT, mediaHeight } from "../src/features/product/layout.ts";
@@ -168,17 +168,31 @@ assert.equal(escapeHtml(`<a href="x">'&`), "&lt;a href=&quot;x&quot;&gt;&#39;&am
   const runs = parseRuns([{ dir: "D:/o/run-2", name: "Nồi", created: 1_793_500_000, status: { state: "COMPLETED", message: "x", videos: [
     { index: 1, ok: true, path: "D:/o/run-2/video-1.mp4", duration_ms: 30400 }, { index: 2, ok: false, message: "lỗi" }] } }, { dir: 5 }, { dir: "D:/o/run-1", status: null }]);
   assert.equal(runs.length, 2);
-  const videos = recentVideos(runs, 5);
-  assert.equal(videos.length, 1);
-  assert.equal(videos[0].displayName, "Nồi · video 1");
-  // Each recent video names its run, so the whole run can be deleted from the list.
-  assert.equal(videos[0].run, runs[0].dir);
-  assert.equal(videos[0].runName, "Nồi");
-  assert.match(videos[0].meta, /^30 giây · \d\d\/\d\d \d\d:\d\d$/);
+  const rows = runs.map(runRow);
+  assert.equal(rows[0].videos.length, 1);
+  assert.equal(rows[0].videos[0].displayName, "Nồi · video 1");
+  assert.equal(rows[0].dir, runs[0].dir);
+  assert.match(rows[0].text, /^1 video · \d\d\/\d\d \d\d:\d\d$/);
   assert.equal((templateButtonsHtml().match(/data-template=/g) ?? []).length, 3);
   assert.match(templateNote("chi-chu"), /thẻ chữ/);
   assert.match(backgroundHint("ban-tin", { id: "a".repeat(64), path: "x", name: "n", extension: "png", width: 1600, height: 900 }), /1600×900 được cắt cho vừa nền dưới 1080×720/);
   assert.equal(captionAt("", 0, 1000), "Phụ đề lời đọc hiện ở đây");
+}
+
+// The Bán hàng list: one row per run, like the queue, with its finished videos and progress.
+{
+  const done = runRow({ dir: "D:\\a", name: "Nồi", template: "ban-tin", created: 0, status: { state: "COMPLETED", done: 2, total: 2, message: "x",
+    videos: [{ index: 1, ok: true, path: "D:\\a\\1.mp4", duration_ms: 31_400 }, { index: 2, ok: false, message: "lỗi" }] } });
+  assert.equal(done.title, "Nồi");
+  assert.equal(done.text, "1 video");
+  assert.equal(done.fraction, null);
+  assert.deepEqual(done.videos, [{ index: 1, outputPath: "D:\\a\\1.mp4", displayName: "Nồi · video 1", seconds: 31 }]);
+  const busy = runRow({ dir: "b", name: "", template: "ban-tin", created: 0, status: { state: "RUNNING", done: 1, total: 4, message: "Đang render video 2/4…", videos: [] } });
+  assert.equal(busy.title, "Video bán hàng");
+  assert.equal(busy.text, "Đang render video 2/4…");
+  assert.equal(busy.fraction, 0.25);
+  assert.equal(runRow({ dir: "c", name: "x", template: "ban-tin", created: 0, status: { state: "CANCELLED", done: 0, total: 2, message: "", videos: [] } }).text, "Đã hủy");
+  assert.equal(runRow({ dir: "d", name: "x", template: "ban-tin", created: 0, status: null }).state, null);
 }
 
 console.log("product tests passed");
