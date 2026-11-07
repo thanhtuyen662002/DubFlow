@@ -37,7 +37,7 @@ import { createSfxLibrary } from "./features/sfx/library.ts";
 import { mountSfxSettings } from "./features/sfx/settings.ts";
 import { mountPerformanceSettings } from "./features/performance/settings.ts";
 import { STYLE_STORAGE_KEY, storedStyle, type SubtitleStyle } from "./features/edit/subtitles.ts";
-import { finishedDubFor, mediaUse, MEDIA_STORAGE_KEY, parseMedia, seedFromJobs, serializeMedia, USE_LABELS, type MediaEntry } from "./features/media/model.ts";
+import { finishedDubFor, mediaUse, MEDIA_STORAGE_KEY, readMedia, seedFromJobs, serializeMedia, USE_LABELS, type MediaEntry } from "./features/media/model.ts";
 import { mountMediaScreen, pauseMedia, type DownloadRow, type MediaScreen } from "./features/media/view.ts";
 import { pickFromMedia } from "./features/media/picker.ts";
 import { COVER_STORAGE_KEY, describeCoverStyle, normalizeCoverStyle, storedCoverStyle, type CoverMode, type CoverStyle } from "./features/edit/cover.ts";
@@ -1804,8 +1804,22 @@ async function compileEntries(entries: readonly MediaEntry[]): Promise<void> {
 const storedMedia = (() => {
   try { return window.localStorage.getItem(MEDIA_STORAGE_KEY); } catch { return null; }
 })();
-const mediaStore = { write: (value: string) => { try { window.localStorage.setItem(MEDIA_STORAGE_KEY, value); } catch { /* the list still works this session */ } } };
-const parsedMedia = parseMedia(storedMedia);
+const mediaStore = {
+  write: (value: string): boolean => {
+    try {
+      window.localStorage.setItem(MEDIA_STORAGE_KEY, value);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+};
+const storedState = readMedia(storedMedia);
+// An unreadable list is kept aside (never overwritten silently) and rebuilt from Lồng tiếng.
+if (storedState.state === "corrupt" && storedMedia !== null) {
+  try { window.localStorage.setItem(`${MEDIA_STORAGE_KEY}.corrupt`, storedMedia); } catch { /* the notice below still tells the user */ }
+}
+const parsedMedia = storedState.state === "ok" ? storedState.entries : null;
 media = mountMediaScreen({
   store: mediaStore,
   // First run after the update: what was already downloaded comes along from Lồng tiếng.
@@ -1824,6 +1838,8 @@ media = mountMediaScreen({
   confirm: (title, message, confirmLabel) => confirmDialog({ title, message, confirmLabel, danger: true }),
 });
 if (!parsedMedia) mediaStore.write(serializeMedia(media.entries()));
+if (storedState.state === "corrupt") showError("Danh sách Hàng đợi đã lưu bị hỏng nên được dựng lại từ các video ở Lồng tiếng. Bản cũ được giữ riêng; file video trên máy không bị ảnh hưởng.");
+else if (storedState.state === "ok" && storedState.dropped) showError(`${storedState.dropped} mục hỏng trong danh sách Hàng đợi đã được bỏ qua.`);
 const docu = mountDocu(invoke, claudeKey, { jobs: () => queue.getSnapshot().jobs, outputRoot, roots: outputRoots, mediaUrl: playableUrl,
   edit: (video, seed) => void editVideo({ id: video.outputPath, kind: "docu", outputPath: video.outputPath, displayName: video.displayName, seed }, "docu"),
   // Claude working over MCP: a pulsing dot on "Phim tài liệu" wherever the user is.

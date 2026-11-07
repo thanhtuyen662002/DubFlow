@@ -4,7 +4,7 @@
  * on to Lồng tiếng, Bán hàng or Ghép video.
  */
 import {
-  addMedia, countMedia, filterMedia, folderOf, MEDIA_FILTERS, mediaUse, originLabel, removeMedia, serializeMedia, USE_LABELS,
+  addMedia, countMedia, MAX_MEDIA, filterMedia, folderOf, MEDIA_FILTERS, mediaUse, originLabel, removeMedia, serializeMedia, USE_LABELS,
   type DubJobLike, type MediaEntry, type MediaFilter, type NewMedia,
 } from "./model.ts";
 
@@ -27,7 +27,8 @@ export type DownloadRow = {
   actions(): HTMLElement[];
 };
 
-export type MediaStore = { write(value: string): void };
+/** Saves the list; false when it could not be saved (storage off or full). */
+export type MediaStore = { write(value: string): boolean };
 
 export type MediaScreen = {
   show(): void;
@@ -166,7 +167,18 @@ export function mountMediaScreen(deps: {
   let playing = "";
   let request = 0;
 
-  const save = () => deps.store.write(serializeMedia(entries));
+  /** Saved, or the user is told the list lives only until DubFlow closes. */
+  let unsaved = false;
+  const save = (): boolean => {
+    const ok = deps.store.write(serializeMedia(entries));
+    if (!ok) warn("Không lưu được danh sách Hàng đợi (bộ nhớ của ứng dụng bị tắt hoặc đã đầy). Danh sách vẫn dùng được đến khi đóng DubFlow; file video trên máy không bị ảnh hưởng.");
+    else if (unsaved) warn("");
+    unsaved = !ok;
+    return ok;
+  };
+  function warn(text: string): void {
+    $("state").textContent = text;
+  }
   const byId = (id: string) => entries.find((entry) => entry.id === id);
   const pickedEntries = () => entries.filter((entry) => picked.has(entry.id));
 
@@ -433,7 +445,8 @@ export function mountMediaScreen(deps: {
     add(items, reveal = true) {
       const result = addMedia(entries, items, deps.now());
       entries = result.entries;
-      save();
+      if (result.ids.length) save();
+      if (result.refused) warn(`Hàng đợi đã đủ ${MAX_MEDIA} video nên ${result.refused} video chưa được thêm. Hãy bỏ bớt video cũ khỏi danh sách rồi thêm lại.`);
       if (reveal && result.ids.length) { current = result.ids[0]; filter = "all"; }
       renderList();
       renderDownloads();
