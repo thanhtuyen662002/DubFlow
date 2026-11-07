@@ -7,6 +7,7 @@ mod ai_keys;
 mod compilation;
 mod cover_graph;
 mod discovery;
+mod douyin_login;
 mod docu;
 mod edit;
 mod gpu;
@@ -2092,7 +2093,8 @@ async fn store_douyin_session(sources: std::sync::Arc<source::Sources>, cookies:
 async fn save_douyin_session(app: tauri::AppHandle, sources: tauri::State<'_, std::sync::Arc<source::Sources>>) -> Result<usize, String> {
     let cookies = douyin_cookies(&app)?;
     let count = store_douyin_session(std::sync::Arc::clone(&sources), cookies).await?;
-    let _ = douyin_view_close(app).await;
+    let _ = douyin_view_close(app.clone()).await;
+    keep_douyin_login(&app);
     Ok(count)
 }
 
@@ -2255,7 +2257,57 @@ fn douyin_profile_cookies(app: &tauri::AppHandle) -> Result<Vec<(String, String)
 
 /// Douyin's login cookie is there and not empty.
 fn has_douyin_login(cookies: &[(String, String)]) -> bool {
-    cookies.iter().any(|(name, value)| (name == "sessionid" || name == "sessionid_ss") && !value.is_empty())
+    douyin_login::has_login(cookies.iter().map(|(name, value)| (name.as_str(), value.as_str())))
+}
+
+/// Where DubFlow keeps its own copy of the Douyin sign-in (see `douyin_login`).
+fn douyin_login_path() -> Result<PathBuf, String> {
+    Ok(control_root()?.join("control").join(douyin_login::LOGIN_FILE))
+}
+
+/// Every douyin.com cookie of the browser profile, with its attributes.
+fn douyin_profile_jar(app: &tauri::AppHandle) -> Result<Vec<douyin_login::SavedCookie>, String> {
+    use tauri::Manager;
+    let main = app.get_webview_window(MAIN_WINDOW).ok_or_else(|| fail("Không thấy cửa sổ DubFlow"))?;
+    Ok(main.cookies().map_err(|error| fail(format!("Không đọc được cookie Douyin: {error}")))?
+        .iter().map(douyin_login::from_cookie)
+        .filter(|cookie| douyin_login::is_douyin_domain(&cookie.domain)).collect())
+}
+
+/// Keep a copy of the profile's Douyin sign-in so an update cannot lose it.
+fn keep_douyin_login(app: &tauri::AppHandle) {
+    if let (Ok(jar), Ok(path)) = (douyin_profile_jar(app), douyin_login_path()) {
+        let _ = douyin_login::save(&path, jar, unix_now() as i64);
+    }
+}
+
+/// When the profile has lost the Douyin sign-in (a new version whose profile
+/// did not inherit it), put DubFlow's saved copy back. Returns whether it did.
+fn restore_douyin_login(app: &tauri::AppHandle) -> bool {
+    use tauri::Manager;
+    let Ok(path) = douyin_login_path() else { return false };
+    let Some(saved) = douyin_login::load(&path, unix_now() as i64) else { return false };
+    let Some(main) = app.get_webview_window(MAIN_WINDOW) else { return false };
+    let mut restored = false;
+    for cookie in &saved {
+        restored |= main.set_cookie(douyin_login::to_cookie(cookie)).is_ok();
+    }
+    restored
+}
+
+/// At start: a profile that is logged in refreshes the saved copy, one that
+/// is not gets the saved copy back. Retried while the main page starts up.
+async fn sync_douyin_login(app: tauri::AppHandle) {
+    for _ in 0..10 {
+        pause(1500).await;
+        let Ok(cookies) = douyin_profile_cookies(&app) else { continue };
+        if has_douyin_login(&cookies) {
+            keep_douyin_login(&app);
+        } else {
+            restore_douyin_login(&app);
+        }
+        return;
+    }
 }
 
 /// Whether the shared browser profile is logged in to Douyin.
@@ -2263,10 +2315,15 @@ fn has_douyin_login(cookies: &[(String, String)]) -> bool {
 async fn douyin_account(app: tauri::AppHandle) -> Result<Value, String> {
     // Right after "Xong" the login page is still closing: read through the
     // main window first and only then try the login page.
-    let cookies = match douyin_profile_cookies(&app) {
+    let mut cookies = match douyin_profile_cookies(&app) {
         Ok(cookies) => cookies,
         Err(first) => douyin_cookies(&app).map_err(|_| first)?,
     };
+    if has_douyin_login(&cookies) {
+        keep_douyin_login(&app);
+    } else if restore_douyin_login(&app) {
+        cookies = douyin_profile_cookies(&app).unwrap_or_default();
+    }
     Ok(json!({"logged_in": has_douyin_login(&cookies)}))
 }
 
@@ -2275,12 +2332,13 @@ async fn douyin_account(app: tauri::AppHandle) -> Result<Value, String> {
 #[tauri::command]
 async fn douyin_logout(app: tauri::AppHandle) -> Result<(), String> {
     use tauri::Manager;
+    // The saved copy goes first, so a logout that fails half way never comes back.
+    if let Ok(path) = douyin_login_path() {
+        douyin_login::forget(&path);
+    }
     let main = app.get_webview_window(MAIN_WINDOW).ok_or_else(|| fail("Không thấy cửa sổ DubFlow"))?;
     let cookies = main.cookies().map_err(|error| fail(format!("Không đọc được cookie Douyin: {error}")))?;
-    for cookie in cookies.into_iter().filter(|cookie| cookie.domain().is_some_and(|domain| {
-        let domain = domain.trim_start_matches('.').to_ascii_lowercase();
-        domain == "douyin.com" || domain.ends_with(".douyin.com")
-    })) {
+    for cookie in cookies.into_iter().filter(|cookie| cookie.domain().is_some_and(douyin_login::is_douyin_domain)) {
         main.delete_cookie(cookie).map_err(|error| fail(format!("Không xóa được cookie Douyin: {error}")))?;
     }
     if let Ok(path) = douyin_state_path() {
@@ -2299,6 +2357,10 @@ fn main() {
     let on_exit = std::sync::Arc::clone(&sources);
     tauri::Builder::default()
         .manage(sources)
+        .setup(|app| {
+            tauri::async_runtime::spawn(sync_douyin_login(app.handle().clone()));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![reframe::reframe_render, reframe::reframe_status, reframe::reframe_cancel, reframe::reframe_info, shorts::shorts_render, shorts::shorts_status, shorts::shorts_cancel, package::package_video, package::package_info, package::package_status, package::package_cancel, source_credit::source_credit_get, source_credit::source_credit_set, ai_keys::ai_key_status, ai_keys::ai_key_get, ai_keys::ai_ask, ai_keys::ai_key_set, ai_keys::ai_key_delete, create_report, product::pick_product_files, product::product_image, product::product_render, product::product_status, product::product_cancel, product::product_spec, product::product_runs, product::product_backgrounds, product::product_background_add, product::product_background_delete, release_info, voice_catalog, pick_files, pick_edit_files, pick_lut, edit::edit_proxy, start_job, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, link_titled_output, withdraw_fetch, cancel_fetch, keep_download, default_download_dir, open_folder, reveal_download, save_douyin_session, ensure_douyin_session, douyin_account, douyin_logout, douyin_view_open, douyin_view_bounds, douyin_view_close, review_clip, video_frame, allow_media, post_suggestions, discover, open_discovery, discovery_view_show, discovery_view_bounds, discovery_view_hide, discovery_view_close, discovery_view_back, discovery_view_reload, discovery_view_url, scroll_discovery, collect_discovery, translate_terms, translate_query, review_speakers, check_update, download_update, install_update, list_versions, activate_version, restart_app, compilation::compilation_render, compilation::compilation_status, compilation::compilation_cancel, compilation::compilation_description, compilation::compilation_runs, projects::project_delete, docu::docu_create, docu::docu_runs, docu::docu_open, docu::docu_check_script, docu::docu_pick_file, docu::docu_voices, docu::docu_narrate, docu::docu_narration_status, docu::docu_narration_cancel, docu::docu_plan, docu::docu_plan_status, docu::docu_plan_cancel, docu::docu_cover, docu::docu_layers,
             docu::docu_reframe, docu::docu_render_options, docu::docu_render, docu::docu_render_status, docu::docu_render_cancel, docu::docu_capcut, docu::docu_launch_capcut, docu::docu_mcp_connection, docu::docu_mcp_activity, storage::storage_report, storage::storage_clean, storage::storage_free, edit::edit_project_load, edit::edit_library, edit::edit_file_sizes, edit::edit_project_save, edit::edit_export, edit::edit_status, edit::edit_cancel, edit::edit_stems, voice_sample, edit::edit_separate, edit::edit_separate_cancel, edit::edit_media_info, edit::edit_audio_peaks, edit::edit_lut_frame, edit::edit_save_recording, edit::edit_versions, edit::edit_version_save, edit::edit_version_load, edit::edit_version_delete, edit::edit_templates, edit::edit_template_save, edit::edit_template_load, edit::edit_template_delete, edit::edit_subtitles_load, edit::edit_subtitles_apply, sfx::sfx_status, sfx::sfx_install, sfx::sfx_path, sfx::user_audio_list, sfx::audio_info, sfx::pick_audio_folder, sfx::pick_audio_files, sfx::expand_audio_paths, gpu::machine_profile, gpu::set_performance])
         .build(tauri::generate_context!())
