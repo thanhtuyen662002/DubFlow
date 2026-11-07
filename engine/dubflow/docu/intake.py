@@ -59,6 +59,19 @@ RULES = (
 )
 
 
+def record_run(data_root: Path, run: Path) -> None:
+    """The app's record of a documentary run (``<data root>/control/runs/<key>.json``, edit.rs ``record_run_in``).
+
+    The editor opens a video as DubFlow's own only with this record, so its captions, covers and layers depend on it.
+    The key is the first 10 bytes of SHA-256 of the lower-cased folder path, as in edit.rs ``file_key``.
+    """
+    folder = run.resolve()
+    key = hashlib.sha256(str(folder).lower().encode("utf-8")).hexdigest()[:20]
+    path = data_root / "control" / "runs" / f"{key}.json"
+    if not path.is_file():
+        write_json(path, {"schema_version": 1, "kind": "docu", "dir": str(folder)})
+
+
 def folder_title(title: str) -> str:
     cleaned = " ".join("".join(" " if ord(c) < 32 or c in '<>:"/\\|?*' else c for c in title).split())
     return cleaned[:NAME_CHARS].rstrip(" .") or "san pham"
