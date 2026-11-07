@@ -22,6 +22,8 @@ on:
       - tests/production/worker/test_beep.py
       - engine/dubflow/separation/split.py
       - tests/separation/test_music_split.py
+      - engine/dubflow/separation/__main__.py
+      - tests/separation/test_editor_cli.py
   pull_request:
     paths:
       - .github/workflows/pr-desktop-editor-windows.yml
@@ -37,6 +39,8 @@ on:
       - tests/production/worker/test_beep.py
       - engine/dubflow/separation/split.py
       - tests/separation/test_music_split.py
+      - engine/dubflow/separation/__main__.py
+      - tests/separation/test_editor_cli.py
 
 permissions:
   contents: read
@@ -139,9 +143,9 @@ jobs:
           python -m pip install --disable-pip-version-check --no-input numpy==2.2.6
           if ($LASTEXITCODE -ne 0) { throw 'numpy install failed' }
           $log = Join-Path $env:RUNNER_TEMP 'music-split-tests.log'
-          python -B -m unittest tests.separation.test_music_split -v 2>&1 | Tee-Object -FilePath $log
+          python -B -m unittest tests.separation.test_music_split tests.separation.test_editor_cli -v 2>&1 | Tee-Object -FilePath $log
           if ($LASTEXITCODE -ne 0) { throw 'Music/SFX split tests failed' }
           $text = Get-Content -LiteralPath $log -Raw
           if ($text -match '\.\.\. skipped') { throw 'Music/SFX split tests skipped some cases' }
-          if ($text -notmatch '(?m)^Ran 5 tests in ') { throw 'Expected 5 music/SFX split tests' }
-          Write-Host 'Music/SFX split tests passed on Windows: 5, none skipped'
+          if ($text -notmatch '(?m)^Ran 13 tests in ') { throw 'Expected 13 music/SFX split and separation CLI tests (junctions included)' }
+          Write-Host 'Music/SFX split + separation CLI tests passed on Windows: 13, none skipped'

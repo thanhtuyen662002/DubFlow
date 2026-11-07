@@ -102,5 +102,25 @@ class EditorSeparationTest(unittest.TestCase):
             self.assertIn("không dùng được", _status(out)["message"])
 
 
+    def test_a_linked_out_folder_gets_no_status_or_output(self):
+        from tests.separation.test_music_split import link_dir, snapshot
+
+        with TemporaryDirectory() as temp:
+            outside = Path(temp) / "outside"
+            outside.mkdir()
+            (outside / "status.json").write_text("keep", encoding="utf-8")
+            before = snapshot(outside)
+            out = Path(temp) / "stems"
+            link_dir(outside, out)
+            source = Path(temp) / "a.wav"
+            source.write_bytes(b"RIFF")
+            with patch.object(cli, "run") as run:
+                code = cli.main(["--source", str(source), "--out-dir", str(out), "--app-root", str(REPO), "--model-root", temp,
+                                 "--ffmpeg", "ffmpeg", "--ffprobe", "ffprobe"])
+            self.assertEqual(code, 1)
+            run.assert_not_called()
+            self.assertEqual(snapshot(outside), before)
+
+
 if __name__ == "__main__":
     unittest.main()

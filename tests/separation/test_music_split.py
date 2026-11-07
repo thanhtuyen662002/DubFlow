@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 from pathlib import Path
+import subprocess
+import sys
 from tempfile import TemporaryDirectory
 import unittest
 from unittest import mock
@@ -31,6 +34,21 @@ def read(path: Path) -> np.ndarray:
 
 def corr(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b) / np.linalg.norm(a) / np.linalg.norm(b))
+
+
+def link_dir(target: Path, link: Path) -> None:
+    """A folder link: a junction on Windows (no privilege needed), a symlink elsewhere. Fails loudly."""
+    if sys.platform == "win32":
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], check=True, stdout=subprocess.DEVNULL)
+    else:
+        os.symlink(target, link, target_is_directory=True)
+    assert os.path.lexists(link) and os.path.realpath(link) != os.path.abspath(link), "the link was not made"
+
+
+def snapshot(folder: Path) -> dict:
+    """Every file below ``folder``: bytes hash and mtime."""
+    return {str(path.relative_to(folder)): (hashlib.sha256(path.read_bytes()).hexdigest(), path.stat().st_mtime_ns)
+            for path in sorted(folder.rglob("*")) if path.is_file()}
 
 
 class MusicSplitTest(unittest.TestCase):
@@ -127,6 +145,45 @@ class MusicSplitTest(unittest.TestCase):
             self.assertEqual(calls[0], "music.wav")
             self.assertFalse((out / split.SPLIT_FILE).exists(), "no marker blesses the new music beside a missing/old SFX")
             self.assertEqual([path.name for path in out.iterdir() if path.name.startswith(".")], [], "no temporary files left")
+
+
+    def test_a_linked_output_folder_or_parent_is_refused_before_anything_changes(self):
+        """Out folder linked (symlink, or junction on Windows), or the draft folder above it linked:
+        the split stops before removing or writing anything, and the outside marker stays byte-for-byte."""
+        with TemporaryDirectory() as temp:
+            folder = Path(temp)
+            background = folder / "background.wav"
+            write(background, np.full((RATE, 2), 0.1))
+            outside = folder / "outside"
+            (outside / "stems").mkdir(parents=True)
+            for name in (split.SPLIT_FILE, "music.wav", "sfx.wav", "voice.wav"):
+                (outside / "stems" / name).write_text(f"keep {name}", encoding="utf-8")
+            before = snapshot(outside)
+            drafts = folder / "drafts"
+            drafts.mkdir()
+            # 1) The out folder itself is a link; 2) the draft folder holding it is.
+            link_dir(outside / "stems", drafts / "stems-link")
+            link_dir(outside, drafts / "work-link")
+            for out in (drafts / "stems-link", drafts / "work-link" / "stems"):
+                with self.subTest(out=out.name):
+                    with self.assertRaises(split.SplitError):
+                        split.split(background, out, source=background)
+                    self.assertEqual(split.main(["--background", str(background), "--out-dir", str(out)]), 1)
+                    self.assertEqual(snapshot(outside), before, "nothing outside is removed, replaced or added")
+
+    def test_a_missing_out_folder_is_made_only_under_plain_folders(self):
+        with TemporaryDirectory() as temp:
+            folder = Path(temp)
+            background = folder / "background.wav"
+            write(background, np.full((RATE, 2), 0.1))
+            # A plain draft folder: the out folder is made on its own.
+            (folder / "work").mkdir()
+            split.split(background, folder / "work" / "stems")
+            self.assertTrue((folder / "work" / "stems" / split.SPLIT_FILE).is_file())
+            # A missing draft folder is never made (no parents), and nothing appears.
+            with self.assertRaises(split.SplitError):
+                split.split(background, folder / "missing" / "stems")
+            self.assertFalse((folder / "missing").exists())
 
 
 if __name__ == "__main__":

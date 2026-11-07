@@ -3346,19 +3346,20 @@ fn split_parts(stems: &Path, background: &Path) -> Option<(PathBuf, PathBuf)> {
 }
 
 fn stem_files(target: &Target) -> StemFiles {
-    let file = |path: PathBuf| path.is_file().then_some(path);
+    // The job's own files only as plain files right inside a plain `editable` folder: never through a link.
+    let editable = target.dir.join("editable");
+    let file = |name: &str| own_file(&editable, name);
     // The editor's own stems folder counts only below a draft folder (and its parent) that are not links.
     let own = target.work.join(STEMS_DIR);
     let own_ok = unlinked(&target.work);
     let own_file = |dir: &Path, name: &str| if own_ok { own_file(dir, name) } else { None };
-    let editable = target.dir.join("editable");
     let job = matches!(target.kind, Kind::Job);
-    let voice = job.then(|| file(editable.join("dialogue_stem.wav"))).flatten();
+    let voice = job.then(|| file("dialogue_stem.wav")).flatten();
     // Files under the editor's own stems folder only through own_file: never through a linked folder or file.
     let separated = own_file(&own, "background.wav");
-    let mut files = match job.then(|| file(editable.join("source_audio.wav"))).flatten() {
+    let mut files = match job.then(|| file("source_audio.wav")).flatten() {
         Some(source) => {
-            let job_stem = file(editable.join("background_stem.wav"));
+            let job_stem = file("background_stem.wav");
             let background = if separated.is_some() && separated_by_current(&target.work) { separated.or(job_stem) } else { job_stem.or(separated) };
             StemFiles { voice, source: Some(source), background, ..StemFiles::default() }
         }
@@ -3531,10 +3532,9 @@ pub fn edit_separate(output_path: String, kind: String) -> Result<(), String> {
     if files.source.is_some() && files.background.is_some() && !separation_outdated(&target, &files) {
         return Err(fail("Video này đã tách giọng rồi"));
     }
-    let input = match (matches!(target.kind, Kind::Job), target.dir.join("editable").join("source_audio.wav")) {
-        (true, wav) if wav.is_file() => wav,
-        _ => target.main.clone(),
-    };
+    // A job's original track only as a plain file in a plain `editable` folder (never through a link).
+    let input = matches!(target.kind, Kind::Job).then(|| own_file(&target.dir.join("editable"), "source_audio.wav"))
+        .flatten().unwrap_or_else(|| target.main.clone());
     let root = version_root()?;
     let models = crate::control_root()?.join("models");
     let media = root.join("runtime").join("media");
@@ -3903,6 +3903,56 @@ mod tests {
         }
         unlink_dir(&linked_work);
         unlink_dir(&parent_link);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A job's `editable` files count only as plain files in a plain folder: a linked `editable`
+    /// folder (symlink or junction) or a linked file inside it gives nothing, and Tách giọng
+    /// falls back to the video itself.
+    #[test]
+    fn a_jobs_linked_editable_folder_or_file_gives_no_stems() {
+        let root = std::env::temp_dir().join(format!("dubflow-linked-editable-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let outside = root.join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        let names = ["dialogue_stem.wav", "source_audio.wav", "background_stem.wav"];
+        for name in names {
+            fs::write(outside.join(name), b"wav").unwrap();
+        }
+        let job_of = |dir: &Path| Target { kind: Kind::Job, main: dir.join("final_vi.mp4"), dir: dir.to_path_buf(),
+            work: dir.join(".dubflow-work").join("work"), captions: None, store: None };
+        // Plain: all three count.
+        let plain = root.join("plain");
+        fs::create_dir_all(plain.join("editable")).unwrap();
+        for name in names {
+            fs::write(plain.join("editable").join(name), b"wav").unwrap();
+        }
+        let parts = stem_files(&job_of(&plain));
+        assert!(parts.voice.is_some() && parts.source.is_some() && parts.background.is_some());
+        // 1) `editable` itself is a link (junction on Windows) to a folder with all three.
+        let linked = root.join("linked-dir");
+        fs::create_dir_all(&linked).unwrap();
+        link_dir(&outside, &linked.join("editable"));
+        assert_eq!(stem_files(&job_of(&linked)), StemFiles::default());
+        assert!(own_file(&linked.join("editable"), "source_audio.wav").is_none());
+        unlink_dir(&linked.join("editable"));
+        // 2) A plain `editable` whose files are links to outside files.
+        let files = root.join("linked-files");
+        fs::create_dir_all(files.join("editable")).unwrap();
+        let mut made = 0;
+        for name in names {
+            #[cfg(unix)]
+            let link = std::os::unix::fs::symlink(outside.join(name), files.join("editable").join(name));
+            #[cfg(windows)]
+            let link = std::os::windows::fs::symlink_file(outside.join(name), files.join("editable").join(name));
+            made += usize::from(link.is_ok());
+        }
+        #[cfg(unix)]
+        assert_eq!(made, names.len(), "file symlinks are made on Unix");
+        if made > 0 {
+            let parts = stem_files(&job_of(&files));
+            assert_eq!((&parts.voice, &parts.source, &parts.background), (&None, &None, &None));
+        }
         let _ = fs::remove_dir_all(&root);
     }
 

@@ -141,6 +141,15 @@ def main(argv: list[str] | None = None) -> int:
     for name in ("source", "out-dir", "app-root", "model-root", "ffmpeg", "ffprobe"):
         parser.add_argument(f"--{name}", type=Path, required=True)
     args = parser.parse_args(argv)
+    from engine.dubflow.separation.split import SplitError, plain_out_dir
+
+    try:
+        plain_out_dir(args.out_dir, make=True)
+    except (SplitError, OSError) as error:
+        # Nothing is written through a linked folder, not even a status.
+        print(json.dumps({"schema_version": 1, "state": "FAILED", "progress": 0,
+                          "message": f"Không tách được giọng ({error})."}, ensure_ascii=True))
+        return 1
     status = Status(args.out_dir / "status.json")
     status.write()
     try:
