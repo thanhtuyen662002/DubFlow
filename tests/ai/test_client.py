@@ -210,7 +210,9 @@ class CommandLineTest(unittest.TestCase):
         os.environ["DUBFLOW_AI_KEY"] = KEY
         out = io.StringIO()
         cli.main(io.StringIO(json.dumps({"action": "models", "provider": "openai"})), out,
-                 Fake((200, {"data": [{"id": "gpt-9-mini"}, {"id": "text-embedding-9"}, {"id": "gpt-9-tts"}]})))
+                 Fake((200, {"data": [{"id": "gpt-9-mini"}, {"id": "text-embedding-9"}, {"id": "gpt-9-tts"},
+                                     {"id": "nano-banana-pro-preview"}, {"id": "lyria-3.5"}, {"id": "gemini-robotics-er-2-preview"},
+                                     {"id": "gemini-2.5-computer-use-preview-10-2025"}, {"id": "veo-4"}]})))
         # Only chat models: the list is what the user picks from in "Cài đặt AI".
         self.assertEqual(json.loads(out.getvalue()), {"ok": True, "models": ["gpt-9-mini"], "suggested": "gpt-9-mini"})
 

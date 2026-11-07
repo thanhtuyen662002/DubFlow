@@ -174,9 +174,35 @@ def _word(phrase: str) -> re.Pattern[str]:
 _THIRD_PERSON_WORDS = {phrase: _word(phrase) for phrase in THIRD_PERSON}
 
 
+# A bare "anh" for the person the brief calls "anh ta" ("Lúc này anh mới nhận ra…" next to "Anh ta sắp
+# phát điên…") reads as a second man; only counted when "anh ta"/"anh ấy" was chosen. "anh" as a noun or a
+# title is left alone: kinship and compounds ("anh trai", "anh em", "anh của hắn"), a counted or possessed
+# brother ("người anh", "hai anh", "em anh"), and an honorific before a name ("anh Minh").
+_ANH = re.compile(r"(?<!\w)anh(?!\w)", re.IGNORECASE)
+_ANH_NOUN_AFTER = re.compile(
+    r"\s+(?:ta|ấy|trai|em|chị|cả|hai|ba|tư|út|rể|họ|ruột|kế|nuôi|nhà|của|mình|hùng|chàng|lính|bạn|xe|đội)(?!\w)",
+    re.IGNORECASE)
+_NEXT_WORD = re.compile(r"\s+(\w)")
+_ANH_NOUN_BEFORE = re.compile(r"(?<!\w)(?:người|các|những|hai|ba|mấy|em|chị|ông|bà|cha|mẹ|vợ)\s+$", re.IGNORECASE)
+
+
+def _bare_anh(text: str) -> bool:
+    for match in _ANH.finditer(text):
+        after, before = text[match.end():], text[:match.start()]
+        following = _NEXT_WORD.match(after)
+        named = bool(following and following.group(1).isupper())  # "anh Minh", not "anh mới" / "anh đã"
+        if named or _ANH_NOUN_AFTER.match(after) or _ANH_NOUN_BEFORE.search(before):
+            continue
+        return True
+    return False
+
+
 def stray_references(text: str, chosen: set[str]) -> list[str]:
     """The third-person words in a line that the brief did not choose for anyone."""
-    return [phrase for phrase, pattern in _THIRD_PERSON_WORDS.items() if phrase not in chosen and pattern.search(text)]
+    stray = [phrase for phrase, pattern in _THIRD_PERSON_WORDS.items() if phrase not in chosen and pattern.search(text)]
+    if chosen & {"anh ta", "anh ấy"} and _bare_anh(text):
+        stray.append("anh")
+    return stray
 
 
 def needs_unify(text: str, chosen: set[str]) -> bool:

@@ -23,6 +23,26 @@ type ProviderInfo = {
   note?: string;
 };
 
+/**
+ * The provider's current chat models (checked 2026-11), shown before a key is saved or when its list
+ * cannot be loaded. With a working key the list comes from the provider itself and replaces this one.
+ */
+export const MODEL_CATALOG: Record<Provider, readonly string[]> = {
+  claude: ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1", "claude-opus-5"],
+  gemini: ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3-flash-preview", "gemini-2.5-pro", "gemini-2.5-flash"],
+  openai: ["gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-astra", "gpt-6-luna", "gpt-5.5", "gpt-5.4-mini", "gpt-5-mini"],
+  deepseek: ["deepseek-v4-pro", "deepseek-flash"],
+  qwen: ["qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "qwen3.8-flash", "qwen3.7-flash", "qwen-max", "qwen-plus", "qwen-flash"],
+  kimi: ["kimi-k3.1-pro", "kimi-k3.1-pro-highspeed", "kimi-k3", "kimi-k2.6"],
+  glm: ["glm-5.3", "glm-5.3-flash", "glm-5.3-flashx", "glm-5.2", "glm-5.1", "glm-5", "glm-4.7", "glm-4.7-flash", "glm-4.5-air", "glm-4.5-flash"],
+  grok: ["grok-4.7", "grok-4.6", "grok-4.5", "grok-4.3", "grok-4.20", "grok-4.1-fast"],
+  // Hundreds of models from many companies: the list loads once the key is saved.
+  openrouter: [],
+  groq: ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "llama-3.3-70b-versatile", "llama-3.1-8b-instant", "qwen/qwen3.8-27b"],
+  mistral: ["mistral-large-latest", "mistral-large-4", "mistral-medium-latest", "mistral-small-latest", "ministral-14b-2512", "ministral-8b-latest"],
+  custom: [],
+};
+
 export const PROVIDERS: Record<Provider, ProviderInfo> = {
   claude: { name: "Claude", label: "Claude (Anthropic)", company: "Anthropic", console: "console.anthropic.com", placeholder: "sk-ant-…", host: false, vision: true, model: "claude-opus-5-5" },
   gemini: { name: "Gemini", label: "Gemini (Google)", company: "Google", console: "aistudio.google.com/apikey", placeholder: "AIza…", host: false, vision: true, model: "gemini-3.5-flash-lite" },
@@ -31,7 +51,7 @@ export const PROVIDERS: Record<Provider, ProviderInfo> = {
     note: "Rẻ, dịch tiếng Trung rất tốt." },
   qwen: { name: "Qwen", label: "Qwen (Alibaba Cloud)", company: "Alibaba Cloud", console: "modelstudio.console.alibabacloud.com", placeholder: "sk-…", host: true, vision: false, model: "qwen-plus",
     baseUrl: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", note: "Mạnh về tiếng Trung. Khóa vùng Bắc Kinh: đổi địa chỉ thành https://dashscope.aliyuncs.com/compatible-mode/v1." },
-  kimi: { name: "Kimi", label: "Kimi (Moonshot AI)", company: "Moonshot AI", console: "platform.kimi.ai", placeholder: "sk-…", host: true, vision: true, model: "kimi-k2.6" },
+  kimi: { name: "Kimi", label: "Kimi (Moonshot AI)", company: "Moonshot AI", console: "platform.kimi.ai", placeholder: "sk-…", host: true, vision: true, model: "kimi-k3" },
   glm: { name: "GLM", label: "GLM (Z.ai / Zhipu)", company: "Z.ai", console: "z.ai/manage-apikey/apikey-list", placeholder: "…", host: true, vision: false, model: "glm-5.3" },
   grok: { name: "Grok", label: "Grok (xAI)", company: "xAI", console: "console.x.ai", placeholder: "xai-…", host: true, vision: true, model: "grok-4.7" },
   openrouter: { name: "OpenRouter", label: "OpenRouter (nhiều model)", company: "OpenRouter", console: "openrouter.ai/keys", placeholder: "sk-or-…", host: true, vision: true, model: "openrouter/auto",
