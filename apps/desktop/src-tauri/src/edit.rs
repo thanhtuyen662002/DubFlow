@@ -628,7 +628,7 @@ impl Target {
         if self.store.is_some() {
             return self.confined();
         }
-        fs::create_dir_all(&self.work).map_err(|_| fail("Không tạo được thư mục chỉnh sửa"))
+        prepare_plain(&self.work)
     }
 
     fn kind_name(&self) -> &'static str {
@@ -822,6 +822,31 @@ fn is_compilation_run(dir: &Path) -> bool {
     named(Some(dir), &|name| name.starts_with("run-")) && named(dir.parent(), &|name| name.starts_with("Tong hop - "))
         && named(dir.parent().and_then(Path::parent), &|name| name == "DubFlow Output")
         && dir.join(".dubflow-work").join("spec.json").is_file()
+}
+
+/// Make `work` and its parent (`.dubflow-work`) one level at a time, never
+/// through a link: each must end up a plain folder, checked before anything
+/// is made inside it. The run folder above them must already exist.
+fn prepare_plain(work: &Path) -> Result<(), String> {
+    let unsafe_folder = || fail("Thư mục bản nháp của DubFlow không an toàn (là liên kết); hãy xóa nó rồi thử lại");
+    let parent = work.parent().ok_or_else(|| fail("Không tạo được thư mục chỉnh sửa"))?;
+    for dir in [parent, work] {
+        match fs::symlink_metadata(dir) {
+            Ok(metadata) if metadata.is_dir() && !is_link(&metadata) => continue,
+            Ok(_) => return Err(unsafe_folder()),
+            Err(_) => {}
+        }
+        // Not there: made on its own (create_dir does not create or follow anything above it), then checked.
+        if let Err(error) = fs::create_dir(dir) {
+            if error.kind() != std::io::ErrorKind::AlreadyExists {
+                return Err(fail("Không tạo được thư mục chỉnh sửa"));
+            }
+        }
+        if !fs::symlink_metadata(dir).is_ok_and(|metadata| metadata.is_dir() && !is_link(&metadata)) {
+            return Err(unsafe_folder());
+        }
+    }
+    Ok(())
 }
 
 fn work_dir(dir: &Path) -> PathBuf {
@@ -3806,6 +3831,34 @@ mod tests {
         }
         let _ = fs::remove_dir_all(&stems);
         let _ = fs::remove_file(&outside);
+    }
+
+    #[test]
+    fn preparing_a_run_draft_never_writes_through_a_linked_parent() {
+        let root = std::env::temp_dir().join(format!("dubflow-prepare-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let outside = root.join("outside");
+        let run = root.join("run");
+        fs::create_dir_all(&outside).unwrap();
+        fs::create_dir_all(&run).unwrap();
+        // .dubflow-work is a link (symlink / junction) to an outside folder; edit is absent.
+        link_dir(&outside, &run.join(".dubflow-work"));
+        assert!(is_link(&fs::symlink_metadata(run.join(".dubflow-work")).unwrap()));
+        let job = Target { kind: Kind::Job, main: run.join("final_vi.mp4"), dir: run.clone(), work: work_dir(&run), captions: None, store: None };
+        // The same step edit_separate and edit_split take first.
+        assert!(job.prepare().is_err());
+        assert_eq!(fs::read_dir(&outside).unwrap().count(), 0, "no edit folder or file made outside");
+        unlink_dir(&run.join(".dubflow-work"));
+        // A plain run: both levels made, and made again harmlessly.
+        job.prepare().unwrap();
+        job.prepare().unwrap();
+        assert!(plain_dir(&run.join(".dubflow-work")) && plain_dir(&job.work));
+        // The edit folder itself linked is refused too.
+        fs::remove_dir(&job.work).unwrap();
+        link_dir(&outside, &job.work);
+        assert!(job.prepare().is_err());
+        unlink_dir(&job.work);
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
