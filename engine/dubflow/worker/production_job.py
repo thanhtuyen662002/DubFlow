@@ -81,7 +81,7 @@ from engine.dubflow.translation.argos_runtime import ArgosRuntime
 from engine.dubflow.translation.hachimi_runtime import ENGINES as TRANSLATION_ENGINES, create_runtime as create_translation_runtime
 from engine.dubflow.ai.client import AiError, Route, make_route
 from engine.dubflow.translation import context_ai
-from engine.dubflow.worker import beep
+from engine.dubflow.worker import beep, beep_sounds
 from engine.dubflow.worker.b2_audio import _joined_text as _joined_phrase_text
 from engine.dubflow.translation.sensitive import SensitivePolicy, SensitiveWordsError, apply_to_cues as apply_sensitive
 from engine.dubflow.worker.b2_audio import B2AudioError, B2AudioResult, MEASURED_GAP_EVIDENCE, run_b2_audio
@@ -893,7 +893,7 @@ def _placement_seconds(point: Mapping[str, Any]) -> float:
 
 
 def _beep_flagged_words(b2_audio: Any, spoken: Sequence[TextCue], policy: SensitivePolicy | None,
-                        warnings: list[str]) -> tuple[Path, Path] | None:
+                        warnings: list[str], ffmpeg: Path | None = None) -> tuple[Path, Path] | None:
     """Beeped copies of the final mix and the dialogue stem, or None when nothing is beeped."""
     if policy is None or policy.mode != "beep":
         return None
@@ -927,12 +927,20 @@ def _beep_flagged_words(b2_audio: Any, spoken: Sequence[TextCue], policy: Sensit
         spans = beep.beep_spans([window for window in windows if window["id"] in texts], texts, flagged, Path(b2_audio.dialogue_stem_path))
         if not spans:
             return None
-        final = beep.write_beeped(Path(b2_audio.final_mix_path), Path(b2_audio.final_mix_path).with_name("final_mix_beeped.wav"), spans)
-        stem = beep.write_beeped(Path(b2_audio.dialogue_stem_path), Path(b2_audio.dialogue_stem_path).with_name("dialogue_stem_beeped.wav"), spans)
+        sound = {"sound": policy.sound, "sound_file": policy.sound_file, "ffmpeg": ffmpeg}
+        try:
+            final = beep.write_beeped(Path(b2_audio.final_mix_path), Path(b2_audio.final_mix_path).with_name("final_mix_beeped.wav"), spans, **sound)
+        except beep_sounds.BeepSoundError as error:
+            # The chosen file cannot be read: the plain beep still hides the word.
+            warnings.append(f"SENSITIVE_SOUND_FALLBACK: {str(error)[:200]}; dùng tiếng bíp thay thế.")
+            sound = {"sound": "beep", "sound_file": None, "ffmpeg": None}
+            final = beep.write_beeped(Path(b2_audio.final_mix_path), Path(b2_audio.final_mix_path).with_name("final_mix_beeped.wav"), spans, **sound)
+        stem = beep.write_beeped(Path(b2_audio.dialogue_stem_path), Path(b2_audio.dialogue_stem_path).with_name("dialogue_stem_beeped.wav"), spans, **sound)
     except (OSError, ValueError, KeyError, TypeError, EOFError, wave.Error) as error:
         warnings.append(f"SENSITIVE_BEEP_SKIPPED: {type(error).__name__}: {str(error)[:200]}; giọng đọc dùng từ đã đổi cách viết.")
         return None
-    warnings.append(f"SENSITIVE_WORDS_BEEPED: {len(spans)} chỗ trong giọng đọc đã được bíp.")
+    label = beep_sounds.SOUND_LABELS.get(sound["sound"], "tiếng bíp")
+    warnings.append(f"SENSITIVE_WORDS_BEEPED: {len(spans)} chỗ trong giọng đọc đã được che bằng {label}.")
     return final, stem
 
 
@@ -2064,7 +2072,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
             tts_documents = getattr(b2_audio, "tts_documents", (b2_audio.tts_document,))
             members = getattr(b2_audio, "member_cue_ids", None) or {}
             audio_path = b2_audio.final_mix_path
-            beeped = _beep_flagged_words(b2_audio, unmasked_spoken, settings.sensitive, warnings)
+            beeped = _beep_flagged_words(b2_audio, unmasked_spoken, settings.sensitive, warnings, config.ffmpeg_path)
             if beeped is not None:
                 audio_path = beeped[0]
             audio_metadata = {

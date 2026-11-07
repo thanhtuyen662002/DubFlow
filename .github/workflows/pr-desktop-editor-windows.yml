@@ -18,6 +18,8 @@ on:
       - apps/desktop/src-tauri/**
       - engine/dubflow/media/adapter.py
       - tests/production/media/**
+      - engine/dubflow/worker/beep_sounds.py
+      - tests/production/worker/test_beep.py
   pull_request:
     paths:
       - .github/workflows/pr-desktop-editor-windows.yml
@@ -29,6 +31,8 @@ on:
       - apps/desktop/src-tauri/**
       - engine/dubflow/media/adapter.py
       - tests/production/media/**
+      - engine/dubflow/worker/beep_sounds.py
+      - tests/production/worker/test_beep.py
 
 permissions:
   contents: read
@@ -112,3 +116,14 @@ jobs:
           if ($text -match '\.\.\. skipped') { throw 'Media adapter tests skipped some cases' }
           if ($text -notmatch '(?m)^Ran (\d+) tests? in ') { throw 'Media test count missing' }
           Write-Host "Media adapter tests passed: $($Matches[1]), none skipped"
+
+      - name: Run the custom beep-sound decode test against real FFmpeg
+        shell: pwsh
+        run: |
+          $log = Join-Path $env:RUNNER_TEMP 'beep-sound-tests.log'
+          python -B -m unittest tests.production.worker.test_beep.BeepTests.test_custom_sound_through_the_real_ffmpeg -v 2>&1 | Tee-Object -FilePath $log
+          if ($LASTEXITCODE -ne 0) { throw 'Custom beep-sound test failed' }
+          $text = Get-Content -LiteralPath $log -Raw
+          if ($text -match '\.\.\. skipped') { throw 'Custom beep-sound test was skipped' }
+          if ($text -notmatch '(?m)^Ran 1 test in ') { throw 'Custom beep-sound test did not run' }
+          Write-Host 'Custom beep-sound decode test passed through the pinned FFmpeg, not skipped'

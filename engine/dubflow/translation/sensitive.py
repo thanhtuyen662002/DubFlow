@@ -63,10 +63,17 @@ def _keep_case(original: str, replacement: str) -> str:
     return replacement
 
 
+SOUNDS = ("beep", "bird", "dog", "custom")
+MAX_SOUND_PATH = 1024
+
+
 @dataclass(frozen=True)
 class SensitivePolicy:
     mode: str
     words: tuple[tuple[str, str], ...]
+    # What is laid over a flagged word in beep mode: the tone, a bird, a dog, or the user's file.
+    sound: str = "beep"
+    sound_file: str | None = None
 
     @classmethod
     def from_mapping(cls, value: Any) -> "SensitivePolicy":
@@ -84,8 +91,17 @@ class SensitivePolicy:
             if not source or len(source) > MAX_WORD_CHARS or len(target) > MAX_WORD_CHARS or re.search(r"[\x00-\x1f]", source + target):
                 raise SensitiveWordsError("sensitive words must be short single-line text")
             words[source] = target or source
+        sound = value.get("sound", "beep")
+        if sound not in SOUNDS:
+            raise SensitiveWordsError("sensitive.sound must be beep, bird, dog or custom")
+        sound_file = value.get("sound_file")
+        if sound == "custom":
+            if not isinstance(sound_file, str) or not sound_file.strip() or len(sound_file) > MAX_SOUND_PATH or re.search(r"[\x00-\x1f]", sound_file):
+                raise SensitiveWordsError("sensitive.sound_file must name the chosen sound file")
+        else:
+            sound_file = None
         # Longest first, so "xác chết" wins over "chết".
-        return cls(value["mode"], tuple(sorted(words.items(), key=lambda pair: -len(pair[0]))))
+        return cls(value["mode"], tuple(sorted(words.items(), key=lambda pair: -len(pair[0]))), sound, sound_file)
 
     def _pattern(self) -> re.Pattern[str] | None:
         if not self.words:
