@@ -473,6 +473,9 @@ pub struct ExportRequest {
     /// Phụ đề lines burned in (Issue #523): drawn on the main video, in its own time.
     #[serde(default)]
     burn: Option<BurnSubtitles>,
+    /// More Phụ đề layers burned over the first (Tiếng Trung above Tiếng Việt), at most 3.
+    #[serde(default)]
+    burn_extra: Vec<BurnSubtitles>,
     /// Số khung/giây (Issue #526); None keeps the main video's.
     #[serde(default)]
     fps: Option<u32>,
@@ -2065,6 +2068,8 @@ pub struct BurnSubtitles {
 }
 
 const BURN_FILE: &str = "subtitles.ass";
+/// Phụ đề layers burned besides the first.
+const MAX_BURN_EXTRA: usize = 3;
 
 /// The lines as the worker burns subtitles (engine/dubflow/subtitle/style.py and
 /// production_job._write_subtitles): PlayRes 1920x1080, one Default style for
@@ -3100,8 +3105,12 @@ fn start_export(request: ExportRequest) -> Result<Value, String> {
     let bitrate = (video_bitrate(out_width, out_height, &fps) as f64 * rate).round() as u64;
     // Che, then Phụ đề, on the main video before it is cut: both follow its own time.
     let mut prefilter: Vec<String> = request.cover.as_ref().map(cover_filter).transpose()?.flatten().into_iter().collect();
-    if let Some(burn) = request.burn.as_ref().filter(|burn| !burn.lines.is_empty()) {
-        let file = work.join(BURN_FILE);
+    if request.burn_extra.len() > MAX_BURN_EXTRA {
+        return Err(fail("Quá nhiều lớp phụ đề"));
+    }
+    let burns = request.burn.iter().chain(request.burn_extra.iter()).filter(|burn| !burn.lines.is_empty());
+    for (index, burn) in burns.enumerate() {
+        let file = work.join(if index == 0 { BURN_FILE.to_owned() } else { format!("subtitles-{}.ass", index + 1) });
         let body = burn_ass(burn)?;
         guarded(&work)?;
         fs::write(&file, body).map_err(|_| fail("Không ghi được phụ đề"))?;
@@ -3362,6 +3371,118 @@ pub fn edit_separate_cancel(output_path: String, kind: String) -> Result<(), Str
     Ok(())
 }
 
+// ---------- Tách phụ đề: the video's own words and their Vietnamese ----------
+
+/// Below the draft folder: `engine.dubflow.subtitle.layers`'s transcript, translation and `layers.json`.
+const SUBS_AI_DIR: &str = "subs-ai";
+
+/// Tách phụ đề runs, by draft folder.
+static EXTRACTING: LazyLock<Mutex<std::collections::HashSet<PathBuf>>> = LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
+
+/// Tách phụ đề: hear the main video's speech (`language` zh or en), translate it
+/// to Vietnamese (in context with the user's AI when a key is saved) and write
+/// both as lines for two subtitle layers, in the background.
+#[tauri::command]
+pub fn edit_subs_extract(output_path: String, kind: String, language: String, ai_translation: Option<crate::AiTranslation>,
+                         sensitive_words: Option<Value>, title: Option<String>) -> Result<(), String> {
+    let target = edit_target(&output_path, &kind)?;
+    if !["zh", "en"].contains(&language.as_str()) {
+        return Err(fail("Ngôn ngữ gốc phải là tiếng Trung hoặc tiếng Anh"));
+    }
+    if !probe(&target.main)?.has_audio {
+        return Err(fail("Video này không có âm thanh để nghe lời thoại"));
+    }
+    let root = version_root()?;
+    let models = crate::control_root()?.join("models");
+    let media = root.join("runtime").join("media");
+    let mut running = EXTRACTING.lock().map_err(|_| fail("Hãy mở lại ứng dụng"))?;
+    if running.contains(&target.work) {
+        return Err(fail("Video này đang được tách phụ đề"));
+    }
+    target.prepare()?;
+    guarded(&target.work)?;
+    let out = target.work.join(SUBS_AI_DIR);
+    if fs::symlink_metadata(&out).is_ok_and(|metadata| is_link(&metadata) || !metadata.is_dir()) {
+        return Err(fail("Thư mục tách phụ đề không an toàn (là liên kết); hãy xóa nó rồi thử lại"));
+    }
+    fs::create_dir_all(&out).map_err(|_| fail("Không tạo được thư mục tách phụ đề"))?;
+    for name in ["cancel", "status.json", "layers.json"] {
+        let _ = fs::remove_file(out.join(name));
+    }
+    let key = crate::write_translation_settings(&out, ai_translation.as_ref(), sensitive_words.as_ref(), title.as_deref())?;
+    let mut command = Command::new(root.join("runtime").join("python.exe"));
+    command.current_dir(root.join("app"))
+        .args(["-B", "-m", "engine.dubflow.subtitle.layers", "--video"]).arg(&target.main)
+        .arg("--out-dir").arg(&out)
+        .arg("--app-root").arg(root.join("app"))
+        .arg("--model-root").arg(models)
+        .arg("--ffmpeg").arg(media.join("ffmpeg.exe"))
+        .args(["--language", &language])
+        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    if let Some(key) = key {
+        // The engine reads it once and removes it from its environment.
+        command.env(crate::ai_keys::JOB_KEY_ENV, key);
+    }
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    let mut child = command.spawn().map_err(|_| fail("Không chạy được bộ tách phụ đề"))?;
+    let work = target.work.clone();
+    running.insert(work.clone());
+    drop(running);
+    std::thread::spawn(move || {
+        let _ = child.wait();
+        if let Ok(mut running) = EXTRACTING.lock() {
+            running.remove(&work);
+        }
+    });
+    Ok(())
+}
+
+/// Tách phụ đề's progress, and its two layers once done (`source` and `vi` lines).
+#[tauri::command]
+pub fn edit_subs_extract_status(output_path: String, kind: String) -> Result<Value, String> {
+    let target = edit_target(&output_path, &kind)?;
+    let out = target.work.join(SUBS_AI_DIR);
+    let read = |name: &str, limit: u64| -> Option<Value> {
+        let path = out.join(name);
+        fs::metadata(&path).ok().filter(|metadata| metadata.len() <= limit)?;
+        serde_json::from_slice(&fs::read(&path).ok()?).ok()
+    };
+    let Some(status) = read("status.json", 64 * 1024) else { return Ok(json!({"state": "NONE"})) };
+    let running = EXTRACTING.lock().is_ok_and(|set| set.contains(&target.work));
+    if status["state"] == "RUNNING" && !running {
+        return Ok(json!({"state": "FAILED", "progress": 0, "message": "Tách phụ đề đã dừng giữa chừng; hãy bấm lại."}));
+    }
+    let mut value = json!({"state": status["state"], "progress": status["progress"], "message": status["message"]});
+    if status["state"] == "COMPLETED" {
+        let Some(layers) = read("layers.json", 32 * 1024 * 1024) else {
+            return Ok(json!({"state": "FAILED", "progress": 0, "message": "Không đọc được phụ đề vừa tách; hãy bấm lại."}));
+        };
+        let lines = |key: &str| -> Vec<Value> {
+            layers[key].as_array().into_iter().flatten().take(MAX_CUES).filter_map(|line| {
+                let (start, end, text) = (line["start_ms"].as_u64()?, line["end_ms"].as_u64()?, line["text"].as_str()?);
+                (end > start && !text.trim().is_empty()).then(|| json!({"start_ms": start, "end_ms": end, "text": text.chars().take(MAX_CUE_TEXT).collect::<String>()}))
+            }).collect()
+        };
+        value["language"] = layers["language"].clone();
+        value["source"] = json!(lines("source"));
+        value["vi"] = json!(lines("vi"));
+        value["warnings"] = layers["warnings"].clone();
+    }
+    Ok(value)
+}
+
+/// Stop Tách phụ đề (at its next step).
+#[tauri::command]
+pub fn edit_subs_extract_cancel(output_path: String, kind: String) -> Result<(), String> {
+    let target = edit_target(&output_path, &kind)?;
+    let out = target.work.join(SUBS_AI_DIR);
+    if out.is_dir() && unlinked(&target.work) {
+        fs::write(out.join("cancel"), b"").map_err(|_| fail("Không hủy được tách phụ đề"))?;
+    }
+    Ok(())
+}
+
 /// Bản xem nhẹ (Issue #536): a heavy video (above Full HD, or above 25 Mbit/s)
 /// previews from a small copy made once in the background, below the data
 /// root; exports always read the original.
@@ -3565,7 +3686,7 @@ mod tests {
     fn request(segments: Vec<Segment>) -> ExportRequest {
         ExportRequest { output_path: "unused".into(), kind: "file".into(), media: vec![], segments, transitions: vec![], overlays: vec![], audio: vec![], main_volume: 1.0,
             texts: vec![], quality: "source".into(),
-            folder: "unused".into(), file_name: "Phim (sửa 1).mp4".into(), cues: vec![Cue { start_ms: 0, end_ms: 1000, text: "Xin chào".into() }], cover: None, normalize: false, burn: None, fps: None, bitrate: None, aspect: None, fill: None, audio_only: false, luts: vec![], main_denoise: false, main_eq: None, stems: None }
+            folder: "unused".into(), file_name: "Phim (sửa 1).mp4".into(), cues: vec![Cue { start_ms: 0, end_ms: 1000, text: "Xin chào".into() }], cover: None, normalize: false, burn: None, burn_extra: vec![], fps: None, bitrate: None, aspect: None, fill: None, audio_only: false, luts: vec![], main_denoise: false, main_eq: None, stems: None }
     }
 
     fn frame() -> Frame {
