@@ -1,4 +1,5 @@
 import { confirmDialog } from "./confirm.ts";
+import { showToast } from "./toast.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 
@@ -18,6 +19,11 @@ export function deleteMessage(kind: ProjectKind): string {
   return `Cả thư mục dự án (${CONTENTS[kind]}) sẽ được chuyển vào Thùng rác của Windows. Video và ảnh gốc bạn đã chọn không bị xóa.`;
 }
 
+/** The run folder a project video sits in (its parent folder). */
+export function runFolder(path: string): string {
+  return path.replace(/[\\/][^\\/]*$/, "");
+}
+
 /** A small trash button for a project row; it never opens the row it sits on. */
 export function deleteProjectButton(title: string, onClick: () => void): HTMLButtonElement {
   const button = document.createElement("button");
@@ -31,15 +37,17 @@ export function deleteProjectButton(title: string, onClick: () => void): HTMLBut
   return button;
 }
 
-/** Ask, then delete. `null` when deleted, `""` when the user kept it, else the error to show. */
-export async function confirmDeleteProject(invoke: Invoke, kind: ProjectKind, dir: string, title: string): Promise<string | null> {
+/** Ask, then delete; the outcome shows as a toast. True when the project was deleted. */
+export async function confirmDeleteProject(invoke: Invoke, kind: ProjectKind, dir: string, title: string): Promise<boolean> {
   const confirmed = await confirmDialog({ title: `Xóa dự án “${title}”?`, message: deleteMessage(kind),
     confirmLabel: "Xóa dự án", cancelLabel: "Giữ lại", danger: true });
-  if (!confirmed) return "";
+  if (!confirmed) return false;
   try {
     await invoke("project_delete", { kind, dir });
-    return null;
+    showToast(`Đã chuyển “${title}” vào Thùng rác.`);
+    return true;
   } catch (error) {
-    return error instanceof Error ? error.message : String(error || "Không xóa được dự án");
+    showToast(error instanceof Error ? error.message : String(error || "Không xóa được dự án"), "err");
+    return false;
   }
 }

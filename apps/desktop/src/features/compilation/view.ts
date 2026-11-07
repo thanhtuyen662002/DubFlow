@@ -51,7 +51,6 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
         <div class="queue-scroll">
           <ul id="compilation-runs" class="queue-list" aria-label="Video tổng hợp"></ul>
           <p id="compilation-runs-empty" class="queue-empty">Chưa có video tổng hợp nào. Các lần tạo trước được tìm trong thư mục “DubFlow Output”.</p>
-          <p id="compilation-runs-state" class="queue-state" role="status"></p>
         </div>
         <div class="queue-col-foot"><button id="compilation-new" class="btn block" type="button">Tạo tổng hợp mới</button></div>
       </section>
@@ -471,12 +470,7 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
   }
 
   async function removeRun(dir: string, title: string): Promise<void> {
-    const error = await confirmDeleteProject(invoke, "compilation", dir, title);
-    if (error === "") return;
-    const note = $("runs-state");
-    note.textContent = error ?? `Đã chuyển “${title}” vào Thùng rác.`;
-    note.classList.toggle("ok", error === null);
-    if (error !== null) return;
+    if (!await confirmDeleteProject(invoke, "compilation", dir, title)) return;
     runs = runs.filter((run) => run.dir !== dir);
     if (current === dir) current = NEW;
     renderRuns();

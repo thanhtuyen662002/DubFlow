@@ -3,6 +3,7 @@ import {
   parseRecent, rememberFile, sizeLabel, fileTitle, type LibraryEntry, type LibraryFilter,
 } from "./library.ts";
 import { shortDate } from "../product/model.ts";
+import { confirmDeleteProject, runFolder } from "../../shell/project_delete.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 
@@ -34,6 +35,7 @@ const GROUP_FROM = 12;
 const ICON_PLUS = '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
 const ICON_SEARCH = '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M11 4.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13zM16 16l4 4" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" fill="none"/></svg>';
 const ICON_EDIT = '<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M4 20h4L18.5 9.5a2.1 2.1 0 0 0-3-3L5 17v3M13.5 6.5l3 3" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>';
+const ICON_TRASH = '<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M5 7h14M10 7V5h4v2M7 7l1 12h8l1-12" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>';
 const ICON_FILM = '<svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true"><rect x="3.5" y="5" width="17" height="14" rx="2.5" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M10 9.5v5l4.5-2.5z" fill="currentColor"/></svg>';
 
 function element<K extends keyof HTMLElementTagNameMap>(tag: K, className = "", text = ""): HTMLElementTagNameMap[K] {
@@ -221,6 +223,19 @@ export function mountEditLibrary(invoke: Invoke, host: EditLibraryHost): EditLib
         render();
       });
       node.append(remove);
+    } else if (entry.kind !== "job") {
+      // A Bán hàng, Tổng hợp or Phim tài liệu video: delete the project it belongs to.
+      const remove = element("button", "el-forget el-delete");
+      remove.type = "button";
+      remove.innerHTML = ICON_TRASH;
+      remove.title = "Xóa dự án (chuyển vào Thùng rác)";
+      remove.setAttribute("aria-label", `Xóa dự án của ${entry.title}`);
+      remove.addEventListener("click", (event) => {
+        event.stopPropagation();
+        void deleteProject(entry);
+      });
+      remove.addEventListener("keydown", (event) => event.stopPropagation());
+      node.append(remove);
     }
     const activate = (): void => void openEntry(entry);
     node.addEventListener("click", activate);
@@ -314,6 +329,18 @@ export function mountEditLibrary(invoke: Invoke, host: EditLibraryHost): EditLib
         render();
       }
     }
+  }
+
+  async function deleteProject(entry: LibraryEntry): Promise<void> {
+    if (entry.kind === "job" || entry.kind === "file") return;
+    const dir = runFolder(entry.path);
+    // A product video is "<name> · video <n>": the project is the whole run.
+    const title = entry.kind === "product" ? entry.title.replace(/ · video \d+$/, "") : entry.title;
+    if (!await confirmDeleteProject(invoke, entry.kind, dir, title)) return;
+    const prefix = `${dir.replace(/\\/g, "/").toLowerCase()}/`;
+    found = found.filter((item) => !item.path.replace(/\\/g, "/").toLowerCase().startsWith(prefix));
+    render();
+    void load();
   }
 
   async function openEntry(entry: LibraryEntry): Promise<void> {

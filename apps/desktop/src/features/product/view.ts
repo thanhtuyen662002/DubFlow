@@ -575,12 +575,7 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
 
   /** Delete the whole run a recent video belongs to (every variant of it). */
   async function removeRun(dir: string, name: string): Promise<void> {
-    const error = await confirmDeleteProject(invoke, "product", dir, name);
-    if (error === "") return;
-    const note = $("#product-recent-state");
-    note.textContent = error ?? `Đã chuyển “${name}” vào Thùng rác.`;
-    note.classList.toggle("ok", error === null);
-    if (error !== null) return;
+    if (!await confirmDeleteProject(invoke, "product", dir, name)) return;
     runs = runs.filter((run) => run.dir !== dir);
     renderRecent();
     void loadRuns();

@@ -57,7 +57,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
       <section class="queue-col docu-col" aria-labelledby="docu-list-title">
         <div class="queue-col-head"><h2 id="docu-list-title">Dự án</h2><button id="docu-refresh" class="quiet-btn" type="button">Làm mới</button></div>
         <button id="docu-mcp-chip" class="docu-mcp-chip" type="button" hidden><span id="docu-mcp-chip-text"></span></button>
-        <div class="queue-scroll"><ul id="docu-runs" class="queue-list" aria-label="Dự án phim tài liệu"></ul><p id="docu-runs-empty" class="queue-empty">Chưa có dự án phim tài liệu nào.</p><p id="docu-runs-state" class="queue-state" role="status"></p></div>
+        <div class="queue-scroll"><ul id="docu-runs" class="queue-list" aria-label="Dự án phim tài liệu"></ul><p id="docu-runs-empty" class="queue-empty">Chưa có dự án phim tài liệu nào.</p></div>
         <div class="queue-col-foot"><button id="docu-new" class="btn block" type="button">Tạo dự án mới</button></div>
       </section>
       <section class="player-col docu-player-col" aria-label="Xem trước và kịch bản">
@@ -261,12 +261,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
   }
 
   async function removeRun(dir: string, title: string): Promise<void> {
-    const error = await confirmDeleteProject(invoke, "docu", dir, title);
-    if (error === "") return;
-    const state = $("#docu-runs-state");
-    state.textContent = error ?? `Đã chuyển “${title}” vào Thùng rác.`;
-    state.classList.toggle("ok", error === null);
-    if (error !== null) return;
+    if (!await confirmDeleteProject(invoke, "docu", dir, title)) return;
     runs = runs.filter(run => !sameDir(run.dir, dir));
     if (sameDir(selected?.dir, dir)) newProject(); else renderRuns();
     void refreshRuns();
