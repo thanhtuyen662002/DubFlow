@@ -174,9 +174,17 @@ def _word(phrase: str) -> re.Pattern[str]:
 _THIRD_PERSON_WORDS = {phrase: _word(phrase) for phrase in THIRD_PERSON}
 
 
+# A bare "anh" for the person the brief calls "anh ta" ("Lúc này anh mới nhận ra…" next to "Anh ta sắp
+# phát điên…") reads as a second man; only counted when "anh ta"/"anh ấy" was chosen.
+_BARE_ANH = re.compile(r"(?<!\w)anh(?!\s+(?:ta|ấy)(?!\w))(?!\w)", re.IGNORECASE)
+
+
 def stray_references(text: str, chosen: set[str]) -> list[str]:
     """The third-person words in a line that the brief did not choose for anyone."""
-    return [phrase for phrase, pattern in _THIRD_PERSON_WORDS.items() if phrase not in chosen and pattern.search(text)]
+    stray = [phrase for phrase, pattern in _THIRD_PERSON_WORDS.items() if phrase not in chosen and pattern.search(text)]
+    if chosen & {"anh ta", "anh ấy"} and _BARE_ANH.search(text):
+        stray.append("anh")
+    return stray
 
 
 def needs_unify(text: str, chosen: set[str]) -> bool:

@@ -82,7 +82,9 @@ _MODEL_PREFERENCES: dict[str, tuple[str, ...]] = {
     "groq": (r"^openai/gpt-oss-120b$", r"^openai/gpt-oss", r"^llama-.*versatile$"),
     "mistral": (r"^mistral-medium-latest$", r"^mistral-large-latest$", r"^mistral-small-latest$"),
 }
-_NOT_CHAT = re.compile(r"embed|whisper|tts|audio|realtime|transcri|image|dall-e|moderation|search|ocr|vision-exp|guard|codex|-code", re.I)
+# Models that do not answer chat: embeddings, speech, images, music, video, robots and screen agents.
+_NOT_CHAT = re.compile(r"embed|whisper|tts|audio|realtime|transcri|image|dall-e|moderation|search|ocr|vision-exp|guard|codex|-code"
+                       r"|nano-banana|lyria|veo|robotics|computer-use|-live", re.I)
 
 
 def pick_model(provider: str, names: Sequence[str]) -> str | None:

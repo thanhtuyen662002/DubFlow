@@ -222,6 +222,13 @@ class ContextTranslationTest(unittest.TestCase):
         self.assertEqual(context_ai.stray_references("Cô ấy đi ả đào", {"cô ấy", "ả"}), [])
         self.assertEqual(context_ai.stray_references("thằng nhỏ chạy", {"anh ta"}), [])
 
+    def test_a_bare_anh_next_to_anh_ta_is_a_drift(self):
+        # 1.1.76 on the owner PC: "Anh ta sắp phát điên…" then "Lúc này anh mới nhận ra…".
+        self.assertEqual(context_ai.stray_references("Lúc này anh mới nhận ra", {"anh ta"}), ["anh"])
+        self.assertEqual(context_ai.stray_references("Anh ta sắp phát điên", {"anh ta"}), [])
+        self.assertEqual(context_ai.stray_references("Ánh đèn tắt, anh ấy về", {"anh ấy"}), [])
+        self.assertEqual(context_ai.stray_references("anh trai của hắn", {"hắn"}), [])
+
     def test_identity_never_holds_the_key(self):
         self.assertNotIn("sk-test", json.dumps(context_ai.identity(ROUTE, dubbing=True)))
 
