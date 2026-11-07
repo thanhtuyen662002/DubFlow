@@ -2077,7 +2077,6 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     const total = outputDuration(edit);
     const fit = fitScale();
     pps = zoomScale(fit, Number(zoom.value) / 100);
-    zoom.disabled = fit >= 20;
     const width = Math.max(scroll.clientWidth, Math.ceil(PAD + PAD_END + total * pps));
     content.style.width = `${width}px`;
     // Ruler.

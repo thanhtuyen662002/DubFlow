@@ -1948,10 +1948,13 @@ export function tickStep(pxPerSecond: number, minPx = 64): number {
 
 export const MAX_ZOOM = 20;
 
-/** Pixels per second for zoom `value` (0 = whole video fits, 1 = 20 px/s). */
+/** How far in past "whole video fits" the slider goes at least, so short videos can zoom too. */
+export const MIN_ZOOM_RANGE = 8;
+
+/** Pixels per second for zoom `value` (0 = whole video fits, 1 = 20 px/s or 8× the fit, whichever is closer). */
 export function zoomScale(fit: number, value: number): number {
-  if (fit >= MAX_ZOOM) return fit;
-  return fit * Math.pow(MAX_ZOOM / fit, clamp(value, 0, 1));
+  const top = Math.max(MAX_ZOOM, fit * MIN_ZOOM_RANGE);
+  return fit * Math.pow(top / fit, clamp(value, 0, 1));
 }
 
 /** Source times of the thumbnail grid: at most `count` frames across the video. */
