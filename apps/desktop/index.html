@@ -51,14 +51,23 @@
 
       <div class="app-body">
         <nav class="rail" aria-label="Điều hướng">
-          <a id="nav-queue" class="rail-item active" href="#" aria-current="page">
-            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" fill="none"/></svg>
-            <span>Hàng đợi</span>
-            <span id="nav-count" class="rail-count">0</span>
-          </a>
           <a id="nav-discover" class="rail-item" href="#">
             <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M11 4.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13zM16 16l4 4" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" fill="none"/></svg>
             <span>Khám phá</span>
+          </a>
+          <a id="nav-media" class="rail-item active" href="#" aria-current="page">
+            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" fill="none"/></svg>
+            <span>Hàng đợi</span>
+            <span id="nav-media-count" class="rail-count">0</span>
+          </a>
+          <a id="nav-edit" class="rail-item" href="#">
+            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M4 20h4L18.5 9.5a2.1 2.1 0 0 0-3-3L5 17v3M13.5 6.5l3 3" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+            <span>Chỉnh sửa</span>
+          </a>
+          <a id="nav-queue" class="rail-item" href="#">
+            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><rect x="9" y="3.5" width="6" height="11" rx="3" stroke="currentColor" stroke-width="1.75" fill="none"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v2.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" fill="none"/></svg>
+            <span>Lồng tiếng</span>
+            <span id="nav-count" class="rail-count">0</span>
           </a>
           <a id="nav-product" class="rail-item" href="#">
             <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M5 8h14l-1.2 11.2a1 1 0 0 1-1 .8H7.2a1 1 0 0 1-1-.8zM9 8V6.5a3 3 0 0 1 6 0V8" stroke="currentColor" stroke-width="1.75" fill="none" stroke-linejoin="round"/></svg>
@@ -66,15 +75,11 @@
           </a>
           <a id="nav-compilation" class="rail-item" href="#">
             <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M4 5h7v6H4zM13 5h7v6h-7zM4 13h7v6H4zM13 13h7v6h-7z" stroke="currentColor" stroke-width="1.75" fill="none" stroke-linejoin="round"/></svg>
-            <span>Tổng hợp</span>
+            <span>Ghép video</span>
           </a>
           <a id="nav-docu" class="rail-item" href="#">
             <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><rect x="4" y="5" width="16" height="14" rx="2" stroke="currentColor" stroke-width="1.75" fill="none"/><path d="M9 5v14M15 5v14M4 10h5M15 10h5M4 14h5M15 14h5" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>
             <span>Phim tài liệu</span>
-          </a>
-          <a id="nav-edit" class="rail-item" href="#">
-            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M4 20h4L18.5 9.5a2.1 2.1 0 0 0-3-3L5 17v3M13.5 6.5l3 3" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
-            <span>Chỉnh sửa</span>
           </a>
           <span class="rail-spacer"></span>
           <button id="nav-settings" class="rail-item" type="button" aria-haspopup="dialog">
@@ -156,7 +161,7 @@
                   <label><input id="select-all" type="checkbox" /> Chọn tất cả</label>
                   <span id="selected-count" class="hint"></span>
                   <button id="discover-clear" class="btn ghost" type="button">Xóa kết quả</button>
-                  <button id="discover-add" class="btn primary" type="button" disabled>Thêm vào hàng đợi</button>
+                  <button id="discover-add" class="btn primary" type="button" disabled>Thêm vào Hàng đợi</button>
                 </div>
                 <div id="result-tools" class="result-tools" hidden>
                   <p class="hint">Bấm một lần để chọn · bấm đúp hoặc Enter để xem lớn</p>
@@ -169,6 +174,7 @@
             </div>
           </section>
 
+          <section id="media-view" class="media"></section>
           <section id="compilation-view" class="product compilation" hidden></section>
           <section id="docu-view" class="product docu" hidden></section>
           <section id="edit-view" class="edit-library" aria-label="Chọn video để chỉnh sửa" hidden></section>
@@ -187,26 +193,28 @@
               <button id="product-list-toggle" class="btn ghost list-toggle" type="button" aria-controls="product-list" aria-expanded="false">Danh sách</button>
               <div>
                 <h1>Video bán hàng</h1>
-                <p class="subtitle">Dán mô tả sản phẩm hoặc thêm ảnh: AI (Claude hoặc Gemini) đọc thông tin và viết kịch bản, DubFlow đọc giọng Việt thành video dọc</p>
+                <p class="subtitle">Chọn clip từ Hàng đợi hoặc thêm ảnh, dán mô tả sản phẩm: AI (Claude hoặc Gemini) viết kịch bản, DubFlow đọc giọng Việt thành video dọc</p>
               </div>
             </header>
             <div class="product-body product-studio">
               <div class="product-col">
+                <section class="product-card" aria-labelledby="product-media-title">
+                  <div class="product-card-head">
+                    <h2 id="product-media-title"><b>1</b> Ảnh và clip</h2>
+                    <span class="product-pick-actions"><button id="product-from-queue" class="btn" type="button" title="Dùng video trong Hàng đợi làm clip">Chọn từ Hàng đợi</button><button id="product-pick" class="btn" type="button">Thêm ảnh/clip…</button></span>
+                  </div>
+                  <ul id="product-photos" class="product-thumbs" aria-label="Ảnh và clip sản phẩm"></ul>
+                  <p id="product-photos-hint" class="hint"></p>
+                </section>
                 <section class="product-card" aria-labelledby="product-source-title">
                   <div class="product-card-head">
-                    <h2 id="product-source-title"><b>1</b> Thông tin sản phẩm</h2>
-                    <span class="hint">Văn bản, ảnh, hoặc cả hai</span>
+                    <h2 id="product-source-title"><b>2</b> Thông tin sản phẩm</h2>
+                    <span id="product-source-count" class="hint">Chưa có văn bản</span>
                   </div>
                   <label class="product-paste">
                     <span class="visually-hidden">Mô tả sản phẩm</span>
                     <textarea id="product-source" rows="8" maxlength="12000" placeholder="Dán mô tả từ trang shop, thông số kỹ thuật, đánh giá của khách… Dán được nhiều đoạn, mỗi đoạn cách nhau một dòng trống."></textarea>
                   </label>
-                  <div class="product-card-head">
-                    <span id="product-source-count" class="hint">Chưa có văn bản</span>
-                    <button id="product-pick" class="btn" type="button">Thêm ảnh/clip…</button>
-                  </div>
-                  <ul id="product-photos" class="product-thumbs" aria-label="Ảnh và clip sản phẩm"></ul>
-                  <p id="product-photos-hint" class="hint"></p>
                   <div id="product-key-row" class="product-key-row" hidden>
                     <p class="hint"></p>
                     <div class="post-key-actions">
@@ -224,7 +232,7 @@
                   </div>
                 </section>
                 <section class="product-card">
-                  <h2><b>2</b> Chi tiết sản phẩm</h2>
+                  <h2><b>3</b> Chi tiết sản phẩm</h2>
                   <div class="product-form">
                     <label>Tên sản phẩm<input id="product-name" type="text" maxlength="120" /></label>
                     <label>Giá<input id="product-price" type="text" maxlength="60" placeholder="Ví dụ 299.000đ" /></label>
@@ -235,7 +243,7 @@
                 </section>
                 <section class="product-card">
                   <div class="product-card-head">
-                    <h2><b>3</b> Kịch bản</h2>
+                    <h2><b>4</b> Kịch bản</h2>
                     <button id="product-add-script" class="link" type="button">+ Tự viết kịch bản</button>
                   </div>
                   <div class="product-options">
@@ -255,8 +263,29 @@
                   <ol id="product-scripts" class="product-scripts"></ol>
                   <p class="hint">Đọc lại và sửa cho đúng sản phẩm trước khi tạo video. Mỗi kịch bản được chọn thành một video.</p>
                 </section>
+                <section class="product-card" aria-labelledby="product-look-title">
+                  <h2 id="product-look-title"><b>5</b> Mẫu video</h2>
+                  <div class="product-look">
+                    <div class="product-look-options">
+                      <div id="product-templates" class="product-templates" role="radiogroup" aria-label="Mẫu video">
+                        <button type="button" role="radio" aria-checked="true" data-template="ban-tin"><span class="product-mini" data-mini="ban-tin"><span></span><span></span></span><b>Bản tin</b><span class="hint">Ảnh trên, nền dưới</span></button>
+                        <button type="button" role="radio" aria-checked="false" data-template="toan-man-hinh"><span class="product-mini" data-mini="toan-man-hinh"><span></span><span></span></span><b>Toàn màn hình</b><span class="hint">Ảnh phủ cả khung</span></button>
+                        <button type="button" role="radio" aria-checked="false" data-template="chi-chu"><span class="product-mini" data-mini="chi-chu"><span></span><span></span></span><b>Chỉ chữ</b><span class="hint">Không cần ảnh</span></button>
+                      </div>
+                      <p id="product-template-note" class="hint"></p>
+                      <div id="product-background-block">
+                        <div class="product-card-head">
+                          <span class="product-label">Ảnh nền</span>
+                          <span id="product-background-size" class="hint"></span>
+                        </div>
+                        <ul id="product-backgrounds" class="product-backgrounds" role="radiogroup" aria-label="Ảnh nền"></ul>
+                        <p id="product-background-hint" class="hint"></p>
+                      </div>
+                    </div>
+                  </div>
+                </section>
                 <section id="product-create-card" class="product-card">
-                  <h2><b>5</b> Giọng đọc và tạo video</h2>
+                  <h2><b>6</b> Giọng đọc và tạo video</h2>
                   <div class="product-voice-grid">
                     <label class="product-voice-wide">Giọng đọc <select id="product-voice"></select></label>
                     <label>Tốc độ đọc
@@ -281,26 +310,9 @@
                 </section>
               </div>
               <div class="product-col product-side">
-                <section class="product-card" aria-labelledby="product-look-title">
-                  <h2 id="product-look-title"><b>4</b> Mẫu video</h2>
-                  <div class="product-look">
-                    <div class="product-look-options">
-                      <div id="product-templates" class="product-templates" role="radiogroup" aria-label="Mẫu video">
-                        <button type="button" role="radio" aria-checked="true" data-template="ban-tin"><span class="product-mini" data-mini="ban-tin"><span></span><span></span></span><b>Bản tin</b><span class="hint">Ảnh trên, nền dưới</span></button>
-                        <button type="button" role="radio" aria-checked="false" data-template="toan-man-hinh"><span class="product-mini" data-mini="toan-man-hinh"><span></span><span></span></span><b>Toàn màn hình</b><span class="hint">Ảnh phủ cả khung</span></button>
-                        <button type="button" role="radio" aria-checked="false" data-template="chi-chu"><span class="product-mini" data-mini="chi-chu"><span></span><span></span></span><b>Chỉ chữ</b><span class="hint">Không cần ảnh</span></button>
-                      </div>
-                      <p id="product-template-note" class="hint"></p>
-                      <div id="product-background-block">
-                        <div class="product-card-head">
-                          <span class="product-label">Ảnh nền</span>
-                          <span id="product-background-size" class="hint"></span>
-                        </div>
-                        <ul id="product-backgrounds" class="product-backgrounds" role="radiogroup" aria-label="Ảnh nền"></ul>
-                        <p id="product-background-hint" class="hint"></p>
-                      </div>
-                    </div>
-                    <figure id="product-preview-wrap" class="product-preview-wrap">
+                <section class="product-card product-preview-card" aria-label="Xem trước">
+                  <h2 class="product-preview-head">Xem trước</h2>
+                  <figure id="product-preview-wrap" class="product-preview-wrap">
                       <div id="product-preview" class="product-preview" role="img" aria-label="Xem trước video theo mẫu đã chọn">
                         <div id="product-stage" class="product-stage">
                           <div id="product-stage-base" class="pv-layer"></div>
@@ -314,7 +326,7 @@
                       </div>
                       <figcaption class="hint">Xem trước bố cục, không phải video thật. Có ảnh nền thì kéo ảnh trong khung để chọn phần giữ lại.</figcaption>
                     </figure>
-                    <figure id="product-player-wrap" class="product-preview-wrap product-player-wrap" hidden>
+                  <figure id="product-player-wrap" class="product-preview-wrap product-player-wrap" hidden>
                       <figcaption id="product-player-title" class="product-player-title"></figcaption>
                       <video id="product-player" class="product-player" controls playsinline preload="metadata"></video>
                       <p id="product-player-note" class="hint" hidden>Không xem được video này trong ứng dụng; hãy bấm “Mở” để xem bằng trình phát của máy.</p>
@@ -323,7 +335,6 @@
                         <button id="product-player-edit" class="btn primary" type="button">Chỉnh sửa</button>
                       </div>
                     </figure>
-                  </div>
                 </section>
               </div>
             </div>
@@ -331,7 +342,7 @@
             </div>
           </section>
 
-          <section id="queue-content" class="queue-screen">
+          <section id="queue-content" class="queue-screen" hidden>
             <section id="queue-col" class="queue-col" aria-labelledby="queue-col-title">
               <div class="queue-col-head">
                 <h2 id="queue-col-title">Video</h2>
@@ -345,10 +356,11 @@
               <div class="queue-scroll">
                 <ul id="fetch-list" class="queue-list fetch-list" hidden></ul>
                 <ul id="queue-list" class="queue-list" hidden></ul>
-                <p id="queue-empty" class="queue-empty">Chưa có video. Thêm từ máy hoặc dán link ở thanh trên cùng.</p>
+                <p id="queue-empty" class="queue-empty">Chưa có video nào để lồng tiếng. Chọn video từ Hàng đợi ở nút bên dưới.</p>
               </div>
-              <div id="queue-col-foot" class="queue-col-foot" hidden>
-                <button id="run-all" class="btn block" type="button" hidden>Bắt đầu video đang chờ</button>
+              <div id="queue-col-foot" class="queue-col-foot dub-foot">
+                <button id="run-all" class="btn primary block" type="button" hidden>Bắt đầu video đang chờ</button>
+                <button id="dub-pick" class="btn block" type="button">Chọn video từ Hàng đợi</button>
               </div>
             </section>
 
@@ -364,10 +376,10 @@
                   <button type="button" role="tab" data-mode="cut" aria-selected="true" aria-controls="edit-panel">Cắt ghép</button>
                   <button type="button" role="tab" data-mode="insert" aria-selected="false" aria-controls="edit-panel">Chèn</button>
                   <button type="button" role="tab" data-mode="subs" aria-selected="false" aria-controls="edit-panel">Phụ đề</button>
-                  <button type="button" role="tab" data-mode="cover" aria-selected="false" aria-controls="edit-panel" title="Che chữ gốc">Che</button>
+                  <button type="button" role="tab" data-mode="cover" aria-selected="false" aria-controls="edit-panel" title="Che chữ gốc trên hình">Che chữ</button>
                   <button type="button" role="tab" data-mode="audio" aria-selected="false" aria-controls="edit-panel" title="Hiệu ứng âm thanh, âm thanh của bạn và âm lượng gốc">Âm thanh</button>
                   <button type="button" role="tab" data-mode="text" aria-selected="false" aria-controls="edit-panel" title="Tiêu đề, chú thích, tên kênh trên video">Chữ</button>
-                  <button type="button" role="tab" data-mode="more" aria-selected="false" aria-controls="edit-panel" title="Đóng gói, Shorts, đổi khung 16:9 từ video lồng tiếng này">Tạo thêm</button>
+                  <button type="button" role="tab" data-mode="more" aria-selected="false" aria-controls="edit-panel" title="Nội dung đăng bài, video đóng gói, Shorts và bản 16:9 từ video này">Đăng &amp; Shorts</button>
                 </div>
                 <button id="list-toggle" class="btn ghost list-toggle view-only" type="button" aria-controls="queue-col" aria-expanded="false">
                   <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" fill="none"/></svg>
@@ -401,11 +413,11 @@
                   <div class="drop-icon" aria-hidden="true">
                     <svg viewBox="0 0 24 24" width="28" height="28"><path d="M12 16V4m0 0-4.5 4.5M12 4l4.5 4.5M5 15v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
                   </div>
-                  <h2>Kéo thả video hoặc thư mục vào đây</h2>
-                  <p>hoặc <button id="add-files-inline" class="link" type="button">chọn file từ máy</button></p>
-                  <p class="formats">MP4 · MKV · MOV · AVI · WEBM · FLV · TS · 3GP · WMV · MPG</p>
+                  <h2>Chọn video để lồng tiếng Việt</h2>
+                  <p><button id="dub-pick-inline" class="btn primary" type="button">Chọn từ Hàng đợi</button></p>
+                  <p class="formats">Video bạn tải về hoặc thêm từ máy nằm ở Hàng đợi. <button id="add-files-inline" class="link" type="button">Thêm video từ máy</button></p>
                   <ol class="how">
-                    <li><b>1</b>Thêm video gốc hoặc dán link</li>
+                    <li><b>1</b>Chọn video từ Hàng đợi</li>
                     <li><b>2</b>Chọn có lồng tiếng Việt hay chỉ phụ đề</li>
                     <li><b>3</b>Bấm “Bắt đầu” — nhận MP4 + SRT/ASS</li>
                   </ol>
@@ -492,8 +504,8 @@
                     <p id="result-warning" class="result-warning" hidden></p>
                     <div class="result-edit">
                       <button id="open-review" class="btn block review-btn" type="button" title="Mở Chỉnh sửa ở thẻ Phụ đề: sửa câu dịch, đọc lại giọng, kiểu chữ">Sửa phụ đề &amp; giọng đọc</button>
-                      <button id="open-more" class="btn block" type="button" title="Mở Chỉnh sửa ở thẻ Tạo thêm">Đóng gói, Shorts, đổi khung</button>
-                      <button id="open-post" class="btn block" type="button" title="Tiêu đề, mô tả SEO, hashtag cho YouTube, Facebook, TikTok (Chỉnh sửa → Tạo thêm)" hidden>Nội dung đăng bài</button>
+                      <button id="open-more" class="btn block" type="button" title="Mở Chỉnh sửa ở thẻ Đăng &amp; Shorts">Đóng gói, Shorts, đổi khung</button>
+                      <button id="open-post" class="btn block" type="button" title="Tiêu đề, mô tả SEO, hashtag cho YouTube, Facebook, TikTok (Chỉnh sửa → Đăng &amp; Shorts)" hidden>Nội dung đăng bài</button>
                     </div>
                   </section>
 
@@ -1164,8 +1176,8 @@
                     <ul id="au-ai-list" class="au-ai-list" aria-label="Gợi ý hiệu ứng"></ul>
                   </div>
                 </section>
-                <section id="edit-more" class="edit-more" aria-label="Tạo thêm" hidden>
-                  <p class="edit-note">Tạo thêm từ video lồng tiếng này: nội dung đăng bài; bản đóng gói có mở đầu, kết thúc và nhạc; Shorts; bản đổi khung 16:9. Mỗi bản ra file mới, video gốc giữ nguyên.</p>
+                <section id="edit-more" class="edit-more" aria-label="Đăng &amp; Shorts" hidden>
+                  <p class="edit-note">Từ video này: nội dung đăng bài; bản đóng gói có mở đầu, kết thúc và nhạc; Shorts; bản đổi khung 16:9. Mỗi bản ra file mới, video gốc giữ nguyên.</p>
                   <div class="more-list">
                     <details id="posts-section" class="more-item" hidden>
                       <summary>
@@ -1703,7 +1715,7 @@
         </div>
         <footer class="settings-foot">
           <span>Phiên bản <button id="release-version" class="link version-link" type="button" title="Các phiên bản đã cài">—</button> <span id="release-channel" class="tag"></span></span>
-          <span class="settings-stats">Hàng đợi: <span id="stat-running">0</span> đang chạy · <span id="stat-done">0</span> hoàn tất · <span id="stat-failed">0</span> lỗi</span>
+          <span class="settings-stats">Lồng tiếng: <span id="stat-running">0</span> đang chạy · <span id="stat-done">0</span> hoàn tất · <span id="stat-failed">0</span> lỗi</span>
         </footer>
       </div>
     </div>

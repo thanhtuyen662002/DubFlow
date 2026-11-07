@@ -65,7 +65,9 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
   mediaUrl(path: string): Promise<string | null>;
   /** Open a finished product video in the editor. */
   edit(video: ProductVideo): void;
-}): { show(): void } {
+  /** "Chọn từ Hàng đợi": the page asks the app to open the picker. */
+  fromQueue?(): void;
+}): { show(): void; addClips(paths: readonly string[]): number } {
   let media: MediaItem[] = [];
   let scripts: Script[] = [];
   let music: string | null = null;
@@ -889,7 +891,16 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
   renderScripts();
   renderTemplates();
 
+  $("#product-from-queue").addEventListener("click", () => settings.fromQueue?.());
   return {
+    addClips: (paths) => {
+      // From Hàng đợi: clips go into a new video, so the form (not an earlier run) is shown.
+      const before = media.length;
+      media = addMedia(media, [...paths], MAX_VISUALS);
+      renderPhotos();
+      if (current) select("");
+      return media.length - before;
+    },
     show: () => {
       showProvider();
       void loadVoices();

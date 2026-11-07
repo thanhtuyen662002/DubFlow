@@ -37,6 +37,9 @@ import { createSfxLibrary } from "./features/sfx/library.ts";
 import { mountSfxSettings } from "./features/sfx/settings.ts";
 import { mountPerformanceSettings } from "./features/performance/settings.ts";
 import { STYLE_STORAGE_KEY, storedStyle, type SubtitleStyle } from "./features/edit/subtitles.ts";
+import { finishedDubFor, mediaUse, MEDIA_STORAGE_KEY, parseMedia, seedFromJobs, serializeMedia, USE_LABELS, type MediaEntry } from "./features/media/model.ts";
+import { mountMediaScreen, pauseMedia, type DownloadRow, type MediaScreen } from "./features/media/view.ts";
+import { pickFromMedia } from "./features/media/picker.ts";
 import { COVER_STORAGE_KEY, describeCoverStyle, normalizeCoverStyle, storedCoverStyle, type CoverMode, type CoverStyle } from "./features/edit/cover.ts";
 import { configureHostAi, createAiSession, isKeyError, PROVIDERS } from "./features/ai/provider.ts";
 import { loadPrefs, translationJobArgs } from "./features/ai/translation_prefs.ts";
@@ -96,6 +99,8 @@ type FetchEntry = {
   saving: boolean;
 };
 const fetches = new Map<string, FetchEntry>();
+/** Hàng đợi (mounted with the other pages below). */
+let media: MediaScreen | null = null as MediaScreen | null;
 
 const $ = <T extends HTMLElement>(selector: string): T => {
   const element = document.querySelector<T>(selector);
@@ -198,6 +203,8 @@ function tone(state: JobStatusState, cancelled = false): string {
 
 function showError(message: string): void {
   queueState.textContent = message;
+  const mediaState = document.getElementById("media-state");
+  if (mediaState) mediaState.textContent = message;
 }
 
 function element<K extends keyof HTMLElementTagNameMap>(tag: K, className = "", text = ""): HTMLElementTagNameMap[K] {
@@ -253,6 +260,7 @@ function jobThumb(id: string, icon: string, seconds?: number, sourcePath?: strin
       .finally(() => {
         queueFrameWaits.delete(sourcePath);
         if (queueFrames.get(sourcePath) && lastModel) renderQueue(lastModel.view);
+        if (queueFrames.get(sourcePath)) media?.refresh();
       });
   }
   if (seconds !== undefined) thumb.append(element("span", "job-dur", duration(seconds * 1000)));
@@ -416,7 +424,7 @@ function renderQueueEmpty(): void {
   empty.hidden = !queueList.hidden || !fetchList.hidden;
   empty.textContent = queue.getSnapshot().jobs.length || fetches.size
     ? "Không có video nào ở mục này."
-    : "Chưa có video. Thêm từ máy hoặc dán link ở thanh trên cùng.";
+    : "Chưa có video nào để lồng tiếng. Chọn video từ Hàng đợi ở nút bên dưới.";
 }
 
 function duration(ms: number): string {
@@ -846,7 +854,7 @@ function renderStage(job: QueueJob | null): void {
     return;
   }
   if (!job) {
-    $("#detail-name").textContent = queue.getSnapshot().jobs.length ? "Chọn một video trong danh sách" : "Thêm video để bắt đầu";
+    $("#detail-name").textContent = queue.getSnapshot().jobs.length ? "Chọn một video trong danh sách" : "Chọn video từ Hàng đợi để bắt đầu";
     $("#player-mode").hidden = true;
     busy.hidden = failed.hidden = true;
     playerJobId = null;
@@ -1066,14 +1074,51 @@ function addPaths(paths: string[]): void {
     return;
   }
   showError("");
-  const added = queue.addPaths(videos);
-  applyDefaults(added);
-  if (added.length) {
-    selectedFetchId = null;
-    showView("queue");
+  // Every video lands in Hàng đợi first; Lồng tiếng, Bán hàng and Ghép video pick from there.
+  if (!videos.length) return;
+  media?.add(videos.map((path) => ({ path })));
+  if (!editor.target) showView("media");
+}
+
+/** Hàng đợi → Lồng tiếng: one dub job per video (an existing one is reused), then show it. */
+function dubEntries(entries: readonly MediaEntry[]): void {
+  if (!entries.length) return;
+  showError("");
+  const jobs = queue.getSnapshot().jobs;
+  const added: string[] = [];
+  let last: string | null = null;
+  try {
+    for (const entry of entries) {
+      const existing = jobs.find((job) => job.sourcePath === entry.path && !job.revisionOf);
+      if (existing) { last = existing.id; continue; }
+      const id = entry.originUrl && entry.outputDir
+        ? queue.addLinkJob(entry.path, entry.originUrl, entry.title, entry.outputDir)
+        : queue.addPaths([entry.path])[0] ?? null;
+      if (id) { added.push(id); last = id; }
+    }
+  } catch (error) {
+    showError(`Không thêm được video vào Lồng tiếng: ${String(error).slice(0, 160)}`);
   }
-  if (added.length && !selectedJob()) queue.selectJob(added[0]);
-  else if (added.length) queue.selectJob(added[added.length - 1]);
+  applyDefaults(added);
+  selectedFetchId = null;
+  void navigate("queue");
+  if (last) queue.selectJob(last);
+}
+
+/** The Hàng đợi videos a page may take, with each one's thumbnail. */
+function mediaThumb(entry: MediaEntry): HTMLElement {
+  return jobThumb(entry.id, VIDEO_ICON, undefined, entry.path);
+}
+
+async function pickForDub(): Promise<void> {
+  const jobs = queue.getSnapshot().jobs;
+  const chosen = await pickFromMedia({
+    title: "Chọn video để lồng tiếng", hint: "Video trong Hàng đợi. Có thể chọn nhiều video, mỗi video thành một việc lồng tiếng.",
+    confirmLabel: "Thêm vào Lồng tiếng", entries: media?.entries() ?? [], thumb: mediaThumb,
+    taken: (entry) => jobs.some((job) => job.sourcePath === entry.path),
+    empty: "Hàng đợi chưa có video. Dán link ở thanh trên cùng hoặc thêm video từ máy trước.", openQueue: () => void navigate("media"),
+  });
+  dubEntries(chosen);
 }
 
 /** Dropped files and folders: the host expands folders to the videos inside. */
@@ -1101,6 +1146,8 @@ async function pickFiles(): Promise<void> {
 
 $("#add-files").addEventListener("click", () => void pickFiles());
 $("#add-files-inline").addEventListener("click", () => void pickFiles());
+$("#dub-pick").addEventListener("click", () => void pickForDub());
+$("#dub-pick-inline").addEventListener("click", () => void pickForDub());
 
 // Batch: start queued videos one at a time (each job keeps its own options),
 // so a long queue never runs several CPU-heavy pipelines at once.
@@ -1111,8 +1158,7 @@ function runnableJobs(): QueueJob[] {
 function renderRunAll(): void {
   const waiting = runnableJobs().length;
   runAllButton.hidden = waiting < 1 && !batchRunning;
-  $("#queue-col-foot").hidden = runAllButton.hidden;
-  runAllButton.textContent = batchRunning ? `Dừng hàng đợi (${waiting} chờ)` : `Bắt đầu ${waiting} video đang chờ`;
+  runAllButton.textContent = batchRunning ? `Dừng lồng tiếng (${waiting} chờ)` : `Bắt đầu ${waiting} video đang chờ`;
   runAllButton.title = batchRunning ? "Video đang chạy sẽ chạy xong; các video còn lại không tự bắt đầu" : "Xử lý lần lượt từng video đang chờ";
 }
 
@@ -1453,58 +1499,32 @@ function fetchBar(fraction: number | null): HTMLElement {
   return bar;
 }
 
-function renderFetches(): void {
-  const stale = selectedFetchId !== null && !fetches.has(selectedFetchId);
-  if (stale) selectedFetchId = null;
-  fetchList.replaceChildren();
-  fetchList.hidden = fetches.size === 0 || queueFilter === "done";
+/** The download rows Hàng đợi shows above its videos. */
+function downloadRows(): DownloadRow[] {
   const now = Date.now();
-  for (const entry of fetches.values()) {
-    const { status, outputDir } = entry;
+  return [...fetches.values()].map((entry) => {
+    const { status } = entry;
     const view = fetchView(entry, now, true);
-    const selected = selectedFetchId === status.scan_id;
-    const item = element("li", `job${view.failed ? " failed" : ""}${selected ? " selected" : ""}`);
-    item.tabIndex = 0;
-    if (selected) item.setAttribute("aria-current", "true");
-    const main = element("span", "job-main");
-    const meta = element("span", "job-meta");
-    meta.append(element("span", `dot ${view.failed ? "err" : status.state === "queued" ? "" : "run"}`),
-      element("span", `msg${view.failed ? " err" : ""}`, view.failed ? "Tải không được" : view.message));
-    const title = element("span", "job-title", fetchName(status));
-    main.append(title, meta);
-    if (view.bar) main.append(fetchBar(view.fraction));
-    item.append(jobThumb(status.scan_id, LINK_ICON), main);
-    if (!entry.saving) {
-      const remove = element("button", "icon-btn job-dismiss");
-      remove.type = "button";
-      remove.title = "Hủy tải";
-      remove.setAttribute("aria-label", "Hủy tải");
-      remove.innerHTML = CLOSE_ICON;
-      remove.addEventListener("click", (event) => {
-        event.stopPropagation();
-        void cancelFetch(status.scan_id);
-      });
-      item.append(remove);
-    }
-    // Where the results of this link will be saved, from the moment it is added.
-    item.title = `${fetchName(status)}\n${status.url}\nVideo tải về: ${downloadDir() ?? defaultDownloadDir}\nKết quả: ${outputDir}`;
-    const select = () => {
-      selectedFetchId = status.scan_id;
-      setListOpen(false);
-      renderFetches();
+    const full = fetchView(entry, now);
+    return {
+      id: status.scan_id, title: fetchName(status), provider: PROVIDER_NAMES[status.provider] ?? status.provider,
+      badge: full.badge, message: view.failed ? full.message : view.message, fraction: view.fraction, bar: view.bar, failed: view.failed,
+      detail: `${full.message}\nVideo tải về: ${shortPath(downloadDir() ?? defaultDownloadDir)}`,
+      cancel: entry.saving ? undefined : () => void cancelFetch(status.scan_id),
+      actions: () => failedFetchActions(entry),
     };
-    item.addEventListener("click", select);
-    item.addEventListener("keydown", (event) => {
-      if (event.target === item && (event.key === "Enter" || event.key === " ")) {
-        event.preventDefault();
-        select();
-      }
-    });
-    fetchList.append(item);
-  }
+  });
+}
+/** The download shown in Hàng đợi's player, if any. */
+let mediaShowing: string | null = null;
+
+function renderFetches(): void {
+  // Downloads show in Hàng đợi, not in Lồng tiếng.
+  fetchList.hidden = true;
+  fetchList.replaceChildren();
+  selectedFetchId = null;
+  media?.renderDownloads();
   renderQueueEmpty();
-  // The player follows the selected download, and returns to the job once it is gone.
-  if ((selectedFetchId !== null || stale) && lastModel) render(lastModel);
 }
 
 function scheduleFetchPoll(entry: FetchEntry): void {
@@ -1560,6 +1580,7 @@ async function refetch(entry: FetchEntry, authRetried = entry.authRetried): Prom
   window.clearTimeout(entry.timer);
   fetches.delete(status.scan_id);
   if (wasSelected) selectedFetchId = scanId;
+  if (mediaShowing === status.scan_id) media?.selectDownload(scanId);
   renderFetches();
 }
 
@@ -1687,12 +1708,8 @@ async function finishFetch(entry: FetchEntry, mediaPath: string): Promise<void> 
     entry.outputDir = outputDir;
   }
   fetches.delete(status.scan_id);
-  try {
-    const linkJob = queue.addLinkJob(path, status.url, title, outputDir);
-    if (linkJob) applyDefaults([linkJob]);
-  } catch (error) {
-    showError(`Không thêm được video vào danh sách: ${String(error).slice(0, 160)}`);
-  }
+  // The finished download joins Hàng đợi; the player follows it when its row was the one shown.
+  media?.add([{ path, title, originUrl: status.url, outputDir }], mediaShowing === status.scan_id);
   renderFetches();
 }
 
@@ -1731,13 +1748,82 @@ async function playableUrl(path: string): Promise<string | null> {
   return allowed ? versioned(path, convertFileSrc(allowed)) : null;
 }
 const productStudio = mountProductStudio(invoke, claudeKey, {
-  outputRoot, cpuOnly, roots: outputRoots, mediaUrl: playableUrl,
+  outputRoot, cpuOnly, roots: outputRoots, mediaUrl: playableUrl, fromQueue: () => void pickForProduct(),
   edit: (video) => void editVideo({ id: video.outputPath, kind: "product", outputPath: video.outputPath, displayName: video.displayName }, "product"),
 });
 const compilation = mountCompilation(invoke, claudeKey, {
   jobs: () => queue.getSnapshot().jobs, outputRoot, cpuOnly, roots: outputRoots, mediaUrl: playableUrl,
   edit: (video) => void editVideo({ id: video.outputPath, kind: "compilation", outputPath: video.outputPath, displayName: video.displayName }, "compilation"),
+  fromQueue: () => void pickForCompilation(),
 });
+
+// Hàng đợi: the list every page picks its videos from.
+async function pickForProduct(): Promise<void> {
+  const chosen = await pickFromMedia({
+    title: "Chọn clip cho video bán hàng", hint: "Các video được chọn thành clip trong video bán hàng, theo thứ tự trong danh sách ảnh/clip.",
+    confirmLabel: "Thêm làm clip", entries: media?.entries() ?? [], thumb: mediaThumb, max: 12,
+    empty: "Hàng đợi chưa có video. Dán link ở thanh trên cùng hoặc thêm video từ máy trước.", openQueue: () => void navigate("media"),
+  });
+  if (chosen.length) productEntries(chosen);
+}
+function productEntries(entries: readonly MediaEntry[]): void {
+  const added = productStudio.addClips(entries.map((entry) => entry.path));
+  void navigate("product");
+  if (added < entries.length) showError(added ? `Đã thêm ${added}/${entries.length} clip (tối đa 12 ảnh hoặc clip mỗi video).` : "Clip đã có trong video bán hàng, hoặc đã đủ 12 ảnh/clip.");
+}
+async function pickForCompilation(): Promise<void> {
+  const jobs = queue.getSnapshot().jobs;
+  const chosen = await pickFromMedia({
+    title: "Chọn video để ghép", hint: "Ghép video dùng bản đã lồng tiếng. Video chưa lồng tiếng cần chạy ở Lồng tiếng trước.",
+    confirmLabel: "Thêm vào video ghép", entries: media?.entries() ?? [], thumb: mediaThumb, max: 30,
+    blocked: (entry) => finishedDubFor(entry, jobs) ? "" : mediaUse(entry, jobs) === "dubbing" ? "Đang lồng tiếng" : "Chưa lồng tiếng",
+    note: (entry) => finishedDubFor(entry, jobs) ? USE_LABELS.dubbed : "",
+    empty: "Hàng đợi chưa có video. Dán link ở thanh trên cùng hoặc thêm video từ máy trước.", openQueue: () => void navigate("media"),
+  });
+  if (chosen.length) compileEntries(chosen);
+}
+/** Hàng đợi → Ghép video: dubbed videos join the draft; the others can go to Lồng tiếng first. */
+async function compileEntries(entries: readonly MediaEntry[]): Promise<void> {
+  const jobs = queue.getSnapshot().jobs;
+  const ready = entries.map((entry) => finishedDubFor(entry, jobs)).filter((job): job is QueueJob => Boolean(job));
+  const waiting = entries.filter((entry) => !finishedDubFor(entry, jobs));
+  if (waiting.length && await confirmDialog({
+    title: ready.length ? `${waiting.length} video chưa lồng tiếng xong` : "Video chưa lồng tiếng xong",
+    message: `Ghép video dùng bản đã lồng tiếng. Đưa ${waiting.length === 1 ? "video này" : `${waiting.length} video này`} sang Lồng tiếng để chạy trước?${ready.length ? ` ${ready.length} video đã xong sẽ được thêm vào video ghép.` : ""}`,
+    confirmLabel: "Sang Lồng tiếng", cancelLabel: ready.length ? "Chỉ ghép video đã xong" : "Để sau",
+  })) {
+    if (ready.length) compilation.pick(ready.map((job) => job.id));
+    dubEntries(waiting);
+    return;
+  }
+  if (!ready.length) return;
+  await navigate("compilation");
+  const added = compilation.pick(ready.map((job) => job.id));
+  if (!added && ready.length) showError("Các video này đã có trong video ghép.");
+}
+const storedMedia = (() => {
+  try { return window.localStorage.getItem(MEDIA_STORAGE_KEY); } catch { return null; }
+})();
+const mediaStore = { write: (value: string) => { try { window.localStorage.setItem(MEDIA_STORAGE_KEY, value); } catch { /* the list still works this session */ } } };
+const parsedMedia = parseMedia(storedMedia);
+media = mountMediaScreen({
+  store: mediaStore,
+  // First run after the update: what was already downloaded comes along from Lồng tiếng.
+  initial: parsedMedia ?? seedFromJobs(queue.getSnapshot().jobs),
+  now: () => new Date().toISOString(),
+  jobs: () => queue.getSnapshot().jobs,
+  downloads: downloadRows,
+  mediaUrl: playableUrl,
+  thumb: mediaThumb,
+  addFiles: () => void pickFiles(),
+  dub: dubEntries,
+  product: productEntries,
+  compile: (entries) => void compileEntries(entries),
+  edit: (entry) => void editVideo({ id: entry.path, kind: "file", outputPath: entry.path, displayName: entry.title }, "media"),
+  reveal: (entry) => void invoke("reveal_download", { path: entry.path }).catch((error) => showError(`Không mở được thư mục: ${String(error).slice(0, 160)}`)),
+  confirm: (title, message, confirmLabel) => confirmDialog({ title, message, confirmLabel, danger: true }),
+});
+if (!parsedMedia) mediaStore.write(serializeMedia(media.entries()));
 const docu = mountDocu(invoke, claudeKey, { jobs: () => queue.getSnapshot().jobs, outputRoot, roots: outputRoots, mediaUrl: playableUrl,
   edit: (video, seed) => void editVideo({ id: video.outputPath, kind: "docu", outputPath: video.outputPath, displayName: video.displayName, seed }, "docu"),
   // Claude working over MCP: a pulsing dot on "Phim tài liệu" wherever the user is.
@@ -1764,23 +1850,26 @@ const editLibrary = mountEditLibrary(invoke, {
   },
   showError,
 });
-type View = "queue" | "discover" | "product" | "compilation" | "docu" | "edit";
+type View = "media" | "queue" | "discover" | "product" | "compilation" | "docu" | "edit";
 const VIEW_HEADINGS: Record<View, [string, string]> = {
-  queue: ["Hàng đợi", ""],
+  media: ["Hàng đợi", "Video tải về và từ máy"],
+  queue: ["Lồng tiếng", ""],
   discover: ["Khám phá", "Douyin, Bilibili, Kuaishou"],
-  product: ["Video bán hàng", "Từ mô tả hoặc ảnh"],
-  compilation: ["Tổng hợp", "Ghép các video đã xong"],
+  product: ["Video bán hàng", "Từ mô tả, ảnh hoặc clip"],
+  compilation: ["Ghép video", "Từ video đã lồng tiếng"],
   docu: ["Phim tài liệu", "Kịch bản phim tài liệu tiếng Anh"],
   edit: ["Chỉnh sửa", "Chọn một video, hoặc kéo thả video vào cửa sổ"],
 };
 /** The page shown (the queue screen also hosts the editor). */
-let currentView: View = "queue";
+let currentView: View = "media";
 /** Show a page; `highlight` is the rail item lit (the page an edited video came from). */
 function showView(view: View, highlight: View = view): void {
   currentView = view;
   // Chỉnh sửa has its own "Mở video trên máy"; the queue's link bar and "Thêm từ máy" would only confuse it.
   document.body.dataset.page = highlight;
   $("#edit-view").hidden = view !== "edit";
+  $("#media-view").hidden = view !== "media";
+  if (view !== "media") pauseMedia();
   $("#compilation-view").hidden = view !== "compilation";
   $("#docu-view").hidden = view !== "docu";
   $("#discover-view").hidden = view !== "discover";
@@ -1793,7 +1882,7 @@ function showView(view: View, highlight: View = view): void {
   // While editing, the header names the video.
   $("#page-meta").textContent = view === "queue" && highlight === "edit" && editor.target ? editor.target.displayName : meta;
   if (view !== "queue") setListOpen(false);
-  for (const [id, active] of [["#nav-queue", highlight === "queue"], ["#nav-discover", highlight === "discover"], ["#nav-product", highlight === "product"], ["#nav-compilation", highlight === "compilation"], ["#nav-docu", highlight === "docu"], ["#nav-edit", highlight === "edit"]] as const) {
+  for (const [id, active] of [["#nav-media", highlight === "media"], ["#nav-queue", highlight === "queue"], ["#nav-discover", highlight === "discover"], ["#nav-product", highlight === "product"], ["#nav-compilation", highlight === "compilation"], ["#nav-docu", highlight === "docu"], ["#nav-edit", highlight === "edit"]] as const) {
     $(id).classList.toggle("active", active);
     if (active) $(id).setAttribute("aria-current", "page");
     else $(id).removeAttribute("aria-current");
@@ -1804,6 +1893,7 @@ function showView(view: View, highlight: View = view): void {
   if (view === "compilation") compilation.show();
   if (view === "docu") docu.show();
   if (view === "edit") editLibrary.show();
+  if (view === "media") media?.show();
   // A page shown again re-checks its panels against the window it now has.
   refitPanels();
 }
@@ -1822,7 +1912,7 @@ async function navigate(view: View): Promise<void> {
   }
   showView(view);
 }
-for (const [id, view] of [["#nav-queue", "queue"], ["#nav-discover", "discover"], ["#nav-product", "product"], ["#nav-compilation", "compilation"], ["#nav-docu", "docu"], ["#nav-edit", "edit"]] as const) {
+for (const [id, view] of [["#nav-media", "media"], ["#nav-queue", "queue"], ["#nav-discover", "discover"], ["#nav-product", "product"], ["#nav-compilation", "compilation"], ["#nav-docu", "docu"], ["#nav-edit", "edit"]] as const) {
   $(id).addEventListener("click", (event) => {
     event.preventDefault();
     void navigate(view);
@@ -1902,12 +1992,13 @@ $("#link-form").addEventListener("submit", async (event) => {
   }
   const submit = $<HTMLButtonElement>("#link-submit");
   submit.disabled = true;
-  // The header is on every screen; the downloads show up in the queue.
-  showView("queue");
+  // The header is on every screen; the downloads show up in Hàng đợi.
+  if (!editor.target) showView("media");
   const failures: string[] = [];
-  for (const link of links) {
+  for (const [index, link] of links.entries()) {
     try {
-      await startFetch(link);
+      const scanId = await startFetch(link);
+      if (index === 0) media?.selectDownload(scanId);
     } catch (error) {
       failures.push(`${link.slice(0, 60)}: ${String(error).slice(0, 120)}`);
     }
@@ -1919,7 +2010,7 @@ $("#link-form").addEventListener("submit", async (event) => {
     ...(tooLong.length ? [`${tooLong.length} link quá dài bị bỏ qua.`] : []),
     ...(dropped ? [`Chỉ nhận tối đa 50 link mỗi lần; ${dropped} link chưa được thêm.`] : []),
   ];
-  showError(notes.length ? `${links.length - failures.length}/${links.length} link đã được thêm vào hàng tải. ${notes.join(" · ")}`.slice(0, 600) : "");
+  showError(notes.length ? `${links.length - failures.length}/${links.length} link đang được tải về Hàng đợi. ${notes.join(" · ")}`.slice(0, 600) : "");
 });
 // Pasting several lines into the one-line box keeps the line breaks as spaces.
 $<HTMLInputElement>("#link-input").addEventListener("paste", (event) => {
@@ -2725,7 +2816,7 @@ if (isTauri) {
     const picking = !editing && currentView === "edit";
       if (event.payload.type === "enter" || event.payload.type === "over") {
         overlay.hidden = false;
-        $("#drag-overlay-text").textContent = editing ? "Thả để chèn vào video đang sửa" : picking ? "Thả để mở video và chỉnh sửa" : "Thả để thêm video";
+        $("#drag-overlay-text").textContent = editing ? "Thả để chèn vào video đang sửa" : picking ? "Thả để mở video và chỉnh sửa" : "Thả để thêm vào Hàng đợi";
         dropZone.classList.add("hover");
       } else {
         overlay.hidden = true;
@@ -2741,6 +2832,9 @@ if (isTauri) {
       }
   }).catch(() => undefined);
 }
+
+// The app opens on Hàng đợi.
+showView("media");
 
 window.addEventListener("beforeunload", () => shell.dispose());
 

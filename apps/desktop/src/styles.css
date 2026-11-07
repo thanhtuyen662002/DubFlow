@@ -814,9 +814,9 @@ button.job.selected { background: var(--select); }
 .product-results li { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .product-results li.failed { color: var(--err); }
 /* Bán hàng: two columns (design E), stacking below 1200 px */
-.product-studio { grid-template-columns: minmax(0, 1fr) var(--product-side-w, minmax(340px, 400px)); align-items: start; max-width: 1360px; }
+.product-studio { grid-template-columns: minmax(0, 1fr) var(--product-side-w, minmax(300px, 340px)); align-items: start; max-width: 1240px; }
 /* Tall windows: the template and its preview stay in view beside the long left column. */
-@media (min-width: 1200px) and (min-height: 900px) { .product-side { position: sticky; top: 0; } }
+@media (min-width: 1200px) and (min-height: 720px) { .product-side { position: sticky; top: 0; } }
 .product-voice-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 16px; margin-top: 12px; }
 .product-voice-grid label { display: grid; gap: 4px; color: var(--text-2); font-size: 12.5px; font-weight: 550; }
 .product-voice-grid select { width: 100%; height: 34px; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--canvas); color: var(--text); }
@@ -1930,3 +1930,77 @@ body:is(.panel-dragging-x, .panel-dragging-y) :is(iframe, video) { pointer-event
 /* Phụ đề: the corner knob that resizes the subtitle text on the preview. */
 .subs-size-knob { position: absolute; z-index: 2; width: 14px; height: 14px; margin: -4px 0 0 -4px; box-sizing: border-box; border: 2px solid #fff; border-radius: 4px; background: var(--accent); cursor: nwse-resize; pointer-events: auto; touch-action: none; }
 .subs-size-knob[hidden] { display: none; }
+
+/* Hàng đợi: every downloaded or added video (list) and a player for the chosen one. */
+.media { display: flex; flex: 1; min-height: 0; }
+.media[hidden] { display: none; }
+.media-screen { flex: 1; }
+.media-col .queue-col-head .hint { font-size: 12px; }
+.media-search { display: block; margin: 0 16px 8px; }
+.media-search input { width: 100%; height: 32px; padding: 0 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--text); font: inherit; font-size: 13px; }
+.media-search input:focus-visible { border-color: var(--accent); outline: none; }
+.media-bulk { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 16px 6px; color: var(--text-2); font-size: 12.5px; }
+.media-all { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.media-row { position: relative; align-items: center; }
+.media-check { flex: none; width: 15px; height: 15px; margin: 0; accent-color: var(--accent); opacity: 0; transition: opacity .12s; }
+.media-row:hover .media-check, .media-row:focus-within .media-check, .media-row.picked .media-check, .media-col:has(.media-row.picked) .media-check { opacity: 1; }
+.media-row .job-meta { flex-wrap: nowrap; }
+.mini-tag.err { color: var(--err); background: var(--err-bg); }
+.media-dl-thumb { background: oklch(0.29 0.025 230); }
+.media-foot { display: flex; flex-direction: column; gap: 8px; }
+.media-bulk-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.media-bulk-actions[hidden] { display: none; }
+.media-bulk-actions .btn { width: 100%; height: 34px; padding: 0 8px; font-size: 13px; }
+.media-bulk-actions .btn.ghost { color: var(--text-2); }
+.media-foot .btn svg { margin-right: 6px; vertical-align: -3px; }
+.media-player-col .player-stage { padding: 16px 16px 12px; }
+.media-frame video { cursor: default; }
+.media-frame video[hidden] { display: none; }
+.media-info { display: flex; flex: none; flex-direction: column; gap: 10px; padding: 12px 16px 16px; border-top: 1px solid var(--line); }
+.media-info[hidden] { display: none; }
+.media-facts { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.media-meta { min-width: 0; overflow: hidden; color: var(--text-3); font-size: 12.5px; text-overflow: ellipsis; white-space: nowrap; }
+.media-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.media-actions .btn { height: 34px; padding: 0 14px; }
+.media-actions .spacer { flex: 1; }
+.media-actions-label { color: var(--text-2); font-size: 13px; }
+@container (max-width: 640px) {
+  .media-actions-label, .media-actions .spacer { display: none; }
+}
+
+/* "Chọn từ Hàng đợi" (Lồng tiếng, Bán hàng, Ghép video). */
+.confirm-panel.media-picker { display: flex; flex-direction: column; width: min(620px, 100%); max-height: min(720px, 100%); padding: 0; overflow: hidden; }
+.media-picker-head { padding: 18px 20px 10px; }
+.media-picker-head .hint { margin-top: 4px; }
+.media-picker-search { flex: none; height: 34px; margin: 0 20px 8px; padding: 0 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--text); font: inherit; font-size: 13px; }
+.media-picker-list { flex: 1; min-height: 120px; margin: 0; padding: 0 12px; overflow: auto; list-style: none; }
+.media-picker .queue-empty { padding: 12px 20px; }
+.media-picker .queue-empty[hidden] { display: none; }
+.media-pick { display: flex; align-items: center; gap: 10px; padding: 7px 8px; border-radius: 8px; cursor: pointer; }
+.media-pick:hover { background: var(--surface); }
+.media-pick:has(input:checked) { background: var(--select); }
+.media-pick.blocked { cursor: default; opacity: .62; }
+.media-pick input { flex: none; width: 16px; height: 16px; accent-color: var(--accent); }
+.media-pick .job-thumb { width: 64px; height: 38px; }
+.media-pick-text { display: flex; flex: 1; flex-direction: column; gap: 3px; min-width: 0; }
+.media-pick-name { overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.media-pick-meta { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; }
+.media-pick-meta .hint { font-size: 12px; }
+.media-picker .confirm-actions { align-items: center; margin: 0; padding: 12px 20px 16px; border-top: 1px solid var(--line); }
+.media-picker-count { margin-right: auto; }
+
+/* Lồng tiếng: the list's foot always offers "Chọn video từ Hàng đợi". */
+.dub-foot { display: flex; flex-direction: column; gap: 8px; }
+.dub-foot .btn[hidden] { display: none; }
+.setup-group-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 18px; }
+.setup-group-head .setup-group { margin: 0; }
+.setup-group-head .btn { height: 30px; padding: 0 12px; font-size: 13px; }
+.product-pick-actions { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+
+/* Bán hàng, sắp xếp lại: the steps 1 → 6 read down one column, the preview stays beside them. */
+.product-media-lead { margin: 6px 0 0; }
+.product-preview-card { display: grid; gap: 12px; }
+.product-preview-head { justify-content: center; color: var(--text-2); font-size: 13px !important; }
+.product-preview-card .product-preview-wrap { width: min(280px, 100%); }
+.product-look-options { flex-basis: 100%; }
+.product-templates button { min-height: 0; }
