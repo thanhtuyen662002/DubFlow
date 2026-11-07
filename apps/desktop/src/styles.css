@@ -1954,7 +1954,7 @@ body:is(.panel-dragging-x, .panel-dragging-y) :is(iframe, video) { pointer-event
 .media-bulk-actions .btn.ghost { color: var(--text-2); }
 .media-foot .btn svg { margin-right: 6px; vertical-align: -3px; }
 .media-player-col .player-stage { padding: 16px 16px 12px; }
-.media-frame video { cursor: default; }
+.media-frame video { cursor: pointer; }
 .media-frame video[hidden] { display: none; }
 .media-info { display: flex; flex: none; flex-direction: column; gap: 10px; padding: 12px 16px 16px; border-top: 1px solid var(--line); }
 .media-info[hidden] { display: none; }
@@ -2004,3 +2004,57 @@ body:is(.panel-dragging-x, .panel-dragging-y) :is(iframe, video) { pointer-event
 .product-preview-card .product-preview-wrap { width: min(280px, 100%); }
 .product-look-options { flex-basis: 100%; }
 .product-templates button { min-height: 0; }
+
+/* ---- DubFlow player bar (Hàng đợi, Bán hàng) ---------------------------- */
+.pbar-host { position: relative; outline: none; }
+.pbar-host:focus-visible { box-shadow: 0 0 0 2px var(--accent); }
+.pbar { position: absolute; right: 0; bottom: 0; left: 0; z-index: 3; display: flex; flex-direction: column; gap: 2px; padding: 18px 10px 6px; background: linear-gradient(to top, oklch(0.08 0.005 275 / .92), oklch(0.08 0.005 275 / .55) 55%, transparent); color: oklch(0.96 0.005 275); opacity: 0; transition: opacity .18s ease; pointer-events: none; }
+.pbar[hidden] { display: none; }
+.pbar-host.pbar-awake .pbar, .pbar-host.pbar-paused .pbar, .pbar-host:focus-within .pbar, .pbar-host.pbar-scrubbing .pbar { opacity: 1; pointer-events: auto; }
+.pbar-host.pbar-full:not(.pbar-awake):not(.pbar-paused) { cursor: none; }
+.pbar-seek { position: relative; height: 16px; margin: 0 6px; cursor: pointer; touch-action: none; outline: none; }
+.pbar-seek::before, .pbar-loaded, .pbar-done { position: absolute; top: 50%; left: 0; height: 4px; border-radius: 2px; transform: translateY(-50%); transition: height .12s ease; content: ""; }
+.pbar-seek::before { right: 0; background: oklch(1 0 0 / .22); }
+.pbar-loaded { background: oklch(1 0 0 / .38); }
+.pbar-done { background: var(--accent); }
+.pbar-seek:hover :is(.pbar-loaded, .pbar-done), .pbar-seek:hover::before, .pbar-scrubbing .pbar-seek :is(.pbar-loaded, .pbar-done), .pbar-scrubbing .pbar-seek::before { height: 6px; }
+.pbar-knob { position: absolute; top: 50%; width: 13px; height: 13px; border-radius: 50%; background: oklch(0.98 0 0); box-shadow: 0 1px 4px oklch(0 0 0 / .5); transform: translate(-50%, -50%) scale(0); transition: transform .12s ease; }
+.pbar-seek:hover .pbar-knob, .pbar-seek:focus-visible .pbar-knob, .pbar-scrubbing .pbar-knob { transform: translate(-50%, -50%) scale(1); }
+.pbar-seek:focus-visible::before { box-shadow: 0 0 0 2px var(--accent-text); }
+.pbar-tip { position: absolute; bottom: 16px; padding: 2px 6px; border-radius: 4px; background: oklch(0.12 0.005 275 / .95); font-size: 12px; font-variant-numeric: tabular-nums; transform: translateX(-50%); pointer-events: none; }
+.pbar-tip[hidden] { display: none; }
+.pbar-row { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.pbar-row .spacer { flex: 1; min-width: 4px; }
+.pbar-btn { display: grid; flex: none; place-items: center; min-width: 32px; height: 32px; padding: 0 4px; border: 0; border-radius: 8px; background: transparent; color: inherit; font: inherit; font-size: 12.5px; font-weight: 600; font-variant-numeric: tabular-nums; cursor: pointer; }
+.pbar-btn:hover { background: oklch(1 0 0 / .14); }
+.pbar-btn:focus-visible { outline: 2px solid var(--accent-text); outline-offset: -2px; }
+.pbar-play svg { width: 20px; height: 20px; }
+.pbar-speed.on { color: var(--accent-text); }
+.pbar-time { margin-left: 6px; overflow: hidden; font-size: 12.5px; font-variant-numeric: tabular-nums; white-space: nowrap; text-overflow: ellipsis; }
+.pbar-volume { --fill: 100%; flex: none; width: 72px; height: 4px; margin: 0 6px 0 2px; border-radius: 2px; background: linear-gradient(to right, oklch(0.98 0 0) var(--fill), oklch(1 0 0 / .25) var(--fill)); cursor: pointer; appearance: none; }
+.pbar-volume::-webkit-slider-thumb { width: 12px; height: 12px; border: 0; border-radius: 50%; background: oklch(0.98 0 0); appearance: none; }
+.pbar-host.pbar-full { display: grid; place-items: center; border-radius: 0; background: #000; }
+.pbar-host.pbar-full video { width: 100%; height: 100%; max-height: 100vh; aspect-ratio: auto; border-radius: 0; }
+.product-player-frame { position: relative; width: 100%; overflow: hidden; border-radius: 12px; background: #000; }
+.product-player-frame .product-player { border-radius: 0; cursor: pointer; }
+.product-player-frame .pbar { padding: 14px 4px 4px; }
+.product-player-frame .pbar-volume, .product-player-frame .pbar-row > .pbar-btn:nth-child(2), .product-player-frame .pbar-row > .pbar-btn:nth-child(3) { display: none; }
+@media (prefers-reduced-motion: reduce) { .pbar, .pbar-knob, .pbar-seek::before, .pbar-loaded, .pbar-done { transition: none; } }
+/* "Chọn từ Hàng đợi": same button, same place (first in the list's foot) on Lồng tiếng, Bán hàng, Ghép video. */
+.pick-foot { display: flex; flex-direction: column; gap: 8px; }
+.pick-foot .btn[hidden] { display: none; }
+.queue-pick { display: inline-flex; align-items: center; justify-content: center; gap: 8px; border-color: color-mix(in oklch, var(--accent) 55%, var(--line)); color: var(--accent-text); }
+.queue-pick:hover:not(:disabled) { background: var(--select, var(--hover)); color: var(--text); }
+.queue-pick svg { flex: none; }
+.flash { animation: flash-ring 1.2s ease-out 1; }
+@keyframes flash-ring { 0% { box-shadow: 0 0 0 2px var(--accent); } 100% { box-shadow: 0 0 0 2px transparent; } }
+@media (prefers-reduced-motion: reduce) { .flash { animation: none; } }
+/* List head: title, then the reset icon and "Thêm mới" on its right (Bán hàng, Ghép video, Phim tài liệu). */
+.col-head-actions { display: inline-flex; flex: none; align-items: center; gap: 4px; }
+.queue-col-head:has(.col-head-actions) { align-items: center; padding-top: 10px; padding-bottom: 6px; }
+.col-refresh { width: 30px; height: 30px; color: var(--text-3); }
+.col-new { height: 30px; padding: 0 10px 0 8px; gap: 5px; font-size: 13px; }
+.col-new.selected, .col-new[aria-pressed="true"] { border-color: color-mix(in oklch, var(--accent) 55%, var(--line)); color: var(--accent-text); }
+.col-refresh.spin svg { animation: spin-once .6s ease-out 1; }
+@keyframes spin-once { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .col-refresh.spin svg { animation: none; } }

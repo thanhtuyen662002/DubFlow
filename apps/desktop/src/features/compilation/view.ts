@@ -6,6 +6,7 @@ import {
 import { PROVIDERS, type AiSession } from "../ai/provider.ts";
 import { parseVoiceCatalog } from "../voices/model.ts";
 import { closeDrawerOutside } from "../../shell/drawer.ts";
+import { confirmDialog } from "../../shell/confirm.ts";
 import { confirmDeleteProject, deleteProjectButton } from "../../shell/project_delete.ts";
 import { fileName, shortDate } from "../product/model.ts";
 
@@ -49,12 +50,12 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
   root.innerHTML = `
     <div id="compilation-screen" class="queue-screen compilation-screen">
       <section id="compilation-col" class="queue-col compilation-col" aria-labelledby="compilation-col-title">
-        <div class="queue-col-head"><h2 id="compilation-col-title">Video đã ghép</h2><button id="compilation-refresh" class="quiet-btn" type="button">Làm mới</button></div>
+        <div class="queue-col-head"><h2 id="compilation-col-title">Video đã ghép</h2><span class="col-head-actions"><button id="compilation-refresh" class="icon-btn col-refresh" type="button" aria-label="Làm mới danh sách" title="Làm mới danh sách"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3M4.5 4.5v4h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button id="compilation-new" class="btn col-new" type="button" title="Ghép một video mới"><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>Thêm mới</button></span></div>
         <div class="queue-scroll">
           <ul id="compilation-runs" class="queue-list" aria-label="Video đã ghép"></ul>
           <p id="compilation-runs-empty" class="queue-empty">Chưa có video ghép nào. Các lần tạo trước được tìm trong thư mục “DubFlow Output”.</p>
         </div>
-        <div class="queue-col-foot"><button id="compilation-new" class="btn block" type="button">Ghép video mới</button></div>
+        <div class="queue-col-foot pick-foot"><button id="compilation-from-queue" class="btn block queue-pick" type="button" title="Chọn video đã tải về hoặc thêm từ máy"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" fill="none"/><path d="M18 15v6m-3-3h6" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/></svg>Chọn từ Hàng đợi</button></div>
       </section>
       <section class="player-col compilation-player-col" aria-label="Xem video tổng hợp">
         <div class="player-head">
@@ -103,8 +104,8 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
             <fieldset id="compilation-fields" class="compilation-fields">
               <legend class="visually-hidden">Thiết lập ghép video</legend>
               <section class="compilation-group">
-                <div class="setup-group-head"><h3 class="setup-group">Chọn video</h3><button id="compilation-from-queue" class="btn" type="button">Chọn từ Hàng đợi</button></div>
-                <p class="hint">Chọn 2–30 video đã lồng tiếng xong. Dùng ↑ ↓ để sắp xếp các phần.</p>
+                <h3 class="setup-group">Chọn video</h3>
+                <p class="hint">Bấm “Chọn từ Hàng đợi” dưới danh sách bên trái để chọn 2–30 video đã lồng tiếng xong. Dùng ↑ ↓ để sắp xếp các phần.</p>
                 <p id="compilation-empty" class="hint">Chưa có video lồng tiếng xong. Chọn video ở Hàng đợi rồi bấm “Lồng tiếng” trước.</p>
                 <ul id="compilation-available" class="compilation-list"></ul>
                 <ol id="compilation-order" class="compilation-list compilation-order"></ol>
@@ -751,7 +752,41 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
   $("render").addEventListener("click", () => void render());
   $("cancel").addEventListener("click", () => void cancel(output));
   $("busy-cancel").addEventListener("click", () => void cancel(current));
-  $("new").addEventListener("click", () => select(NEW, "setup"));
+  /** Scroll the form to the top and ring it briefly, so the click visibly lands. */
+  function flash(node: HTMLElement): void {
+    if (typeof node.closest !== "function") return;
+    node.closest<HTMLElement>(".tab-scroll")?.scrollTo({ top: 0 });
+    node.classList.remove("flash");
+    void node.offsetWidth;
+    node.classList.add("flash");
+  }
+  /** "Ghép video mới": an empty draft; a draft already holding videos or text is cleared only after asking. */
+  async function startNew(): Promise<void> {
+    const typed = selected.length > 0 || ["title", "intro", "outro"].some((id) => field(id).value.trim());
+    if (current !== NEW) {
+      // From an earlier video: first back to the draft being typed.
+      select(NEW, "setup");
+      if (typed && !busy) $("state").textContent = "Đây là bản nháp đang nhập. Bấm “Thêm mới” lần nữa nếu muốn làm trống để ghép video khác.";
+    } else if (typed && !busy) {
+      const clear = await confirmDialog({
+        title: "Thêm video ghép mới",
+        message: "Bỏ các video đã chọn, tiêu đề, mở đầu và kết thúc đang nhập để ghép một video khác? Giọng đọc và nhạc nền giữ nguyên. Các video đã ghép không bị ảnh hưởng.",
+        confirmLabel: "Làm trống, bắt đầu mới",
+        cancelLabel: "Giữ nội dung đang nhập",
+      });
+      if (clear) {
+        selected = [];
+        previewIndex = 0;
+        for (const id of ["title", "intro", "outro"]) field(id).value = "";
+        $("state").textContent = "";
+        renderSelection();
+        renderEditors();
+      }
+    }
+    select(NEW, "setup");
+    flash($("fields"));
+  }
+  $("new").addEventListener("click", () => void startNew());
   $("refresh").addEventListener("click", () => void loadRuns());
   $("reuse").addEventListener("click", () => { const run = runOf(current); if (run) reuse(run); });
   $("failed-reuse").addEventListener("click", () => { const run = runOf(current); if (run) reuse(run); });

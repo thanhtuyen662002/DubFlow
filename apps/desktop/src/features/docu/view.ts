@@ -55,10 +55,9 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
   root.innerHTML = `
     <div id="docu-screen" class="queue-screen docu-screen">
       <section class="queue-col docu-col" aria-labelledby="docu-list-title">
-        <div class="queue-col-head"><h2 id="docu-list-title">Dự án</h2><button id="docu-refresh" class="quiet-btn" type="button">Làm mới</button></div>
+        <div class="queue-col-head"><h2 id="docu-list-title">Dự án</h2><span class="col-head-actions"><button id="docu-refresh" class="icon-btn col-refresh" type="button" aria-label="Làm mới danh sách" title="Làm mới danh sách"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3M4.5 4.5v4h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button id="docu-new" class="btn col-new" type="button" title="Tạo dự án phim tài liệu mới"><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>Thêm mới</button></span></div>
         <button id="docu-mcp-chip" class="docu-mcp-chip" type="button" hidden><span id="docu-mcp-chip-text"></span></button>
         <div class="queue-scroll"><ul id="docu-runs" class="queue-list" aria-label="Dự án phim tài liệu"></ul><p id="docu-runs-empty" class="queue-empty">Chưa có dự án phim tài liệu nào.</p></div>
-        <div class="queue-col-foot"><button id="docu-new" class="btn block" type="button">Tạo dự án mới</button></div>
       </section>
       <section class="player-col docu-player-col" aria-label="Xem trước và kịch bản">
         <div class="player-head"><button id="docu-list-toggle" class="btn ghost list-toggle" type="button" aria-controls="docu-screen" aria-expanded="false">Dự án</button><h2 id="docu-project-name" class="player-title">Tạo dự án mới</h2></div>
@@ -856,7 +855,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
   $("#docu-refresh").addEventListener("click", () => void refreshRuns());
   $("#docu-minutes").addEventListener("change", showMidrollHint);
   $("#docu-mcp-open").addEventListener("click", () => { const dir = $("#docu-mcp-open").dataset.dir; if (dir) void openRun(dir); });
-  $("#docu-new").addEventListener("click", () => { setListOpen(false); newProject(); });
+  $("#docu-new").addEventListener("click", () => { setListOpen(false); newProject(); $<HTMLInputElement>("#docu-title").focus(); });
   const setListOpen = (open: boolean) => {
     screen.classList.toggle("list-open", open); $("#docu-list-toggle").setAttribute("aria-expanded", String(open));
   };

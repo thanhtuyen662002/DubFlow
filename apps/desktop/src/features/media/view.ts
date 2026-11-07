@@ -3,6 +3,7 @@
  * left and a player for the chosen one on the right. From here a video goes
  * on to Lồng tiếng, Bán hàng or Ghép video.
  */
+import { mountPlayerBar } from "./player_bar.ts";
 import {
   addMedia, countMedia, MAX_MEDIA, filterMedia, folderOf, MEDIA_FILTERS, mediaUse, originLabel, removeMedia, serializeMedia, USE_LABELS,
   type DubJobLike, type MediaEntry, type MediaFilter, type NewMedia,
@@ -115,7 +116,7 @@ export function mountMediaScreen(deps: {
         <p id="media-state" class="queue-state" role="status"></p>
         <div class="player-stage">
           <div class="player-frame media-frame">
-            <video id="media-video" controls playsinline preload="metadata" hidden></video>
+            <video id="media-video" playsinline preload="metadata" hidden></video>
             <div id="media-placeholder" class="player-placeholder">
               <svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="m10 9.5 4.5 2.5-4.5 2.5z" fill="currentColor"/></svg>
               <span id="media-placeholder-text"></span>
@@ -157,6 +158,8 @@ export function mountMediaScreen(deps: {
   const $ = <T extends HTMLElement>(id: string): T => root.querySelector<T>(`#media-${id}`)!;
   const screen = $("screen") as HTMLElement;
   const video = $<HTMLVideoElement>("video");
+  const bar = mountPlayerBar(video, video.closest<HTMLElement>(".media-frame") ?? video.parentElement as HTMLElement);
+  bar.setVisible(false);
 
   let entries: MediaEntry[] = [...deps.initial];
   let filter: MediaFilter = "all";
@@ -372,6 +375,7 @@ export function mountMediaScreen(deps: {
     video.pause();
     video.removeAttribute("src");
     video.hidden = true;
+    bar.setVisible(false);
     video.load();
   }
 
@@ -386,13 +390,14 @@ export function mountMediaScreen(deps: {
       if (!url) { placeholder("Không xem được video này trong ứng dụng; bấm “Mở thư mục” để xem bằng trình phát của máy."); return; }
       video.src = url;
       video.hidden = false;
+      bar.setVisible(true);
       $("placeholder").hidden = true;
     }).catch(() => {
       if (mine === request) placeholder("Không mở được video để xem.");
     });
   }
   video.addEventListener("error", () => {
-    if (!video.hidden && playing) { video.hidden = true; placeholder("Không phát được video này trong ứng dụng; bấm “Mở thư mục” để xem bằng trình phát của máy."); }
+    if (!video.hidden && playing) { video.hidden = true; bar.setVisible(false); placeholder("Không phát được video này trong ứng dụng; bấm “Mở thư mục” để xem bằng trình phát của máy."); }
   });
 
   async function remove(ids: string[]): Promise<void> {

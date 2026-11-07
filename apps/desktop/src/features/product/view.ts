@@ -15,6 +15,7 @@ import { parseVoiceCatalog } from "../voices/model.ts";
 import { confirmDialog } from "../../shell/confirm.ts";
 import { confirmDeleteProject, deleteProjectButton } from "../../shell/project_delete.ts";
 import { closeDrawerOutside } from "../../shell/drawer.ts";
+import { mountPlayerBar } from "../media/player_bar.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 type Script = { text: string; use: boolean };
@@ -92,6 +93,7 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
   const field = (id: string) => $<HTMLInputElement | HTMLTextAreaElement>(id);
   const voiceSelect = $<HTMLSelectElement>("#product-voice");
   const player = $<HTMLVideoElement>("#product-player");
+  mountPlayerBar(player, player.parentElement as HTMLElement);
   let playStarted = performance.now();
 
   // Product photos need a provider that reads images.
@@ -368,7 +370,7 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
     $("#product-template-note").textContent = templateNote(template);
     $("#product-photos-hint").textContent = template === "chi-chu"
       ? "Mẫu “Chỉ chữ” không đưa ảnh hay clip vào video; ảnh vẫn giúp AI đọc thông tin."
-      : "Ảnh và clip không bắt buộc. AI đọc tối đa 8 ảnh đầu. Kéo (hoặc bấm ‹ ›) để đổi thứ tự trong video; bỏ chọn “Video” để ảnh chỉ dùng cho AI đọc.";
+      : "Lấy clip từ nút “Chọn từ Hàng đợi” dưới danh sách bên trái, hoặc thêm ảnh/clip từ máy. Không bắt buộc. AI đọc tối đa 8 ảnh đầu. Kéo (hoặc bấm ‹ ›) để đổi thứ tự trong video; bỏ chọn “Video” để ảnh chỉ dùng cho AI đọc.";
     renderBackgrounds();
   }
 
@@ -843,10 +845,44 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
     ($("#product-scripts").lastElementChild?.querySelector("textarea") as HTMLTextAreaElement | null)?.focus();
   });
   $("#product-render").addEventListener("click", () => void render());
-  $("#product-new").addEventListener("click", () => {
+  const DRAFT_FIELDS = ["#product-name", "#product-price", "#product-features", "#product-audience", "#product-notes"];
+  /** Something typed or added for the next video (what "Tạo video mới" would clear). */
+  function hasDraft(): boolean {
+    return media.length > 0 || Boolean(source.value.trim()) || scripts.some((script) => script.text.trim())
+      || DRAFT_FIELDS.some((id) => field(id).value.trim());
+  }
+  /** "Tạo video mới": a blank form for the next product; voice, template and music stay as they are. */
+  async function startNew(): Promise<void> {
+    if (current) {
+      // From an earlier video: first back to the form being typed.
+      select("");
+      if (hasDraft()) $("#product-render-state").textContent = "Đây là nội dung đang nhập. Bấm “Thêm mới” lần nữa nếu muốn làm trống để làm sản phẩm khác.";
+    } else if (hasDraft()) {
+      const clear = await confirmDialog({
+        title: "Thêm video bán hàng mới",
+        message: "Làm trống ảnh/clip, mô tả, thông tin sản phẩm và kịch bản đang nhập để bắt đầu sản phẩm khác? Giọng đọc, mẫu video và nhạc nền giữ nguyên. Các video đã tạo không bị ảnh hưởng.",
+        confirmLabel: "Làm trống, bắt đầu mới",
+        cancelLabel: "Giữ nội dung đang nhập",
+      });
+      if (clear) {
+        media = [];
+        scripts = [];
+        source.value = "";
+        for (const id of DRAFT_FIELDS) field(id).value = "";
+        $("#product-results").replaceChildren();
+        $("#product-render-state").textContent = "";
+        renderScripts();
+        renderPhotos();
+      }
+    }
     select("");
     $(".product-body").scrollTop = 0;
-  });
+    const first = $("#product-media-title").closest<HTMLElement>(".product-card");
+    first?.classList.remove("flash");
+    void first?.offsetWidth;
+    first?.classList.add("flash");
+  }
+  $("#product-new").addEventListener("click", () => void startNew());
   $("#product-refresh").addEventListener("click", () => void loadRuns());
   $("#product-list-toggle").addEventListener("click", () => setListOpen(!$("#product-screen").classList.contains("list-open")));
   closeDrawerOutside($("#product-screen"), $("#product-list"), $("#product-list-toggle"), () => setListOpen(false));
