@@ -1,14 +1,20 @@
 import assert from "node:assert/strict";
 import {
-  addMedia, countMedia, dubJobFor, filterMedia, finishedDubFor, mediaUse, originLabel, parseMedia, removeMedia, seedFromJobs, serializeMedia,
+  addMedia, countMedia, dubJobFor, readMedia, filterMedia, finishedDubFor, mediaUse, originLabel, parseMedia, removeMedia, seedFromJobs, serializeMedia,
 } from "../src/features/media/model.ts";
 
 let next = 0;
 const id = () => `m${++next}`;
 
-// Nothing stored yet: null (the list is then seeded); broken storage is an empty list.
+// Nothing stored yet, or something unreadable: never an empty list (both are rebuilt from Lồng tiếng).
 assert.equal(parseMedia(null), null);
-assert.deepEqual(parseMedia("not json"), []);
+assert.equal(parseMedia("not json"), null);
+assert.deepEqual(readMedia(null), { state: "missing" });
+assert.deepEqual(readMedia("not json"), { state: "corrupt" });
+assert.deepEqual(readMedia('{"items":"x"}'), { state: "corrupt" });
+assert.deepEqual(readMedia('{"schema_version":1,"items":[]}'), { state: "ok", entries: [], dropped: 0 });
+// Bad rows are counted, so the user can be told.
+assert.deepEqual(readMedia('{"items":[{"id":"a","path":"C:/a.mp4","title":"a","addedAt":"t"},{"id":"b"}]}').dropped, 1);
 assert.deepEqual(parseMedia('{"items":[{"id":"a","path":" ","title":"x","addedAt":"t"},{"id":"b","path":"C:\\\\v.mp4","title":"v","addedAt":"t","originUrl":"javascript:x"}]}'), []);
 
 // Added videos go on top; the same file (any case or slash) moves up and keeps its id and link.
@@ -59,5 +65,11 @@ const seeded = seedFromJobs([
 ]);
 assert.deepEqual(seeded.map((entry) => [entry.id, entry.title, entry.originUrl ?? null]), [["media-link", "Video hay", "https://b23.tv/x"], ["media-old", "a", null]]);
 assert.equal(originLabel(seeded[0]), "Bilibili");
+
+// A full list refuses new videos (and says how many) instead of dropping old ones; a known path still moves up.
+const full = addMedia([], [{ path: "C:\\1.mp4" }, { path: "C:\\2.mp4" }], "t", id, 2).entries;
+const over = addMedia(full, [{ path: "C:\\3.mp4" }, { path: "c:/1.MP4" }], "t2", id, 2);
+assert.equal(over.refused, 1);
+assert.deepEqual(over.entries.map((entry) => entry.path), ["c:/1.MP4", "C:\\2.mp4"]);
 
 console.log("media ok");

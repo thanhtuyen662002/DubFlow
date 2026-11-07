@@ -51,13 +51,34 @@ function isEntry(value: unknown): value is MediaEntry {
     && (entry.outputDir === undefined || typeof entry.outputDir === "string");
 }
 
-/** The stored list, newest first; null when nothing was ever stored (first run after the update). */
+/**
+ * The stored list, newest first. `missing`: nothing stored yet (first run
+ * after the update); `corrupt`: something unreadable is stored. Both are
+ * rebuilt from Lồng tiếng's videos, never taken as an empty list.
+ */
+export type ParsedMedia = { state: "ok"; entries: MediaEntry[]; dropped: number } | { state: "missing" | "corrupt" };
+
+export function readMedia(serialized: string | null): ParsedMedia {
+  if (serialized === null) return { state: "missing" };
+  let value: unknown;
+  try {
+    value = JSON.parse(serialized);
+  } catch {
+    return { state: "corrupt" };
+  }
+  const list = Array.isArray(value) ? value : (value && typeof value === "object" ? (value as { items?: unknown }).items : null);
+  if (!Array.isArray(list)) return { state: "corrupt" };
+  const entries = parseMedia(serialized) ?? [];
+  return { state: "ok", entries, dropped: list.length - entries.length };
+}
+
+/** The stored list's valid rows (see readMedia for what a broken store means). */
 export function parseMedia(serialized: string | null): MediaEntry[] | null {
   if (serialized === null) return null;
   try {
     const value = JSON.parse(serialized) as unknown;
     const list = Array.isArray(value) ? value : (value && typeof value === "object" ? (value as { items?: unknown }).items : null);
-    if (!Array.isArray(list)) return [];
+    if (!Array.isArray(list)) return null;
     const seen = new Set<string>();
     return list.filter(isEntry).filter((entry) => {
       const key = pathKey(entry.path);
@@ -66,7 +87,7 @@ export function parseMedia(serialized: string | null): MediaEntry[] | null {
       return true;
     }).slice(0, MAX_MEDIA);
   } catch {
-    return [];
+    return null;
   }
 }
 
@@ -99,15 +120,20 @@ export function seedFromJobs(jobs: readonly DubJobLike[]): MediaEntry[] {
 
 export type NewMedia = { path: string; title?: string; originUrl?: string; outputDir?: string };
 
-/** Add videos at the top; a path already listed moves up and keeps its id. Returns the list and the ids touched. */
-export function addMedia(entries: readonly MediaEntry[], added: readonly NewMedia[], now: string, makeId: () => string = newId): { entries: MediaEntry[]; ids: string[] } {
+/**
+ * Add videos at the top; a path already listed moves up and keeps its id.
+ * A full list (MAX_MEDIA) takes no new video: those are counted in `refused`, never dropped silently.
+ */
+export function addMedia(entries: readonly MediaEntry[], added: readonly NewMedia[], now: string, makeId: () => string = newId, max = MAX_MEDIA): { entries: MediaEntry[]; ids: string[]; refused: number } {
   let list = [...entries];
   const ids: string[] = [];
+  let refused = 0;
   for (const item of added) {
     const path = item.path.trim();
     if (!path) continue;
     const key = pathKey(path);
     const known = list.find((entry) => pathKey(entry.path) === key);
+    if (!known && list.length >= max) { refused += 1; continue; }
     const title = item.title?.trim() || known?.title || fileTitle(path);
     const entry: MediaEntry = {
       id: known?.id ?? makeId(), path, title, addedAt: now,
@@ -117,7 +143,7 @@ export function addMedia(entries: readonly MediaEntry[], added: readonly NewMedi
     list = [entry, ...list.filter((other) => other !== known)];
     if (!ids.includes(entry.id)) ids.push(entry.id);
   }
-  return { entries: list.slice(0, MAX_MEDIA), ids };
+  return { entries: list, ids, refused };
 }
 
 export function removeMedia(entries: readonly MediaEntry[], ids: readonly string[]): MediaEntry[] {
