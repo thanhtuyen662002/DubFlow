@@ -2368,3 +2368,7 @@ body.settings-open .rail-item.active:not(#nav-settings)::before { display: none;
 .tl-stemlane[data-stem="background"] .tl-va:not(.muted) { background: oklch(0.26 0.05 160 / .5); box-shadow: inset 0 0 0 1px oklch(0.7 0.12 160 / .35); }
 .tl-stemlane[data-stem="sfx"] .tl-va:not(.muted) { background: oklch(0.26 0.05 60 / .5); box-shadow: inset 0 0 0 1px oklch(0.75 0.12 60 / .35); }
 .tl-stemlane[data-stem="voice"] .tl-va:not(.muted) { background: oklch(0.26 0.05 310 / .5); box-shadow: inset 0 0 0 1px oklch(0.7 0.12 310 / .35); }
+
+/* Cài đặt › Dịch phụ đề: the sound over flagged words. */
+.sensitive-sound-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.sensitive-sound-row .hint { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }

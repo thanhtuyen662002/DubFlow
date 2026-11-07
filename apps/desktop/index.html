@@ -1579,6 +1579,21 @@
                       <option value="beep">Che chữ (ch*t) và bíp trong giọng đọc</option>
                     </select>
                   </label>
+                  <div id="sensitive-sound-box" class="ai-fields" hidden>
+                    <label class="ai-field">Âm thay cho từ cấm trong giọng đọc
+                      <select id="sensitive-sound">
+                        <option value="beep">Tiếng bíp</option>
+                        <option value="bird">Tiếng chim hót</option>
+                        <option value="dog">Tiếng chó sủa</option>
+                        <option value="custom">Âm thanh tự chọn…</option>
+                      </select>
+                    </label>
+                    <div class="sensitive-sound-row">
+                      <button id="sensitive-sound-play" class="secondary" type="button">▶ Nghe thử</button>
+                      <button id="sensitive-sound-pick" class="secondary" type="button">Chọn file âm thanh…</button>
+                      <span id="sensitive-sound-file" class="hint"></span>
+                    </div>
+                  </div>
                   <div id="sensitive-words-box" class="ai-fields" hidden>
                     <label class="ai-field">Danh sách từ, mỗi dòng “từ = cách viết thay”
                       <textarea id="sensitive-words" rows="7" spellcheck="false"></textarea>
