@@ -803,6 +803,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
     if (stamp === mcpSeen) return;
     const first = mcpSeen === "";
     mcpSeen = stamp;
+    if (newest?.project && !runs.some(run => sameDir(run.dir, newest.project))) void refreshRuns();
     if (first || !follow) return;
     if (current?.project && !sameDir(current.project, selected?.dir)) { await openRun(current.project, true); return; }
     if (newest?.project && newest.state === "done") {
@@ -992,7 +993,8 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
   renderRuns();
   return {
     show() {
-      if (!shown) { shown = true; newProject(); void refreshRuns(); void loadVoices(); }
+      if (!shown) { shown = true; newProject(); void loadVoices(); }
+      void refreshRuns(); // a project made over MCP while the page was closed
       renderSourcePicker(); renderProvider();
     },
   };

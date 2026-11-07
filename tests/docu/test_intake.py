@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -21,6 +22,21 @@ def recognise(audio, **kwargs):
     cue = SimpleNamespace(cue_id="c1", start_ms=1000, end_ms=4000, source_text="这座大楼有26层，建筑面积40萬平方米")
     kwargs["on_chunk"](1, 1, "chunk", "hash")
     return SimpleNamespace(cues=[cue])
+
+
+class RunRecordTests(unittest.TestCase):
+    def test_record_uses_the_app_key_and_keeps_an_existing_record(self):
+        with TemporaryDirectory() as temp:
+            data, run = Path(temp) / "data", Path(temp) / "DubFlow Output" / "Phim tai lieu - Dam's $5M" / "run-74ac8002faf2"
+            run.mkdir(parents=True)
+            intake.record_run(data, run)
+            folder = run.resolve()
+            key = hashlib.sha256(str(folder).lower().encode("utf-8")).digest()[:10].hex()
+            record = data / "control" / "runs" / f"{key}.json"
+            self.assertEqual(json.loads(record.read_text(encoding="utf-8")), {"schema_version": 1, "kind": "docu", "dir": str(folder)})
+            record.write_text("{}", encoding="utf-8")
+            intake.record_run(data, run)
+            self.assertEqual(record.read_text(encoding="utf-8"), "{}")
 
 
 class IntakeTests(unittest.TestCase):

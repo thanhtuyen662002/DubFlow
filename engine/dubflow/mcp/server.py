@@ -207,6 +207,7 @@ class Server:
                                             burn_end_credits=bool(args.get("burn_end_credits", True)), sources=args.get("sources"),
                                             app_root=install.app_root, model_root=install.model_root, ffmpeg=install.ffmpeg,
                                             ffprobe=install.ffprobe, language=args.get("source_language") or "zh")
+            intake.record_run(install.model_root.parent, Path(created["project"]))
             return _text({**created, "next": "get_script_brief, then save_script"})
         if name == "list_projects":
             if args.get("root"):
@@ -216,6 +217,7 @@ class Server:
                 return _text(mcp_tools.list_projects([root]))
             return _text(mcp_tools.list_projects(self.allowed_roots()))
         run = mcp_tools.project(args.get("project"), self.allowed_roots())
+        intake.record_run(install.model_root.parent, run)  # also a project made before this record existed
         if name == "get_script_brief":
             return _text(intake.script_brief(run))
         if name == "save_script":
