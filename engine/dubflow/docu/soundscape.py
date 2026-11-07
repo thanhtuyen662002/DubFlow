@@ -162,7 +162,7 @@ def ambience_argv(ffmpeg: Path, script: dict[str, Any], timeline: dict[str, Any]
             files.append(file)
             argv += ["-stream_loop", "-1", "-i", str(file)]
             chain = (f"[{index}:a]aformat=sample_rates={RATE}:channel_layouts=mono,atrim=0:{stop:.3f},"
-                     f"loudnorm=I={SFX_LUFS:g}:TP=-12:LRA=7,aresample={RATE}")
+                     f"loudnorm=I={SFX_LUFS:g}:TP=-9:LRA=7,aresample={RATE}")
         else:
             source, filters = RECIPES[tag]
             argv += ["-f", "lavfi", "-i", f"{source}:d={stop:.3f}"]
