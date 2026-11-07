@@ -1,0 +1,3 @@
+# Issue #615 three-layer audio stems
+
+Owner request in the project thread: the editor's sound in three layers (Lời, Nhạc, SFX), each with its own level and timeline lane, plus shortcuts to add background music and SFX. Draft PR #612 holds the claim metadata and evidence; it continues on this branch (renamed from `agent/audio-3-layers`) without a second PR. Scope: `engine/dubflow/separation/split.py` (HPSS music/SFX split of the accompaniment), the separation CLI's split step, the host's split command, stem files and path checks, the Lớp âm thanh panel and lanes, and their tests. Real-media Windows GUI smoke is required before acceptance.

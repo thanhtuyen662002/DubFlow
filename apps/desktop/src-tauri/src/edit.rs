@@ -3326,7 +3326,8 @@ fn stem_files(target: &Target) -> StemFiles {
     let editable = target.dir.join("editable");
     let job = matches!(target.kind, Kind::Job);
     let voice = job.then(|| file(editable.join("dialogue_stem.wav"))).flatten();
-    let separated = file(own.join("background.wav"));
+    // Files under the editor's own stems folder only through own_file: never through a linked folder or file.
+    let separated = own_file(&own, "background.wav");
     let mut files = match job.then(|| file(editable.join("source_audio.wav"))).flatten() {
         Some(source) => {
             let job_stem = file(editable.join("background_stem.wav"));
@@ -3334,7 +3335,7 @@ fn stem_files(target: &Target) -> StemFiles {
             StemFiles { voice, source: Some(source), background, ..StemFiles::default() }
         }
         None => {
-            let source = separated.as_ref().and_then(|_| file(own.join("source.wav")));
+            let source = separated.as_ref().and_then(|_| own_file(&own, "source.wav"));
             StemFiles { voice, background: source.as_ref().and(separated), source, ..StemFiles::default() }
         }
     };
@@ -3828,6 +3829,19 @@ mod tests {
         assert!(read_separation(&work).is_none());
         assert!(cancel_stem_runs(&stems, true).is_err(), "cancel refuses the linked folder");
         assert!(!outside.join("cancel").exists() && !outside.join("split-cancel").exists(), "nothing written outside");
+        // The parts a video or a job would mix: nothing from the linked folder, the job falling back to nothing.
+        fs::write(outside.join("source.wav"), b"src").unwrap();
+        let file = Target { kind: Kind::File, main: root.join("a.mp4"), dir: root.clone(), work: work.clone(), captions: None, store: None };
+        assert_eq!(stem_files(&file), StemFiles::default(), "a plain video takes nothing through the linked folder");
+        let job_dir = root.join("job");
+        fs::create_dir_all(job_dir.join("editable")).unwrap();
+        fs::write(job_dir.join("editable").join("source_audio.wav"), b"wav").unwrap();
+        let job = Target { kind: Kind::Job, main: job_dir.join("final_vi.mp4"), dir: job_dir.clone(), work: work.clone(), captions: None, store: None };
+        let parts = stem_files(&job);
+        assert!(parts.source.is_some(), "the job's own source");
+        assert_eq!((&parts.background, &parts.music, &parts.sfx, &parts.spoken), (&None, &None, &None, &None), "no fallback to the linked accompaniment");
+        let listed = [&parts.voice, &parts.source, &parts.background, &parts.music, &parts.sfx, &parts.spoken];
+        assert!(listed.into_iter().flatten().all(|path| !path.starts_with(&stems) && !path.starts_with(&outside)), "nothing beneath the link is allowed");
         // A plain folder still works, and a link at a status file's name is not read.
         let plain = root.join("plain");
         fs::create_dir_all(plain.join(STEMS_DIR)).unwrap();
