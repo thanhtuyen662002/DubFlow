@@ -55,7 +55,7 @@ PRESETS: dict[str, Preset] = {
     "openai": Preset("ChatGPT (OpenAI)", "openai", "https://api.openai.com/v1", "gpt-5-mini", True, "platform.openai.com/api-keys"),
     "deepseek": Preset("DeepSeek", "openai", "https://api.deepseek.com", "deepseek-flash", True, "platform.deepseek.com/api_keys"),
     "qwen": Preset("Qwen (Alibaba Cloud)", "openai", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", "qwen-plus", False, "modelstudio.console.alibabacloud.com"),
-    "kimi": Preset("Kimi (Moonshot AI)", "openai", "https://api.moonshot.ai/v1", "kimi-k2.6", True, "platform.kimi.ai"),
+    "kimi": Preset("Kimi (Moonshot AI)", "openai", "https://api.moonshot.ai/v1", "kimi-k3", True, "platform.kimi.ai"),
     "glm": Preset("GLM (Z.ai / Zhipu)", "openai", "https://api.z.ai/api/paas/v4", "glm-5.3", False, "z.ai/manage-apikey/apikey-list"),
     "grok": Preset("Grok (xAI)", "openai", "https://api.x.ai/v1", "grok-4.7", True, "console.x.ai"),
     "openrouter": Preset("OpenRouter (nhiều model)", "openai", "https://openrouter.ai/api/v1", "openrouter/auto", True, "openrouter.ai/keys"),
@@ -82,7 +82,9 @@ _MODEL_PREFERENCES: dict[str, tuple[str, ...]] = {
     "groq": (r"^openai/gpt-oss-120b$", r"^openai/gpt-oss", r"^llama-.*versatile$"),
     "mistral": (r"^mistral-medium-latest$", r"^mistral-large-latest$", r"^mistral-small-latest$"),
 }
-_NOT_CHAT = re.compile(r"embed|whisper|tts|audio|realtime|transcri|image|dall-e|moderation|search|ocr|vision-exp|guard|codex|-code", re.I)
+# Models that do not answer chat: embeddings, speech, images, music, video, robots and screen agents.
+_NOT_CHAT = re.compile(r"embed|whisper|tts|audio|realtime|transcri|image|dall-e|moderation|search|ocr|vision-exp|guard|codex|-code"
+                       r"|nano-banana|lyria|veo|robotics|computer-use|-live", re.I)
 
 
 def pick_model(provider: str, names: Sequence[str]) -> str | None:
