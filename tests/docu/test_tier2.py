@@ -112,6 +112,8 @@ class SoundscapeTests(unittest.TestCase):
         self.assertEqual(files, [folder / "data_beeps.wav"])
         self.assertIn(str(folder / "data_beeps.wav"), argv)
         self.assertIn("loudnorm=I=-31", graph)
+        true_peak = float(re.search(r"loudnorm=[^,]*TP=(-?[\d.]+)", graph).group(1))
+        self.assertTrue(-9 <= true_peak <= 0, f"FFmpeg rejects loudnorm TP={true_peak}")
         self.assertIn("anoisesrc=r=48000:c=pink", " ".join(argv))
         self.assertIn("clip((t-0.000)/0.5,0,1)*clip((12.000-t)/0.5,0,1)", graph)
         self.assertIn("adelay=12000:all=1", graph)
