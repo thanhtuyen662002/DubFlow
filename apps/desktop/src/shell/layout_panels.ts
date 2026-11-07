@@ -54,6 +54,7 @@ export function mountLayoutPanels(): void {
   mountThreeColumns("product", document.querySelector("#product-screen"));
 
   // Chỉnh sửa: the tool panel beside the player and the timeline under both.
+  // The timeline key is v2 since it gained a lane per layer: heights saved for the old single-row timeline hid the new lanes.
   const editPanel = document.querySelector<HTMLElement>("#edit-panel");
   if (queueScreen && editPanel) {
     mountPanel({
@@ -65,7 +66,7 @@ export function mountLayoutPanels(): void {
   const timeline = document.querySelector<HTMLElement>("#edit-timeline");
   if (queueScreen && timeline) {
     mountPanel({
-      key: "edit.timeline", panel: timeline, edge: "top", label: "dòng thời gian",
+      key: "edit.timeline.v2", panel: timeline, edge: "top", label: "dòng thời gian",
       min: 110, max: () => Math.max(110, (queueScreen.getBoundingClientRect().height || window.innerHeight) - MAIN_MIN_H),
       fallback: () => timeline.getBoundingClientRect().height || 170,
     });
