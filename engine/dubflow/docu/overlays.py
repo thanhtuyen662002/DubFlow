@@ -37,8 +37,8 @@ CALLOUT_SECONDS = 6.0
 LOWER_THIRD_SECONDS = 5.0
 FADE_MS = 250
 WIDTH, HEIGHT = 1920, 1080
-# Loudness of the bed before ducking; the narration sits at -16 LUFS.
-BED_LUFS = -30.0
+# Loudness of the bed before ducking; the narration sits at -16 LUFS. Ducking leaves it about 10 dB under the voice.
+BED_LUFS = -20.0
 MUSIC_SUFFIXES = (".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus")
 
 
@@ -345,7 +345,7 @@ def ducked_mix(bed: bool = True, ambience: int | None = None) -> str:
         return "[1:a]apad[audio]"
     parts, layers = ["[1:a]apad,asplit=2[voice][key]" if bed else "[1:a]apad[voice]"], ["[voice]"]
     if bed:
-        parts.append("[2:a][key]sidechaincompress=threshold=0.02:ratio=8:attack=20:release=450:makeup=1[bed]")
+        parts.append("[2:a][key]sidechaincompress=threshold=0.05:ratio=3:attack=20:release=450:makeup=1[bed]")
         layers.append("[bed]")
     if ambience is not None:
         parts.append(f"[{ambience}:a]anull[room]")
