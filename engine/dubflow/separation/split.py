@@ -131,6 +131,17 @@ def _voice(source: Path, background: Path, out_dir: Path, *, cancelled=None) -> 
             Path(temp).unlink(missing_ok=True)
 
 
+def _publish(target: Path, text: str) -> None:
+    """Write ``target`` through a temporary file beside it and an atomic replace (a link there is replaced, not followed)."""
+    descriptor, temp = tempfile.mkstemp(prefix=f".{target.stem}-", suffix=target.suffix, dir=target.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(temp, target)
+    finally:
+        Path(temp).unlink(missing_ok=True)
+
+
 def split(background: Path, out_dir: Path, *, source: Path | None = None, progress=None, cancelled=None) -> dict:
     import numpy as np
 
@@ -140,6 +151,9 @@ def split(background: Path, out_dir: Path, *, source: Path | None = None, progre
             raise SplitError("nhạc nền phải là WAV PCM 16-bit")
         identity = identity_of(background)
         out_dir.mkdir(parents=True, exist_ok=True)
+        # The old marker goes first: until the new one is written, no music/SFX pair counts as current
+        # (an interrupted run may leave one new part beside an old one).
+        (out_dir / SPLIT_FILE).unlink(missing_ok=True)
         block, context = int(BLOCK_SECONDS * rate), int(CONTEXT_SECONDS * rate)
         temps = []
         try:
@@ -184,7 +198,7 @@ def split(background: Path, out_dir: Path, *, source: Path | None = None, progre
         except (OSError, EOFError, wave.Error):
             pass  # Only the Lời lane's picture needs it.
     document = {"schema_version": 1, **identity}
-    (out_dir / SPLIT_FILE).write_text(json.dumps(document, ensure_ascii=True), encoding="utf-8")
+    _publish(out_dir / SPLIT_FILE, json.dumps(document, ensure_ascii=True))
     return document
 
 

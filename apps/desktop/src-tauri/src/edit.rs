@@ -3277,14 +3277,29 @@ fn end_stem_run(work: &Path, run: StemRun) {
 }
 
 /// Music and SFX when they were split from exactly this accompaniment (same file, size and time).
-fn split_parts(stems: &Path, background: &Path) -> Option<(PathBuf, PathBuf)> {
-    let music = stems.join("music.wav");
-    let sfx = stems.join("sfx.wav");
-    if !music.is_file() || !sfx.is_file() {
+/// The split's recipe and marker version (`engine.dubflow.separation.split`).
+const SPLIT_RECIPE: &str = "hpss-median-v1";
+
+/// `dir/name` when it is a plain file right inside `dir`: not a link or
+/// reparse point, and not resolving anywhere else.
+fn own_file(dir: &Path, name: &str) -> Option<PathBuf> {
+    let path = dir.join(name);
+    let metadata = fs::symlink_metadata(&path).ok()?;
+    if !metadata.is_file() || is_link(&metadata) {
         return None;
     }
-    let value: Value = fs::read(stems.join(SPLIT_FILE)).ok().filter(|bytes| bytes.len() < 64 * 1024)
+    let inside = path.canonicalize().ok()?.parent()? == dir.canonicalize().ok()?.as_path();
+    inside.then_some(path)
+}
+
+fn split_parts(stems: &Path, background: &Path) -> Option<(PathBuf, PathBuf)> {
+    let music = own_file(stems, "music.wav")?;
+    let sfx = own_file(stems, "sfx.wav")?;
+    let value: Value = fs::read(own_file(stems, SPLIT_FILE)?).ok().filter(|bytes| bytes.len() < 64 * 1024)
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())?;
+    if value["schema_version"].as_u64() != Some(1) || value["recipe"].as_str() != Some(SPLIT_RECIPE) {
+        return None;
+    }
     let metadata = fs::metadata(background).ok()?;
     let modified = metadata.modified().ok()?.duration_since(UNIX_EPOCH).ok()?.as_nanos();
     let named = value["background"].as_str().map(PathBuf::from)?;
@@ -3318,7 +3333,7 @@ fn stem_files(target: &Target) -> StemFiles {
     if let Some((music, sfx)) = files.background.as_ref().and_then(|background| split_parts(&own, background)) {
         files.music = Some(music);
         files.sfx = Some(sfx);
-        files.spoken = file(own.join("voice.wav"));
+        files.spoken = own_file(&own, "voice.wav");
     }
     files
 }
@@ -3712,6 +3727,47 @@ pub async fn edit_proxy(app: tauri::AppHandle, path: String, start: bool) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn music_and_sfx_count_only_as_plain_files_with_a_current_marker() {
+        let stems = std::env::temp_dir().join(format!("dubflow-split-parts-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&stems);
+        fs::create_dir_all(&stems).unwrap();
+        let background = stems.join("background.wav");
+        fs::write(&background, b"bg").unwrap();
+        fs::write(stems.join("music.wav"), b"m").unwrap();
+        fs::write(stems.join("sfx.wav"), b"s").unwrap();
+        let metadata = fs::metadata(&background).unwrap();
+        let mtime = metadata.modified().unwrap().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64;
+        let marker = |schema: u64, recipe: &str| {
+            fs::write(stems.join(SPLIT_FILE), json!({"schema_version": schema, "recipe": recipe, "background": background.display().to_string(),
+                "size": metadata.len(), "mtime_ns": mtime}).to_string()).unwrap();
+        };
+        marker(1, SPLIT_RECIPE);
+        assert!(split_parts(&stems, &background).is_some());
+        marker(2, SPLIT_RECIPE);
+        assert!(split_parts(&stems, &background).is_none(), "another marker version");
+        marker(1, "other-recipe");
+        assert!(split_parts(&stems, &background).is_none(), "another recipe");
+        marker(1, SPLIT_RECIPE);
+        fs::remove_file(stems.join(SPLIT_FILE)).unwrap();
+        assert!(split_parts(&stems, &background).is_none(), "no marker, no pair");
+        marker(1, SPLIT_RECIPE);
+        // A linked part (pointing outside the stems folder) is never admitted.
+        let outside = std::env::temp_dir().join(format!("dubflow-split-outside-{}.wav", std::process::id()));
+        fs::write(&outside, b"x").unwrap();
+        fs::remove_file(stems.join("sfx.wav")).unwrap();
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(&outside, stems.join("sfx.wav")).is_ok();
+        #[cfg(windows)]
+        let linked = std::os::windows::fs::symlink_file(&outside, stems.join("sfx.wav")).is_ok();
+        if linked {
+            assert!(split_parts(&stems, &background).is_none(), "a linked sfx.wav");
+            assert!(own_file(&stems, "sfx.wav").is_none());
+        }
+        let _ = fs::remove_dir_all(&stems);
+        let _ = fs::remove_file(&outside);
+    }
 
     #[test]
     fn a_failed_music_split_reaches_the_editor_as_a_partial_success() {

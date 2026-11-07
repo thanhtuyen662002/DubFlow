@@ -143,5 +143,5 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Music/SFX split tests failed' }
           $text = Get-Content -LiteralPath $log -Raw
           if ($text -match '\.\.\. skipped') { throw 'Music/SFX split tests skipped some cases' }
-          if ($text -notmatch '(?m)^Ran 3 tests in ') { throw 'Expected 3 music/SFX split tests' }
-          Write-Host 'Music/SFX split tests passed on Windows: 3, none skipped'
+          if ($text -notmatch '(?m)^Ran 5 tests in ') { throw 'Expected 5 music/SFX split tests' }
+          Write-Host 'Music/SFX split tests passed on Windows: 5, none skipped'

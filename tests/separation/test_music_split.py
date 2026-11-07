@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest import mock
 import wave
 
 import numpy as np
@@ -84,6 +86,47 @@ class MusicSplitTest(unittest.TestCase):
             with self.assertRaises(split.SplitError):
                 split.split(background, folder / "out", cancelled=lambda: True)
             self.assertEqual(sorted(path.name for path in (folder / "out").iterdir()), [])
+
+    def test_a_linked_marker_is_replaced_not_followed(self):
+        with TemporaryDirectory() as temp:
+            folder = Path(temp)
+            out = folder / "out"
+            out.mkdir()
+            outside = folder / "outside.json"
+            outside.write_text("keep me", encoding="utf-8")
+            before = (outside.read_bytes(), outside.stat().st_mtime_ns)
+            os.symlink(outside, out / split.SPLIT_FILE)
+            background = folder / "background.wav"
+            write(background, np.full((RATE, 2), 0.1))
+            split.split(background, out)
+            self.assertEqual((outside.read_bytes(), outside.stat().st_mtime_ns), before)
+            marker = out / split.SPLIT_FILE
+            self.assertFalse(marker.is_symlink())
+            self.assertEqual(json.loads(marker.read_text(encoding="utf-8"))["recipe"], split.RECIPE)
+
+    def test_an_interrupted_retry_leaves_no_marker_for_a_mixed_pair(self):
+        with TemporaryDirectory() as temp:
+            folder = Path(temp)
+            background = folder / "background.wav"
+            write(background, np.full((RATE, 2), 0.1))
+            out = folder / "out"
+            split.split(background, out)
+            # An old valid marker, one part missing; the retry stops after replacing the first part.
+            (out / "sfx.wav").unlink()
+            self.assertTrue((out / split.SPLIT_FILE).is_file())
+            real = os.replace
+            calls = []
+
+            def replace(source, target):
+                calls.append(Path(target).name)
+                if len(calls) == 2:
+                    raise OSError("interrupted")
+                return real(source, target)
+            with mock.patch.object(split.os, "replace", side_effect=replace), self.assertRaises(OSError):
+                split.split(background, out)
+            self.assertEqual(calls[0], "music.wav")
+            self.assertFalse((out / split.SPLIT_FILE).exists(), "no marker blesses the new music beside a missing/old SFX")
+            self.assertEqual([path.name for path in out.iterdir() if path.name.startswith(".")], [], "no temporary files left")
 
 
 if __name__ == "__main__":
