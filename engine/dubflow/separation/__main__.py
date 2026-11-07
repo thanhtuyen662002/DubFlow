@@ -83,7 +83,7 @@ def run(source: Path, out_dir: Path, *, app_root: Path, model_root: Path, ffmpeg
     def progress(fraction):
         if _cancelled(out_dir):
             raise SeparationError("SEPARATION_CANCELLED", "cancelled")
-        status.write(force=False, progress=round(8 + 90 * min(1.0, max(0.0, fraction)), 1),
+        status.write(force=False, progress=round(8 + 82 * min(1.0, max(0.0, fraction)), 1),
                      message="Đang tách giọng gốc khỏi nhạc nền…")
     status.write(progress=8, message="Đang tách giọng gốc khỏi nhạc nền…")
     try:
@@ -94,7 +94,19 @@ def run(source: Path, out_dir: Path, *, app_root: Path, model_root: Path, ffmpeg
         raise
     # The older Spleeter adapter's resumable batches are scratch nobody reads now.
     shutil.rmtree(out_dir / ".spleeter-chunks", ignore_errors=True)
-    status.write(state="COMPLETED", progress=100, message="Đã tách giọng.", backend=mdx.BACKEND)
+    # Nhạc and SFX: the accompaniment in two parts (no model; a few seconds a minute).
+    status.write(progress=90, message="Đang tách nhạc và tiếng động…")
+    try:
+        from engine.dubflow.separation import split as music_split
+
+        music_split.split(background, out_dir, source=source_wav, cancelled=lambda: _cancelled(out_dir),
+                          progress=lambda fraction: status.write(force=False, progress=round(90 + 9 * fraction, 1),
+                                                                 message="Đang tách nhạc và tiếng động…"))
+    except Exception as error:  # noqa: BLE001 - voice and accompaniment are still usable without the two parts.
+        if _cancelled(out_dir):
+            return _stop(status)
+        status.write(split_error=" ".join(str(error).split())[:200])
+    status.write(state="COMPLETED", progress=100, message="Đã tách giọng, nhạc và tiếng động.", backend=mdx.BACKEND)
     return status.value
 
 

@@ -502,13 +502,16 @@ pub struct ExportRequest {
 
 /// Lớp âm thanh: how loud each part of the main video's sound plays, 0–2.
 /// `original` is the original voice when the accompaniment is separated, the
-/// whole original sound otherwise; `background` is the accompaniment.
+/// whole original sound otherwise; `background` is the accompaniment, or its
+/// music once it is split into music and SFX (`sfx`; absent = as `background`).
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct StemLevels {
     voice: f64,
     original: f64,
     background: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sfx: Option<f64>,
 }
 
 /// What follows the edit's picture and sound in the export graph.
@@ -3202,6 +3205,39 @@ struct StemFiles {
     voice: Option<PathBuf>,
     source: Option<PathBuf>,
     background: Option<PathBuf>,
+    /// The accompaniment split in two (`engine.dubflow.separation.split`): both or neither.
+    music: Option<PathBuf>,
+    sfx: Option<PathBuf>,
+    /// The original voice alone (source − accompaniment), drawn as the Lời lane; never mixed.
+    spoken: Option<PathBuf>,
+}
+
+/// Below the stems folder: Nhạc and SFX, and the accompaniment they came from.
+const SPLIT_FILE: &str = "split.json";
+const SPLIT_STATUS: &str = "split-status.json";
+
+/// Tách nhạc và tiếng động runs, by draft folder.
+static SPLITTING: LazyLock<Mutex<std::collections::HashSet<PathBuf>>> = LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
+
+/// Music and SFX when they were split from exactly this accompaniment (same file, size and time).
+fn split_parts(stems: &Path, background: &Path) -> Option<(PathBuf, PathBuf)> {
+    let music = stems.join("music.wav");
+    let sfx = stems.join("sfx.wav");
+    if !music.is_file() || !sfx.is_file() {
+        return None;
+    }
+    let value: Value = fs::read(stems.join(SPLIT_FILE)).ok().filter(|bytes| bytes.len() < 64 * 1024)
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())?;
+    let metadata = fs::metadata(background).ok()?;
+    let modified = metadata.modified().ok()?.duration_since(UNIX_EPOCH).ok()?.as_nanos();
+    let named = value["background"].as_str().map(PathBuf::from)?;
+    let same_file = match (named.canonicalize(), background.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    };
+    let same = same_file && value["size"].as_u64() == Some(metadata.len())
+        && value["mtime_ns"].as_u64().map(u128::from) == Some(modified);
+    same.then_some((music, sfx))
 }
 
 fn stem_files(target: &Target) -> StemFiles {
@@ -3211,17 +3247,23 @@ fn stem_files(target: &Target) -> StemFiles {
     let job = matches!(target.kind, Kind::Job);
     let voice = job.then(|| file(editable.join("dialogue_stem.wav"))).flatten();
     let separated = file(own.join("background.wav"));
-    match job.then(|| file(editable.join("source_audio.wav"))).flatten() {
+    let mut files = match job.then(|| file(editable.join("source_audio.wav"))).flatten() {
         Some(source) => {
             let job_stem = file(editable.join("background_stem.wav"));
             let background = if separated.is_some() && separated_by_current(&target.work) { separated.or(job_stem) } else { job_stem.or(separated) };
-            StemFiles { voice, source: Some(source), background }
+            StemFiles { voice, source: Some(source), background, ..StemFiles::default() }
         }
         None => {
             let source = separated.as_ref().and_then(|_| file(own.join("source.wav")));
-            StemFiles { voice, background: source.as_ref().and(separated), source }
+            StemFiles { voice, background: source.as_ref().and(separated), source, ..StemFiles::default() }
         }
+    };
+    if let Some((music, sfx)) = files.background.as_ref().and_then(|background| split_parts(&own, background)) {
+        files.music = Some(music);
+        files.sfx = Some(sfx);
+        files.spoken = file(own.join("voice.wav"));
     }
+    files
 }
 
 /// The parts to mix and their weights: the voice at its level; with an
@@ -3230,8 +3272,9 @@ fn stem_files(target: &Target) -> StemFiles {
 /// cancels and only the original voice keeps `original`; without one, the
 /// whole source at `original`.
 fn stem_weights(levels: &StemLevels, files: &StemFiles) -> Result<Vec<(PathBuf, f64)>, String> {
-    let StemLevels { voice, original, background } = *levels;
-    if ![voice, original, background].iter().all(|level| level.is_finite() && (0.0..=MAX_STEM_LEVEL).contains(level)) {
+    let StemLevels { voice, original, background, sfx } = *levels;
+    let sfx = sfx.unwrap_or(background);
+    if ![voice, original, background, sfx].iter().all(|level| level.is_finite() && (0.0..=MAX_STEM_LEVEL).contains(level)) {
         return Err(fail("Âm lượng lớp âm thanh không hợp lệ"));
     }
     let Some(source) = files.source.clone() else {
@@ -3242,8 +3285,14 @@ fn stem_weights(levels: &StemLevels, files: &StemFiles) -> Result<Vec<(PathBuf, 
         parts.push((file.clone(), voice));
     }
     parts.push((source, original));
-    if let Some(file) = &files.background {
-        parts.push((file.clone(), background - original));
+    match (&files.background, &files.music, &files.sfx) {
+        // Music + SFX add up to the accompaniment: each cancels its share of the source.
+        (Some(_), Some(music), Some(effects)) => {
+            parts.push((music.clone(), background - original));
+            parts.push((effects.clone(), sfx - original));
+        }
+        (Some(file), _, _) => parts.push((file.clone(), background - original)),
+        _ => {}
     }
     let audible: Vec<(PathBuf, f64)> = parts.iter().filter(|(_, weight)| weight.abs() > 1e-6).cloned().collect();
     // All silent: one part at 0 keeps the sound track.
@@ -3289,12 +3338,75 @@ fn read_separation(work: &Path) -> Option<Value> {
 pub fn edit_stems(output_path: String, kind: String) -> Result<Value, String> {
     let target = edit_target(&output_path, &kind)?;
     let files = stem_files(&target);
-    let listed: Vec<PathBuf> = [&files.voice, &files.source, &files.background].into_iter().flatten()
+    let listed: Vec<PathBuf> = [&files.voice, &files.source, &files.background, &files.music, &files.sfx, &files.spoken].into_iter().flatten()
         .filter_map(|file| file.canonicalize().ok()).collect();
     crate::sfx::allow_files(&listed);
     let shown = |file: &Option<PathBuf>| file.as_ref().map(|file| display_path(file));
     Ok(json!({"voice": shown(&files.voice), "source": shown(&files.source), "background": shown(&files.background),
-        "separation": read_separation(&target.work), "outdated": separation_outdated(&target, &files)}))
+        "music": shown(&files.music), "sfx": shown(&files.sfx), "spoken": shown(&files.spoken),
+        "separation": read_separation(&target.work), "outdated": separation_outdated(&target, &files),
+        "split": read_split(&target.work)}))
+}
+
+fn read_split(work: &Path) -> Option<Value> {
+    let path = work.join(STEMS_DIR).join(SPLIT_STATUS);
+    let value: Value = fs::read(&path).ok().filter(|bytes| bytes.len() < 64 * 1024).and_then(|bytes| serde_json::from_slice(&bytes).ok())?;
+    let running = SPLITTING.lock().is_ok_and(|set| set.contains(work));
+    if value["state"] == "RUNNING" && !running {
+        return Some(json!({"state": "FAILED", "progress": 0, "message": "Tách nhạc và tiếng động đã dừng giữa chừng; hãy bấm lại."}));
+    }
+    Some(json!({"state": value["state"], "progress": value["progress"], "message": value["message"]}))
+}
+
+/// Tách nhạc và SFX: split the accompaniment already in use (a dubbing job's
+/// or an earlier Tách giọng's) into music and sound effects, in the background.
+#[tauri::command]
+pub fn edit_split(output_path: String, kind: String) -> Result<(), String> {
+    let target = edit_target(&output_path, &kind)?;
+    let files = stem_files(&target);
+    let Some(background) = files.background.clone() else {
+        return Err(fail("Hãy bấm Tách giọng trước"));
+    };
+    if files.music.is_some() {
+        return Err(fail("Video này đã tách nhạc và tiếng động rồi"));
+    }
+    let root = version_root()?;
+    let mut running = SPLITTING.lock().map_err(|_| fail("Hãy mở lại ứng dụng"))?;
+    if running.contains(&target.work) || SEPARATING.lock().is_ok_and(|set| set.contains(&target.work)) {
+        return Err(fail("Video này đang được tách"));
+    }
+    target.prepare()?;
+    guarded(&target.work)?;
+    let out = target.work.join(STEMS_DIR);
+    if fs::symlink_metadata(&out).is_ok_and(|metadata| is_link(&metadata) || !metadata.is_dir()) {
+        return Err(fail("Thư mục tách giọng không an toàn (là liên kết); hãy xóa nó rồi thử lại"));
+    }
+    fs::create_dir_all(&out).map_err(|_| fail("Không tạo được thư mục tách giọng"))?;
+    for name in ["split-cancel", SPLIT_STATUS] {
+        let _ = fs::remove_file(out.join(name));
+    }
+    let mut command = Command::new(root.join("runtime").join("python.exe"));
+    command.current_dir(root.join("app"))
+        .args(["-B", "-m", "engine.dubflow.separation.split", "--background"]).arg(&background)
+        .arg("--out-dir").arg(&out);
+    if let Some(source) = &files.source {
+        command.arg("--source").arg(source);
+    }
+    command
+        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    let mut child = command.spawn().map_err(|_| fail("Không chạy được bộ tách nhạc"))?;
+    let work = target.work.clone();
+    running.insert(work.clone());
+    drop(running);
+    std::thread::spawn(move || {
+        let _ = child.wait();
+        if let Ok(mut running) = SPLITTING.lock() {
+            running.remove(&work);
+        }
+    });
+    Ok(())
 }
 
 /// Tách giọng: separate the main video's sound (a dubbing job's original
@@ -3358,6 +3470,9 @@ pub fn edit_separate_cancel(output_path: String, kind: String) -> Result<(), Str
     let out = target.work.join(STEMS_DIR);
     if out.is_dir() && unlinked(&target.work) {
         fs::write(out.join("cancel"), b"").map_err(|_| fail("Không hủy được tách giọng"))?;
+        if SPLITTING.lock().is_ok_and(|set| set.contains(&target.work)) {
+            let _ = fs::write(out.join("split-cancel"), b"");
+        }
     }
     Ok(())
 }
@@ -4399,8 +4514,8 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
     #[test]
     fn mixes_the_main_sound_from_its_parts() {
         // Voice at 150 %, the original voice at 20 % and the accompaniment at 100 %: source 0.2, accompaniment 0.8.
-        let parts = stem_weights(&StemLevels { voice: 1.5, original: 0.2, background: 1.0 },
-            &StemFiles { voice: Some("v.wav".into()), source: Some("s.wav".into()), background: Some("b.wav".into()) }).unwrap();
+        let parts = stem_weights(&StemLevels { voice: 1.5, original: 0.2, background: 1.0, sfx: None },
+            &StemFiles { voice: Some("v.wav".into()), source: Some("s.wav".into()), background: Some("b.wav".into()), ..StemFiles::default() }).unwrap();
         assert_eq!(parts, vec![(PathBuf::from("v.wav"), 1.5), (PathBuf::from("s.wav"), 0.2), (PathBuf::from("b.wav"), 0.8)]);
         let edit = Edit { stems: vec![(1, 1.5), (2, 0.2), (3, 0.8)], ..whole(10.0) };
         let mix = Mix { sounds: vec![], main_volume: 1.0, ..Default::default() };
@@ -4413,16 +4528,27 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
         assert!(!script.contains("[0:a]"));
         assert!(script.ends_with("[am]alimiter=limit=0.891:level=0:latency=1[a]"), "turned-up parts pass the limiter");
         // Only the original voice: the accompaniment cancels out of the source.
-        let only = stem_weights(&StemLevels { voice: 0.0, original: 1.0, background: 0.0 },
-            &StemFiles { voice: Some("v.wav".into()), source: Some("s.wav".into()), background: Some("b.wav".into()) }).unwrap();
+        let only = stem_weights(&StemLevels { voice: 0.0, original: 1.0, background: 0.0, sfx: None },
+            &StemFiles { voice: Some("v.wav".into()), source: Some("s.wav".into()), background: Some("b.wav".into()), ..StemFiles::default() }).unwrap();
         assert_eq!(only, vec![(PathBuf::from("s.wav"), 1.0), (PathBuf::from("b.wav"), -1.0)]);
         // Without an accompaniment, `original` is the whole source; silence keeps one part.
-        let plain = StemFiles { voice: Some("v.wav".into()), source: Some("s.wav".into()), background: None };
-        assert_eq!(stem_weights(&StemLevels { voice: 1.0, original: 0.3, background: 1.0 }, &plain).unwrap(),
+        let plain = StemFiles { voice: Some("v.wav".into()), source: Some("s.wav".into()), background: None, ..StemFiles::default() };
+        assert_eq!(stem_weights(&StemLevels { voice: 1.0, original: 0.3, background: 1.0, sfx: None }, &plain).unwrap(),
             vec![(PathBuf::from("v.wav"), 1.0), (PathBuf::from("s.wav"), 0.3)]);
-        assert_eq!(stem_weights(&StemLevels { voice: 0.0, original: 0.0, background: 0.0 }, &plain).unwrap(), vec![(PathBuf::from("v.wav"), 0.0)]);
-        assert!(stem_weights(&StemLevels { voice: 2.5, original: 1.0, background: 1.0 }, &plain).is_err());
-        assert!(stem_weights(&StemLevels { voice: 1.0, original: 1.0, background: 1.0 }, &StemFiles::default()).is_err());
+        assert_eq!(stem_weights(&StemLevels { voice: 0.0, original: 0.0, background: 0.0, sfx: None }, &plain).unwrap(), vec![(PathBuf::from("v.wav"), 0.0)]);
+        assert!(stem_weights(&StemLevels { voice: 2.5, original: 1.0, background: 1.0, sfx: None }, &plain).is_err());
+        assert!(stem_weights(&StemLevels { voice: 1.0, original: 1.0, background: 1.0, sfx: None }, &StemFiles::default()).is_err());
+        // Split into music and SFX: each part cancels its share of the source; no `sfx` level follows the music.
+        let split = StemFiles { voice: None, source: Some("s.wav".into()), background: Some("b.wav".into()), music: Some("m.wav".into()), sfx: Some("x.wav".into()), spoken: None };
+        assert_eq!(stem_weights(&StemLevels { voice: 0.0, original: 0.0, background: 1.0, sfx: Some(0.5) }, &split).unwrap(),
+            vec![(PathBuf::from("m.wav"), 1.0), (PathBuf::from("x.wav"), 0.5)]);
+        assert_eq!(stem_weights(&StemLevels { voice: 0.0, original: 1.0, background: 1.0, sfx: None }, &split).unwrap(),
+            vec![(PathBuf::from("s.wav"), 1.0)]);
+        assert_eq!(stem_weights(&StemLevels { voice: 0.0, original: 1.2, background: 0.0, sfx: Some(2.0) }, &split).unwrap(),
+            vec![(PathBuf::from("s.wav"), 1.2), (PathBuf::from("m.wav"), -1.2), (PathBuf::from("x.wav"), 0.8)]);
+        assert!(stem_weights(&StemLevels { voice: 0.0, original: 1.0, background: 1.0, sfx: Some(2.5) }, &split).is_err());
+        let saved: StemLevels = serde_json::from_value(json!({"voice": 1, "original": 0, "background": 1})).unwrap();
+        assert_eq!(saved.sfx, None, "drafts from before the split still load");
     }
 
     #[test]
@@ -4450,6 +4576,21 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
         assert!(separation_outdated(&file, &stem_files(&file)), "no backend: an older model made it");
         fs::write(work.join(STEMS_DIR).join("status.json"), json!({"state": "COMPLETED", "backend": SEPARATION_BACKEND}).to_string()).unwrap();
         assert!(!separation_outdated(&file, &stem_files(&file)));
+        // Music and SFX count only when split from this very accompaniment.
+        let stems = work.join(STEMS_DIR);
+        for name in ["music.wav", "sfx.wav"] {
+            fs::write(stems.join(name), b"wav").unwrap();
+        }
+        assert_eq!(stem_files(&file).music, None, "no split.json");
+        let background = stems.join("background.wav");
+        let metadata = fs::metadata(&background).unwrap();
+        let mtime = metadata.modified().unwrap().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64;
+        let identity = json!({"schema_version": 1, "recipe": "hpss-median-v1", "background": background.to_string_lossy(), "size": metadata.len(), "mtime_ns": mtime});
+        fs::write(stems.join(SPLIT_FILE), identity.to_string()).unwrap();
+        let files = stem_files(&file);
+        assert_eq!((files.music, files.sfx), (Some(stems.join("music.wav")), Some(stems.join("sfx.wav"))));
+        fs::write(&background, b"wav2").unwrap();
+        assert_eq!(stem_files(&file).music, None, "a new accompaniment makes the split stale");
         let _ = fs::remove_dir_all(&base);
     }
 

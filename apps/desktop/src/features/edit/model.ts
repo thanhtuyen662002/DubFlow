@@ -169,9 +169,19 @@ export type Edit = {
  * accompaniment (`background`, music and effects) is separated, else the
  * whole original sound.
  */
-export type StemLevels = { readonly voice: number; readonly original: number; readonly background: number };
+export type StemLevels = {
+  readonly voice: number; readonly original: number; readonly background: number;
+  /** Tiếng động (SFX) once the accompaniment is split into music (`background`) and effects; absent = as `background`. */
+  readonly sfx?: number;
+};
 export const STEM_KEYS = ["voice", "original", "background"] as const;
-export type StemKey = typeof STEM_KEYS[number];
+/** Every part's key, `sfx` included (it may be absent in a level set). */
+export const ALL_STEM_KEYS = ["voice", "original", "background", "sfx"] as const;
+export type StemKey = typeof ALL_STEM_KEYS[number];
+/** A part's level; SFX follows the music until it is set on its own. */
+export function stemLevel(levels: StemLevels, key: StemKey): number {
+  return key === "sfx" ? levels.sfx ?? levels.background : levels[key];
+}
 /** What the parts start at: the dub over the music, the original voice out (or low when it is not separated). */
 export function defaultStems(separated: boolean): StemLevels {
   return { voice: 1, original: separated ? 0 : 0.35, background: 1 };
@@ -181,8 +191,12 @@ export function defaultStems(separated: boolean): StemLevels {
  * at `original` and the accompaniment at `background − original` (the
  * source's own accompaniment cancels out).
  */
-export function stemWeights(levels: StemLevels, separated: boolean): { voice: number; source: number; background: number } {
-  return { voice: levels.voice, source: levels.original, background: separated ? levels.background - levels.original : 0 };
+export function stemWeights(levels: StemLevels, separated: boolean, split = false): { voice: number; source: number; background: number; music: number; sfx: number } {
+  if (separated && split) {
+    // Music + SFX add up to the accompaniment: each cancels its share of the source.
+    return { voice: levels.voice, source: levels.original, background: 0, music: levels.background - levels.original, sfx: stemLevel(levels, "sfx") - levels.original };
+  }
+  return { voice: levels.voice, source: levels.original, background: separated ? levels.background - levels.original : 0, music: 0, sfx: 0 };
 }
 
 /** A named point on the output, anchored to output time like sound clips. */
@@ -1072,9 +1086,11 @@ export function setStems(edit: Edit, levels: StemLevels | null): Edit {
     const { mainStems: _, ...rest } = edit;
     return rest;
   }
-  if (!STEM_KEYS.every((key) => Number.isFinite(levels[key]))) return edit;
-  const next = Object.fromEntries(STEM_KEYS.map((key) => [key, Math.round(clamp(levels[key], 0, MAX_VOLUME) * 100) / 100])) as StemLevels;
-  const same = edit.mainStems && STEM_KEYS.every((key) => edit.mainStems?.[key] === next[key]);
+  if (!STEM_KEYS.every((key) => Number.isFinite(levels[key])) || (levels.sfx !== undefined && !Number.isFinite(levels.sfx))) return edit;
+  const level = (value: number): number => Math.round(clamp(value, 0, MAX_VOLUME) * 100) / 100;
+  const next = Object.fromEntries(STEM_KEYS.map((key) => [key, level(levels[key])])) as { voice: number; original: number; background: number; sfx?: number };
+  if (levels.sfx !== undefined) next.sfx = level(levels.sfx);
+  const same = edit.mainStems && ALL_STEM_KEYS.every((key) => edit.mainStems?.[key] === next[key]);
   return same ? edit : { ...edit, mainStems: next };
 }
 
@@ -1082,6 +1098,7 @@ function parseStems(raw: unknown): StemLevels | undefined {
   if (!raw || typeof raw !== "object") return undefined;
   const value = raw as Record<string, unknown>;
   if (!STEM_KEYS.every((key) => typeof value[key] === "number" && Number.isFinite(value[key]))) return undefined;
+  if (value.sfx !== undefined && !(typeof value.sfx === "number" && Number.isFinite(value.sfx))) return undefined;
   return setStems({ mainStems: undefined } as unknown as Edit, value as unknown as StemLevels).mainStems;
 }
 
@@ -1451,7 +1468,7 @@ export function matchesExport(edit: Edit, exported: {
     return value.kind === source.kind && (source.kind === "sfx" ? value.id === source.id : typeof value.path === "string" && samePath(value.path, source.path));
   };
   const stems = parseStems(exported.stems);
-  if (!!stems !== !!plan.stems || (stems && plan.stems && !STEM_KEYS.every((key) => stems[key] === plan.stems?.[key]))) return false;
+  if (!!stems !== !!plan.stems || (stems && plan.stems && !ALL_STEM_KEYS.every((key) => stems[key] === plan.stems?.[key]))) return false;
   return (exported.main_volume ?? 1) === plan.mainVolume
     && (exported.main_denoise === true) === (plan.mainDenoise === true) && (exported.main_eq ?? null) === (plan.mainEq ?? null)
     && audio.length === plan.audio.length && plan.audio.every((clip, at) => {

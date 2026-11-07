@@ -7,16 +7,27 @@
  * export mixes the same files (`stem_weights` in the host).
  */
 import { boostedAudio, fallbackAudio, isBoosted, setLevel, wake } from "./boost.ts";
-import { defaultStems, setStems, STEM_KEYS, stemWeights, type Edit, type StemKey, type StemLevels } from "./model.ts";
+import { ALL_STEM_KEYS, defaultStems, setStems, stemLevel, stemWeights, type Edit, type StemKey, type StemLevels } from "./model.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 
 type Separation = { state: string; progress?: number; message?: string };
 /** `outdated`: the accompaniment came from an older model; Tách giọng may run again. */
-type StemsResponse = { voice: string | null; source: string | null; background: string | null; separation: Separation | null; outdated?: boolean };
-type FileKey = "voice" | "source" | "background";
+/** `music`/`sfx`: the accompaniment split in two (Tách nhạc và SFX); `split` is that run's progress. */
+type StemsResponse = {
+  voice: string | null; source: string | null; background: string | null; separation: Separation | null; outdated?: boolean;
+  music?: string | null; sfx?: string | null; split?: Separation | null;
+  /** The original voice alone (source − accompaniment), only drawn on the timeline. */
+  spoken?: string | null;
+};
+/** A part as a timeline lane: its file to draw and its level. */
+export type StemLane = { key: StemKey; label: string; path: string; level: number };
+type FileKey = "voice" | "source" | "background" | "music" | "sfx";
 
 export type StemsContext = {
+  /** "Thêm nhạc nền" / "Thêm SFX": the Âm thanh tools that add sounds. */
+  addMusic: () => void;
+  addSfx: () => void;
   edit: () => Edit;
   base: () => Edit;
   busy: () => boolean;
@@ -34,6 +45,12 @@ export type StemsMode = {
   render(shown: boolean): void;
   /** Whether the preview plays the parts instead of the main video's own track. */
   active(edit: Edit): boolean;
+  /** The parts as timeline lanes while Lớp âm thanh is on (none when off). */
+  lanes(edit: Edit): StemLane[];
+  /** A lane's level dragged on the timeline (`commit` false while dragging). */
+  setLevel(key: StemKey, value: number, commit: boolean): void;
+  /** Turn a part off, or back on at its level before. */
+  toggle(key: StemKey): void;
   /** Keep the parts on `video`'s time at `level` (the segment's volume × Âm thanh gốc); `on` false pauses them. */
   sync(video: HTMLVideoElement, level: number, on: boolean, playing: boolean): void;
   pause(): void;
@@ -78,8 +95,9 @@ export function mountStems(invoke: Invoke, context: StemsContext): StemsMode {
   const players = new Map<FileKey, { element: HTMLAudioElement; path: string }>();
 
   const separated = (): boolean => !!files?.source && !!files.background;
+  const split = (): boolean => separated() && !!files?.music && !!files.sfx;
   const hasVoice = (): boolean => !!files?.voice;
-  const keys = (): StemKey[] => STEM_KEYS.filter((key) => key === "voice" ? hasVoice() : key === "background" ? separated() : !!files?.source);
+  const keys = (): StemKey[] => ALL_STEM_KEYS.filter((key) => key === "voice" ? hasVoice() : key === "background" ? separated() : key === "sfx" ? split() : !!files?.source);
 
   /** What the parts start at when first changed. */
   function initial(): StemLevels {
@@ -88,13 +106,29 @@ export function mountStems(invoke: Invoke, context: StemsContext): StemsMode {
 
   function label(key: StemKey): string {
     if (key === "voice") return "Giọng Việt (lồng tiếng)";
-    if (key === "background") return "Nhạc nền và tiếng động";
+    if (key === "sfx") return "Tiếng động, hiệu ứng (SFX)";
+    if (key === "background") return split() ? "Nhạc" : "Nhạc nền và tiếng động";
     if (!separated()) return "Âm gốc (giọng gốc lẫn nhạc nền)";
-    return hasVoice() ? "Giọng gốc" : "Giọng nói trong video";
+    return hasVoice() ? "Giọng gốc" : "Lời (giọng nói trong video)";
   }
 
   function presets(): Preset[] {
     const sep = separated();
+    if (split()) {
+      return hasVoice() ? [
+        { label: "Lồng tiếng chuẩn", title: "Giọng Việt, nhạc và SFX 100%, tắt giọng gốc", levels: { voice: 1, original: 0, background: 1, sfx: 1 } },
+        { label: "Giọng Việt rõ", title: "Giọng Việt 140%, nhạc 50%, SFX 80%, tắt giọng gốc", levels: { voice: 1.4, original: 0, background: 0.5, sfx: 0.8 } },
+        { label: "Bỏ nhạc, giữ SFX", title: "Tắt nhạc (tránh bản quyền), giữ tiếng động", levels: { voice: 1, original: 0, background: 0, sfx: 1 } },
+        { label: "Chỉ nhạc", title: "Tắt giọng và SFX", levels: { voice: 0, original: 0, background: 1, sfx: 0 } },
+        { label: "Bản gốc", title: "Tắt giọng Việt, nghe như video gốc", levels: { voice: 0, original: 1, background: 1, sfx: 1 } },
+      ] : [
+        { label: "Bỏ lời", title: "Tắt lời, giữ nhạc và SFX", levels: { voice: 0, original: 0, background: 1, sfx: 1 } },
+        { label: "Bỏ nhạc", title: "Tắt nhạc (tránh bản quyền), giữ lời và SFX", levels: { voice: 0, original: 1, background: 0, sfx: 1 } },
+        { label: "Chỉ lời", title: "Tắt nhạc và SFX", levels: { voice: 0, original: 1, background: 0, sfx: 0 } },
+        { label: "Chỉ SFX", title: "Tắt lời và nhạc", levels: { voice: 0, original: 0, background: 0, sfx: 1 } },
+        { label: "Như gốc", title: "Lời, nhạc và SFX 100%", levels: { voice: 0, original: 1, background: 1, sfx: 1 } },
+      ];
+    }
     if (!hasVoice()) {
       return [
         { label: "Bỏ giọng, giữ nhạc", title: "Tắt giọng nói, giữ nhạc nền và tiếng động", levels: { voice: 0, original: 0, background: 1 } },
@@ -128,9 +162,11 @@ export function mountStems(invoke: Invoke, context: StemsContext): StemsMode {
       const next = await invoke<StemsResponse>("edit_stems", { outputPath, kind });
       if (mine !== token) return;
       const wasSeparated = separated();
+      const wasSplit = split();
       const wasOutdated = !!files?.outdated && files.separation?.state === "RUNNING";
       files = next;
       if (!wasSeparated && separated()) afterSeparation();
+      else if (wasSeparated && !wasSplit && split()) context.note("Đã tách nhạc và tiếng động (SFX): chỉnh riêng từng lớp bên dưới.");
       else if (wasOutdated && separated() && !next.outdated) {
         // Same file names, new sound: the players read it again.
         revision += 1;
@@ -146,7 +182,7 @@ export function mountStems(invoke: Invoke, context: StemsContext): StemsMode {
     }
     if (mine !== token) return;
     clearTimeout(poll);
-    if (files?.separation?.state === "RUNNING") poll = window.setTimeout(() => void load(), POLL_MS);
+    if (files?.separation?.state === "RUNNING" || files?.split?.state === "RUNNING") poll = window.setTimeout(() => void load(), POLL_MS);
     for (const [key, player] of players) {
       if (files?.[key] === player.path) continue;
       release(player.element);
@@ -166,7 +202,20 @@ export function mountStems(invoke: Invoke, context: StemsContext): StemsMode {
     } else {
       context.commit(setStems(edit, initial()));
     }
-    context.note(hasVoice() ? "Đã tách giọng gốc khỏi nhạc nền: giọng gốc đang tắt, nhạc nền giữ nguyên." : "Đã tách giọng nói khỏi nhạc nền.");
+    context.note(hasVoice() ? "Đã tách giọng gốc khỏi nhạc nền: giọng gốc đang tắt, nhạc nền giữ nguyên."
+      : split() ? "Đã tách thành 3 lớp: lời, nhạc và tiếng động (SFX)." : "Đã tách giọng nói khỏi nhạc nền.");
+  }
+
+  async function splitMusic(): Promise<void> {
+    try {
+      await invoke("edit_split", { outputPath, kind });
+      files = files ? { ...files, split: { state: "RUNNING", progress: 0, message: "Đang bắt đầu tách nhạc và tiếng động…" } } : files;
+      renderPanel();
+      clearTimeout(poll);
+      poll = window.setTimeout(() => void load(), POLL_MS);
+    } catch (error) {
+      context.note(String(error).slice(0, 200));
+    }
   }
 
   async function separate(): Promise<void> {
@@ -185,6 +234,13 @@ export function mountStems(invoke: Invoke, context: StemsContext): StemsMode {
 
   function levels(edit: Edit): StemLevels {
     return edit.mainStems ?? initial();
+  }
+
+  /** One part set; the music keeps SFX where it was (SFX follows the music only until it is set). */
+  function withLevel(current: StemLevels, key: StemKey, value: number): StemLevels {
+    const next = { ...current, [key]: value };
+    if (split() && key === "background" && current.sfx === undefined) next.sfx = current.background;
+    return next;
   }
 
   function apply(next: StemLevels, commit: boolean): void {
@@ -213,7 +269,9 @@ export function mountStems(invoke: Invoke, context: StemsContext): StemsMode {
     const edit = context.edit();
     const parts = keys();
     const running = files?.separation?.state === "RUNNING";
-    const next = JSON.stringify([parts, !!edit.mainStems, running, loading && !files, files?.separation?.state, files?.separation?.message, solo, hasAudio]);
+    const splitting = files?.split?.state === "RUNNING";
+    const next = JSON.stringify([parts, !!edit.mainStems, running, splitting, loading && !files, files?.separation?.state, files?.separation?.message,
+      files?.split?.state, solo, hasAudio]);
     if (next === shape) {
       update(edit);
       return;
@@ -243,19 +301,56 @@ export function mountStems(invoke: Invoke, context: StemsContext): StemsMode {
         ? "Chỉnh riêng từng lớp, 0–200%. Âm lượng cả video bên dưới áp dụng lên tổng."
         : "Đang phát âm thanh có sẵn của video. Kéo một thanh hoặc chọn kiểu bên dưới để chỉnh riêng từng lớp."));
       const current = levels(edit);
-      for (const key of parts) body.push(row(key, current[key], !!edit.mainStems));
+      for (const key of parts) body.push(row(key, stemLevel(current, key), !!edit.mainStems));
       const chipRow = element("div", "au-stems-presets");
       for (const preset of presets()) {
         const chip = element("button", "btn chip", preset.label);
         chip.type = "button";
         chip.title = preset.title;
-        const on = !!edit.mainStems && STEM_KEYS.every((key) => !parts.includes(key) || edit.mainStems?.[key] === preset.levels[key]);
+        const on = !!edit.mainStems && parts.every((key) => stemLevel(edit.mainStems!, key) === stemLevel(preset.levels, key));
         chip.setAttribute("aria-pressed", String(on));
         chip.addEventListener("click", () => { if (!context.busy()) apply(preset.levels, true); });
         chipRow.append(chip);
         chips.push({ chip, levels: preset.levels });
       }
       body.push(chipRow);
+    }
+    if (separated() && !split() && hasAudio) {
+      // Older separations (and dubbing jobs) have one accompaniment: split it into music and SFX on request.
+      const box = element("div", "au-stems-separate");
+      if (splitting) {
+        const bar = element("div", "au-stems-track");
+        const fill = element("div", "au-stems-fill");
+        fill.style.width = `${Math.max(2, Math.min(100, Number(files?.split?.progress) || 0))}%`;
+        bar.append(fill);
+        progressFill = fill;
+        progressText = element("small", "edit-note", files?.split?.message || "Đang tách nhạc và tiếng động…");
+        box.append(progressText, bar);
+      } else {
+        const button = element("button", "btn", "Tách nhạc và tiếng động (SFX)");
+        button.type = "button";
+        button.disabled = loading;
+        button.addEventListener("click", () => void splitMusic());
+        box.append(button, element("small", "edit-note", "Tách nhạc nền thành 2 lớp: nhạc (giai điệu) và tiếng động, hiệu ứng (SFX). Không cần tải thêm, vài giây cho mỗi phút video."));
+        if (files?.split?.state === "FAILED" && files.split.message) box.append(element("small", "edit-note error", files.split.message));
+      }
+      body.push(box);
+    }
+    if (split() && edit.mainStems) {
+      body.push(element("small", "edit-note", "Trống, nhịp trong bài nhạc thường nằm ở lớp SFX. Lớp được tách tự động nên có thể còn lẫn một chút."));
+    }
+    if (parts.length) {
+      const add = element("div", "au-stems-add");
+      const music = element("button", "btn ghost small", "＋ Thêm nhạc nền");
+      music.type = "button";
+      music.title = "Chọn file nhạc trên máy, thêm tại đầu phát (bật “Lặp lại đến hết video” để làm nhạc nền)";
+      music.addEventListener("click", () => context.addMusic());
+      const sfx = element("button", "btn ghost small", "＋ Thêm SFX");
+      sfx.type = "button";
+      sfx.title = "Chọn hiệu ứng âm thanh trong Kho DubFlow";
+      sfx.addEventListener("click", () => context.addSfx());
+      add.append(music, sfx);
+      body.push(add);
     }
     if ((!separated() || files?.outdated) && hasAudio) {
       const box = element("div", "au-stems-separate");
@@ -280,13 +375,13 @@ export function mountStems(invoke: Invoke, context: StemsContext): StemsMode {
           `Nhạc nền của video này được tách bằng bộ lọc cũ nên còn sót giọng gốc và tiếng rè. Lọc lại để nhạc nền sạch hơn. ${SEPARATE_NOTE}`));
         if (status?.state === "FAILED" && status.message) box.append(element("small", "edit-note error", status.message));
       } else {
-        const button = element("button", "btn", hasVoice() ? "Tách giọng gốc khỏi nhạc nền" : "Tách giọng nói và nhạc nền");
+        const button = element("button", "btn", hasVoice() ? "Tách giọng gốc khỏi nhạc nền" : "Tách lời, nhạc và SFX");
         button.type = "button";
         button.disabled = loading;
         button.addEventListener("click", () => void separate());
         box.append(button, element("small", "edit-note", hasVoice()
           ? `Video này chưa có nhạc nền tách riêng nên giọng gốc còn lẫn trong âm gốc. ${SEPARATE_NOTE}`
-          : `Tách để chỉnh riêng giọng nói và nhạc nền. ${SEPARATE_NOTE}`));
+          : `Tách âm thanh thành 3 lớp: lời, nhạc và tiếng động (SFX), rồi chỉnh riêng từng lớp. ${SEPARATE_NOTE}`));
         if (status?.state === "FAILED" && status.message) box.append(element("small", "edit-note error", status.message));
       }
       body.push(box);
@@ -299,17 +394,18 @@ export function mountStems(invoke: Invoke, context: StemsContext): StemsMode {
   function update(edit: Edit): void {
     const current = levels(edit);
     for (const [key, { input, out, mute }] of rows) {
-      if (document.activeElement !== input) input.value = String(Math.round(current[key] * 100));
-      out.textContent = percent(current[key]);
-      mute.textContent = current[key] === 0 ? "Bật" : "Tắt";
-      mute.title = current[key] === 0 ? "Bật lại lớp này" : "Tắt lớp này";
+      const value = stemLevel(current, key);
+      if (document.activeElement !== input) input.value = String(Math.round(value * 100));
+      out.textContent = percent(value);
+      mute.textContent = value === 0 ? "Bật" : "Tắt";
+      mute.title = value === 0 ? "Bật lại lớp này" : "Tắt lớp này";
     }
     const parts = keys();
     for (const { chip, levels: preset } of chips) {
-      const on = !!edit.mainStems && parts.every((key) => edit.mainStems?.[key] === preset[key]);
+      const on = !!edit.mainStems && parts.every((key) => stemLevel(edit.mainStems!, key) === stemLevel(preset, key));
       chip.setAttribute("aria-pressed", String(on));
     }
-    const status = files?.separation;
+    const status = files?.separation?.state === "RUNNING" ? files.separation : files?.split?.state === "RUNNING" ? files.split : files?.separation;
     if (progressFill) progressFill.style.width = `${Math.max(2, Math.min(100, Number(status?.progress) || 0))}%`;
     if (progressText) progressText.textContent = status?.message || "Đang tách giọng…";
   }
@@ -330,19 +426,20 @@ export function mountStems(invoke: Invoke, context: StemsContext): StemsMode {
     input.addEventListener("input", () => {
       if (!shown) return;
       out.textContent = percent(Number(input.value) / 100);
-      apply({ ...levels(context.base()), [key]: Number(input.value) / 100 }, false);
+      apply(withLevel(levels(context.base()), key, Number(input.value) / 100), false);
     });
     input.addEventListener("change", () => {
       if (!shown) return;
-      apply({ ...levels(context.base()), [key]: Number(input.value) / 100 }, true);
+      apply(withLevel(levels(context.base()), key, Number(input.value) / 100), true);
     });
     const mute = element("button", "btn ghost small au-stem-mute", value === 0 ? "Bật" : "Tắt");
     mute.type = "button";
     mute.title = value === 0 ? "Bật lại lớp này" : "Tắt lớp này";
     mute.addEventListener("click", () => {
       const current = levels(context.base());
-      if (current[key] > 0) before.set(key, current[key]);
-      apply({ ...current, [key]: current[key] > 0 ? 0 : before.get(key) ?? 1 }, true);
+      const value = stemLevel(current, key);
+      if (value > 0) before.set(key, value);
+      apply(withLevel(current, key, value > 0 ? 0 : before.get(key) ?? 1), true);
     });
     const alone = element("button", "btn ghost small au-stem-solo", "Nghe riêng");
     alone.type = "button";
@@ -422,17 +519,49 @@ export function mountStems(invoke: Invoke, context: StemsContext): StemsMode {
     active(edit) {
       return !!edit.mainStems && !!files?.source;
     },
+    lanes(edit) {
+      const current = edit.mainStems;
+      if (!current || !files?.source) return [];
+      const lanes: Array<{ key: StemKey; label: string; path: string | null | undefined }> = [];
+      if (hasVoice()) lanes.push({ key: "voice", label: "Giọng Việt", path: files.voice });
+      if (!separated()) lanes.push({ key: "original", label: "Âm gốc", path: files.source });
+      else {
+        lanes.push({ key: "original", label: hasVoice() ? "Giọng gốc" : "Lời", path: files.spoken || files.source });
+        if (split()) lanes.push({ key: "background", label: "Nhạc", path: files.music }, { key: "sfx", label: "SFX", path: files.sfx });
+        else lanes.push({ key: "background", label: "Nhạc nền", path: files.background });
+      }
+      return lanes.filter((lane): lane is { key: StemKey; label: string; path: string } => !!lane.path)
+        .map((lane) => ({ ...lane, level: stemLevel(current, lane.key) }));
+    },
+    setLevel(key, value, commit) {
+      if (context.busy() && commit === false && !context.edit().mainStems) return;
+      apply(withLevel(levels(context.base()), key, Math.min(2, Math.max(0, value))), commit);
+      update(context.edit());
+    },
+    toggle(key) {
+      if (context.busy()) return;
+      const current = levels(context.base());
+      const value = stemLevel(current, key);
+      if (value > 0) before.set(key, value);
+      apply(withLevel(current, key, value > 0 ? 0 : before.get(key) ?? 1), true);
+    },
     sync(video, level, on, playing) {
       const edit = context.edit();
       if (!on || !edit.mainStems || !files?.source) {
         pause();
         return;
       }
-      const heard = solo ? Object.fromEntries(STEM_KEYS.map((key) => [key, key === solo ? edit.mainStems![key] : 0])) as StemLevels : edit.mainStems;
-      const weights = stemWeights(heard, separated());
+      const heard = solo ? Object.fromEntries(ALL_STEM_KEYS.map((key) => [key, key === solo ? stemLevel(edit.mainStems!, key) : 0])) as StemLevels : edit.mainStems;
+      const weights = stemWeights(heard, separated(), split());
       if (playing) wake();
-      for (const key of ["voice", "source", "background"] as const) {
+      for (const key of ["voice", "source", "background", "music", "sfx"] as const) {
         const path = files[key];
+        if (path && weights[key] === 0 && (key === "music" || key === "sfx" || key === "background")) {
+          // A silent part does not need to play (the split parts are big files).
+          const idle = players.get(key);
+          if (idle && !idle.element.paused) idle.element.pause();
+          continue;
+        }
         if (!path) continue;
         const player = playerFor(key, path);
         setLevel(player, weights[key] * level);
