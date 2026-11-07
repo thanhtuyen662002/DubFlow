@@ -87,6 +87,19 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
   onWindowMoved: (listener: () => void) => void, aiChinese?: (text: string) => Promise<string | null>): { show(): void; hide(): void } {
   const tabs = $("#platform-tabs");
   const trendList = $("#trend-list");
+  // Two tabs like a studio's discover page: the video grid, or the hot topics as a grid of their own.
+  const discoverBody = document.querySelector<HTMLElement>(".discover-body");
+  const tabButtons = [...document.querySelectorAll<HTMLButtonElement>("#discover-tabs [data-tab]")];
+  function showTab(tab: "video" | "trend"): void {
+    if (discoverBody) discoverBody.dataset.tab = tab;
+    for (const button of tabButtons) button.setAttribute("aria-selected", String(button.dataset.tab === tab));
+  }
+  for (const button of tabButtons) button.addEventListener("click", () => showTab(button.dataset.tab === "trend" ? "trend" : "video"));
+  // Picking a topic searches it, so the results tab comes forward.
+  trendList.addEventListener("click", (event) => {
+    if ((event.target as Element).closest("button")) showTab("video");
+  });
+  showTab("video");
   const trendState = $("#trend-state");
   const form = $<HTMLFormElement>("#discover-form");
   const kind = $<HTMLSelectElement>("#discover-kind");
@@ -259,6 +272,15 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
   /** The title a download is named after: the Vietnamese one when the card shows it. */
   const downloadTitle = (video: DiscoveredVideo): string | undefined => viTitle(video) || (video.title === NO_TITLE ? undefined : video.title);
 
+  /** 60–100 by where a video's views rank among the results; null without view counts. */
+  function hotScore(video: DiscoveredVideo): number | null {
+    if (video.plays === null) return null;
+    const counted = videos.filter((item) => item.plays !== null);
+    if (counted.length < 2) return null;
+    const below = counted.filter((item) => (item.plays as number) < (video.plays as number)).length;
+    return Math.round(60 + 40 * below / (counted.length - 1));
+  }
+
   function renderResults(): void {
     stopPreview();
     hoverCard = null;
@@ -296,6 +318,40 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
       sub.className = "sub";
       sub.textContent = [video.author, video.plays !== null ? `${formatCount(video.plays)} lượt xem` : ""].filter(Boolean).join(" · ");
       meta.append(title, original, sub);
+      const score = hotScore(video);
+      if (score !== null) {
+        const badge = document.createElement("span");
+        badge.className = "hot";
+        badge.textContent = String(score);
+        badge.title = "Độ hot so với các video khác trong kết quả (theo lượt xem)";
+        thumb.append(badge);
+        if (score >= 90) {
+          const tag = document.createElement("span");
+          tag.className = "tag";
+          tag.textContent = "Nhiều lượt xem";
+          meta.append(tag);
+        }
+      }
+      const make = document.createElement("button");
+      make.type = "button";
+      make.className = "btn primary make";
+      make.innerHTML = `<svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path d="M7 5v14l11-7z" fill="currentColor"/></svg><span>Làm video</span>`;
+      make.title = "Đưa video này về Hàng đợi";
+      make.addEventListener("click", async (event) => {
+        event.stopPropagation();
+        make.disabled = true;
+        try {
+          await enqueue(video.fetchUrl, downloadTitle(video));
+          make.querySelector("span")!.textContent = "Đã thêm";
+          state.textContent = `Đã đưa “${(downloadTitle(video) ?? "video").slice(0, 60)}” về Hàng đợi.${ADDED_NOTE}`;
+        } catch (error) {
+          make.disabled = false;
+          state.textContent = `Không thêm được: ${String(error).slice(0, 160)}`;
+        }
+      });
+      make.addEventListener("dblclick", (event) => event.stopPropagation());
+      make.addEventListener("keydown", (event) => event.stopPropagation());
+      meta.append(make);
       card.append(thumb, check, meta);
       const entry: Card = {
         video, card, thumb, check,
