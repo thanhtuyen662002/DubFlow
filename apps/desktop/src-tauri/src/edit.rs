@@ -3322,7 +3322,10 @@ fn split_parts(stems: &Path, background: &Path) -> Option<(PathBuf, PathBuf)> {
 
 fn stem_files(target: &Target) -> StemFiles {
     let file = |path: PathBuf| path.is_file().then_some(path);
+    // The editor's own stems folder counts only below a draft folder (and its parent) that are not links.
     let own = target.work.join(STEMS_DIR);
+    let own_ok = unlinked(&target.work);
+    let own_file = |dir: &Path, name: &str| if own_ok { own_file(dir, name) } else { None };
     let editable = target.dir.join("editable");
     let job = matches!(target.kind, Kind::Job);
     let voice = job.then(|| file(editable.join("dialogue_stem.wav"))).flatten();
@@ -3339,7 +3342,7 @@ fn stem_files(target: &Target) -> StemFiles {
             StemFiles { voice, background: source.as_ref().and(separated), source, ..StemFiles::default() }
         }
     };
-    if let Some((music, sfx)) = files.background.as_ref().and_then(|background| split_parts(&own, background)) {
+    if let Some((music, sfx)) = files.background.as_ref().filter(|_| own_ok).and_then(|background| split_parts(&own, background)) {
         files.music = Some(music);
         files.sfx = Some(sfx);
         files.spoken = own_file(&own, "voice.wav");
@@ -3385,7 +3388,7 @@ const MAX_STEM_LEVEL: f64 = 2.0;
 
 /// Whether Tách giọng's own output came from the current model.
 fn separated_by_current(work: &Path) -> bool {
-    let path = work.join(STEMS_DIR).join("status.json");
+    let Some(path) = own_file(&work.join(STEMS_DIR), "status.json") else { return false };
     fs::read(&path).ok().filter(|bytes| bytes.len() < 64 * 1024)
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
         .is_some_and(|value| value["state"] == "COMPLETED" && value["backend"] == SEPARATION_BACKEND)
@@ -3423,15 +3426,21 @@ fn read_separation(work: &Path) -> Option<Value> {
 #[tauri::command]
 pub fn edit_stems(output_path: String, kind: String) -> Result<Value, String> {
     let target = edit_target(&output_path, &kind)?;
-    let files = stem_files(&target);
+    Ok(stem_listing(&target))
+}
+
+/// What edit_stems answers (and allows the preview to play): nothing from a draft folder reached through a link.
+fn stem_listing(target: &Target) -> Value {
+    let files = stem_files(target);
+    let own_ok = unlinked(&target.work);
     let listed: Vec<PathBuf> = [&files.voice, &files.source, &files.background, &files.music, &files.sfx, &files.spoken].into_iter().flatten()
         .filter_map(|file| file.canonicalize().ok()).collect();
     crate::sfx::allow_files(&listed);
     let shown = |file: &Option<PathBuf>| file.as_ref().map(|file| display_path(file));
-    Ok(json!({"voice": shown(&files.voice), "source": shown(&files.source), "background": shown(&files.background),
+    json!({"voice": shown(&files.voice), "source": shown(&files.source), "background": shown(&files.background),
         "music": shown(&files.music), "sfx": shown(&files.sfx), "spoken": shown(&files.spoken),
-        "separation": read_separation(&target.work), "outdated": separation_outdated(&target, &files),
-        "split": read_split(&target.work)}))
+        "separation": if own_ok { read_separation(&target.work) } else { None }, "outdated": separation_outdated(target, &files),
+        "split": if own_ok { read_split(&target.work) } else { None }})
 }
 
 fn read_split(work: &Path) -> Option<Value> {
@@ -3797,6 +3806,51 @@ mod tests {
         }
         let _ = fs::remove_dir_all(&stems);
         let _ = fs::remove_file(&outside);
+    }
+
+    #[test]
+    fn a_linked_draft_folder_or_its_parent_gives_no_stems() {
+        let root = std::env::temp_dir().join(format!("dubflow-linked-work-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        // Outside: a whole draft folder with separated, split parts and statuses.
+        let outside = root.join("outside");
+        let stems = outside.join("work").join(STEMS_DIR);
+        fs::create_dir_all(&stems).unwrap();
+        for name in ["background.wav", "source.wav", "music.wav", "sfx.wav", "voice.wav"] {
+            fs::write(stems.join(name), b"x").unwrap();
+        }
+        let done = json!({"state": "COMPLETED", "progress": 100, "message": "x", "backend": SEPARATION_BACKEND}).to_string();
+        fs::write(stems.join("status.json"), &done).unwrap();
+        fs::write(stems.join(SPLIT_STATUS), &done).unwrap();
+        // A job whose own editable files are real.
+        let dir = root.join("job");
+        fs::create_dir_all(dir.join("editable")).unwrap();
+        for name in ["dialogue_stem.wav", "source_audio.wav"] {
+            fs::write(dir.join("editable").join(name), b"wav").unwrap();
+        }
+        // 1) The draft folder itself is a link; 2) its parent (.dubflow-work) is.
+        let linked_work = root.join("drafts").join("work");
+        fs::create_dir_all(linked_work.parent().unwrap()).unwrap();
+        link_dir(&outside.join("work"), &linked_work);
+        let parent_link = root.join("dubflow-work-link");
+        link_dir(&outside, &parent_link);
+        for work in [linked_work.clone(), parent_link.join("work")] {
+            assert!(!unlinked(&work), "the fixture is reached through a link");
+            let job = Target { kind: Kind::Job, main: dir.join("final_vi.mp4"), dir: dir.clone(), work: work.clone(), captions: None, store: None };
+            let parts = stem_files(&job);
+            assert!(parts.voice.is_some() && parts.source.is_some(), "the job's own files stay");
+            assert_eq!((&parts.background, &parts.music, &parts.sfx, &parts.spoken), (&None, &None, &None, &None));
+            let listing = stem_listing(&job);
+            assert!(listing["separation"].is_null() && listing["split"].is_null(), "no status read through the link");
+            for key in ["background", "music", "sfx", "spoken"] {
+                assert!(listing[key].is_null(), "{key}");
+            }
+            let file = Target { kind: Kind::File, main: root.join("a.mp4"), dir: root.clone(), work: work.clone(), captions: None, store: None };
+            assert_eq!(stem_files(&file), StemFiles::default());
+        }
+        unlink_dir(&linked_work);
+        unlink_dir(&parent_link);
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
