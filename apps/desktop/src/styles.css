@@ -2361,3 +2361,7 @@ body.settings-open .rail-item.active:not(#nav-settings)::before { display: none;
 .el-card > .rename-btn { top: 10px; right: 10px; }
 .el-card:hover > .rename-btn, .el-card:focus-within > .rename-btn { opacity: 1; }
 .rename-input { width: 100%; height: 26px; padding: 0 8px; border: 1px solid var(--accent); border-radius: 6px; background: var(--canvas); color: var(--text); font: inherit; font-weight: 600; outline: none; }
+
+/* Cài đặt › Dịch phụ đề: the sound over flagged words. */
+.sensitive-sound-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.sensitive-sound-row .hint { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }

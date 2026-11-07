@@ -3,7 +3,8 @@ import { createServer } from "node:http";
 import {
   askJson, checkProvider, noRedirectFetch, configureHostAi, createAiSession, hostRequest, isKeyError, isProvider, MODEL_CATALOG, PROVIDER_IDS, PROVIDERS,
 } from "../src/features/ai/provider.ts";
-import { DEFAULT_SENSITIVE_WORDS, formatWordList, normalizePrefs, parseWordList, translationJobArgs } from "../src/features/ai/translation_prefs.ts";
+import { DEFAULT_SENSITIVE_WORDS, formatWordList, normalizePrefs, parseWordList, sensitiveArgs, translationJobArgs } from "../src/features/ai/translation_prefs.ts";
+import { birdClip, dogClip, soundClip } from "../src/features/ai/beep_sound.ts";
 
 // Every provider id is known, labelled and has a console to get a key from.
 assert.equal(PROVIDER_IDS.length, 12);
@@ -63,19 +64,27 @@ assert.deepEqual(parseWordList("Chết = chớt\n\n giết→giớt \nchết = k
 assert.equal(formatWordList([{ from: "chết", to: "chớt" }, { from: "dao", to: "dao" }]), "chết = chớt\ndao");
 assert.deepEqual(parseWordList(formatWordList(DEFAULT_SENSITIVE_WORDS)), [...DEFAULT_SENSITIVE_WORDS]);
 assert.deepEqual(normalizePrefs({ sensitiveMode: "loud", aiTranslation: false, words: "x" }),
-  { aiTranslation: false, sensitiveMode: "off", words: [...DEFAULT_SENSITIVE_WORDS] });
+  { aiTranslation: false, sensitiveMode: "off", words: [...DEFAULT_SENSITIVE_WORDS], beepSound: "beep", beepFile: null });
+// The covering sound: a known one, and a file choice only with its file.
+assert.equal(normalizePrefs({ beepSound: "dog" }).beepSound, "dog");
+assert.equal(normalizePrefs({ beepSound: "cat" }).beepSound, "beep");
+assert.equal(normalizePrefs({ beepSound: "custom" }).beepSound, "beep");
+assert.deepEqual([normalizePrefs({ beepSound: "custom", beepFile: "D:\\sfx\\meo.mp3" }).beepSound, normalizePrefs({ beepFile: "a\nb" }).beepFile], ["custom", null]);
 
 // Job arguments: AI translation only with a saved key (or a custom server); words only when on.
 const prefs = { aiTranslation: true, sensitiveMode: "beep", words: [{ from: "chết", to: "chớt" }] };
 const fake = (provider, saved, options = {}) => ({ provider: () => provider, saved: () => saved, options: () => options });
 assert.deepEqual(translationJobArgs(prefs, fake("deepseek", "…1234"), "Video"), {
   aiTranslation: { provider: "deepseek", model: "deepseek-flash", baseUrl: null },
-  sensitiveWords: { mode: "beep", words: [{ from: "chết", to: "chớt" }] }, title: "Video" });
+  sensitiveWords: { mode: "beep", words: [{ from: "chết", to: "chớt" }], sound: "beep" }, title: "Video" });
 assert.equal(translationJobArgs(prefs, fake("deepseek", null), "").aiTranslation, null);
 assert.equal(translationJobArgs({ ...prefs, aiTranslation: false }, fake("gemini", "…1"), "").aiTranslation, null);
 assert.deepEqual(translationJobArgs(prefs, fake("custom", null, { baseUrl: "http://localhost:1234/v1", model: "m" }), "").aiTranslation,
   { provider: "custom", model: "m", baseUrl: "http://localhost:1234/v1" });
 assert.equal(translationJobArgs({ ...prefs, sensitiveMode: "off" }, fake("gemini", "…1"), "").sensitiveWords, null);
+assert.deepEqual(sensitiveArgs({ ...prefs, beepSound: "bird" }), { mode: "beep", words: prefs.words, sound: "bird" });
+assert.deepEqual(sensitiveArgs({ ...prefs, beepSound: "custom", beepFile: "D:\\a.mp3" }), { mode: "beep", words: prefs.words, sound: "custom", sound_file: "D:\\a.mp3" });
+assert.deepEqual(sensitiveArgs({ ...prefs, sensitiveMode: "variant", beepSound: "dog" }), { mode: "variant", words: prefs.words });
 
 // Claude and Gemini are fetched from the webview: a redirect fails instead of carrying the key along.
 const seen = [];
@@ -107,3 +116,10 @@ first.close();
 other.close();
 
 console.log("ai providers ok");
+
+// Nghe thử plays the engine's recipes (same samples as engine/dubflow/worker/beep_sounds.py at 16 kHz).
+assert.equal(birdClip(16000).length, 13204);
+assert.equal(dogClip(16000).length, 10400);
+assert.ok(Math.abs(birdClip(16000)[3000] - -0.15444935115913352) < 1e-6);
+assert.ok(Math.abs(dogClip(16000)[2000] - 0.028342992129426824) < 1e-6);
+assert.equal(soundClip("custom", 16000), null);
