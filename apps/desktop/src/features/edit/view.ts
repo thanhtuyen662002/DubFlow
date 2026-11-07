@@ -2243,7 +2243,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       const context = canvas.getContext("2d");
       if (!context) continue;
       context.scale(ratio, ratio);
-      context.fillStyle = "oklch(0.86 0.12 160 / 0.85)";
+      context.fillStyle = "oklch(0.82 0.14 75 / 0.85)";
       const gain = Math.min(1, 0.35 + segment.volume * 0.65);
       for (let x = 0; x < width; x += 2) {
         const a = sourceAt(segment, x / pps), b = sourceAt(segment, (x + 2) / pps);
