@@ -23,9 +23,9 @@ rfd = "0.15.4"
 tauri = { version = "=2.12.0", features = ["protocol-asset", "unstable"] }
 
 [target.'cfg(windows)'.dependencies]
-# Already in the lockfile through Tauri; only the Credential Manager, the
+# Already in the lockfile through Tauri; only the Credential Manager, DPAPI, the
 # one-instance claim and the window lookup APIs are added.
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Credentials", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Credentials", "Win32_Security_Cryptography", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [features]
 default = ["custom-protocol"]
