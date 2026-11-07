@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { dubbingOptions, filterVoices, parseVoiceCatalog, voiceLabel } from "../src/features/voices/model.ts";
+import { dubbingOptions, filterVoices, parseVoiceCatalog, voiceLabel, voicesByRegion } from "../src/features/voices/model.ts";
 import { MemorySnapshotStorage, QueueController, parseQueueSnapshot } from "../src/features/queue/model.ts";
 
 const manifest = JSON.parse(readFileSync(new URL("../../../models/manifests/production-vieneu-v1.json", import.meta.url), "utf8"));
@@ -11,6 +11,11 @@ for (const accent of ["Bắc", "Trung", "Nam"]) {
 }
 assert.ok(filterVoices(catalog, { style: "tin tức" }).length > 0);
 assert.ok(filterVoices(catalog, { style: "kể chuyện" }).length > 0);
+// Pickers group voices Bắc, Trung, Nam; every voice appears once.
+const regions = voicesByRegion(catalog);
+assert.deepEqual(regions.map((group) => group.region), ["Bắc", "Trung", "Nam"]);
+assert.equal(regions.reduce((sum, group) => sum + group.voices.length, 0), catalog.voices.length);
+assert.ok(regions.every((group) => group.voices.every((voice) => voice.accent === group.region)));
 assert.ok(voiceLabel(catalog.voices[0]).includes(catalog.voices[0].name));
 for (const invalid of [null, {}, { default_voice_id: "missing", voices: catalog.voices },
   { ...catalog, voices: [catalog.voices[0], catalog.voices[0]] },

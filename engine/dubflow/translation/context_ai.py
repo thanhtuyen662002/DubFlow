@@ -26,6 +26,7 @@ import json
 import os
 from pathlib import Path
 import re
+import time
 from typing import Any, Protocol
 
 from engine.dubflow.ai.client import AiError, Route, ask
@@ -40,7 +41,10 @@ DUB_SYLLABLES_PER_SECOND = 4.5
 READ_SYLLABLES_PER_SECOND = 6.0
 WARNING = "AI_TRANSLATION_PARTIAL: "
 # Failures no retry can fix: the key, the balance, the model or the request itself.
-FATAL_CODES = frozenset({"KEY", "BALANCE", "MODEL", "INVALID"})
+# QUOTA: the key's daily quota is used up (free keys); every later window would fail the same way.
+FATAL_CODES = frozenset({"KEY", "BALANCE", "MODEL", "INVALID", "QUOTA"})
+# Before trying again the windows a rate limit (429) stopped: free keys count calls per minute.
+RATE_LIMIT_PAUSE_SECONDS = 60.0
 
 
 class Cue(Protocol):
@@ -361,7 +365,8 @@ def identity(route: Route, *, dubbing: bool) -> dict[str, Any]:
 
 
 def translate_in_context(cues: Sequence[Any], route: Route, *, dubbing: bool, cache_dir: Path | None = None, title: str = "",
-                         on_progress: Callable[[int, int], None] | None = None, asker: Asker = ask) -> ContextResult:
+                         on_progress: Callable[[int, int], None] | None = None, asker: Asker = ask,
+                         pause: Callable[[float], None] = time.sleep) -> ContextResult:
     """Every cue with an in-context translation where the AI gave one, otherwise its offline draft."""
     ordered = list(cues)
     windows = [ordered[index:index + WINDOW_CUES] for index in range(0, len(ordered), WINDOW_CUES)]
@@ -394,9 +399,10 @@ def translate_in_context(cues: Sequence[Any], route: Route, *, dubbing: bool, ca
     done = from_ai = 0
     finished: dict[str, str] = {}
     fatal = False
+    rate_limited = False
 
     def run(number: int) -> bool:
-        nonlocal current, error, done, from_ai, fatal
+        nonlocal current, error, done, from_ai, fatal, rate_limited
         window = windows[number - 1]
         start = (number - 1) * WINDOW_CUES
         before = [(cue, finished.get(cue.cue_id, cue.translated_text or "")) for cue in ordered[max(0, start - CONTEXT_CUES):start]]
@@ -421,6 +427,7 @@ def translate_in_context(cues: Sequence[Any], route: Route, *, dubbing: bool, ca
             except AiError as failure:
                 error = failure.message
                 fatal = failure.code in FATAL_CODES
+                rate_limited = rate_limited or failure.code == "LIMIT"
                 return False
         lines = _lines(value, window, dubbing=dubbing)
         if not lines or lacks_diacritics(list(lines.values())):
@@ -441,6 +448,9 @@ def translate_in_context(cues: Sequence[Any], route: Route, *, dubbing: bool, ca
             if fatal:
                 break
     if failed and not fatal:
+        if rate_limited:
+            # A free key's per-minute count resets; the retries below would hit the same limit at once.
+            pause(RATE_LIMIT_PAUSE_SECONDS)
         for number in failed:
             if not run(number) and fatal:
                 break

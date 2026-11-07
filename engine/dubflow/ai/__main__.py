@@ -8,7 +8,7 @@ JSON line:
   -> ``{"ok": true, "value": {...}, "model": "used-model"}``
 * ``{"action": "models", "provider", "base_url"?}``
   -> ``{"ok": true, "models": [...], "suggested": "model-or-null"}``
-* failures -> ``{"ok": false, "code": "KEY|BALANCE|MODEL|LIMIT|SERVER|TIMEOUT|NETWORK|REFUSED|FORMAT|INVALID", "message": "..."}``
+* failures -> ``{"ok": false, "code": "KEY|BALANCE|MODEL|LIMIT|QUOTA|SERVER|TIMEOUT|NETWORK|REFUSED|FORMAT|INVALID", "message": "..."}``
 """
 from __future__ import annotations
 

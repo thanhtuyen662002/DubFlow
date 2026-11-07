@@ -1197,6 +1197,38 @@ runAllButton.addEventListener("click", () => {
   pumpBatch();
 });
 
+// "Tự bắt đầu": a video added to the list starts on its own, one at a time, with the default
+// settings, like pasting a link into a one-button app. Off by default; remembered.
+const AUTO_START_KEY = "dubflow.autoStart.v1";
+const autoStartToggle = $<HTMLInputElement>("#auto-start");
+function autoStart(): boolean {
+  try {
+    return window.localStorage.getItem(AUTO_START_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+autoStartToggle.checked = autoStart();
+autoStartToggle.addEventListener("change", () => {
+  try {
+    if (autoStartToggle.checked) window.localStorage.setItem(AUTO_START_KEY, "1");
+    else window.localStorage.removeItem(AUTO_START_KEY);
+  } catch {
+    autoStartToggle.checked = !autoStartToggle.checked;
+    showError("Không lưu được lựa chọn này trên máy này.");
+  }
+});
+/** Videos already in the list when the app opened (or when they were seen): only later ones start on their own. */
+const seenJobs = new Set(queue.getSnapshot().jobs.map((job) => job.id));
+function startNewJobs(jobs: readonly QueueJob[]): void {
+  const added = jobs.filter((job) => !seenJobs.has(job.id));
+  for (const job of added) seenJobs.add(job.id);
+  if (!autoStart() || !added.some((job) => job.status.state === "QUEUED" && canStart(job))) return;
+  batchRunning = true;
+  renderRunAll();
+  window.setTimeout(pumpBatch, 0);
+}
+
 // Results folder: next to each source (default) or one chosen folder.
 const OUTPUT_ROOT_KEY = "dubflow.outputRoot.v1";
 function outputRoot(): string | null {
@@ -1747,7 +1779,7 @@ const discovery = mountDiscovery(invoke, async (url, title) => { await startFetc
   const key = claudeKey.read();
   return key ? chineseKeyword(claudeKey.provider(), key, text) : null;
 });
-const aiSettings = mountAiSettings(claudeKey, () => openSettings("account"));
+const aiSettings = mountAiSettings(claudeKey, () => openSettings("account"), invoke);
 mountSfxSettings(sfxLibrary, showError);
 /** Folders whose "DubFlow Output" may hold earlier Bán hàng and Tổng hợp runs: the chosen one and the queue's. */
 function outputRoots(): string[] {
@@ -2393,6 +2425,7 @@ const baseTitle = document.title;
 window.addEventListener("focus", () => { document.title = baseTitle; });
 
 queue.subscribe((snapshot) => {
+  startNewJobs(snapshot.jobs);
   for (const job of snapshot.jobs) {
     const previous = lastStates.get(job.id);
     if (previous && ACTIVE.includes(previous) && job.status.state === "COMPLETED") storage.jobFinished();

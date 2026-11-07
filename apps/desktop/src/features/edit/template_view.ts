@@ -15,7 +15,7 @@ import {
   buildRequest, CENTER, fileName, formatFeatures, keepsVoice, parseBackgrounds, parseFeatures, parseProductSpec, parseStatus, TEMPLATES,
   type Focus, type LibraryBackground, type ProductSpec, type SpecInfo, type Template,
 } from "../product/model.ts";
-import { parseVoiceCatalog } from "../voices/model.ts";
+import { parseVoiceCatalog, voiceOptionGroups } from "../voices/model.ts";
 import { formatClock, outputDuration, retargetEdit, serializeProject, type Edit, type Media } from "./model.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
@@ -252,12 +252,7 @@ export function mountTemplate(invoke: Invoke, context: TemplateContext): Templat
     if (select.options.length) return;
     try {
       const catalog = parseVoiceCatalog(await invoke<unknown>("voice_catalog"));
-      select.replaceChildren(...catalog.voices.map((voice) => {
-        const option = document.createElement("option");
-        option.value = voice.voice_id;
-        option.textContent = `${voice.name} · ${voice.gender} · miền ${voice.accent} · ${voice.style}`;
-        return option;
-      }));
+      select.replaceChildren(...voiceOptionGroups(catalog, null));
     } catch (error) {
       field("state").textContent = `Không tải được danh sách giọng: ${String(error).slice(0, 160)}`;
     }

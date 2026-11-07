@@ -163,6 +163,34 @@ pub fn ai_key_delete(provider: String) -> Result<(), String> {
     store::delete(&target(&provider)?)
 }
 
+/// Each provider's own page for creating an API key. Fixed here, so the webview
+/// can only open these pages, never an address it was handed.
+pub(crate) fn key_page(provider: &str) -> Option<&'static str> {
+    Some(match provider {
+        "claude" => "https://console.anthropic.com/settings/keys",
+        "gemini" => "https://aistudio.google.com/apikey",
+        "openai" => "https://platform.openai.com/api-keys",
+        "deepseek" => "https://platform.deepseek.com/api_keys",
+        "qwen" => "https://modelstudio.console.alibabacloud.com/",
+        "kimi" => "https://platform.kimi.ai/",
+        "glm" => "https://z.ai/manage-apikey/apikey-list",
+        "grok" => "https://console.x.ai/",
+        "openrouter" => "https://openrouter.ai/keys",
+        "groq" => "https://console.groq.com/keys",
+        "mistral" => "https://console.mistral.ai/api-keys",
+        _ => return None,
+    })
+}
+
+/// Opens the provider's key page in the user's default browser.
+#[tauri::command]
+pub fn ai_key_page(provider: String) -> Result<(), String> {
+    let url = key_page(&provider).ok_or_else(|| fail("Nhà cung cấp này không có trang lấy khóa"))?;
+    Command::new("explorer.exe").arg(url).spawn()
+        .map_err(|error| fail(format!("Không mở được trình duyệt: {error}")))?;
+    Ok(())
+}
+
 /// The saved key for a video job's AI translation, if any.
 pub(crate) fn job_key(provider: &str) -> Result<Option<String>, String> {
     store::read(&target(provider)?)
@@ -227,6 +255,16 @@ mod tests {
         assert!(checked_key("khóa-có-dấu-123").is_err());
         assert!(checked_key(&"a".repeat(MAX_KEY_CHARS + 1)).is_err());
         assert_eq!(masked("AIzaSyExample1234"), "…1234");
+    }
+
+    #[test]
+    fn key_pages_are_fixed_https_pages_of_known_providers() {
+        assert_eq!(key_page("gemini"), Some("https://aistudio.google.com/apikey"));
+        assert_eq!(key_page("custom"), None);
+        assert_eq!(key_page("https://example.com"), None);
+        for provider in PROVIDERS.iter().filter(|id| **id != "custom") {
+            assert!(key_page(provider).is_some_and(|url| url.starts_with("https://")), "{provider}");
+        }
     }
 
     /// Writes to this user's Credential Manager under a test-only name and removes it.

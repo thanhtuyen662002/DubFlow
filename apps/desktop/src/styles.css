@@ -601,6 +601,14 @@ button.job.selected { background: var(--select); }
 .ai-key-status.saved { color: var(--accent-text); }
 .ai-key-card .post-key-actions { margin-top: 0; }
 .ai-key-card .hint { margin: 0; }
+.ai-key-page { font-size: 12.5px; }
+.ai-free-guide { padding: 10px 12px; border-radius: 8px; background: var(--select); font-size: 12.5px; color: var(--text-2); }
+.ai-free-guide .ai-free-title { margin: 0 0 4px; color: var(--text); font-weight: 600; }
+.ai-free-guide ol { margin: 0; padding-left: 20px; display: grid; gap: 2px; }
+.ai-key-card .ai-free-note { color: var(--text-3); font-size: 12px; }
+.ai-free-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 10px 14px; border: 1px solid var(--accent); border-radius: 10px; background: var(--select); font-size: 13px; color: var(--text-2); }
+.ai-free-banner p { margin: 0; flex: 1 1 260px; }
+.ai-free-banner b { color: var(--text); }
 .ai-fields { display: grid; gap: 8px; }
 .ai-field { display: grid; gap: 4px; font-size: 12px; color: var(--text-2); }
 .ai-field :is(input, select, textarea) { width: 100%; min-width: 0; box-sizing: border-box; padding: 7px 10px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--canvas); color: var(--text); font-size: 13px; }

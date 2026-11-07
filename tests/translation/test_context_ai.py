@@ -85,6 +85,20 @@ class ContextTranslationTest(unittest.TestCase):
         self.assertEqual([cue.translated_text for cue in result.cues], [cue.translated_text for cue in cues(10)])
         self.assertIn("không hợp lệ", result.error)
 
+    def test_a_rate_limited_window_is_retried_after_a_pause_and_a_used_up_day_stops(self):
+        pauses = []
+        asker = Asker([None, None, AiError("LIMIT", "Đã vượt giới hạn số lần gọi Gemini")])
+        result = context_ai.translate_in_context(cues(90), ROUTE, dubbing=False, asker=asker, pause=pauses.append)
+        self.assertTrue(result.complete)
+        self.assertEqual(pauses, [context_ai.RATE_LIMIT_PAUSE_SECONDS])
+        # A day's free quota used up: no window after it is asked, the offline lines stay, no pause.
+        pauses.clear()
+        asker = Asker([None, None, AiError("QUOTA", "Khóa Gemini đã hết lượt gọi của hôm nay")])
+        result = context_ai.translate_in_context(cues(90), ROUTE, dubbing=False, asker=asker, pause=pauses.append)
+        self.assertEqual((result.windows_done, len(asker.prompts), pauses), (1, 3, []))
+        self.assertIn("hôm nay", result.error)
+        self.assertEqual(result.cues[60].translated_text, "Xin chào 60")
+
     def test_unknown_ids_overlong_and_empty_lines_keep_the_draft(self):
         def asker(route, system, schema, parts, **_):
             if schema is context_ai.BRIEF_SCHEMA:
