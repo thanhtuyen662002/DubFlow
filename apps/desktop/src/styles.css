@@ -980,7 +980,7 @@ button.job.selected { background: var(--select); }
 }
 /* Short windows: a lower timeline leaves the video room. */
 @media (max-height: 600px) {
-  .queue-screen .edit-timeline { height: 140px; }
+  .queue-screen .edit-timeline { height: 180px; }
   .queue-screen .tl-content:not(.with-audio, .with-overlays) .tl-track { height: 52px; }
 }
 /* Small windows: a narrower panel leaves the video room. */
@@ -1024,7 +1024,7 @@ button.job.selected { background: var(--select); }
 .edit-hint.warn { color: var(--warn); }
 .edit-hint:empty { display: none; }
 
-.edit-timeline { display: flex; grid-column: 1 / -1; grid-row: 2; flex-direction: column; height: 170px; min-width: 0; border-top: 1px solid var(--line); background: var(--surface); }
+.edit-timeline { display: flex; grid-column: 1 / -1; grid-row: 2; flex-direction: column; height: 250px; min-width: 0; border-top: 1px solid var(--line); background: var(--surface); }
 .tl-head { display: flex; flex: none; align-items: center; gap: 12px; height: 36px; padding: 0 10px 0 16px; border-bottom: 1px solid var(--line); font-size: 13px; }
 .tl-head h3 { flex: none; font-size: 14px; font-weight: 600; white-space: nowrap; }
 .tl-info { min-width: 0; overflow: hidden; color: var(--text-3); text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
@@ -2266,3 +2266,25 @@ body.settings-open .rail-item.active:not(#nav-settings)::before { display: none;
 .video-card .make { margin-top: auto; }
 .video-card .sub { margin-bottom: 8px; }
 .discover .topic-row > .hint { display: none; }
+
+/* Timeline: CapCut-style lanes with their names pinned on the left. */
+.edit-timeline { background: oklch(0.165 0.007 260); }
+.tl-lane { position: relative; }
+.tl-lane::before { content: attr(data-label); position: sticky; left: 0; z-index: 6; display: flex; align-items: center; width: 84px; height: 100%; min-height: 22px; padding: 0 10px 0 14px; box-sizing: border-box; border-right: 1px solid oklch(0.26 0.010 260); background: oklch(0.165 0.007 260); color: var(--text-3); font-size: 11.5px; font-weight: 650; letter-spacing: .01em; pointer-events: none; }
+.tl-lane::after { content: ""; position: absolute; left: 0; right: 0; bottom: -3px; height: 1px; background: oklch(0.22 0.008 260); pointer-events: none; }
+.tl-ruler::before { content: ""; position: sticky; left: 0; z-index: 6; display: block; width: 84px; height: 100%; border-right: 1px solid oklch(0.26 0.010 260); background: oklch(0.165 0.007 260); }
+.tl-vatrack { height: 38px; margin-top: 6px; }
+.tl-vatrack[hidden] { display: none; }
+.tl-va { position: absolute; top: 0; bottom: 0; overflow: hidden; border-radius: 6px; background: oklch(0.24 0.035 var(--accent-h) / .55); box-shadow: inset 0 0 0 1px oklch(0.66 0.15 var(--accent-h) / .35); cursor: pointer; }
+.tl-va.selected { box-shadow: inset 0 0 0 2px var(--accent); }
+.tl-va.muted { background: oklch(0.22 0.008 260); box-shadow: inset 0 0 0 1px var(--line-strong); }
+.tl-va .tl-wave { top: 0; bottom: 0; height: 100%; background: none; }
+.tl-va-level { position: absolute; left: 0; right: 0; height: 2px; margin-bottom: -1px; background: oklch(0.92 0.02 var(--accent-h) / .9); cursor: ns-resize; }
+.tl-va-level::before { content: ""; position: absolute; left: 0; right: 0; top: -6px; bottom: -6px; }
+.tl-va:hover .tl-va-level, .tl-va.leveling .tl-va-level { height: 3px; background: #fff; }
+.tl-va-name { position: absolute; top: 3px; left: 6px; padding: 0 5px; border-radius: 4px; background: oklch(0 0 0 / .55); color: #fff; font-family: var(--mono); font-size: 10.5px; line-height: 15px; pointer-events: none; }
+.tl-empty-lanes { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.tl-stub { display: flex; height: 26px; }
+.tl-stub::before { height: 26px; }
+.tl-stub-add { position: sticky; left: 92px; align-self: center; height: 22px; margin-left: 8px; padding: 0 10px; border: 1px dashed oklch(0.32 0.012 260); border-radius: 6px; background: transparent; color: var(--text-3); font-size: 12px; white-space: nowrap; cursor: pointer; }
+.tl-stub-add:hover { border-color: oklch(0.66 0.15 var(--accent-h) / .7); color: var(--accent-text); }

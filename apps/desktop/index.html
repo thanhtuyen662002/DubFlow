@@ -1460,11 +1460,13 @@
               <div id="tl-scroll" class="tl-scroll">
                 <div id="tl-content" class="tl-content">
                   <div id="tl-ruler" class="tl-ruler"></div>
-                  <div id="tl-overlays" class="tl-ovtrack" aria-label="Video chồng" hidden></div>
-                  <div id="tl-track" class="tl-track" aria-label="Các đoạn video"></div>
-                  <div id="tl-subs" class="tl-subtrack" aria-label="Phụ đề" hidden></div>
-                  <div id="tl-text" class="tl-txtrack" aria-label="Chữ trên video" hidden></div>
-                  <div id="tl-audio" class="tl-autrack" aria-label="Âm thanh thêm" hidden></div>
+                  <div id="tl-overlays" class="tl-ovtrack tl-lane" data-label="Hình ảnh" aria-label="Video chồng" hidden></div>
+                  <div id="tl-track" class="tl-track tl-lane" data-label="Video" aria-label="Các đoạn video"></div>
+                  <div id="tl-vaudio" class="tl-vatrack tl-lane" data-label="Tiếng gốc" aria-label="Âm thanh của video"></div>
+                  <div id="tl-subs" class="tl-subtrack tl-lane" data-label="Phụ đề" aria-label="Phụ đề" hidden></div>
+                  <div id="tl-text" class="tl-txtrack tl-lane" data-label="Chữ" aria-label="Chữ trên video" hidden></div>
+                  <div id="tl-audio" class="tl-autrack tl-lane" data-label="Âm thanh" aria-label="Âm thanh thêm" hidden></div>
+                  <div id="tl-empty" class="tl-empty-lanes"></div>
                   <div id="tl-range" class="tl-range" aria-hidden="true" hidden></div>
                   <div id="tl-markers" class="tl-markers"></div>
                   <div id="tl-snapline" class="tl-snapline" aria-hidden="true" hidden></div>
