@@ -1780,7 +1780,7 @@ const discovery = mountDiscovery(invoke, async (url, title) => { await startFetc
   const key = claudeKey.read();
   return key ? chineseKeyword(claudeKey.provider(), key, text) : null;
 });
-const aiSettings = mountAiSettings(claudeKey, () => openSettings("account"), invoke);
+const aiSettings = mountAiSettings(claudeKey, () => openSettings("account"), invoke, playableUrl);
 mountSfxSettings(sfxLibrary, showError);
 /** Folders whose "DubFlow Output" may hold earlier Bán hàng and Tổng hợp runs: the chosen one and the queue's. */
 function outputRoots(): string[] {

@@ -5,6 +5,7 @@ import {
 import {
   DEFAULT_SENSITIVE_WORDS, formatWordList, loadPrefs, parseWordList, savePrefs, type SensitiveMode, type TranslationPrefs,
 } from "./translation_prefs.ts";
+import { playSamples, soundClip, type BeepSound } from "./beep_sound.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 
@@ -127,7 +128,7 @@ const PROVIDER_BLURBS: Record<Provider, string> = {
  * The AI part of Cài đặt: the default provider, its key, model and server (tab Tài khoản),
  * subtitle translation and sensitive words (tab Dịch phụ đề). `reveal` shows Cài đặt at Tài khoản.
  */
-export function mountAiSettings(session: AiSession, reveal: () => void, invoke?: Invoke): {
+export function mountAiSettings(session: AiSession, reveal: () => void, invoke?: Invoke, playableUrl?: (path: string) => Promise<string | null>): {
   open(): void; refresh(): void; prefs(): TranslationPrefs; startFreeKey(): void;
 } {
   const state = $("#ai-settings-state");
@@ -301,11 +302,20 @@ export function mountAiSettings(session: AiSession, reveal: () => void, invoke?:
   const aiToggle = $<HTMLInputElement>("#ai-translate-subs");
   const sensitiveMode = $<HTMLSelectElement>("#sensitive-mode");
   const sensitiveWords = $<HTMLTextAreaElement>("#sensitive-words");
+  const sensitiveSound = $<HTMLSelectElement>("#sensitive-sound");
+  let previewAudio: HTMLAudioElement | null = null;
   function renderPrefs(): void {
     aiToggle.checked = prefs.aiTranslation;
     sensitiveMode.value = prefs.sensitiveMode;
     sensitiveWords.value = formatWordList(prefs.words);
     $("#sensitive-words-box").hidden = prefs.sensitiveMode === "off";
+    $("#sensitive-sound-box").hidden = prefs.sensitiveMode !== "beep";
+    sensitiveSound.value = prefs.beepSound;
+    $("#sensitive-sound-pick").hidden = prefs.beepSound !== "custom";
+    const name = prefs.beepFile ? prefs.beepFile.split(/[\\/]/).pop() ?? "" : "";
+    const fileNote = $("#sensitive-sound-file");
+    fileNote.textContent = prefs.beepSound === "custom" ? (name ? `Đang dùng: ${name}` : "Chưa chọn file: video sẽ dùng tiếng bíp.") : "";
+    fileNote.title = prefs.beepSound === "custom" ? prefs.beepFile ?? "" : "";
     const provider = session.provider();
     const ready = provider === "custom" ? Boolean(session.options(provider).baseUrl && session.options(provider).model) : session.saved(provider) !== null;
     const hint = $("#ai-translate-hint");
@@ -331,6 +341,46 @@ export function mountAiSettings(session: AiSession, reveal: () => void, invoke?:
     prefs = { ...prefs, words: parseWordList(sensitiveWords.value) };
     savePrefs(prefs);
     sensitiveWords.value = formatWordList(prefs.words);
+  });
+  async function pickBeepFile(): Promise<boolean> {
+    const files = invoke ? await invoke<string[]>("pick_audio_files").catch(() => []) : [];
+    if (!files.length) return false;
+    prefs = { ...prefs, beepSound: "custom", beepFile: files[0] };
+    savePrefs(prefs);
+    return true;
+  }
+  sensitiveSound.addEventListener("change", async () => {
+    const sound = sensitiveSound.value as BeepSound;
+    if (sound === "custom" && !prefs.beepFile && !await pickBeepFile()) {
+      renderPrefs();
+      return;
+    }
+    prefs = { ...prefs, beepSound: sound };
+    savePrefs(prefs);
+    renderPrefs();
+  });
+  $("#sensitive-sound-pick").addEventListener("click", async () => {
+    if (await pickBeepFile()) renderPrefs();
+  });
+  $("#sensitive-sound-play").addEventListener("click", async () => {
+    previewAudio?.pause();
+    const clip = soundClip(prefs.beepSound, 48_000);
+    if (clip) {
+      // Twice, as over a word about a second long.
+      const twice = new Float32Array(clip.length * 2);
+      twice.set(clip);
+      twice.set(clip, clip.length);
+      return playSamples(prefs.beepSound === "beep" ? clip : twice, 48_000);
+    }
+    const url = prefs.beepFile && playableUrl ? await playableUrl(prefs.beepFile).catch(() => null) : null;
+    if (!url) {
+      $("#sensitive-sound-file").textContent = "Không mở được file này để nghe thử; hãy bấm “Chọn file âm thanh…” lại.";
+      return;
+    }
+    previewAudio = new Audio(url);
+    void previewAudio.play().catch(() => undefined);
+    // The video uses at most its first seconds per word; the preview stops after 3 s.
+    window.setTimeout(() => previewAudio?.pause(), 3000);
   });
   $("#sensitive-reset").addEventListener("click", () => {
     prefs = { ...prefs, words: [...DEFAULT_SENSITIVE_WORDS] };
