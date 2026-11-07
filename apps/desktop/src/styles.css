@@ -2179,7 +2179,7 @@ select, textarea, input[type="text"], input[type="search"], input[type="number"]
 body:is([data-page="discover"], [data-page="product"]) .header-title { visibility: hidden; }
 
 /* Hàng đợi: the link box at the top of the list. */
-.media-col .link-form { flex: none; box-sizing: border-box; width: auto; align-self: stretch; min-width: 0; height: 40px; margin: 0 0 10px; padding-left: 12px; background: var(--canvas); }
+.media-col .link-form { flex: none; box-sizing: border-box; width: auto; align-self: stretch; min-width: 0; height: 40px; margin: 0 16px 10px; padding-left: 12px; background: var(--canvas); }
 .media-col .link-form .btn { height: 30px; padding: 0 12px; background: var(--accent); color: var(--on-accent); font-weight: 650; }
 .media-col .link-form .btn:hover:not(:disabled) { background: var(--accent-hover); }
 body[data-page="edit"]:has(#edit-view:not([hidden])) .header-title { visibility: hidden; }
@@ -2337,3 +2337,17 @@ body.settings-open .rail-item.active:not(#nav-settings)::before { display: none;
 .layout-pic.timeline { grid-template: 1fr 12px / 1fr 18px; }
 .layout-pic.timeline b:nth-child(2) { grid-column: 2; grid-row: 1; }
 .layout-pic.timeline b:nth-child(3) { grid-column: 1 / span 2; grid-row: 2; }
+
+/* One shape for every list column: title + count on the left, actions on the right, search under the head. */
+.queue-col-head { align-items: center; }
+.queue-col-head h2 { flex: none; }
+.queue-col-head .col-count { flex: 1; min-width: 0; overflow: hidden; color: var(--text-3); font-size: 12px; white-space: nowrap; text-overflow: ellipsis; }
+.queue-col-head .col-count:empty { visibility: hidden; }
+.queue-col .search-miss { display: none !important; }
+.queue-col > .queue-filter { margin-bottom: 8px; }
+.queue-col > .media-search { margin: 0 16px 8px; }
+.docu-thumb { display: grid; place-items: center; background: oklch(0.24 0.02 260); color: var(--text-3); }
+/* Column heads line up: the player head, the details tabs and the editor's tool tabs share one bottom line. */
+.tabs button { height: 47px; }
+.queue-screen.editing .player-head { height: 62px; }
+.queue-col-head { box-sizing: border-box; height: 48px; margin-bottom: 10px; padding: 0 16px; border-bottom: 1px solid var(--line); }

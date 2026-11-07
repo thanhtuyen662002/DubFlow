@@ -4,6 +4,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { connectDesktopShell, type DesktopShellModel } from "./shell/desktop_shell.ts";
 import { confirmDialog } from "./shell/confirm.ts";
 import { mountLayoutPanels, refitPanels, resetPanels } from "./shell/layout_panels.ts";
+import { mountListTools } from "./shell/list_tools.ts";
 import { PREVIEW_EDIT_LIBRARY, previewInvoke } from "./shell/preview_invoke.ts";
 import { createVoiceSampler } from "./features/voices/sample.ts";
 import { QueueController, type QueueJob, type SnapshotStorage } from "./features/queue/model.ts";
@@ -1900,6 +1901,11 @@ const docu = mountDocu(invoke, claudeKey, { jobs: () => queue.getSnapshot().jobs
 });
 // Every page's side panels: drag to resize, fold into a strip, sizes remembered.
 mountLayoutPanels();
+// Every list column gets the same count and search box as Hàng đợi.
+mountListTools(document.querySelector("#queue-col"), "#queue-list", "video", "Tìm theo tên");
+mountListTools(document.querySelector("#product-list"), "#product-runs", "video", "Tìm theo tên");
+mountListTools(document.querySelector("#compilation-col"), "#compilation-runs", "video", "Tìm theo tên");
+mountListTools(document.querySelector(".docu-col"), "#docu-runs", "dự án", "Tìm dự án theo tên");
 /** The Chỉnh sửa screen's list: finished videos of every page and videos on the computer (Issue #497). */
 const editLibrary = mountEditLibrary(invoke, {
   jobs: () => queue.getSnapshot().jobs.filter((job) => job.status.state === "COMPLETED" && job.outputPath)

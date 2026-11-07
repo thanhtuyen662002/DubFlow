@@ -251,7 +251,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
   function renderRuns(): void {
     const list = $("#docu-runs");
     list.innerHTML = runs.map(run => `<li class="project-row"><button type="button" class="job ${selected?.dir === run.dir ? "selected" : ""}" data-run="${escapeHtml(run.dir)}" aria-current="${selected?.dir === run.dir ? "true" : "false"}">
-      <span class="dot ${run.script ? "ok" : ""}"></span><span class="job-main"><strong class="job-title">${escapeHtml(run.spec.title)}</strong><span class="job-meta"><span class="msg">${run.spec.sources.length} nguồn · ${run.spec.target_minutes} phút</span></span></span></button></li>`).join("");
+      <span class="job-thumb docu-thumb" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20"><rect x="3.5" y="5" width="17" height="14" rx="2" stroke="currentColor" stroke-width="1.6" fill="none"/><path d="M3.5 9h17M3.5 15h17M8 5v4M12 5v4M16 5v4M8 15v4M12 15v4M16 15v4" stroke="currentColor" stroke-width="1.4"/></svg></span><span class="job-main"><span class="job-title">${escapeHtml(run.spec.title)}</span><span class="job-meta"><span class="dot ${run.script ? "ok" : "warn"}"></span><span class="msg">${run.script ? "Có kịch bản" : "Chưa có kịch bản"} · ${run.spec.sources.length} nguồn · ${run.spec.target_minutes} phút</span></span></span></button></li>`).join("");
     list.querySelectorAll("li").forEach((item, index) => {
       const run = runs[index];
       item.append(deleteProjectButton(run.spec.title, () => void removeRun(run.dir, run.spec.title)));

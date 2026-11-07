@@ -49,6 +49,8 @@ export type PanelHandle = {
   refit(): void;
   /** Forget the dragged size and fold state: back to the page's own size. */
   reset(): void;
+  /** Read the stored state again (another panel with the same key changed it). */
+  reload(): void;
 };
 
 export function clampSize(size: number, min: number, max: number): number {
@@ -274,7 +276,8 @@ export function mountPanel(options: PanelOptions): PanelHandle {
   });
 
   apply();
-  const api: PanelHandle = { state: () => ({ ...state }), setCollapsed, refit: apply, reset: () => commit({ size: null, collapsed: false }) };
+  const api: PanelHandle = { state: () => ({ ...state }), setCollapsed, refit: apply, reset: () => commit({ size: null, collapsed: false }),
+    reload: () => { state = readState(key); apply(); } };
   mounted.push(api);
   if (!resizeHooked && typeof window.addEventListener === "function") {
     resizeHooked = true;
