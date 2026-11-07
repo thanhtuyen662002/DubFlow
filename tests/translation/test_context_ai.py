@@ -229,6 +229,14 @@ class ContextTranslationTest(unittest.TestCase):
         self.assertEqual(context_ai.stray_references("Ánh đèn tắt, anh ấy về", {"anh ấy"}), [])
         self.assertEqual(context_ai.stray_references("anh trai của hắn", {"hắn"}), [])
 
+    def test_anh_as_kinship_or_title_is_not_a_drift(self):
+        for text in ("Anh trai của hắn", "Anh em của hắn", "Người anh của hắn về", "anh Minh gật đầu",
+                     "Hắn gọi anh của mình", "hai anh em cãi nhau"):
+            with self.subTest(text=text):
+                self.assertNotIn("anh", context_ai.stray_references(text, {"anh ta"}))
+        self.assertEqual(context_ai.stray_references("Anh trai về, lúc này anh mới nhận ra", {"anh ta"}), ["anh"])
+        self.assertEqual(context_ai.stray_references("Rồi anh đã bỏ đi", {"anh ta"}), ["anh"])
+
     def test_identity_never_holds_the_key(self):
         self.assertNotIn("sk-test", json.dumps(context_ai.identity(ROUTE, dubbing=True)))
 
