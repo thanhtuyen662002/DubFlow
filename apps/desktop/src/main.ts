@@ -3,7 +3,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { connectDesktopShell, type DesktopShellModel } from "./shell/desktop_shell.ts";
 import { confirmDialog } from "./shell/confirm.ts";
-import { mountLayoutPanels, refitPanels } from "./shell/layout_panels.ts";
+import { mountLayoutPanels, refitPanels, resetPanels } from "./shell/layout_panels.ts";
 import { PREVIEW_EDIT_LIBRARY, previewInvoke } from "./shell/preview_invoke.ts";
 import { createVoiceSampler } from "./features/voices/sample.ts";
 import { QueueController, type QueueJob, type SnapshotStorage } from "./features/queue/model.ts";
@@ -2725,6 +2725,35 @@ function applyAccent(id: string): void {
   let saved = "blue";
   try { saved = window.localStorage.getItem(ACCENT_KEY) ?? "blue"; } catch { /* default */ }
   applyAccent(saved);
+}
+// Bố cục màn Chỉnh sửa: tool column full height ("tools", default) or timeline full width ("timeline").
+// Chosen in Cài đặt › Giao diện or with the button in the editor's top bar; remembered on this computer.
+const EDIT_LAYOUT_KEY = "dubflow.editLayout.v1";
+function applyEditLayout(layout: string, save: boolean): void {
+  const known = layout === "timeline" ? "timeline" : "tools";
+  document.documentElement.dataset.editLayout = known;
+  for (const choice of document.querySelectorAll<HTMLElement>("#layout-grid .layout-choice")) {
+    choice.setAttribute("aria-checked", String(choice.dataset.layout === known));
+  }
+  $("#edit-layout").setAttribute("aria-pressed", String(known === "timeline"));
+  if (save) {
+    try { window.localStorage.setItem(EDIT_LAYOUT_KEY, known); } catch { /* this session only */ }
+  }
+  // The player and the timeline lay themselves out on resize.
+  window.dispatchEvent(new Event("resize"));
+  refitPanels();
+}
+{
+  for (const choice of document.querySelectorAll<HTMLElement>("#layout-grid .layout-choice")) {
+    choice.addEventListener("click", () => applyEditLayout(choice.dataset.layout ?? "tools", true));
+  }
+  $("#edit-layout").addEventListener("click", () => {
+    applyEditLayout(document.documentElement.dataset.editLayout === "timeline" ? "tools" : "timeline", true);
+  });
+  $("#layout-reset").addEventListener("click", () => resetPanels());
+  let saved = "tools";
+  try { saved = window.localStorage.getItem(EDIT_LAYOUT_KEY) ?? "tools"; } catch { /* default */ }
+  applyEditLayout(saved, false);
 }
 // Settings dialog, opened from the rail and from the header's update button.
 // Groups are tabs on the left; the chosen one shows on the right and is remembered.

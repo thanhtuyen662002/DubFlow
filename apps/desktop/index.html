@@ -380,6 +380,9 @@
                   <button id="edit-versions" class="icon-btn" type="button" aria-haspopup="dialog" aria-label="Phiên bản và mẫu" title="Phiên bản và mẫu: lưu bản chỉnh sửa để quay lại, dùng lại chữ, logo, âm thanh cho video khác">
                     <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path d="M4 7.5 12 4l8 3.5-8 3.5-8-3.5zM4 12l8 3.5 8-3.5M4 16.5 12 20l8-3.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
                   </button>
+                  <button id="edit-layout" class="icon-btn" type="button" aria-label="Đổi bố cục" title="Đổi bố cục: công cụ cao hết bên phải hoặc dòng thời gian rộng hết bên dưới">
+                    <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="15" rx="2" stroke="currentColor" stroke-width="1.6" fill="none"/><path d="M14.5 4.5v15M3.5 14h11" stroke="currentColor" stroke-width="1.6" fill="none"/></svg>
+                  </button>
                   <span class="edit-changes-slot">
                     <span id="edit-changes" class="edit-changes" hidden><span class="dot warn"></span><span id="edit-changes-text"></span></span>
                     <span id="edit-light" class="edit-changes edit-light" role="status" hidden title="Đang tạo bản xem nhẹ. Video nặng (trên Full HD hoặc rất nhiều dữ liệu): DubFlow làm một bản nhỏ để xem và kéo mượt khi chỉnh. Video xuất ra vẫn lấy từ video gốc."><span class="dot accent"></span><span id="edit-light-text"></span></span>
@@ -1698,9 +1701,26 @@
             <section id="settings-pane-look" class="settings-pane" role="tabpanel" aria-labelledby="settings-tab-look" tabindex="0" hidden>
               <header class="settings-pane-head">
                 <h3>Giao diện</h3>
-                <p>Màu chủ đạo cho nút, mục đang chọn và điểm nhấn. Đổi ngay, không cần khởi động lại.</p>
+                <p>Màu chủ đạo và cách xếp các khung. Đổi ngay, không cần khởi động lại.</p>
               </header>
               <div id="accent-grid" class="accent-grid" role="radiogroup" aria-label="Màu chủ đạo"></div>
+              <div class="settings-pane-head settings-subhead">
+                <h3>Bố cục</h3>
+                <p>Mọi khung ở mọi màn đều kéo mép để đổi cỡ, bấm mũi tên giữa mép để thu gọn. Ở đây chọn cách xếp màn Chỉnh sửa và đưa các khung về cỡ ban đầu.</p>
+              </div>
+              <div id="layout-grid" class="layout-grid" role="radiogroup" aria-label="Bố cục màn Chỉnh sửa">
+                <button class="layout-choice" type="button" role="radio" data-layout="tools"><i class="layout-pic tools" aria-hidden="true"><b></b><b></b><b></b></i><span><strong>Công cụ cao hết</strong><small>Cột công cụ chạy hết chiều cao, dòng thời gian nằm dưới video</small></span></button>
+                <button class="layout-choice" type="button" role="radio" data-layout="timeline"><i class="layout-pic timeline" aria-hidden="true"><b></b><b></b><b></b></i><span><strong>Dòng thời gian rộng hết</strong><small>Dòng thời gian trải hết bề ngang, cột công cụ nằm trên</small></span></button>
+              </div>
+              <dl class="settings-list">
+                <div class="settings-row">
+                  <div class="settings-text">
+                    <dt>Cỡ các khung</dt>
+                    <dd>Đưa mọi khung đã kéo hoặc thu gọn (danh sách, cột công cụ, dòng thời gian, xem trước) về cỡ ban đầu.</dd>
+                  </div>
+                  <button id="layout-reset" class="btn" type="button">Đặt lại cỡ khung</button>
+                </div>
+              </dl>
             </section>
             <section id="settings-pane-update" class="settings-pane" role="tabpanel" aria-labelledby="settings-tab-update" tabindex="0" hidden>
               <header class="settings-pane-head">

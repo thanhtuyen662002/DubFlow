@@ -2314,3 +2314,26 @@ body.settings-open .rail-item.active:not(#nav-settings)::before { display: none;
   .ai-settings-keys .ai-provider-grid { grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); }
   .ai-settings-keys .ai-free-banner { flex-wrap: wrap; }
 }
+
+/* Bố cục: "tools" = the tool column runs the full height, the timeline sits under the player only. */
+:root[data-edit-layout="tools"] .queue-screen.editing .edit-panel { grid-row: 1 / span 2; }
+:root[data-edit-layout="tools"] .queue-screen.editing .edit-timeline { grid-column: 1; }
+#edit-layout[aria-pressed="true"] { color: var(--accent-text); }
+.settings-subhead { margin-top: 28px; }
+.layout-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; margin-top: 14px; }
+.layout-choice { display: flex; align-items: center; gap: 14px; padding: 14px; border: 1px solid oklch(0.27 0.010 260); border-radius: 12px; background: oklch(0.19 0.009 260); color: var(--text); text-align: left; cursor: pointer; }
+.layout-choice:hover { border-color: var(--line-strong); }
+.layout-choice[aria-checked="true"] { border-color: color-mix(in oklch, var(--accent) 85%, transparent); background: color-mix(in oklch, var(--accent) 12%, transparent); }
+.layout-choice span { display: grid; gap: 3px; }
+.layout-choice strong { font-weight: 650; }
+.layout-choice small { color: var(--text-3); font-size: 12.5px; line-height: 1.4; }
+/* Little pictures: player (1), tools (2), timeline (3). */
+.layout-pic { flex: none; display: grid; width: 64px; height: 44px; gap: 3px; padding: 3px; border: 1px solid var(--line-strong); border-radius: 6px; }
+.layout-pic b { border-radius: 2px; background: oklch(0.32 0.012 260); }
+.layout-pic b:nth-child(2) { background: color-mix(in oklch, var(--accent) 60%, transparent); }
+.layout-pic.tools { grid-template: 1fr 12px / 1fr 18px; }
+.layout-pic.tools b:nth-child(2) { grid-column: 2; grid-row: 1 / span 2; }
+.layout-pic.tools b:nth-child(3) { grid-column: 1; grid-row: 2; }
+.layout-pic.timeline { grid-template: 1fr 12px / 1fr 18px; }
+.layout-pic.timeline b:nth-child(2) { grid-column: 2; grid-row: 1; }
+.layout-pic.timeline b:nth-child(3) { grid-column: 1 / span 2; grid-row: 2; }

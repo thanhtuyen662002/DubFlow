@@ -2,7 +2,7 @@
  * Every page's side panels become resizable and foldable (see panels.ts).
  * Called once after the pages have built their markup.
  */
-import { mountPanel, refitPanels } from "./panels.ts";
+import { mountPanel, refitPanels, resetPanels } from "./panels.ts";
 
 /** The list turns into a drawer under this window width (styles.css). */
 const DRAWER_BELOW = 1200;
@@ -107,4 +107,4 @@ export function mountLayoutPanels(): void {
   refitPanels();
 }
 
-export { refitPanels };
+export { refitPanels, resetPanels };
