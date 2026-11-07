@@ -3280,9 +3280,17 @@ fn end_stem_run(work: &Path, run: StemRun) {
 /// The split's recipe and marker version (`engine.dubflow.separation.split`).
 const SPLIT_RECIPE: &str = "hpss-median-v1";
 
-/// `dir/name` when it is a plain file right inside `dir`: not a link or
+/// `dir` itself is a real folder: not a link, junction or other reparse point.
+fn plain_dir(dir: &Path) -> bool {
+    fs::symlink_metadata(dir).is_ok_and(|metadata| metadata.is_dir() && !is_link(&metadata))
+}
+
+/// `dir/name` when `dir` is a plain folder and `name` a plain file right inside it: not a link or
 /// reparse point, and not resolving anywhere else.
 fn own_file(dir: &Path, name: &str) -> Option<PathBuf> {
+    if !plain_dir(dir) {
+        return None;
+    }
     let path = dir.join(name);
     let metadata = fs::symlink_metadata(&path).ok()?;
     if !metadata.is_file() || is_link(&metadata) {
@@ -3394,7 +3402,7 @@ fn separation_outdated(target: &Target, files: &StemFiles) -> bool {
 }
 
 fn read_separation(work: &Path) -> Option<Value> {
-    let path = work.join(STEMS_DIR).join("status.json");
+    let path = own_file(&work.join(STEMS_DIR), "status.json")?;
     let value: Value = fs::read(&path).ok().filter(|bytes| bytes.len() < 64 * 1024).and_then(|bytes| serde_json::from_slice(&bytes).ok())?;
     let running = SEPARATING.lock().is_ok_and(|set| set.contains(work));
     // A run the app no longer watches (closed mid-way) is over.
@@ -3426,7 +3434,7 @@ pub fn edit_stems(output_path: String, kind: String) -> Result<Value, String> {
 }
 
 fn read_split(work: &Path) -> Option<Value> {
-    let path = work.join(STEMS_DIR).join(SPLIT_STATUS);
+    let path = own_file(&work.join(STEMS_DIR), SPLIT_STATUS)?;
     let value: Value = fs::read(&path).ok().filter(|bytes| bytes.len() < 64 * 1024).and_then(|bytes| serde_json::from_slice(&bytes).ok())?;
     let running = SPLITTING.lock().is_ok_and(|set| set.contains(work));
     if value["state"] == "RUNNING" && !running {
@@ -3530,12 +3538,33 @@ pub fn edit_separate(output_path: String, kind: String) -> Result<(), String> {
 #[tauri::command]
 pub fn edit_separate_cancel(output_path: String, kind: String) -> Result<(), String> {
     let target = edit_target(&output_path, &kind)?;
-    let out = target.work.join(STEMS_DIR);
-    if out.is_dir() && unlinked(&target.work) {
-        fs::write(out.join("cancel"), b"").map_err(|_| fail("Không hủy được tách giọng"))?;
-        if SPLITTING.lock().is_ok_and(|set| set.contains(&target.work)) {
-            let _ = fs::write(out.join("split-cancel"), b"");
+    if !unlinked(&target.work) {
+        return Ok(());
+    }
+    let split = SPLITTING.lock().is_ok_and(|set| set.contains(&target.work));
+    cancel_stem_runs(&target.work.join(STEMS_DIR), split)
+}
+
+/// Drop the cancel marks in a plain stems folder (never through a link or junction, there or at the mark).
+fn cancel_stem_runs(out: &Path, split: bool) -> Result<(), String> {
+    match fs::symlink_metadata(out) {
+        Err(_) => return Ok(()),
+        Ok(metadata) if !metadata.is_dir() || is_link(&metadata) => {
+            return Err(fail("Thư mục tách giọng không an toàn (là liên kết); hãy xóa nó rồi thử lại"));
         }
+        Ok(_) => {}
+    }
+    let mark = |name: &str| -> std::io::Result<()> {
+        let path = out.join(name);
+        // A link left at the mark's name is removed, not written through.
+        if fs::symlink_metadata(&path).is_ok_and(|metadata| is_link(&metadata) || !metadata.is_file()) {
+            fs::remove_file(&path)?;
+        }
+        fs::write(path, b"")
+    };
+    mark("cancel").map_err(|_| fail("Không hủy được tách giọng"))?;
+    if split {
+        let _ = mark("split-cancel");
     }
     Ok(())
 }
@@ -3767,6 +3796,53 @@ mod tests {
         }
         let _ = fs::remove_dir_all(&stems);
         let _ = fs::remove_file(&outside);
+    }
+
+    #[test]
+    fn a_linked_stems_folder_is_never_read_or_written_through() {
+        let root = std::env::temp_dir().join(format!("dubflow-linked-stems-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let outside = root.join("outside");
+        let work = root.join("work");
+        fs::create_dir_all(&outside).unwrap();
+        fs::create_dir_all(&work).unwrap();
+        // Outside: a complete, current-looking split and statuses.
+        let background = outside.join("background.wav");
+        fs::write(&background, b"bg").unwrap();
+        fs::write(outside.join("music.wav"), b"m").unwrap();
+        fs::write(outside.join("sfx.wav"), b"s").unwrap();
+        let metadata = fs::metadata(&background).unwrap();
+        let mtime = metadata.modified().unwrap().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64;
+        fs::write(outside.join(SPLIT_FILE), json!({"schema_version": 1, "recipe": SPLIT_RECIPE, "background": background.display().to_string(),
+            "size": metadata.len(), "mtime_ns": mtime}).to_string()).unwrap();
+        fs::write(outside.join(SPLIT_STATUS), json!({"state": "COMPLETED", "progress": 100, "message": "x"}).to_string()).unwrap();
+        fs::write(outside.join("status.json"), json!({"state": "COMPLETED", "progress": 100, "message": "x"}).to_string()).unwrap();
+        assert!(split_parts(&outside, &background).is_some(), "the same files in a plain folder are accepted");
+        let stems = work.join(STEMS_DIR);
+        link_dir(&outside, &stems);
+        assert!(is_link(&fs::symlink_metadata(&stems).expect("the link exists")), "the fixture is a link or junction");
+        assert!(!plain_dir(&stems));
+        assert!(split_parts(&stems, &background).is_none(), "nothing admitted through the linked folder");
+        assert!(own_file(&stems, "music.wav").is_none());
+        assert!(read_split(&work).is_none());
+        assert!(read_separation(&work).is_none());
+        assert!(cancel_stem_runs(&stems, true).is_err(), "cancel refuses the linked folder");
+        assert!(!outside.join("cancel").exists() && !outside.join("split-cancel").exists(), "nothing written outside");
+        // A plain folder still works, and a link at a status file's name is not read.
+        let plain = root.join("plain");
+        fs::create_dir_all(plain.join(STEMS_DIR)).unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(outside.join(SPLIT_STATUS), plain.join(STEMS_DIR).join(SPLIT_STATUS)).unwrap();
+            assert!(read_split(&plain).is_none(), "a linked status file");
+            std::os::unix::fs::symlink(outside.join("x-cancel"), plain.join(STEMS_DIR).join("cancel")).unwrap();
+        }
+        cancel_stem_runs(&plain.join(STEMS_DIR), true).unwrap();
+        assert!(own_file(&plain.join(STEMS_DIR), "cancel").is_some() && own_file(&plain.join(STEMS_DIR), "split-cancel").is_some());
+        assert!(!outside.join("x-cancel").exists(), "a linked mark is replaced, not written through");
+        // Remove the link itself first, then the rest.
+        unlink_dir(&stems);
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
