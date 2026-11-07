@@ -2203,7 +2203,7 @@ body[data-page="edit"]:has(#edit-view:not([hidden])) .header-title { visibility:
 .settings-dialog .settings-body { gap: 8px; padding: 0 24px 0 28px; }
 .settings-dialog .settings-tabs { width: 220px; padding: 6px 0; border-right: 0; background: transparent; }
 .settings-dialog .settings-panes { border: 1px solid oklch(0.25 0.010 260); border-bottom: 0; border-radius: 18px 18px 0 0; background: oklch(0.17 0.008 260); }
-.settings-dialog .settings-pane { max-width: 980px; padding: 28px 36px 18px; }
+.settings-dialog .settings-pane { padding: 28px 36px 18px; }
 .settings-dialog .review-foot { padding: 12px 40px; border-top-color: oklch(0.23 0.008 260); background: transparent; }
 body.settings-open .header-title { visibility: hidden; }
 body.settings-open .rail-item.active:not(#nav-settings) { background: transparent; color: var(--text-3); box-shadow: none; }
