@@ -173,7 +173,18 @@
           <section id="docu-view" class="product docu" hidden></section>
           <section id="edit-view" class="edit-library" aria-label="Chọn video để chỉnh sửa" hidden></section>
           <section id="product-view" class="product" hidden>
+            <div id="product-screen" class="queue-screen product-screen">
+            <section id="product-list" class="queue-col product-list-col" aria-labelledby="product-list-title">
+              <div class="queue-col-head"><h2 id="product-list-title">Video bán hàng</h2><button id="product-refresh" class="quiet-btn" type="button">Làm mới</button></div>
+              <div class="queue-scroll">
+                <ul id="product-runs" class="queue-list" aria-label="Video bán hàng đã tạo"></ul>
+                <p id="product-runs-empty" class="queue-empty">Chưa có video bán hàng nào. Các lần tạo trước được tìm trong thư mục “DubFlow Output”.</p>
+              </div>
+              <div class="queue-col-foot"><button id="product-new" class="btn block" type="button" aria-pressed="true">Tạo video mới</button></div>
+            </section>
+            <div class="product-main">
             <header class="topbar">
+              <button id="product-list-toggle" class="btn ghost list-toggle" type="button" aria-controls="product-list" aria-expanded="false">Danh sách</button>
               <div>
                 <h1>Video bán hàng</h1>
                 <p class="subtitle">Dán mô tả sản phẩm hoặc thêm ảnh: AI (Claude hoặc Gemini) đọc thông tin và viết kịch bản, DubFlow đọc giọng Việt thành video dọc</p>
@@ -266,10 +277,6 @@
                     <p id="product-render-state" class="discover-state" role="status"></p>
                   </div>
                   <ul id="product-results" class="product-results"></ul>
-                  <div id="product-recent" class="product-recent" hidden>
-                    <h3 class="product-label">Video đã tạo</h3>
-                    <ul id="product-recent-list" class="product-results product-recent-list" aria-label="Video bán hàng đã tạo"></ul>
-                  </div>
                   <p class="hint">Chỉ dùng ảnh, clip và nhạc bạn có quyền sử dụng. Video lưu trong thư mục “DubFlow Output”.</p>
                 </section>
               </div>
@@ -319,6 +326,8 @@
                   </div>
                 </section>
               </div>
+            </div>
+            </div>
             </div>
           </section>
 

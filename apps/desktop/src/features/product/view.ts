@@ -2,7 +2,7 @@ import { readProduct, WORDS_PER_SECOND, writeScripts, type Photo } from "./ai.ts
 import { LAYOUT } from "./layout.ts";
 import {
   addMedia, buildRequest, CENTER, fileName, focusKey, formatFeatures, isImage, MAX_VARIANTS, MAX_VISUALS, moveItem,
-  parseBackgroundMemory, parseBackgrounds, parseRuns, parseStatus, photosToRead, readForm, recentVideos, TEMPLATES, toBase64,
+  parseBackgroundMemory, parseBackgrounds, parseRuns, parseStatus, photosToRead, readForm, runRow, TEMPLATES, toBase64,
   videoMedia, type BackgroundMemory, type Focus, type LibraryBackground, type MediaItem, type ProductStatus, type Template,
 } from "./model.ts";
 import type { PreviewState } from "./preview.ts";
@@ -14,6 +14,7 @@ import { isKeyError, isProvider, keyHint, PROVIDER_IDS, PROVIDERS } from "../ai/
 import { parseVoiceCatalog } from "../voices/model.ts";
 import { confirmDialog } from "../../shell/confirm.ts";
 import { confirmDeleteProject, deleteProjectButton } from "../../shell/project_delete.ts";
+import { closeDrawerOutside } from "../../shell/drawer.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 type Script = { text: string; use: boolean };
@@ -34,7 +35,6 @@ function apiError(error: unknown, name: string): string {
 const SENT = "văn bản và ảnh sản phẩm bạn đưa vào";
 export const MEMORY_KEY = "dubflow.product.backgrounds.v1";
 const TICK_MS = 200;
-const RECENT_LIMIT = 12;
 
 export function readMemory(): BackgroundMemory {
   try {
@@ -79,6 +79,10 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
   const images = createImages(invoke);
   let runs: ReturnType<typeof parseRuns> = [];
   let runsToken = 0;
+  /** The list's open row: "" for "Tạo video mới", else a run's folder; `playing` is the video shown. */
+  let current = "";
+  let playing = "";
+  const posters = new Map<string, string | null>();
   const keyRow = $("#product-key-row");
   const keyInput = $<HTMLInputElement>("#product-key");
   const providerSelect = $<HTMLSelectElement>("#product-provider");
@@ -493,6 +497,7 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
 
   /** Play a finished video where the preview is; "Xem trước mẫu" goes back. */
   async function play(video: ProductVideo): Promise<void> {
+    playing = video.outputPath;
     $("#product-player-wrap").hidden = false;
     $("#product-preview-wrap").hidden = true;
     $("#product-player-title").textContent = video.displayName;
@@ -515,6 +520,7 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
   }
 
   function closePlayer(): void {
+    playing = "";
     player.pause();
     player.removeAttribute("src");
     player.load();
@@ -540,7 +546,7 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
     return [watch, edit];
   }
 
-  /** Earlier runs' videos found below the output folders, newest first. */
+  /** Earlier runs found below the output folders, newest first. */
   async function loadRuns(): Promise<void> {
     const token = ++runsToken;
     try {
@@ -550,34 +556,132 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
     } catch {
       // The list is a convenience; the page works without it.
     }
-    renderRecent();
+    if (current && !runs.some((run) => run.dir === current) && current !== running) current = "";
+    renderRuns();
   }
 
-  function renderRecent(): void {
-    const videos = recentVideos(runs, RECENT_LIMIT);
-    $("#product-recent").hidden = !videos.length;
-    $("#product-recent-list").replaceChildren(...videos.map((video) => {
+  function requestPoster(path: string): void {
+    if (posters.has(path)) return;
+    posters.set(path, null);
+    void invoke<ArrayBuffer>("video_frame", { sourcePath: path, position: 0.15, maxWidth: 320 })
+      .then((bytes) => {
+        posters.set(path, URL.createObjectURL(new Blob([bytes], { type: "image/jpeg" })));
+        renderRuns();
+      })
+      .catch(() => undefined);
+  }
+
+  /** The list on the left, laid out like the queue: one row per run, its videos under the open one. */
+  function renderRuns(): void {
+    $("#product-runs-empty").hidden = runs.length > 0;
+    const fresh = $("#product-new");
+    fresh.classList.toggle("selected", !current);
+    fresh.setAttribute("aria-pressed", String(!current));
+    $("#product-runs").replaceChildren(...runs.map((run) => {
+      const row = runRow(run);
+      const open = row.dir === current;
       const item = document.createElement("li");
-      const label = document.createElement("span");
-      label.className = "product-recent-name";
-      label.textContent = video.displayName;
-      label.title = video.outputPath;
+      item.className = `job project-row product-run${open ? " selected" : ""}`;
+      item.tabIndex = 0;
+      item.setAttribute("role", "button");
+      item.setAttribute("aria-current", String(open));
+      item.title = row.dir;
+      const thumb = document.createElement("span");
+      thumb.className = "job-thumb product-run-thumb";
+      thumb.style.background = "oklch(0.30 0.03 250)";
+      const first = row.videos[0];
+      if (first) {
+        const poster = posters.get(first.outputPath);
+        if (poster) thumb.style.background = `center / cover no-repeat url("${poster}")`;
+        else if (poster === undefined) requestPoster(first.outputPath);
+        if (first.seconds) {
+          const duration = document.createElement("span");
+          duration.className = "job-dur";
+          duration.textContent = `0:${String(first.seconds).padStart(2, "0")}`;
+          if (first.seconds >= 60) duration.textContent = `${Math.floor(first.seconds / 60)}:${String(first.seconds % 60).padStart(2, "0")}`;
+          thumb.append(duration);
+        }
+      }
+      const main = document.createElement("span");
+      main.className = "job-main";
+      const title = document.createElement("span");
+      title.className = "job-title";
+      title.textContent = row.title;
       const meta = document.createElement("span");
-      meta.className = "hint";
-      meta.textContent = video.meta;
-      const actions = document.createElement("span");
-      actions.className = "product-recent-actions";
-      actions.append(...videoActions(video), deleteProjectButton(video.runName, () => void removeRun(video.run, video.runName)));
-      item.append(label, meta, actions);
+      meta.className = "job-meta";
+      const dot = document.createElement("span");
+      dot.className = `dot ${row.state === "COMPLETED" ? "ok" : row.state === "RUNNING" ? "run" : row.state === "FAILED" ? "err" : "warn"}`;
+      const text = document.createElement("span");
+      text.className = `msg${row.state === "FAILED" ? " err" : ""}`;
+      text.textContent = row.text;
+      meta.append(dot, text);
+      if (row.fraction !== null) {
+        const pct = document.createElement("span");
+        pct.className = "pct";
+        pct.textContent = `${Math.floor(row.fraction * 100)}%`;
+        meta.append(pct);
+      }
+      main.append(title, meta);
+      if (row.state === "RUNNING") {
+        const bar = document.createElement("div");
+        bar.className = `bar${row.fraction === null ? " indeterminate" : ""}`;
+        const fill = document.createElement("span");
+        fill.style.width = row.fraction === null ? "" : `${Math.max(4, Math.round(row.fraction * 100))}%`;
+        bar.append(fill);
+        main.append(bar);
+      }
+      // The open run lists its videos (one per script) so each can be watched.
+      if (open && row.videos.length > 1) {
+        const chips = document.createElement("span");
+        chips.className = "product-run-videos";
+        for (const video of row.videos) {
+          const chip = document.createElement("button");
+          chip.type = "button";
+          chip.className = "btn chip";
+          chip.textContent = `Video ${video.index}`;
+          chip.setAttribute("aria-pressed", String(video.outputPath === playing));
+          chip.addEventListener("click", (event) => { event.stopPropagation(); void play(video); renderRuns(); });
+          chip.addEventListener("keydown", (event) => event.stopPropagation());
+          chips.append(chip);
+        }
+        main.append(chips);
+      }
+      item.append(thumb, main);
+      // A running run is cancelled first, so it has no delete button.
+      if (row.state !== "RUNNING") item.append(deleteProjectButton(row.title, () => void removeRun(row.dir, row.title)));
+      item.addEventListener("click", () => select(row.dir));
+      item.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") { event.preventDefault(); select(row.dir); }
+      });
       return item;
     }));
   }
 
-  /** Delete the whole run a recent video belongs to (every variant of it). */
+  /** Open a run: its first finished video plays where the preview is. "" goes back to a new video. */
+  function select(dir: string): void {
+    current = dir;
+    setListOpen(false);
+    const run = runs.find((item) => item.dir === dir);
+    const video = run ? runRow(run).videos[0] : undefined;
+    if (video) void play(video);
+    else if (!$("#product-player-wrap").hidden) closePlayer();
+    renderRuns();
+  }
+
+  function setListOpen(open: boolean): void {
+    $("#product-screen").classList.toggle("list-open", open);
+    $("#product-list-toggle").setAttribute("aria-expanded", String(open));
+  }
+
+  /** Delete a whole run (every video of it). */
   async function removeRun(dir: string, name: string): Promise<void> {
     if (!await confirmDeleteProject(invoke, "product", dir, name)) return;
     runs = runs.filter((run) => run.dir !== dir);
-    renderRecent();
+    if (current === dir) {
+      current = "";
+      if (!$("#product-player-wrap").hidden) closePlayer();
+    }
+    renderRuns();
     void loadRuns();
   }
 
@@ -624,6 +728,9 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
       if (!status) return;
       $("#product-render-state").textContent = status.message;
       renderResults(status, outputDir);
+      // The running row in the list follows the same status.
+      const run = runs.find((item) => item.dir === outputDir);
+      if (run) { run.status = status; renderRuns(); } else void loadRuns();
       if (status.state !== "RUNNING") finish();
     } catch {
       // The status file is being replaced; the next poll reads it.
@@ -678,6 +785,7 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
       const outputDir = await invoke<string>("product_render", { request });
       running = outputDir;
       $("#product-cancel").hidden = false;
+      void loadRuns();
       window.clearInterval(polling);
       polling = window.setInterval(() => void poll(outputDir), 1500);
     } catch (error) {
@@ -733,7 +841,18 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
     ($("#product-scripts").lastElementChild?.querySelector("textarea") as HTMLTextAreaElement | null)?.focus();
   });
   $("#product-render").addEventListener("click", () => void render());
-  $("#product-player-close").addEventListener("click", closePlayer);
+  $("#product-new").addEventListener("click", () => {
+    select("");
+    $(".product-body").scrollTop = 0;
+  });
+  $("#product-refresh").addEventListener("click", () => void loadRuns());
+  $("#product-list-toggle").addEventListener("click", () => setListOpen(!$("#product-screen").classList.contains("list-open")));
+  closeDrawerOutside($("#product-screen"), $("#product-list"), $("#product-list-toggle"), () => setListOpen(false));
+  $("#product-player-close").addEventListener("click", () => {
+    closePlayer();
+    current = "";
+    renderRuns();
+  });
   $("#product-player-edit").addEventListener("click", () => {
     const button = $("#product-player-edit");
     if (button.dataset.path) settings.edit({ outputPath: button.dataset.path, displayName: button.dataset.name ?? fileName(button.dataset.path) });
