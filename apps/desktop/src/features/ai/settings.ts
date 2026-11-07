@@ -1,5 +1,5 @@
 import {
-  checkProvider, isKeyError, isProvider, KEY_STORAGE_NOTE, PROVIDER_IDS, PROVIDERS, setKeyFor,
+  checkProvider, isKeyError, isProvider, KEY_STORAGE_NOTE, MODEL_CATALOG, PROVIDER_IDS, PROVIDERS, setKeyFor,
   type AiSession, type KeyStore, type Provider, type ProviderOptions,
 } from "./provider.ts";
 import {
@@ -126,7 +126,10 @@ export function mountAiSettings(session: AiSession, reveal: () => void): { open(
       fields.append(element("label", { className: "ai-field" }, "Địa chỉ máy chủ (Base URL)", base));
     }
     const chosenModel = () => (manual.hidden ? model.value : manual.value).trim();
-    const fillModels = (names: readonly string[], chosen = chosenModel() || options.model?.trim() || "") => {
+    const fillModels = (fetched: readonly string[], chosen = chosenModel() || options.model?.trim() || "") => {
+      // Before the key's own list is loaded, the provider's current models (MODEL_CATALOG) are offered.
+      const suggested = !fetched.length && MODEL_CATALOG[provider].length > 0;
+      const names = suggested ? MODEL_CATALOG[provider] : fetched;
       const list = [...names];
       if (chosen && !list.includes(chosen)) list.unshift(chosen);
       model.replaceChildren(
@@ -138,7 +141,8 @@ export function mountAiSettings(session: AiSession, reveal: () => void): { open(
       manual.hidden = !typing;
       model.hidden = typing;
       if (typing) manual.value = chosen;
-      modelHint.textContent = names.length ? `${names.length} model của tài khoản này.`
+      modelHint.textContent = suggested ? `${names.length} model hiện có của ${info.name}. Lưu khóa và bấm “Kiểm tra khóa” để thấy đúng các model tài khoản của bạn dùng được.`
+        : names.length ? `${names.length} model của tài khoản này.`
         : typing ? "Máy chủ chưa trả danh sách model: nhập tên model." : "Bấm “Kiểm tra khóa” để tải danh sách model.";
     };
     fillModels(modelsOf(provider));

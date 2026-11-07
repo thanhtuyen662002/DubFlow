@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import {
-  askJson, checkProvider, noRedirectFetch, configureHostAi, createAiSession, hostRequest, isKeyError, isProvider, PROVIDER_IDS, PROVIDERS,
+  askJson, checkProvider, noRedirectFetch, configureHostAi, createAiSession, hostRequest, isKeyError, isProvider, MODEL_CATALOG, PROVIDER_IDS, PROVIDERS,
 } from "../src/features/ai/provider.ts";
 import { DEFAULT_SENSITIVE_WORDS, formatWordList, normalizePrefs, parseWordList, translationJobArgs } from "../src/features/ai/translation_prefs.ts";
 
@@ -13,6 +13,19 @@ for (const id of PROVIDER_IDS) {
   assert.equal(PROVIDERS[id].host, id !== "claude" && id !== "gemini", id);
 }
 assert.equal(isProvider("evil"), false);
+
+// Before a key is saved every provider with a fixed model range offers its current chat models, default included;
+// OpenRouter (hundreds) and custom servers load theirs from the server.
+const NOT_CHAT = /embed|whisper|tts|audio|realtime|image|moderation|ocr|guard|nano-banana|lyria|veo/i;
+for (const id of PROVIDER_IDS) {
+  const names = MODEL_CATALOG[id];
+  if (id === "custom" || id === "openrouter") { assert.equal(names.length, 0, id); continue; }
+  assert.ok(names.length >= 2, id);
+  assert.ok(names.includes(PROVIDERS[id].model), `${id} catalog has its default ${PROVIDERS[id].model}`);
+  assert.equal(new Set(names).size, names.length, id);
+  for (const name of names) assert.ok(!NOT_CHAT.test(name), `${id}: ${name}`);
+}
+assert.ok(MODEL_CATALOG.deepseek.includes("deepseek-v4-pro"));
 
 // The host request carries the chosen model and, for custom and Qwen, the server address.
 assert.deepEqual(hostRequest("deepseek", {}, { action: "models" }), { provider: "deepseek", model: "deepseek-flash", action: "models" });

@@ -55,7 +55,7 @@ PRESETS: dict[str, Preset] = {
     "openai": Preset("ChatGPT (OpenAI)", "openai", "https://api.openai.com/v1", "gpt-5-mini", True, "platform.openai.com/api-keys"),
     "deepseek": Preset("DeepSeek", "openai", "https://api.deepseek.com", "deepseek-flash", True, "platform.deepseek.com/api_keys"),
     "qwen": Preset("Qwen (Alibaba Cloud)", "openai", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", "qwen-plus", False, "modelstudio.console.alibabacloud.com"),
-    "kimi": Preset("Kimi (Moonshot AI)", "openai", "https://api.moonshot.ai/v1", "kimi-k2.6", True, "platform.kimi.ai"),
+    "kimi": Preset("Kimi (Moonshot AI)", "openai", "https://api.moonshot.ai/v1", "kimi-k3", True, "platform.kimi.ai"),
     "glm": Preset("GLM (Z.ai / Zhipu)", "openai", "https://api.z.ai/api/paas/v4", "glm-5.3", False, "z.ai/manage-apikey/apikey-list"),
     "grok": Preset("Grok (xAI)", "openai", "https://api.x.ai/v1", "grok-4.7", True, "console.x.ai"),
     "openrouter": Preset("OpenRouter (nhiều model)", "openai", "https://openrouter.ai/api/v1", "openrouter/auto", True, "openrouter.ai/keys"),
