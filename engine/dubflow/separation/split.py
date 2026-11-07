@@ -111,6 +111,7 @@ def _voice(source: Path, background: Path, out_dir: Path, *, cancelled=None) -> 
         if shape != (right.getnchannels(), right.getsampwidth(), right.getframerate()) or shape[1] != 2:
             return
         frames = min(left.getnframes(), right.getnframes())
+        plain_out_dir(out_dir)
         descriptor, temp = tempfile.mkstemp(prefix=".voice-", suffix=".wav", dir=out_dir)
         os.close(descriptor)
         try:
@@ -127,6 +128,7 @@ def _voice(source: Path, background: Path, out_dir: Path, *, cancelled=None) -> 
                     b = np.frombuffer(right.readframes(count), dtype="<i2").astype(np.int32)
                     size = min(a.size, b.size)
                     writer.writeframes(np.clip(a[:size] - b[:size], -32768, 32767).astype("<i2").tobytes())
+            plain_out_dir(out_dir)
             os.replace(temp, out_dir / "voice.wav")
         finally:
             Path(temp).unlink(missing_ok=True)
@@ -168,11 +170,14 @@ def plain_out_dir(out_dir: Path, *, make: bool = False) -> None:
 
 
 def _publish(target: Path, text: str) -> None:
-    """Write ``target`` through a temporary file beside it and an atomic replace (a link there is replaced, not followed)."""
+    """Write ``target`` through a temporary file beside it and an atomic replace (a link there is replaced, not followed).
+    The folder is checked again right before the temporary file is made and right before the replace."""
+    plain_out_dir(target.parent)
     descriptor, temp = tempfile.mkstemp(prefix=f".{target.stem}-", suffix=target.suffix, dir=target.parent)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             handle.write(text)
+        plain_out_dir(target.parent)
         os.replace(temp, target)
     finally:
         Path(temp).unlink(missing_ok=True)
@@ -195,6 +200,7 @@ def split(background: Path, out_dir: Path, *, source: Path | None = None, progre
         try:
             writers = []
             for name in ("music", "sfx"):
+                plain_out_dir(out_dir)
                 descriptor, temp = tempfile.mkstemp(prefix=f".{name}-", suffix=".wav", dir=out_dir)
                 os.close(descriptor)
                 temps.append(Path(temp))
@@ -221,8 +227,10 @@ def split(background: Path, out_dir: Path, *, source: Path | None = None, progre
             finally:
                 for writer in writers:
                     writer.close()
+            # Each publication checks the folder again: one swapped for a link meanwhile stops the run.
             plain_out_dir(out_dir)
             os.replace(temps[0], out_dir / "music.wav")
+            plain_out_dir(out_dir)
             os.replace(temps[1], out_dir / "sfx.wav")
             temps = []
         finally:
@@ -236,7 +244,6 @@ def split(background: Path, out_dir: Path, *, source: Path | None = None, progre
         except (OSError, EOFError, wave.Error):
             pass  # Only the Lời lane's picture needs it.
     document = {"schema_version": 1, **identity}
-    plain_out_dir(out_dir)
     _publish(out_dir / SPLIT_FILE, json.dumps(document, ensure_ascii=True))
     return document
 

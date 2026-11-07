@@ -40,11 +40,24 @@ class Status:
         if not force and now - self._written < 0.5:
             return
         self._written = now
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        descriptor, name = tempfile.mkstemp(prefix=".status-", suffix=".json", dir=self.path.parent)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            json.dump(self.value, stream, ensure_ascii=True)
-        os.replace(name, self.path)
+        from engine.dubflow.separation.split import SplitError, plain_out_dir
+
+        # The folder is checked again before every temporary file and every replace: a status is never
+        # written through a folder swapped for a link during a long run (the run's own checks stop it).
+        try:
+            plain_out_dir(self.path.parent, make=True)
+            descriptor, name = tempfile.mkstemp(prefix=".status-", suffix=".json", dir=self.path.parent)
+        except SplitError:
+            return
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                json.dump(self.value, stream, ensure_ascii=True)
+            plain_out_dir(self.path.parent)
+            os.replace(name, self.path)
+        except SplitError:
+            pass
+        finally:
+            Path(name).unlink(missing_ok=True)
 
 
 def _cancelled(out_dir: Path) -> bool:
@@ -63,7 +76,9 @@ def run(source: Path, out_dir: Path, *, app_root: Path, model_root: Path, ffmpeg
     profile_path = app_root / PROFILE
     profile = _read_json(profile_path)
     model_dir = _child(model_root, profile["model_dir"])
-    out_dir.mkdir(parents=True, exist_ok=True)
+    from engine.dubflow.separation.split import plain_out_dir
+
+    plain_out_dir(out_dir, make=True)
     background = out_dir / "background.wav"
     if source.suffix.lower() == ".wav":
         source_wav = source

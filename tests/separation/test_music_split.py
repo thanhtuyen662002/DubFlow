@@ -186,5 +186,54 @@ class MusicSplitTest(unittest.TestCase):
             self.assertFalse((folder / "missing").exists())
 
 
+    def test_a_folder_swapped_for_a_link_between_publications_gets_nothing_more(self):
+        """The out folder is swapped for a link (junction on Windows) right after the music part, the SFX part
+        or the voice is published: the next publication refuses, and nothing appears or changes outside."""
+        for after in (1, 2, 3):  # replaces in order: music.wav, sfx.wav, voice.wav, then split.json
+            with self.subTest(after=after), TemporaryDirectory() as temp:
+                folder = Path(temp)
+                background = folder / "background.wav"
+                write(background, np.full((RATE, 2), 0.1))
+                outside = folder / "outside"
+                outside.mkdir()
+                (outside / split.SPLIT_FILE).write_text("keep", encoding="utf-8")
+                before = snapshot(outside)
+                (folder / "work").mkdir()
+                out = folder / "work" / "stems"
+                real = os.replace
+                done = []
+
+                def replace(source, target, out=out, outside=outside, after=after, done=done):
+                    real(source, target)
+                    done.append(Path(target).name)
+                    if len(done) == after:
+                        real(out, out.with_name("stems-moved"))
+                        link_dir(outside, out)
+                with mock.patch.object(split.os, "replace", side_effect=replace), self.assertRaises(split.SplitError):
+                    split.split(background, out, source=background)
+                self.assertEqual(done, ["music.wav", "sfx.wav", "voice.wav"][:after])
+                self.assertEqual(snapshot(outside), before, "no part, temp or marker is written outside")
+                self.assertFalse((folder / "work" / "stems-moved" / split.SPLIT_FILE).exists(), "no marker for a partial run")
+
+    def test_a_status_is_never_written_through_a_swapped_folder(self):
+        from engine.dubflow.separation.__main__ import Status
+
+        with TemporaryDirectory() as temp:
+            folder = Path(temp)
+            outside = folder / "outside"
+            outside.mkdir()
+            (outside / "split-status.json").write_text("keep", encoding="utf-8")
+            before = snapshot(outside)
+            (folder / "work").mkdir()
+            out = folder / "work" / "stems"
+            status = Status(out / "split-status.json")
+            status.write(progress=1)
+            self.assertTrue((out / "split-status.json").is_file())
+            os.replace(out, folder / "work" / "stems-moved")
+            link_dir(outside, out)
+            status.write(progress=50)
+            self.assertEqual(snapshot(outside), before)
+
+
 if __name__ == "__main__":
     unittest.main()

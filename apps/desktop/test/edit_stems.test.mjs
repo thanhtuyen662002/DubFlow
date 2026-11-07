@@ -52,3 +52,19 @@ assert.deepEqual(parseProject(JSON.parse(JSON.stringify(savedSfx)), 30, { path: 
 assert.equal(setStems(loud, { ...loud.mainStems, sfx: Number.NaN }), loud);
 assert.equal(matchesExport(withSfx, exported), false, "another SFX level is another export");
 console.log("edit_stems tests passed");
+
+// ---------- Browser preview: music/SFX paths sit under .dubflow-work\edit\stems ----------
+{
+  const { previewInvoke } = await import("../src/shell/preview_invoke.ts");
+  const outputPath = "D:\\Videos\\DubFlow Output\\run\\final_vi.mp4";
+  await previewInvoke("edit_split", { outputPath });
+  const now = Date.now;
+  Date.now = () => now() + 60_000;
+  try {
+    const stems = await previewInvoke("edit_stems", { outputPath, kind: "job" });
+    assert.equal(stems.music, "D:\\Videos\\DubFlow Output\\run\\.dubflow-work\\edit\\stems\\music.wav");
+    assert.equal(stems.sfx, "D:\\Videos\\DubFlow Output\\run\\.dubflow-work\\edit\\stems\\sfx.wav");
+  } finally {
+    Date.now = now;
+  }
+}

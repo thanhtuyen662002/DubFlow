@@ -518,7 +518,7 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
           : { state: "RUNNING", progress, message: progress < 8 ? "Đang tải bộ tách giọng lần đầu: 31/67 MB" : "Đang tách giọng gốc khỏi nhạc nền…" },
         outdated: job && !done,
         // Tách giọng also splits the accompaniment; a job's older one splits on request (edit_split).
-        ...(done || (splitAt !== undefined && splitDone) ? { music: `${dir}\.dubflow-work\edit\stems\music.wav`, sfx: `${dir}\.dubflow-work\edit\stems\sfx.wav` } : {}),
+        ...(done || (splitAt !== undefined && splitDone) ? { music: `${dir}\\.dubflow-work\\edit\\stems\\music.wav`, sfx: `${dir}\\.dubflow-work\\edit\\stems\\sfx.wav` } : {}),
         split: splitAt === undefined ? null : splitDone ? { state: "COMPLETED", progress: 100, message: "Đã tách nhạc và tiếng động." }
           : { state: "RUNNING", progress: splitProgress, message: "Đang tách nhạc và tiếng động…" },
       } as T;
