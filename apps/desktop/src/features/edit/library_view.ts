@@ -69,6 +69,13 @@ function writeStorage(key: string, value: string): void {
 export function mountEditLibrary(invoke: Invoke, host: EditLibraryHost): EditLibrary {
   const root = document.querySelector<HTMLElement>("#edit-view")!;
   root.innerHTML = `
+    <header class="topbar el-hero">
+      <div>
+        <span class="eyebrow">Chỉnh sửa</span>
+        <h1>Video của bạn</h1>
+        <p class="subtitle">Mở video đã làm xong hoặc video có sẵn trên máy để cắt ghép, thêm chữ, âm thanh rồi xuất lại.</p>
+      </div>
+    </header>
     <div class="el-toolbar">
       <div class="seg el-filters" role="tablist" aria-label="Nguồn video"></div>
       <div class="el-actions">

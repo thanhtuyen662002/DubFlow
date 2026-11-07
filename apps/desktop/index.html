@@ -12,45 +12,17 @@
   </head>
   <body>
     <div class="app" aria-live="polite">
-      <header id="app-header" class="app-header">
-        <div class="header-logo" aria-hidden="true">
-          <span class="logo-tile"><svg viewBox="0 0 256 256" width="24" height="24"><path d="M84 52H128C176 52 206 86 206 128S176 204 128 204H100L62 232V74Q62 52 84 52Z" fill="currentColor"/><rect x="98" y="104" width="18" height="48" rx="9" fill="#F4B740"/><rect x="125" y="86" width="18" height="84" rx="9" fill="#F4B740"/><rect x="152" y="108" width="18" height="40" rx="9" fill="#F4B740"/></svg></span>
-        </div>
-        <div class="header-title">
-          <h1 id="page-title">Hàng đợi</h1>
-          <span id="queue-summary" class="header-meta">Chưa có video</span>
-          <span id="page-meta" class="header-meta" hidden></span>
-        </div>
-        <div class="header-tools">
-          <form id="link-form" class="link-form" autocomplete="off">
-            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1" stroke="currentColor" stroke-width="1.75" fill="none" stroke-linecap="round"/></svg>
-            <input id="link-input" type="text" inputmode="url" placeholder="Dán link Douyin, Bilibili hoặc Kuaishou" title="Có thể dán nhiều link cùng lúc" aria-label="Link video" />
-            <button id="link-submit" class="btn ghost" type="submit">Tải về</button>
-          </form>
-          <button id="add-files" class="btn primary" type="button">
-            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-            <span class="add-files-label">Thêm từ máy</span>
-          </button>
-        </div>
-        <button id="header-update" class="header-update" type="button" hidden title="Có bản mới; mở Cài đặt để cập nhật">
-          <span class="update-dot" aria-hidden="true"></span><span id="header-update-label">Cập nhật</span>
-        </button>
-        <div class="window-controls">
-          <button id="window-minimize" class="window-btn" type="button" aria-label="Thu nhỏ" title="Thu nhỏ">
-            <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M1 6h10" stroke="currentColor" stroke-width="1.2"/></svg>
-          </button>
-          <button id="window-maximize" class="window-btn" type="button" aria-label="Phóng to" title="Phóng to">
-            <svg class="icon-maximize" viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><rect x="1.5" y="1.5" width="9" height="9" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
-            <svg class="icon-restore" viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><rect x="1.5" y="3.5" width="7" height="7" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M3.5 3.5V2.7c0-.7.5-1.2 1.2-1.2h4.6c.7 0 1.2.5 1.2 1.2v4.6c0 .7-.5 1.2-1.2 1.2h-.8" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
-          </button>
-          <button id="window-close" class="window-btn close" type="button" aria-label="Đóng" title="Đóng">
-            <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M1.5 1.5l9 9M10.5 1.5l-9 9" stroke="currentColor" stroke-width="1.2"/></svg>
-          </button>
-        </div>
-      </header>
 
       <div class="app-body">
         <nav class="rail" aria-label="Điều hướng">
+          <div class="rail-logo" aria-hidden="true">
+          <span class="logo-tile"><svg viewBox="0 0 256 256" width="24" height="24"><path d="M84 52H128C176 52 206 86 206 128S176 204 128 204H100L62 232V74Q62 52 84 52Z" fill="currentColor"/><rect x="98" y="104" width="18" height="48" rx="9" fill="#3D6BE0"/><rect x="125" y="86" width="18" height="84" rx="9" fill="#3D6BE0"/><rect x="152" y="108" width="18" height="40" rx="9" fill="#3D6BE0"/></svg></span>
+        </div>
+          <button id="nav-create" class="rail-item" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="create-pop">
+            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.6" fill="none"/><path d="M12 8v8M8 12h8" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/></svg>
+            <span>Tạo mới</span>
+          </button>
+          <span class="rail-sep" aria-hidden="true"></span>
           <a id="nav-discover" class="rail-item" href="#">
             <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M11 4.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13zM16 16l4 4" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" fill="none"/></svg>
             <span>Khám phá</span>
@@ -88,6 +60,31 @@
           </button>
         </nav>
 
+        <div class="app-col">
+        <header id="app-header" class="app-header">
+          
+          <div class="header-title">
+            <h1 id="page-title">Hàng đợi</h1>
+            <span id="queue-summary" class="header-meta">Chưa có video</span>
+            <span id="page-meta" class="header-meta" hidden></span>
+          </div>
+          <div class="header-drag"></div>
+          <button id="header-update" class="header-update" type="button" hidden title="Có bản mới; mở Cài đặt để cập nhật">
+            <span class="update-dot" aria-hidden="true"></span><span id="header-update-label">Cập nhật</span>
+          </button>
+          <div class="window-controls">
+            <button id="window-minimize" class="window-btn" type="button" aria-label="Thu nhỏ" title="Thu nhỏ">
+              <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M1 6h10" stroke="currentColor" stroke-width="1.2"/></svg>
+            </button>
+            <button id="window-maximize" class="window-btn" type="button" aria-label="Phóng to" title="Phóng to">
+              <svg class="icon-maximize" viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><rect x="1.5" y="1.5" width="9" height="9" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
+              <svg class="icon-restore" viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><rect x="1.5" y="3.5" width="7" height="7" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M3.5 3.5V2.7c0-.7.5-1.2 1.2-1.2h4.6c.7 0 1.2.5 1.2 1.2v4.6c0 .7-.5 1.2-1.2 1.2h-.8" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
+            </button>
+            <button id="window-close" class="window-btn close" type="button" aria-label="Đóng" title="Đóng">
+              <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M1.5 1.5l9 9M10.5 1.5l-9 9" stroke="currentColor" stroke-width="1.2"/></svg>
+            </button>
+          </div>
+        </header>
         <main class="main">
           <section id="discover-view" class="discover" hidden>
             <header class="topbar">
@@ -1474,12 +1471,28 @@
             </section>
           </section>
         </main>
+        </div>
       </div>
     </div>
-    <div id="settings-dialog" class="review settings-dialog" role="dialog" aria-modal="true" aria-labelledby="settings-title" hidden>
+    <div id="create-pop" class="create-pop" role="dialog" aria-modal="false" aria-labelledby="create-title" hidden>
+      <span class="eyebrow">Tạo mới</span>
+      <h2 id="create-title">Thêm video để làm</h2>
+      <p class="subtitle">Dán link Douyin, Bilibili hoặc Kuaishou (có thể dán nhiều link), hoặc chọn video có sẵn trên máy. Video vào Hàng đợi.</p>
+      <form id="link-form" class="link-form" autocomplete="off">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1" stroke="currentColor" stroke-width="1.75" fill="none" stroke-linecap="round"/></svg>
+            <input id="link-input" type="text" inputmode="url" placeholder="Dán link Douyin, Bilibili hoặc Kuaishou" title="Có thể dán nhiều link cùng lúc" aria-label="Link video" />
+            <button id="link-submit" class="btn ghost" type="submit">Tải về</button>
+          </form>
+      <div class="create-or"><span>hoặc</span></div>
+      <button id="add-files" class="btn block" type="button">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            <span class="add-files-label">Thêm từ máy</span>
+          </button>
+    </div>
+    <div id="settings-dialog" class="review settings-dialog" role="dialog" aria-modal="false" aria-labelledby="settings-title" hidden>
       <div class="review-panel settings-panel">
         <header class="review-head">
-          <div><span class="eyebrow">Cài đặt</span><h2 id="settings-title">Thiết lập DubFlow</h2></div>
+          <div><span class="eyebrow">Cài đặt</span><h2 id="settings-title">Thiết lập DubFlow</h2><p class="subtitle">Áp dụng cho mọi video mới. Từng video vẫn chỉnh riêng được khi làm.</p></div>
           <button id="settings-close" class="icon-btn" type="button" aria-label="Đóng cài đặt">
             <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
           </button>
@@ -1509,6 +1522,10 @@
             <button id="settings-tab-storage" class="settings-tab" type="button" role="tab" data-tab="storage" aria-controls="settings-pane-storage" aria-selected="false" tabindex="-1">
               <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><ellipse cx="12" cy="6" rx="7.5" ry="2.8" stroke="currentColor" stroke-width="1.7" fill="none"/><path d="M4.5 6v12c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8V6M4.5 12c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8" stroke="currentColor" stroke-width="1.7" fill="none"/></svg>
               <span>Dung lượng</span>
+            </button>
+            <button id="settings-tab-look" class="settings-tab" type="button" role="tab" data-tab="look" aria-controls="settings-pane-look" aria-selected="false" tabindex="-1">
+              <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path d="M12 3.5a8.5 8.5 0 1 0 0 17c1.2 0 1.8-.8 1.8-1.7 0-1.2-1-1.6-1-2.6 0-1 .8-1.7 1.9-1.7h2.1a3.7 3.7 0 0 0 3.7-3.7c0-4.2-3.8-7.3-8.5-7.3z" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linejoin="round"/><circle cx="7.8" cy="11.5" r="1.2" fill="currentColor"/><circle cx="10.5" cy="7.6" r="1.2" fill="currentColor"/><circle cx="15" cy="7.8" r="1.2" fill="currentColor"/></svg>
+              <span>Giao diện</span>
             </button>
             <button id="settings-tab-update" class="settings-tab" type="button" role="tab" data-tab="update" aria-controls="settings-pane-update" aria-selected="false" tabindex="-1">
               <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3M19.5 4v4.5H15" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
@@ -1683,6 +1700,13 @@
                   <input id="auto-clean" class="switch" type="checkbox" role="switch" checked />
                 </div>
               </dl>
+            </section>
+            <section id="settings-pane-look" class="settings-pane" role="tabpanel" aria-labelledby="settings-tab-look" tabindex="0" hidden>
+              <header class="settings-pane-head">
+                <h3>Giao diện</h3>
+                <p>Màu chủ đạo cho nút, mục đang chọn và điểm nhấn. Đổi ngay, không cần khởi động lại.</p>
+              </header>
+              <div id="accent-grid" class="accent-grid" role="radiogroup" aria-label="Màu chủ đạo"></div>
             </section>
             <section id="settings-pane-update" class="settings-pane" role="tabpanel" aria-labelledby="settings-tab-update" tabindex="0" hidden>
               <header class="settings-pane-head">

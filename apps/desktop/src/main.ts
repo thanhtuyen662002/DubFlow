@@ -1980,6 +1980,7 @@ async function navigate(view: View): Promise<void> {
 for (const [id, view] of [["#nav-media", "media"], ["#nav-queue", "queue"], ["#nav-discover", "discover"], ["#nav-product", "product"], ["#nav-compilation", "compilation"], ["#nav-docu", "docu"], ["#nav-edit", "edit"]] as const) {
   $(id).addEventListener("click", (event) => {
     event.preventDefault();
+    if (!settingsDialog.hidden) closeSettings();
     void navigate(view);
   });
 }
@@ -2077,6 +2078,33 @@ $("#link-form").addEventListener("submit", async (event) => {
   ];
   showError(notes.length ? `${links.length - failures.length}/${links.length} link đang được tải về Hàng đợi. ${notes.join(" · ")}`.slice(0, 600) : "");
 });
+// "Tạo mới" on the rail opens a small panel with the link box and "Thêm từ máy".
+const createPop = $("#create-pop");
+const createButton = $("#nav-create");
+function setCreateOpen(open: boolean): void {
+  createPop.hidden = !open;
+  createButton.classList.toggle("active-pop", open);
+  createButton.setAttribute("aria-expanded", String(open));
+  if (open) $<HTMLInputElement>("#link-input").focus();
+}
+createButton.addEventListener("click", (event) => {
+  event.stopPropagation();
+  setCreateOpen(createPop.hidden);
+});
+document.addEventListener("mousedown", (event) => {
+  if (createPop.hidden) return;
+  const target = event.target as Node;
+  if (!createPop.contains(target) && !createButton.contains(target)) setCreateOpen(false);
+});
+createPop.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    event.stopPropagation();
+    setCreateOpen(false);
+    createButton.focus();
+  }
+});
+$("#link-form").addEventListener("submit", () => setCreateOpen(false));
+$("#add-files").addEventListener("click", () => setCreateOpen(false));
 // Pasting several lines into the one-line box keeps the line breaks as spaces.
 $<HTMLInputElement>("#link-input").addEventListener("paste", (event) => {
   const text = event.clipboardData?.getData("text") ?? "";
@@ -2085,13 +2113,6 @@ $<HTMLInputElement>("#link-input").addEventListener("paste", (event) => {
   const input = event.currentTarget as HTMLInputElement;
   input.value = text.replace(/\s+/g, " ").trim();
 });
-// Narrow windows get a shorter hint so the box never shows a clipped sentence.
-const narrowHeader = window.matchMedia("(max-width: 1199.98px)");
-function syncLinkHint(): void {
-  $<HTMLInputElement>("#link-input").placeholder = narrowHeader.matches ? "Dán link video" : "Dán link Douyin, Bilibili hoặc Kuaishou";
-}
-narrowHeader.addEventListener("change", syncLinkHint);
-syncLinkHint();
 
 // Review: edit Vietnamese text per cue, then re-run in the same output folder.
 type ReviewCue = {
@@ -2697,6 +2718,40 @@ void invoke<ReleaseInfo>("release_info")
   }));
 $("#installed-versions").addEventListener("click", () => $("#release-version").click());
 
+// Màu chủ đạo: chosen in Cài đặt › Giao diện, remembered on this computer.
+const ACCENT_KEY = "dubflow.accent.v1";
+const ACCENTS: ReadonlyArray<[id: string, name: string, hue: number]> = [
+  ["blue", "Xanh dương", 255], ["teal", "Xanh ngọc", 195], ["green", "Xanh lá", 150], ["violet", "Tím", 290],
+  ["pink", "Hồng", 350], ["orange", "Cam", 45], ["red", "Đỏ", 22],
+];
+function applyAccent(id: string): void {
+  const known = ACCENTS.some(([value]) => value === id) ? id : "blue";
+  if (known === "blue") delete document.documentElement.dataset.accent;
+  else document.documentElement.dataset.accent = known;
+  for (const swatch of document.querySelectorAll<HTMLElement>("#accent-grid .accent-swatch")) {
+    swatch.setAttribute("aria-checked", String(swatch.dataset.accent === known));
+  }
+}
+{
+  const grid = $("#accent-grid");
+  for (const [id, name, hue] of ACCENTS) {
+    const swatch = document.createElement("button");
+    swatch.type = "button";
+    swatch.className = "accent-swatch";
+    swatch.dataset.accent = id;
+    swatch.setAttribute("role", "radio");
+    swatch.style.setProperty("--h", String(hue));
+    swatch.innerHTML = `<i aria-hidden="true"></i><span>${name}</span>`;
+    swatch.addEventListener("click", () => {
+      applyAccent(id);
+      try { window.localStorage.setItem(ACCENT_KEY, id); } catch { /* this session only */ }
+    });
+    grid.append(swatch);
+  }
+  let saved = "blue";
+  try { saved = window.localStorage.getItem(ACCENT_KEY) ?? "blue"; } catch { /* default */ }
+  applyAccent(saved);
+}
 // Settings dialog, opened from the rail and from the header's update button.
 // Groups are tabs on the left; the chosen one shows on the right and is remembered.
 const settingsDialog = $("#settings-dialog");
@@ -2746,6 +2801,8 @@ function openSettings(tab?: string): void {
     aiSettings.refresh();
   }
   settingsDialog.hidden = false;
+  // Cài đặt is a page of its own: the rail lights it instead of the page underneath.
+  document.body.classList.add("settings-open");
   $("#nav-settings").classList.add("active");
   const target = tab ?? (updateVersion !== null ? "update" : rememberedSettingsTab());
   showSettingsTab(target);
@@ -2761,6 +2818,7 @@ function openSettings(tab?: string): void {
 function closeSettings(): void {
   if (settingsDialog.hidden) return;
   settingsDialog.hidden = true;
+  document.body.classList.remove("settings-open");
   $("#nav-settings").classList.remove("active");
   if (settingsReturnFocus?.isConnected) settingsReturnFocus.focus();
 }
