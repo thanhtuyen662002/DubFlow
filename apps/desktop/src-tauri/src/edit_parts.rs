@@ -596,7 +596,7 @@ mod tests {
         fs::create_dir_all(dir.join("work/parts")).unwrap();
         let source_file = dir.join("source.mp4");
         let made = Command::new(&ffmpeg).args(["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=320x240:r=30:d=330", "-f", "lavfi", "-i",
-            "sine=f=330:d=330", "-c:v", "libx264", "-g", "90", "-c:a", "aac", "-shortest"]).arg(&source_file).status().unwrap();
+            "sine=f=330:d=330", "-c:v", "mpeg4", "-q:v", "3", "-g", "90", "-c:a", "aac", "-shortest"]).arg(&source_file).status().unwrap();
         assert!(made.success());
         let mut timeline = edit(vec![segment(0, 10.0, 190.0), Segment { speed: 2.0, ..segment(0, 200.0, 260.0) }, segment(0, 260.0, 320.0)]);
         timeline.transitions.push(Transition { after: 0, kind: TransitionKind::Dissolve, duration: 1.0 });
@@ -640,6 +640,7 @@ mod tests {
         let stats = String::from_utf8_lossy(&compared.stdout);
         let scores: Vec<f64> = stats.lines().filter_map(|line| line.split_whitespace().find_map(|field| field.strip_prefix("psnr_avg:")))
             .map(|value| if value == "inf" { 99.0 } else { value.parse::<f64>().unwrap_or(0.0) }).collect();
+        // (The source is MPEG-4 Part 2: every FFmpeg has it, the shipped LGPL one has no libx264.)
         // A frame off by one is about 18 dB here: only a joint of a part may
         // repeat or skip one frame (concat rounds each segment to whole frames).
         let off: Vec<usize> = scores.iter().enumerate().filter(|(_, &score)| score < 30.0).map(|(index, _)| index).collect();
