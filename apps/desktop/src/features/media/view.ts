@@ -263,7 +263,7 @@ export function mountMediaScreen(deps: {
     $("empty").hidden = shown.length > 0 || (downloading > 0 && !entries.length);
     $("empty").textContent = entries.length
       ? "Không có video khớp. Thử từ khóa khác hoặc xem “Tất cả”."
-      : "Chưa có video. Dán link ở thanh trên cùng, chọn video ở Khám phá, hoặc thêm video từ máy.";
+      : "Chưa có video. Bấm “Tạo mới” để dán link, chọn video ở Khám phá, hoặc thêm video từ máy.";
     // Several chosen: the actions work on all of them at once.
     const count = picked.size;
     $("bulk").hidden = count === 0;

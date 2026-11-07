@@ -190,12 +190,15 @@ type Where = "playhead" | "end" | "overlay";
 type LibraryItem = { key: string; path: string; title: string; meta: string; kind: "job" | "file"; duration: number | null };
 type Box = { element: HTMLDivElement; video: HTMLVideoElement; image: HTMLImageElement; path: string };
 
-const PAD = 12;
+/** Room left of time 0 for the lane names (CapCut-style track heads). */
+const PAD = 92;
+/** Room right of the end. */
+const PAD_END = 16;
 /** Height of one overlay row on the timeline (overlapping overlays take more rows). */
 const OV_ROW = 28;
-const TIMELINE_PX = 170;
+const TIMELINE_PX = 250;
 /** The timeline below a 600 px window (styles.css). */
-const SHORT_TIMELINE_PX = 140;
+const SHORT_TIMELINE_PX = 180;
 /** A timeline drop this close to a segment edge goes on the edge, not a sliver away. */
 const DROP_SNAP_PX = 12;
 /** Moving edges and the playhead snap to points this close. */
@@ -204,6 +207,8 @@ const SNAP_PX = 8;
 const DRAG_PX = 5;
 /** Waveform strip height in a segment block. */
 const WAVE_PX = 18;
+/** Height of the "Tiếng gốc" lane. */
+const VA_PX = 38;
 const THUMB_WIDTH = 76;
 const THUMB_PX = 192;
 const POSTER_PX = 160;
@@ -284,6 +289,15 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   const content = $("#tl-content");
   const ruler = $("#tl-ruler");
   const track = $("#tl-track");
+  /** The video's own sound, apart from the pictures: one block per segment, its level dragged up or down. */
+  const vaTrack = $("#tl-vaudio");
+  /** Lanes with nothing in them yet stay on the timeline, each with a button to its tab. */
+  const emptyLanes = $("#tl-empty");
+  emptyLanes.addEventListener("pointerdown", (event) => event.stopPropagation());
+  emptyLanes.addEventListener("click", (event) => {
+    const button = (event.target as HTMLElement).closest<HTMLElement>("[data-goto]");
+    if (button) document.querySelector<HTMLButtonElement>(`#edit-modes [data-mode="${button.dataset.goto}"]`)?.click();
+  });
   const overlayTrack = $("#tl-overlays");
   const audioTrack = $("#tl-audio");
   const textTrack = $("#tl-text");
@@ -1783,7 +1797,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
 
   function fitScale(): number {
     const total = session ? outputDuration(current()) : 1;
-    return Math.max(0.02, (scroll.clientWidth - PAD * 2) / Math.max(total, 0.1));
+    return Math.max(0.02, (scroll.clientWidth - PAD - PAD_END) / Math.max(total, 0.1));
   }
 
   /** The modes this video has: Mẫu for Bán hàng videos, Phụ đề and Che for dubbing jobs. */
@@ -2064,7 +2078,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     const fit = fitScale();
     pps = zoomScale(fit, Number(zoom.value) / 100);
     zoom.disabled = fit >= 20;
-    const width = Math.max(scroll.clientWidth, Math.ceil(PAD * 2 + total * pps));
+    const width = Math.max(scroll.clientWidth, Math.ceil(PAD + PAD_END + total * pps));
     content.style.width = `${width}px`;
     // Ruler.
     const tick_ = tickStep(pps);
@@ -2116,12 +2130,6 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       endHandle.dataset.edge = "end";
       endHandle.title = "Kéo để cắt cuối đoạn";
       block.append(strip);
-      if (media?.hasAudio && segment.volume > 0 && length >= 8 && lookOf(segment).freeze === null) {
-        const wave = element("canvas", "tl-wave");
-        wave.dataset.path = path;
-        wave.dataset.id = segment.id;
-        block.append(wave);
-      }
       if (lookOf(segment).freeze !== null) block.classList.add("held");
       block.append(label, startHandle, endHandle);
       return block;
@@ -2141,6 +2149,35 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       blocks.push(joint);
     }
     track.replaceChildren(...blocks);
+    // Tiếng gốc: each segment's sound in a lane of its own, under the pictures.
+    const sounds: HTMLElement[] = [];
+    let soundNumber = 0;
+    edit.segments.forEach((segment, index) => {
+      const inserted = segment.mediaId !== MAIN;
+      if (!inserted) soundNumber += 1;
+      const media = mediaOf(edit, segment.mediaId);
+      const length = segmentLength(segment) * pps;
+      if (!media?.hasAudio || lookOf(segment).freeze !== null) return;
+      const block = element("div", `tl-va${segment.id === session!.selected && !session!.overlay ? " selected" : ""}${segment.volume === 0 ? " muted" : ""}`);
+      block.dataset.id = segment.id;
+      block.style.left = `${PAD + starts[index] * pps}px`;
+      block.style.width = `${Math.max(2, length)}px`;
+      const percent = Math.round(segment.volume * 100);
+      block.title = `Tiếng ${inserted ? "đoạn chèn" : `đoạn ${soundNumber}`}: ${percent}% · kéo vạch lên xuống để đổi âm lượng, bấm đúp để tắt hoặc bật tiếng`;
+      if (segment.volume > 0 && length >= 8) {
+        const wave = element("canvas", "tl-wave");
+        wave.dataset.path = media ? mediaPath(media) : "";
+        wave.dataset.id = segment.id;
+        block.append(wave);
+      }
+      const level = element("span", "tl-va-level");
+      level.style.bottom = `${Math.min(100, segment.volume / 2 * 100)}%`;
+      block.append(level);
+      if (length >= 48) block.append(element("span", "tl-va-name", segment.volume === 0 ? "Tắt tiếng" : `${percent}%`));
+      sounds.push(block);
+    });
+    vaTrack.replaceChildren(...sounds);
+    vaTrack.hidden = sounds.length === 0;
     drawWaves(edit);
     // Overlay row.
     overlayTrack.hidden = !edit.overlays.length;
@@ -2172,12 +2209,27 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     const textHeight = textMode.renderTrack(textTrack, mode === "text", PAD) + (subsHeight ? 6 + subsHeight : 0);
     const audioHeight = audio.renderTrack(audioTrack, mode === "audio", PAD);
     content.classList.toggle("with-audio", audioHeight > 0 || textHeight > 0);
-    const rows = 22 + (edit.overlays.length ? ovRows * OV_ROW + 2 : 0) + 48 + (textHeight ? 6 + textHeight : 0) + (audioHeight ? 6 + audioHeight : 0) + 16;
+    const stubs: Array<[label: string, goto: string, action: string]> = [];
+    if (overlayTrack.hidden) stubs.push(["Hình ảnh", "insert", "Chèn ảnh hoặc video chồng"]);
+    if (subsTrack.hidden) stubs.push(["Phụ đề", "subs", "Thêm phụ đề"]);
+    if (textTrack.hidden) stubs.push(["Chữ", "text", "Thêm chữ"]);
+    stubs.push(["Che", "cover", "Che chữ gốc trên hình"]);
+    if (audioTrack.hidden) stubs.push(["Âm thanh", "audio", "Thêm nhạc, hiệu ứng âm thanh"]);
+    emptyLanes.replaceChildren(...stubs.map(([label, goto, action]) => {
+      const lane = element("div", "tl-lane tl-stub");
+      lane.dataset.label = label;
+      const add = element("button", "tl-stub-add", `+ ${action}`);
+      add.setAttribute("type", "button");
+      add.dataset.goto = goto;
+      lane.append(add);
+      return lane;
+    }));
+    const rows = 22 + (edit.overlays.length ? ovRows * OV_ROW + 2 : 0) + 80 + (sounds.length ? VA_PX + 6 : 0) + (textHeight ? 6 + textHeight : 0) + (audioHeight ? 6 + audioHeight : 0) + emptyLanes.childElementCount * 32 + 16;
     // At most 40% of the window: further rows scroll, the video keeps its room.
     // Never lower than the timeline without rows (lower in short windows, see styles.css), so it does not jump.
     const least = window.innerHeight <= 600 ? SHORT_TIMELINE_PX : TIMELINE_PX;
     const most = Math.max(least, Math.round(window.innerHeight * 0.4));
-    timeline.style.height = audioHeight || textHeight || ovRows > 1 ? `${Math.min(most, Math.max(least, 36 + rows))}px` : "";
+    timeline.style.height = `${Math.min(most, Math.max(least, 36 + rows))}px`;
     renderThumbs();
     renderPlayhead();
     const inserts = edit.segments.filter((segment) => segment.mediaId !== MAIN).length;
@@ -2224,7 +2276,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   /** Draw each segment's sound under its thumbnails (50 levels a second of its media). */
   function drawWaves(edit: Edit): void {
     const ratio = Math.min(2, window.devicePixelRatio || 1);
-    for (const canvas of track.querySelectorAll<HTMLCanvasElement>("canvas.tl-wave")) {
+    for (const canvas of vaTrack.querySelectorAll<HTMLCanvasElement>("canvas.tl-wave")) {
       const path = canvas.dataset.path ?? "";
       const segment = edit.segments.find((candidate) => candidate.id === canvas.dataset.id);
       const levels = peaks.get(path);
@@ -2238,12 +2290,12 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       }
       const width = Math.min(8192, Math.max(1, Math.round(segmentLength(segment) * pps)));
       canvas.width = Math.round(width * ratio);
-      canvas.height = Math.round(WAVE_PX * ratio);
+      canvas.height = Math.round(VA_PX * ratio);
       canvas.style.width = `${width}px`;
       const context = canvas.getContext("2d");
       if (!context) continue;
       context.scale(ratio, ratio);
-      context.fillStyle = "oklch(0.82 0.14 75 / 0.85)";
+      context.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--accent-text").trim() || "oklch(0.80 0.10 255)";
       const gain = Math.min(1, 0.35 + segment.volume * 0.65);
       for (let x = 0; x < width; x += 2) {
         const a = sourceAt(segment, x / pps), b = sourceAt(segment, (x + 2) / pps);
@@ -2251,8 +2303,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
         const to = Math.max(from + 1, Math.floor(Math.max(a, b) * 50));
         let level = 0;
         for (let index = from; index < to && index < levels.length; index++) level = Math.max(level, levels[index]);
-        const height = Math.max(level ? 1 : 0, (level / 255) * WAVE_PX * gain);
-        context.fillRect(x, WAVE_PX - height, 1.4, height);
+        const height = Math.max(level ? 1 : 0, (level / 255) * VA_PX * gain);
+        context.fillRect(x, (VA_PX - height) / 2, 1.4, height);
       }
     }
   }
@@ -2397,6 +2449,64 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     return { to, joint };
   }
 
+
+  // Tiếng gốc: a click picks the segment; dragging its level line changes the segment's volume (0–200%).
+  let levelDrag: { id: string; block: HTMLElement; pointer: number } | null = null;
+  function levelAt(block: HTMLElement, clientY: number): number {
+    const box = block.getBoundingClientRect();
+    const share = Math.min(1, Math.max(0, (box.bottom - clientY) / Math.max(1, box.height)));
+    return Math.round(share * 2 * 20) / 20;
+  }
+  vaTrack.addEventListener("pointerdown", (event) => {
+    const block = (event.target as HTMLElement).closest<HTMLElement>(".tl-va");
+    if (!session || !block || event.button !== 0 || session.draft) return;
+    event.stopPropagation();
+    event.preventDefault();
+    const id = block.dataset.id!;
+    session.selected = id;
+    session.overlay = null;
+    if ((event.target as HTMLElement).closest(".tl-va-level") || event.altKey) {
+      levelDrag = { id, block, pointer: event.pointerId };
+      vaTrack.setPointerCapture(event.pointerId);
+      block.classList.add("leveling");
+      session.draft = setVolume(session.history.current, id, levelAt(block, event.clientY));
+      renderPanel();
+      paintLevel(block, id);
+      return;
+    }
+    seekOutput(timeAt(event.clientX));
+    render();
+  });
+  function paintLevel(block: HTMLElement, id: string): void {
+    const segment = (session?.draft ?? session?.history.current)?.segments.find((candidate) => candidate.id === id);
+    if (!segment) return;
+    const line = block.querySelector<HTMLElement>(".tl-va-level");
+    if (line) line.style.bottom = `${Math.min(100, segment.volume / 2 * 100)}%`;
+    const name = block.querySelector<HTMLElement>(".tl-va-name");
+    if (name) name.textContent = segment.volume === 0 ? "Tắt tiếng" : `${Math.round(segment.volume * 100)}%`;
+  }
+  vaTrack.addEventListener("pointermove", (event) => {
+    if (!session || !levelDrag || event.pointerId !== levelDrag.pointer) return;
+    session.draft = setVolume(session.history.current, levelDrag.id, levelAt(levelDrag.block, event.clientY));
+    const playing = session.draft.segments.find((candidate) => candidate.id === levelDrag!.id);
+    if (playing && current().segments[session.index]?.id === playing.id) applySegment(playing, active);
+    renderPanel();
+    paintLevel(levelDrag.block, levelDrag.id);
+  });
+  const endLevel = (event: PointerEvent): void => {
+    if (!levelDrag || event.pointerId !== levelDrag.pointer) return;
+    levelDrag.block.classList.remove("leveling");
+    levelDrag = null;
+    if (session?.draft) commit(session.draft);
+  };
+  vaTrack.addEventListener("pointerup", endLevel);
+  vaTrack.addEventListener("pointercancel", endLevel);
+  vaTrack.addEventListener("dblclick", (event) => {
+    const block = (event.target as HTMLElement).closest<HTMLElement>(".tl-va");
+    const segment = block && session?.history.current.segments.find((candidate) => candidate.id === block.dataset.id);
+    if (!session || !segment) return;
+    commit(setVolume(session.history.current, segment.id, segment.volume === 0 ? 1 : 0));
+  });
 
   content.addEventListener("pointerdown", (event) => {
     if (!session || event.button !== 0 || session.draft) return;

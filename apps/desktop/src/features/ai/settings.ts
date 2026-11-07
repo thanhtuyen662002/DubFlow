@@ -107,6 +107,22 @@ export function checkMessage(provider: Provider, error: unknown): string {
   return `Chưa kiểm tra được ${name}: ${text.replace(/^[A-Z]+: /, "")}`.slice(0, 300);
 }
 
+/** One line under each provider in the Cài đặt grid. */
+const PROVIDER_BLURBS: Record<Provider, string> = {
+  claude: "Dịch tự nhiên nhất, hiểu ngữ cảnh",
+  gemini: "Google, có gói miễn phí",
+  openai: "ChatGPT, ổn định, đọc được ảnh",
+  deepseek: "Rẻ, giỏi tiếng Trung",
+  qwen: "Alibaba, mạnh tiếng Trung",
+  kimi: "Moonshot, ngữ cảnh dài",
+  glm: "Z.ai / Zhipu, giá mềm",
+  grok: "xAI, nhanh",
+  openrouter: "Một khóa, hàng trăm model",
+  groq: "Rất nhanh, có gói miễn phí",
+  mistral: "Mistral AI, châu Âu",
+  custom: "LM Studio, Ollama, máy chủ riêng",
+};
+
 /**
  * The AI part of Cài đặt: the default provider, its key, model and server (tab Tài khoản),
  * subtitle translation and sensitive words (tab Dịch phụ đề). `reveal` shows Cài đặt at Tài khoản.
@@ -322,9 +338,31 @@ export function mountAiSettings(session: AiSession, reveal: () => void, invoke?:
     renderPrefs();
   });
 
+  /** The providers as a grid of cards; the one in use is lit and the saved ones say so. */
+  function grid(): HTMLElement {
+    const box = element("div", { className: "ai-provider-grid", role: "radiogroup", ariaLabel: "AI mặc định" } as Partial<HTMLDivElement>);
+    for (const id of PROVIDER_IDS) {
+      const on = id === session.provider();
+      const saved = Boolean(session.saved(id));
+      const pick = element("button", { type: "button", className: `ai-provider-card${on ? " on" : ""}${saved ? " saved" : ""}` },
+        element("strong", { textContent: PROVIDERS[id].name }),
+        element("span", { textContent: PROVIDER_BLURBS[id] }));
+      pick.setAttribute("role", "radio");
+      pick.setAttribute("aria-checked", String(on));
+      if (saved) pick.title = "Đã lưu khóa";
+      pick.addEventListener("click", () => {
+        if (id === session.provider()) return;
+        providerSelect.value = id;
+        providerSelect.dispatchEvent(new Event("change"));
+      });
+      box.append(pick);
+    }
+    return box;
+  }
+
   function render(): void {
     providerSelect.value = session.provider();
-    $("#ai-settings-keys").replaceChildren(noKeyBanner(), card(session.provider()), savedList());
+    $("#ai-settings-keys").replaceChildren(grid(), noKeyBanner(), card(session.provider()), savedList());
     renderPrefs();
   }
 
