@@ -14,7 +14,7 @@
     <div class="app" aria-live="polite">
       <header id="app-header" class="app-header">
         <div class="header-logo" aria-hidden="true">
-          <svg viewBox="0 0 256 256" width="26" height="26"><rect width="256" height="256" rx="56" fill="#4F46E5"/><path d="M84 52H128C176 52 206 86 206 128S176 204 128 204H100L62 232V74Q62 52 84 52Z" fill="#fff"/><rect x="98" y="104" width="18" height="48" rx="9" fill="#4F46E5"/><rect x="125" y="86" width="18" height="84" rx="9" fill="#4F46E5"/><rect x="152" y="108" width="18" height="40" rx="9" fill="#F97366"/></svg>
+          <span class="logo-tile"><svg viewBox="0 0 256 256" width="24" height="24"><path d="M84 52H128C176 52 206 86 206 128S176 204 128 204H100L62 232V74Q62 52 84 52Z" fill="currentColor"/><rect x="98" y="104" width="18" height="48" rx="9" fill="#F4B740"/><rect x="125" y="86" width="18" height="84" rx="9" fill="#F4B740"/><rect x="152" y="108" width="18" height="40" rx="9" fill="#F4B740"/></svg></span>
         </div>
         <div class="header-title">
           <h1 id="page-title">Hàng đợi</h1>
@@ -92,8 +92,9 @@
           <section id="discover-view" class="discover" hidden>
             <header class="topbar">
               <div>
-                <h1>Khám phá video</h1>
-                <p class="subtitle">Xu hướng, gợi ý từ khóa và lấy video từ Douyin, Bilibili, Kuaishou</p>
+                <span class="eyebrow">Khám phá</span>
+                <h1>Video nào đang hot bên Trung?</h1>
+                <p class="subtitle">Xu hướng, gợi ý từ khóa và lấy video từ Douyin, Bilibili, Kuaishou rồi đưa thẳng vào hàng đợi.</p>
               </div>
               <div id="platform-tabs" class="platform-tabs" role="tablist" aria-label="Nền tảng"></div>
             </header>
@@ -192,6 +193,7 @@
             <header class="topbar">
               <button id="product-list-toggle" class="btn ghost list-toggle" type="button" aria-controls="product-list" aria-expanded="false">Danh sách</button>
               <div>
+                <span class="eyebrow">Bán hàng</span>
                 <h1>Video bán hàng</h1>
                 <p class="subtitle">Chọn clip từ Hàng đợi hoặc thêm ảnh, dán mô tả sản phẩm: AI (Claude hoặc Gemini) viết kịch bản, DubFlow đọc giọng Việt thành video dọc</p>
               </div>
@@ -1477,7 +1479,7 @@
     <div id="settings-dialog" class="review settings-dialog" role="dialog" aria-modal="true" aria-labelledby="settings-title" hidden>
       <div class="review-panel settings-panel">
         <header class="review-head">
-          <div><h2 id="settings-title">Cài đặt</h2></div>
+          <div><span class="eyebrow">Cài đặt</span><h2 id="settings-title">Thiết lập DubFlow</h2></div>
           <button id="settings-close" class="icon-btn" type="button" aria-label="Đóng cài đặt">
             <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
           </button>
