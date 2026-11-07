@@ -4,7 +4,7 @@ import {
   type CompilationRun, type CompletedVideo, type ItemForm,
 } from "./model.ts";
 import { PROVIDERS, type AiSession } from "../ai/provider.ts";
-import { parseVoiceCatalog } from "../voices/model.ts";
+import { parseVoiceCatalog, voiceOptionGroups } from "../voices/model.ts";
 import { closeDrawerOutside } from "../../shell/drawer.ts";
 import { confirmDialog } from "../../shell/confirm.ts";
 import { confirmDeleteProject, deleteProjectButton } from "../../shell/project_delete.ts";
@@ -729,11 +729,7 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
     loadingVoices = true;
     try {
       const catalog = parseVoiceCatalog(await invoke("voice_catalog"));
-      select.replaceChildren(...catalog.voices.map(voice => {
-        const option = document.createElement("option"); option.value = voice.voice_id;
-        option.textContent = `${voice.name} · ${voice.gender} · miền ${voice.accent} · ${voice.style}`;
-        option.selected = voice.voice_id === catalog.default_voice_id; return option;
-      }));
+      select.replaceChildren(...voiceOptionGroups(catalog, catalog.default_voice_id));
     } catch (error) { $("state").textContent = message(error); }
     finally { loadingVoices = false; }
   }

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import {
   askJson, createAiSession, GEMINI_FALLBACK_MODEL, GEMINI_MAX_RETRY_WAIT_MS, GEMINI_MODEL, GEMINI_TIMEOUT_MS, isKeyError, keyHint,
-  lacksDiacritics, parseRetryAfter, parseRetryDelay, setKeyFor, toGeminiSchema,
+  GEMINI_DAILY_QUOTA, isDailyQuota, lacksDiacritics, parseRetryAfter, parseRetryDelay, setKeyFor, toGeminiSchema,
 } from "../src/features/ai/provider.ts";
 import { fillPanel } from "../src/features/reframe/ai.ts";
 import { suggestSegments } from "../src/features/shorts/ai.ts";
@@ -229,6 +229,25 @@ const retryInfo = (retryDelay) => ({ status: "RESOURCE_EXHAUSTED", message: "quo
   const serverHint = await play([failure(503, {}, { "Retry-After": "6" }), answer({ x: "ok" })]);
   assert.deepEqual(serverHint.waits, [6000], "Retry-After on a 5xx is honoured too");
 }
+// A free key's daily quota used up: one attempt, no wait, its own message (a per-minute limit is still retried).
+{
+  const day = { status: "RESOURCE_EXHAUSTED", message: "You exceeded your current quota, please check your plan and billing details.", details: [
+    { "@type": "type.googleapis.com/google.rpc.QuotaFailure", violations: [{ quotaId: "GenerateRequestsPerDayPerProjectPerModel-FreeTier" }] },
+    { "@type": "type.googleapis.com/google.rpc.RetryInfo", retryDelay: "20s" },
+  ] };
+  const run = await play([failure(429, day), answer({ x: "too early" })]);
+  assert.deepEqual(run.models, [GEMINI_MODEL]);
+  assert.deepEqual(run.waits, []);
+  assert.equal(run.error.message, GEMINI_DAILY_QUOTA);
+  assert.equal(isKeyError(run.error), false);
+  const minute = { ...day, details: [{ "@type": "type.googleapis.com/google.rpc.QuotaFailure", violations: [{ quotaId: "GenerateRequestsPerMinutePerProjectPerModel-FreeTier" }] },
+    { "@type": "type.googleapis.com/google.rpc.RetryInfo", retryDelay: "42s" }] };
+  const waited = await play([failure(429, minute), answer({ x: "ok" })]);
+  assert.deepEqual(waited.waits, [42_000], "a free key's per-minute wait (often 30–60 s) is honoured");
+  assert.equal(isDailyQuota(day.details), true);
+  assert.equal(isDailyQuota(minute.details), false);
+  assert.equal(isDailyQuota(undefined, "Quota exceeded: requests per day"), true);
+}
 // Invalid hints are ignored rather than trusted.
 for (const headers of [{ "Retry-After": "soon" }, { "Retry-After": "-5" }, { "Retry-After": "1.5" }, { "Retry-After": "" }]) {
   const run = await play([failure(429, retryInfo("later"), headers), answer({ x: "ok" })]);
@@ -249,7 +268,7 @@ for (const headers of [{ "Retry-After": "soon" }, { "Retry-After": "-5" }, { "Re
   assert.match(date.error.message, /hơn một giờ/);
   const later = await play([failure(503), failure(503, {}, { "Retry-After": String(GEMINI_MAX_RETRY_WAIT_MS / 1000 + 1) })]);
   assert.deepEqual(later.models, [GEMINI_MODEL, GEMINI_MODEL], "the fallback model is not tried before the requested time either");
-  assert.match(later.error.message, /^503: Gemini yêu cầu chờ khoảng 1 phút/);
+  assert.match(later.error.message, /^503: Gemini yêu cầu chờ khoảng \d+ phút/);
   const atCap = await play([failure(429, {}, { "Retry-After": String(GEMINI_MAX_RETRY_WAIT_MS / 1000) }), answer({ x: "ok" })]);
   assert.deepEqual(atCap.waits, [GEMINI_MAX_RETRY_WAIT_MS], "a wait exactly at the cap is honoured");
 }

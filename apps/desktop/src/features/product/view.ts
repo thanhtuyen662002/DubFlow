@@ -11,7 +11,7 @@ import {
 } from "./look.ts";
 import { KEY_CLEARED, type SessionKey } from "../seo/view.ts";
 import { isKeyError, isProvider, keyHint, PROVIDER_IDS, PROVIDERS } from "../ai/provider.ts";
-import { parseVoiceCatalog } from "../voices/model.ts";
+import { parseVoiceCatalog, voiceOptionGroups } from "../voices/model.ts";
 import { confirmDialog } from "../../shell/confirm.ts";
 import { confirmDeleteProject, deleteProjectButton } from "../../shell/project_delete.ts";
 import { closeDrawerOutside } from "../../shell/drawer.ts";
@@ -802,13 +802,7 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
     if (voiceSelect.options.length) return;
     try {
       const catalog = parseVoiceCatalog(await invoke<unknown>("voice_catalog"));
-      voiceSelect.replaceChildren(...catalog.voices.map((voice) => {
-        const option = document.createElement("option");
-        option.value = voice.voice_id;
-        option.textContent = `${voice.name} · ${voice.gender} · miền ${voice.accent} · ${voice.style}`;
-        option.selected = voice.voice_id === catalog.default_voice_id;
-        return option;
-      }));
+      voiceSelect.replaceChildren(...voiceOptionGroups(catalog, catalog.default_voice_id));
     } catch (error) {
       $("#product-render-state").textContent = `Không tải được danh sách giọng: ${String(error).slice(0, 160)}`;
     }

@@ -125,6 +125,38 @@ class ErrorsAndRetriesTest(unittest.TestCase):
             ask_json(make_route("openai", KEY), "s", SCHEMA, [{"text": "t"}], transport=fake, sleep=lambda _: self.fail("waited"))
         self.assertIn("phút", caught.exception.message)
 
+    def test_a_used_up_daily_free_quota_stops_at_once_with_its_own_message(self):
+        day = {"error": {"code": 429, "status": "RESOURCE_EXHAUSTED",
+                         "message": "You exceeded your current quota, please check your plan and billing details.",
+                         "details": [{"@type": "type.googleapis.com/google.rpc.QuotaFailure", "violations": [
+                             {"quotaMetric": "generativelanguage.googleapis.com/generate_content_free_tier_requests",
+                              "quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"}]},
+                                     {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "20s"}]}}
+        fake = Fake((429, day))
+        with self.assertRaises(AiError) as caught:
+            ask_json(make_route("gemini", KEY), "s", SCHEMA, [{"text": "t"}], transport=fake, sleep=lambda _: self.fail("waited"))
+        self.assertEqual(caught.exception.code, "QUOTA")
+        self.assertFalse(caught.exception.retryable)
+        self.assertIn("hôm nay", caught.exception.message)
+        self.assertEqual(len(fake.requests), 1)
+
+    def test_a_free_tier_per_minute_limit_is_waited_out_not_taken_for_an_empty_balance(self):
+        minute = {"error": {"code": 429, "status": "RESOURCE_EXHAUSTED",
+                            "message": "You exceeded your current quota, please check your plan and billing details.",
+                            "details": [{"@type": "type.googleapis.com/google.rpc.QuotaFailure", "violations": [
+                                {"quotaId": "GenerateRequestsPerMinutePerProjectPerModel-FreeTier"}]},
+                                        {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "42s"}]}}
+        waits = []
+        fake = Fake((429, minute), (200, {"candidates": [{"content": {"parts": [{"text": '{"zh": "ok"}'}]}, "finishReason": "STOP"}]}))
+        self.assertEqual(ask_json(make_route("gemini", KEY), "s", SCHEMA, [{"text": "t"}], transport=fake, sleep=waits.append), {"zh": "ok"})
+        self.assertEqual(waits, [42.0])
+        # OpenAI's 429 for an account without credit is still a balance problem.
+        fake = Fake((429, {"error": {"message": "You exceeded your current quota, please check your plan and billing details.",
+                                    "type": "insufficient_quota", "code": "insufficient_quota"}}))
+        with self.assertRaises(AiError) as caught:
+            ask_json(make_route("openai", KEY), "s", SCHEMA, [{"text": "t"}], transport=fake, sleep=lambda _: None)
+        self.assertEqual(caught.exception.code, "BALANCE")
+
     def test_network_failures_and_timeouts(self):
         with self.assertRaises(AiError) as caught:
             ask_json(make_route("openai", KEY), "s", SCHEMA, [{"text": "t"}], transport=Fake(*[URLError("no route")] * 3), sleep=lambda _: None)

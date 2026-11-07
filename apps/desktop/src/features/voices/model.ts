@@ -59,3 +59,27 @@ export function dubbingOptions(catalog: VoiceCatalog, enabled: boolean, voiceId:
   if (!catalog.voices.some((voice) => voice.voice_id === selected)) throw new Error("Giọng đã chọn không có trong danh mục");
   return { enabled, voiceId: selected };
 }
+
+/** The voices by region (Bắc, Trung, Nam, then any other), each region's voices in catalog order. */
+export function voicesByRegion(catalog: VoiceCatalog): Array<{ region: string; voices: VoiceChoice[] }> {
+  const order = ["Bắc", "Trung", "Nam"];
+  const regions = [...new Set(catalog.voices.map((voice) => voice.accent))]
+    .sort((a, b) => (order.indexOf(a) + 1 || 99) - (order.indexOf(b) + 1 || 99));
+  return regions.map((region) => ({ region, voices: catalog.voices.filter((voice) => voice.accent === region) }));
+}
+
+/** A voice <select>'s options grouped "Miền Bắc / Trung / Nam", so a regional voice is found at a glance. */
+export function voiceOptionGroups(catalog: VoiceCatalog, selected: string | null = catalog.default_voice_id): HTMLOptGroupElement[] {
+  return voicesByRegion(catalog).map(({ region, voices }) => {
+    const group = document.createElement("optgroup");
+    group.label = `Miền ${region} (${voices.length} giọng)`;
+    group.append(...voices.map((voice) => {
+      const option = document.createElement("option");
+      option.value = voice.voice_id;
+      option.textContent = `${voice.name} · ${voice.gender} · ${voice.style}`;
+      option.selected = voice.voice_id === selected;
+      return option;
+    }));
+    return group;
+  });
+}

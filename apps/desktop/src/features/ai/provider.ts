@@ -81,7 +81,7 @@ export const GEMINI_TIMEOUT_MS = 90_000;
  * The longest pause DubFlow takes when Google asks it to wait (Retry-After or retryDelay).
  * A longer request stops the attempts with a "try again later" message instead of retrying early.
  */
-export const GEMINI_MAX_RETRY_WAIT_MS = 30_000;
+export const GEMINI_MAX_RETRY_WAIT_MS = 60_000;
 
 export function isProvider(value: unknown): value is Provider {
   return typeof value === "string" && (PROVIDER_IDS as readonly string[]).includes(value);
@@ -247,7 +247,7 @@ export function toGeminiSchema(schema: unknown): unknown {
 }
 
 type GeminiReply = {
-  error?: { status?: string; message?: string; details?: Array<{ "@type"?: string; retryDelay?: unknown }> };
+  error?: { status?: string; message?: string; details?: Array<{ "@type"?: string; retryDelay?: unknown; violations?: unknown }> };
   promptFeedback?: { blockReason?: string };
   candidates?: Array<{ finishReason?: string; content?: { parts?: Array<{ text?: string; thought?: boolean }> } }>;
 };
@@ -291,6 +291,26 @@ export function parseRetryDelay(details: unknown): number | null {
   return null;
 }
 
+/**
+ * Whether a 429 says the day's quota is used up (free keys: a `…PerDay…` quota id in Google's
+ * QuotaFailure detail). No retry today can fix it, unlike the per-minute limit.
+ */
+export function isDailyQuota(details: unknown, message = ""): boolean {
+  if (Array.isArray(details)) {
+    for (const detail of details) {
+      const violations = detail && typeof detail === "object" ? (detail as { violations?: unknown }).violations : null;
+      if (!Array.isArray(violations)) continue;
+      if (violations.some((item) => item && typeof item === "object" &&
+        /per_?day|daily/i.test(`${(item as Record<string, unknown>).quotaId ?? ""} ${(item as Record<string, unknown>).quotaMetric ?? ""}`))) return true;
+    }
+  }
+  return /per[ _-]?day|daily (limit|quota)|requests? per day/i.test(message);
+}
+
+/** The message for a free key whose quota for today is used up. */
+export const GEMINI_DAILY_QUOTA = "429: Khóa Gemini đã hết lượt gọi của hôm nay (gói miễn phí giới hạn số lần gọi mỗi ngày). " +
+  "Hãy thử lại vào ngày mai, hoặc dùng khóa trả phí hay nhà cung cấp khác trong “Cài đặt › Tài khoản”.";
+
 /** The longest valid wait the failed response asked for (header or Google error details), or null. */
 function retryHint(response: Response, reply: GeminiReply): number | null {
   const hints = [parseRetryAfter(response.headers?.get?.("retry-after")), parseRetryDelay(reply.error?.details)]
@@ -329,6 +349,7 @@ async function askGeminiOnce(key: string, request: JsonRequest, send: typeof fet
     throw error;
   }
   if (!response.ok) {
+    if (response.status === 429 && isDailyQuota(reply.error?.details, reply.error?.message)) throw new Error(GEMINI_DAILY_QUOTA);
     const message = `${response.status} ${reply.error?.status ?? ""}: ${reply.error?.message ?? "Gemini lỗi"}`.slice(0, 300);
     const retryable = retryableStatus(response.status);
     throw new GeminiAttemptError(message, retryable, retryable ? retryHint(response, reply) : null);
@@ -351,7 +372,7 @@ async function askGeminiOnce(key: string, request: JsonRequest, send: typeof fet
 /** The user's message for a Gemini failure that retrying did not fix: 429, every 500–599 and time-outs. */
 export function geminiFailure(error: unknown): Error {
   const message = String((error as Error)?.message ?? error);
-  if (/^429\b/.test(message)) return new Error("429: Đã vượt giới hạn số lần gọi Gemini; hãy chờ một phút rồi thử lại.");
+  if (/^429\b/.test(message)) return new Error("429: Đã vượt giới hạn số lần gọi Gemini mỗi phút (khóa miễn phí hay gặp); hãy chờ một phút rồi thử lại.");
   if (/^5\d\d\b/.test(message)) return new Error(`${message.slice(0, 3)}: Gemini đang quá tải hoặc gặp lỗi máy chủ; hãy thử lại sau ít phút.`);
   if (/^timeout\b/.test(message)) return new Error("Gemini trả lời quá lâu; hãy thử lại sau ít phút.");
   return error instanceof Error ? error : new Error(message);

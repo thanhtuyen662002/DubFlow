@@ -76,6 +76,27 @@ function element<K extends keyof HTMLElementTagNameMap>(tag: K, props: Partial<H
   return node;
 }
 
+/**
+ * How to get a free Gemini key, step by step, for someone who has no key yet. Gemini is the one
+ * provider with a free tier that needs no card, so it is the quickest way to AI translation.
+ */
+export const FREE_GEMINI_STEPS = [
+  "Bấm “Mở trang lấy khóa” và đăng nhập bằng tài khoản Google.",
+  "Bấm “Create API key” (Tạo khóa API), rồi chép khóa vừa tạo (bắt đầu bằng AIza).",
+  "Dán khóa vào ô bên dưới, bấm “Lưu” rồi “Kiểm tra khóa”.",
+] as const;
+
+/** What a free key costs in practice: limits, and Google's use of what is sent. */
+export const FREE_TIER_NOTE = "Gói miễn phí giới hạn số lần gọi mỗi phút và mỗi ngày: video dài có thể phải chờ, hết lượt thì phần còn lại dùng bản dịch offline. " +
+  "Với gói miễn phí, Google có thể dùng nội dung gửi lên để cải thiện sản phẩm, nên video riêng tư hãy dùng khóa trả phí hoặc dịch offline.";
+
+/** Whether any provider is ready for AI translation (a saved key, or a custom server with a model). */
+export function anyKeyReady(session: AiSession): boolean {
+  return PROVIDER_IDS.some((id) => id === "custom"
+    ? Boolean(session.options(id).baseUrl && session.options(id).model)
+    : session.saved(id) !== null);
+}
+
 /** The user's message for a failed "Kiểm tra khóa". */
 export function checkMessage(provider: Provider, error: unknown): string {
   const name = PROVIDERS[provider].name;
@@ -90,7 +111,9 @@ export function checkMessage(provider: Provider, error: unknown): string {
  * The AI part of Cài đặt: the default provider, its key, model and server (tab Tài khoản),
  * subtitle translation and sensitive words (tab Dịch phụ đề). `reveal` shows Cài đặt at Tài khoản.
  */
-export function mountAiSettings(session: AiSession, reveal: () => void): { open(): void; refresh(): void; prefs(): TranslationPrefs } {
+export function mountAiSettings(session: AiSession, reveal: () => void, invoke?: Invoke): {
+  open(): void; refresh(): void; prefs(): TranslationPrefs; startFreeKey(): void;
+} {
   const state = $("#ai-settings-state");
   const providerSelect = $<HTMLSelectElement>("#ai-settings-provider");
   providerSelect.replaceChildren(...PROVIDER_IDS.map((id) => element("option", { value: id, textContent: PROVIDERS[id].label })));
@@ -104,6 +127,18 @@ export function mountAiSettings(session: AiSession, reveal: () => void): { open(
     const status = element("span", { className: saved ? "ai-key-status saved" : "ai-key-status", textContent: saved ? `Đã lưu (${saved})` : "Chưa có khóa" });
     const head = element("div", { className: "ai-key-head" }, element("span", { textContent: info.label }), status);
     const where = element("p", { className: "hint", textContent: `Lấy khóa tại ${info.console}.${info.note ? ` ${info.note}` : ""}` });
+    if (invoke && provider !== "custom") {
+      const page = element("button", { type: "button", className: "link ai-key-page", textContent: "Mở trang lấy khóa" });
+      page.addEventListener("click", () => {
+        invoke("ai_key_page", { provider }).catch((error) => { state.textContent = `Không mở được trang: ${String(error).slice(0, 160)}`; });
+      });
+      where.append(" ", page);
+    }
+    const guide = provider === "gemini" && !saved ? element("div", { className: "ai-free-guide" },
+      element("p", { className: "ai-free-title", textContent: "Miễn phí, không cần thẻ: lấy khóa Gemini trong khoảng 2 phút" }),
+      element("ol", {}, ...FREE_GEMINI_STEPS.map((step) => element("li", { textContent: step }))),
+    ) : null;
+    const freeNote = provider === "gemini" ? element("p", { className: "hint ai-free-note", textContent: FREE_TIER_NOTE }) : null;
     const input = element("input", { type: "password", autocomplete: "off", placeholder: saved ? "Dán khóa mới để thay" : info.placeholder });
     input.setAttribute("aria-label", `Khóa API ${info.name}`);
     const save = element("button", { type: "button", className: "btn primary", textContent: "Lưu" });
@@ -209,7 +244,8 @@ export function mountAiSettings(session: AiSession, reveal: () => void): { open(
         state.textContent = String(error).slice(0, 200);
       }
     });
-    return element("section", { className: "ai-key-card" }, head, where, keyRow, fields, element("div", { className: "ai-check" }, check, checkState));
+    return element("section", { className: "ai-key-card" }, head, where, ...(guide ? [guide] : []), keyRow, fields,
+      element("div", { className: "ai-check" }, check, checkState), ...(freeNote ? [freeNote] : []));
   }
 
   /** The saved key of a provider (for "Kiểm tra khóa" without retyping it). */
@@ -219,6 +255,25 @@ export function mountAiSettings(session: AiSession, reveal: () => void): { open(
     const key = session.read();
     session.setProvider(current);
     return key;
+  }
+
+  /** No key anywhere yet: point to the free Gemini key, unless Gemini is already the one shown. */
+  function noKeyBanner(): HTMLElement | string {
+    if (anyKeyReady(session) || session.provider() === "gemini") return "";
+    const go = element("button", { type: "button", className: "btn primary", textContent: "Lấy khóa Gemini miễn phí" });
+    go.addEventListener("click", () => startFreeKey());
+    return element("div", { className: "ai-free-banner" },
+      element("p", {}, element("b", { textContent: "Chưa có khóa AI nào." }),
+        " Phụ đề đang dịch từng câu bằng bộ dịch offline. Cách nhanh nhất để dịch theo ngữ cảnh: khóa Gemini miễn phí."), go);
+  }
+
+  /** Cài đặt › Tài khoản with Gemini chosen and its key box focused. */
+  function startFreeKey(): void {
+    session.setProvider("gemini");
+    state.textContent = "";
+    render();
+    reveal();
+    $<HTMLInputElement>("#ai-settings-keys input[type=password]").focus();
   }
 
   function savedList(): HTMLElement | string {
@@ -237,11 +292,18 @@ export function mountAiSettings(session: AiSession, reveal: () => void): { open(
     $("#sensitive-words-box").hidden = prefs.sensitiveMode === "off";
     const provider = session.provider();
     const ready = provider === "custom" ? Boolean(session.options(provider).baseUrl && session.options(provider).model) : session.saved(provider) !== null;
-    $("#ai-translate-hint").textContent = ready
-      ? `Video mới: ${PROVIDERS[provider].name} dịch cả đoạn hội thoại theo ngữ cảnh (xưng hô, thành ngữ, văn nói). Nếu AI lỗi, phụ đề dùng bản dịch offline như cũ. Lời thoại được gửi tới ${PROVIDERS[provider].company}.`
+    const hint = $("#ai-translate-hint");
+    hint.textContent = ready
+      ? `Video mới: ${PROVIDERS[provider].name} dịch cả đoạn hội thoại theo ngữ cảnh (xưng hô, thành ngữ, văn nói). Nếu AI lỗi, phụ đề dùng bản dịch offline như cũ. Lời thoại được gửi tới ${PROVIDERS[provider].company}.` +
+        (provider === "gemini" ? " Nếu là khóa miễn phí, Google có thể dùng lời thoại để cải thiện sản phẩm; video riêng tư hãy dùng khóa trả phí hoặc tắt mục này." : "")
       : provider === "custom"
         ? "Chưa nhập địa chỉ máy chủ và model: phụ đề đang dùng bộ dịch offline (dịch từng câu)."
         : `Chưa có khóa ${PROVIDERS[provider].name}: phụ đề đang dùng bộ dịch offline (dịch từng câu). Lưu khóa ở mục Tài khoản để dịch theo ngữ cảnh.`;
+    if (!ready && !anyKeyReady(session)) {
+      const go = element("button", { type: "button", className: "link", textContent: "Lấy khóa Gemini miễn phí" });
+      go.addEventListener("click", () => startFreeKey());
+      hint.append(" ", go);
+    }
   }
   aiToggle.addEventListener("change", () => { prefs = { ...prefs, aiTranslation: aiToggle.checked }; savePrefs(prefs); });
   sensitiveMode.addEventListener("change", () => {
@@ -262,7 +324,7 @@ export function mountAiSettings(session: AiSession, reveal: () => void): { open(
 
   function render(): void {
     providerSelect.value = session.provider();
-    $("#ai-settings-keys").replaceChildren(card(session.provider()), savedList());
+    $("#ai-settings-keys").replaceChildren(noKeyBanner(), card(session.provider()), savedList());
     renderPrefs();
   }
 
@@ -281,5 +343,6 @@ export function mountAiSettings(session: AiSession, reveal: () => void): { open(
     },
     refresh: render,
     prefs: () => prefs,
+    startFreeKey,
   };
 }

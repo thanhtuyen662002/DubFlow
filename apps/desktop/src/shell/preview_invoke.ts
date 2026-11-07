@@ -672,6 +672,7 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
     case "ai_key_get": return (previewKeys.get(String(args.provider)) ?? null) as T;
     case "ai_key_set": previewKeys.set(String(args.provider), String(args.key).trim()); return `…${String(args.key).trim().slice(-4)}` as T;
     case "ai_key_delete": previewKeys.delete(String(args.provider)); return null as T;
+    case "ai_key_page": return null as T;
     case "release_info": return { version: "0.1.0", channel: "preview", backend: "mock" } as T;
     // Nghe thử: a short tone stands in for the voice; the first one takes a moment, like the real model.
     case "voice_sample": await new Promise((resolve) => setTimeout(resolve, 1200)); return `C:\\Users\\preview\\AppData\\Local\\DubFlow\\voice-samples\\${String(args.voiceId)}.wav` as T;

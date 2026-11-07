@@ -31,7 +31,9 @@ MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 # Seconds without a byte from the server. Thinking models (DeepSeek V4 Pro, o-series) can stay quiet
 # for minutes before answering a long window, so this is generous; a dead connection still fails.
 DEFAULT_TIMEOUT = 300.0
-MAX_WAIT_SECONDS = 30.0
+# Google's free tier asks for waits of up to about a minute between bursts; waiting is cheaper
+# than leaving a window to the offline translator.
+MAX_WAIT_SECONDS = 65.0
 
 
 @dataclass(frozen=True)
@@ -101,7 +103,11 @@ Transport = Callable[[Request, float], tuple[int, Mapping[str, str], bytes]]
 
 
 class AiError(Exception):
-    """A failure the user can act on. ``code``: KEY, LIMIT, SERVER, TIMEOUT, NETWORK, REFUSED, FORMAT, INVALID, MODEL."""
+    """A failure the user can act on. ``code``: KEY, LIMIT, QUOTA, SERVER, TIMEOUT, NETWORK, REFUSED, FORMAT, INVALID, MODEL.
+
+    LIMIT is a per-minute rate limit (worth waiting for); QUOTA is a daily quota that is used up,
+    typical of a free key, which no retry today can fix.
+    """
 
     def __init__(self, code: str, message: str, *, status: int | None = None, retry_after: float | None = None) -> None:
         self.code = code
@@ -222,6 +228,23 @@ def _retry_after(headers: Mapping[str, str], payload: Any) -> float | None:
     return None
 
 
+def daily_quota(payload: Any, detail: str = "") -> bool:
+    """Whether a 429 says the day's quota is used up (Gemini free tier: ``...PerDay...`` quota ids)."""
+    error = payload.get("error") if isinstance(payload, dict) else None
+    details = error.get("details") if isinstance(error, dict) else None
+    for item in details if isinstance(details, list) else []:
+        for violation in (item.get("violations") or []) if isinstance(item, dict) and isinstance(item.get("violations"), list) else []:
+            if isinstance(violation, dict) and re.search(r"per_?day|daily", f"{violation.get('quotaId', '')} {violation.get('quotaMetric', '')}", re.I):
+                return True
+    return bool(re.search(r"per[ _-]?day|daily (limit|quota)|requests? per day", detail, re.I))
+
+
+def _error_kind(payload: Any) -> str:
+    """An OpenAI-shaped error's ``type`` and ``code`` (``insufficient_quota`` is an account without credit)."""
+    error = payload.get("error") if isinstance(payload, dict) else None
+    return f"{error.get('type', '')} {error.get('code', '')}" if isinstance(error, dict) else ""
+
+
 def _error_text(payload: Any, body: bytes) -> str:
     if isinstance(payload, dict):
         error = payload.get("error")
@@ -243,12 +266,17 @@ def _http_error(route: Route, status: int, headers: Mapping[str, str], body: byt
     name = route.preset.label
     if status in {401, 403} or re.search(r"api[_ -]?key|unauthori[sz]ed|authentication|PERMISSION_DENIED|UNAUTHENTICATED", detail, re.I) and status == 400:
         return AiError("KEY", f"Khóa {name} không hợp lệ hoặc không có quyền ({status}): {detail}", status=status)
-    if status == 402 or re.search(r"insufficient[_ ]balance|insufficient_quota|billing|credit", detail, re.I):
+    # Gemini's free-tier 429 says "check your plan and billing details": a rate limit, not an empty balance.
+    if status == 402 or status != 429 and re.search(r"insufficient[_ ]balance|insufficient_quota|billing|credit", detail, re.I) \
+            or status == 429 and re.search(r"insufficient[_ ]balance|insufficient_quota", f"{detail} {_error_kind(payload)}", re.I):
         return AiError("BALANCE", f"Tài khoản {name} hết số dư hoặc hạn mức ({status}): {detail}", status=status)
     if status == 404 or re.search(r"model.*(not.*found|does not exist|not exist|invalid)|unknown model", detail, re.I):
         return AiError("MODEL", f"{name} không có model “{route.model}” ({status}): {detail}", status=status)
     if 300 <= status <= 399:
         return AiError("INVALID", f"{name} chuyển hướng sang địa chỉ khác ({status}); DubFlow không gửi khóa theo. Hãy kiểm tra địa chỉ máy chủ.", status=status)
+    if status == 429 and daily_quota(payload, detail):
+        return AiError("QUOTA", f"Khóa {name} đã hết lượt gọi của hôm nay (gói miễn phí giới hạn số lần gọi mỗi ngày). "
+                       "Hãy thử lại vào ngày mai, hoặc dùng khóa trả phí hay nhà cung cấp khác trong Cài đặt › Tài khoản.", status=status)
     if status == 429:
         return AiError("LIMIT", f"Đã vượt giới hạn số lần gọi {name}; hãy chờ một phút rồi thử lại.", status=status, retry_after=_retry_after(headers, payload))
     if 500 <= status <= 599:
