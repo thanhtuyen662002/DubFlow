@@ -101,7 +101,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
                 <p id="docu-minutes-hint" class="hint" role="status" hidden></p>
               </section>
               <section class="docu-card docu-source-picker" aria-labelledby="docu-source-title">
-                <h3 id="docu-source-title">Nguồn (2–5)</h3>
+                <h3 id="docu-source-title">Nguồn (2–15)</h3>
                 <label>Video đã hoàn tất<select id="docu-job-select"></select></label>
                 <button id="docu-add-job" class="btn" type="button">Thêm video đã xong</button>
                 <button id="docu-add-file" class="btn" type="button">Thêm video (kèm phụ đề nếu có)</button>
