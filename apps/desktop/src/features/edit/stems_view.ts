@@ -11,7 +11,8 @@ import { ALL_STEM_KEYS, defaultStems, setStems, stemLevel, stemWeights, type Edi
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 
-type Separation = { state: string; progress?: number; message?: string };
+/** `split_error`: Tách giọng finished but its music/SFX split did not (voice and accompaniment are usable). */
+type Separation = { state: string; progress?: number; message?: string; split_error?: string };
 /** `outdated`: the accompaniment came from an older model; Tách giọng may run again. */
 /** `music`/`sfx`: the accompaniment split in two (Tách nhạc và SFX); `split` is that run's progress. */
 type StemsResponse = {
@@ -333,6 +334,9 @@ export function mountStems(invoke: Invoke, context: StemsContext): StemsMode {
         button.addEventListener("click", () => void splitMusic());
         box.append(button, element("small", "edit-note", "Tách nhạc nền thành 2 lớp: nhạc (giai điệu) và tiếng động, hiệu ứng (SFX). Không cần tải thêm, vài giây cho mỗi phút video."));
         if (files?.split?.state === "FAILED" && files.split.message) box.append(element("small", "edit-note error", files.split.message));
+        else if (files?.separation?.state === "COMPLETED" && files.separation.split_error) {
+          box.append(element("small", "edit-note warn", `Tách giọng xong nhưng chưa tách được nhạc và tiếng động (${files.separation.split_error}). Giọng và nhạc nền vẫn dùng được; bấm nút trên để thử lại.`));
+        }
       }
       body.push(box);
     }

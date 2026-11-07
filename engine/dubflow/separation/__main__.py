@@ -105,7 +105,11 @@ def run(source: Path, out_dir: Path, *, app_root: Path, model_root: Path, ffmpeg
     except Exception as error:  # noqa: BLE001 - voice and accompaniment are still usable without the two parts.
         if _cancelled(out_dir):
             return _stop(status)
-        status.write(split_error=" ".join(str(error).split())[:200])
+        # Partial success: the voice and accompaniment stand; the two parts can be split again on their own.
+        detail = " ".join(str(error).split())[:200]
+        status.write(state="COMPLETED", progress=100, backend=mdx.BACKEND, split_error=detail,
+                     message=f"Đã tách giọng, nhưng chưa tách được nhạc và tiếng động ({detail}). Bấm Tách nhạc và tiếng động (SFX) để thử lại.")
+        return status.value
     status.write(state="COMPLETED", progress=100, message="Đã tách giọng, nhạc và tiếng động.", backend=mdx.BACKEND)
     return status.value
 

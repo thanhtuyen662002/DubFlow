@@ -39,6 +39,27 @@ class EditorSeparationTest(unittest.TestCase):
             self.assertEqual(calls[0][1], out / "background.wav")
             self.assertTrue(str(calls[0][2]).endswith("uvr-mdx-kim-vocal-2-v1"))
 
+    def test_a_failed_music_split_is_a_partial_success_that_keeps_the_voice(self):
+        with TemporaryDirectory() as temp:
+            out, source = Path(temp) / "stems", Path(temp) / "source_audio.wav"
+            source.write_bytes(b"RIFF")
+
+            def separate(source_wav, background_wav, **options):
+                Path(background_wav).write_bytes(b"not a wav")
+                return {}
+            status = cli.Status(out / "status.json")
+            result = cli.run(source, out, app_root=REPO, model_root=Path(temp) / "models", ffmpeg=Path("ffmpeg"),
+                             ffprobe=Path("ffprobe"), status=status, separate=separate, ensure=lambda *a, **k: None,
+                             extract=lambda *a, **k: None)
+            saved = _status(out)
+            self.assertEqual(result["state"], "COMPLETED")
+            self.assertTrue(saved["split_error"])
+            self.assertIn("chưa tách được nhạc và tiếng động", saved["message"])
+            self.assertNotEqual(saved["message"], "Đã tách giọng, nhạc và tiếng động.")
+            # The usable accompaniment stays; no half-made parts are left.
+            self.assertEqual((out / "background.wav").read_bytes(), b"not a wav")
+            self.assertFalse((out / "music.wav").exists() or (out / "sfx.wav").exists())
+
     def test_video_source_is_extracted_first(self):
         with TemporaryDirectory() as temp:
             out, video = Path(temp) / "stems", Path(temp) / "clip.mp4"

@@ -3219,6 +3219,63 @@ const SPLIT_STATUS: &str = "split-status.json";
 /// Tách nhạc và tiếng động runs, by draft folder.
 static SPLITTING: LazyLock<Mutex<std::collections::HashSet<PathBuf>>> = LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
 
+/// Tách giọng and Tách nhạc và tiếng động of one video never run together:
+/// the split reads the accompaniment that a separation rewrites. Both sets are
+/// always taken in the same order (SEPARATING, then SPLITTING).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum StemRun {
+    Separate,
+    Split,
+}
+
+/// Claim `work` for a run; dropped unclaimed again unless `keep` is called (the run started).
+struct StemClaim {
+    work: PathBuf,
+    run: StemRun,
+    kept: bool,
+}
+
+impl StemClaim {
+    fn keep(mut self) -> PathBuf {
+        self.kept = true;
+        self.work.clone()
+    }
+}
+
+impl Drop for StemClaim {
+    fn drop(&mut self) {
+        if !self.kept {
+            end_stem_run(&self.work, self.run);
+        }
+    }
+}
+
+fn begin_stem_run(work: &Path, run: StemRun) -> Result<StemClaim, String> {
+    let mut separating = SEPARATING.lock().map_err(|_| fail("Hãy mở lại ứng dụng"))?;
+    let mut splitting = SPLITTING.lock().map_err(|_| fail("Hãy mở lại ứng dụng"))?;
+    if separating.contains(work) {
+        return Err(fail("Video này đang được tách giọng"));
+    }
+    if splitting.contains(work) {
+        return Err(fail("Video này đang được tách nhạc và tiếng động"));
+    }
+    match run {
+        StemRun::Separate => separating.insert(work.to_path_buf()),
+        StemRun::Split => splitting.insert(work.to_path_buf()),
+    };
+    Ok(StemClaim { work: work.to_path_buf(), run, kept: false })
+}
+
+fn end_stem_run(work: &Path, run: StemRun) {
+    let set = match run {
+        StemRun::Separate => &SEPARATING,
+        StemRun::Split => &SPLITTING,
+    };
+    if let Ok(mut running) = set.lock() {
+        running.remove(work);
+    }
+}
+
 /// Music and SFX when they were split from exactly this accompaniment (same file, size and time).
 fn split_parts(stems: &Path, background: &Path) -> Option<(PathBuf, PathBuf)> {
     let music = stems.join("music.wav");
@@ -3329,7 +3386,12 @@ fn read_separation(work: &Path) -> Option<Value> {
     if value["state"] == "RUNNING" && !running {
         return Some(json!({"state": "FAILED", "progress": 0, "message": "Tách giọng đã dừng giữa chừng; hãy bấm Tách giọng lại."}));
     }
-    Some(json!({"state": value["state"], "progress": value["progress"], "message": value["message"]}))
+    let mut status = json!({"state": value["state"], "progress": value["progress"], "message": value["message"]});
+    // Voice and accompaniment made, the music/SFX split not: a partial success the editor says plainly.
+    if let Some(error) = value["split_error"].as_str().filter(|error| !error.is_empty()) {
+        status["split_error"] = json!(error.chars().take(200).collect::<String>());
+    }
+    Some(status)
 }
 
 /// Lớp âm thanh of the video the editor has open: its parts (allowed in the
@@ -3371,10 +3433,7 @@ pub fn edit_split(output_path: String, kind: String) -> Result<(), String> {
         return Err(fail("Video này đã tách nhạc và tiếng động rồi"));
     }
     let root = version_root()?;
-    let mut running = SPLITTING.lock().map_err(|_| fail("Hãy mở lại ứng dụng"))?;
-    if running.contains(&target.work) || SEPARATING.lock().is_ok_and(|set| set.contains(&target.work)) {
-        return Err(fail("Video này đang được tách"));
-    }
+    let claim = begin_stem_run(&target.work, StemRun::Split)?;
     target.prepare()?;
     guarded(&target.work)?;
     let out = target.work.join(STEMS_DIR);
@@ -3397,14 +3456,10 @@ pub fn edit_split(output_path: String, kind: String) -> Result<(), String> {
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
     let mut child = command.spawn().map_err(|_| fail("Không chạy được bộ tách nhạc"))?;
-    let work = target.work.clone();
-    running.insert(work.clone());
-    drop(running);
+    let work = claim.keep();
     std::thread::spawn(move || {
         let _ = child.wait();
-        if let Ok(mut running) = SPLITTING.lock() {
-            running.remove(&work);
-        }
+        end_stem_run(&work, StemRun::Split);
     });
     Ok(())
 }
@@ -3425,10 +3480,7 @@ pub fn edit_separate(output_path: String, kind: String) -> Result<(), String> {
     let root = version_root()?;
     let models = crate::control_root()?.join("models");
     let media = root.join("runtime").join("media");
-    let mut running = SEPARATING.lock().map_err(|_| fail("Hãy mở lại ứng dụng"))?;
-    if running.contains(&target.work) {
-        return Err(fail("Video này đang được tách giọng"));
-    }
+    let claim = begin_stem_run(&target.work, StemRun::Separate)?;
     target.prepare()?;
     guarded(&target.work)?;
     let out = target.work.join(STEMS_DIR);
@@ -3451,14 +3503,10 @@ pub fn edit_separate(output_path: String, kind: String) -> Result<(), String> {
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
     let mut child = command.spawn().map_err(|_| fail("Không chạy được bộ tách giọng"))?;
-    let work = target.work.clone();
-    running.insert(work.clone());
-    drop(running);
+    let work = claim.keep();
     std::thread::spawn(move || {
         let _ = child.wait();
-        if let Ok(mut running) = SEPARATING.lock() {
-            running.remove(&work);
-        }
+        end_stem_run(&work, StemRun::Separate);
     });
     Ok(())
 }
@@ -3664,6 +3712,39 @@ pub async fn edit_proxy(app: tauri::AppHandle, path: String, start: bool) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_music_split_reaches_the_editor_as_a_partial_success() {
+        let work = std::env::temp_dir().join(format!("dubflow-split-error-{}", std::process::id()));
+        fs::create_dir_all(work.join(STEMS_DIR)).unwrap();
+        let write = |value: Value| fs::write(work.join(STEMS_DIR).join("status.json"), value.to_string()).unwrap();
+        write(json!({"state": "COMPLETED", "progress": 100, "message": "Đã tách giọng, nhưng chưa tách được nhạc và tiếng động (x).", "split_error": "x"}));
+        let status = read_separation(&work).unwrap();
+        assert_eq!(status["state"], "COMPLETED");
+        assert_eq!(status["split_error"], "x");
+        write(json!({"state": "COMPLETED", "progress": 100, "message": "Đã tách giọng, nhạc và tiếng động."}));
+        assert!(read_separation(&work).unwrap().get("split_error").is_none());
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn separation_and_music_split_of_one_video_never_run_together() {
+        for (first, second) in [(StemRun::Separate, StemRun::Split), (StemRun::Split, StemRun::Separate)] {
+            let work = std::env::temp_dir().join(format!("dubflow-stem-run-{first:?}-{}", std::process::id()));
+            let claim = begin_stem_run(&work, first).expect("the first run starts");
+            assert!(begin_stem_run(&work, second).is_err(), "{second:?} waits for {first:?}");
+            assert!(begin_stem_run(&work, first).is_err(), "{first:?} does not start twice");
+            // Another video is not held up.
+            let other = begin_stem_run(&work.join("other"), second).expect("another video runs");
+            drop(other);
+            // A run that did not start (spawn failed) frees the video; a started one frees it when it ends.
+            drop(claim);
+            let started = begin_stem_run(&work, second).expect("free again").keep();
+            assert!(begin_stem_run(&work, first).is_err());
+            end_stem_run(&started, second);
+            drop(begin_stem_run(&work, first).expect("free after the run ended"));
+        }
+    }
 
     fn segment(start: f64, end: f64, speed: f64, volume: f64) -> Segment {
         Segment { media: 0, start, end, speed, volume, ..Default::default() }
