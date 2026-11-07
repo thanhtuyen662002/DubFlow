@@ -675,12 +675,7 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
 
   /** Delete a whole run (every video of it). */
   async function removeRun(dir: string, name: string): Promise<void> {
-    const error = await confirmDeleteProject(invoke, "product", dir, name);
-    if (error === "") return;
-    const note = $("#product-runs-state");
-    note.textContent = error ?? `Đã chuyển “${name}” vào Thùng rác.`;
-    note.classList.toggle("ok", error === null);
-    if (error !== null) return;
+    if (!await confirmDeleteProject(invoke, "product", dir, name)) return;
     runs = runs.filter((run) => run.dir !== dir);
     if (current === dir) {
       current = "";

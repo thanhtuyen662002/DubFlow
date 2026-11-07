@@ -178,6 +178,7 @@ select { color-scheme: dark; }
 .el-forget { position: absolute; top: 6px; right: 6px; display: grid; place-items: center; width: 24px; height: 24px; border: 0; border-radius: 6px; background: oklch(0.13 0.006 275 / .82); color: var(--text-2); font-size: 16px; line-height: 1; opacity: 0; cursor: pointer; transition: opacity .15s var(--ease); }
 .el-card:hover .el-forget, .el-forget:focus-visible { opacity: 1; }
 .el-forget:hover { background: var(--err-bg); color: var(--err); }
+.el-delete { width: 28px; height: 28px; }
 .el-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; max-width: 460px; margin: 12vh auto 0; text-align: center; }
 .el-empty-icon { display: grid; place-items: center; width: 56px; height: 56px; margin-bottom: 4px; border-radius: 14px; background: var(--raised); color: var(--accent-text); }
 .el-empty-title { font-size: 15px; font-weight: 600; }
@@ -235,7 +236,14 @@ button.job.selected { background: var(--select); }
 .list-toggle { display: none; flex: none; height: 32px; padding: 0 10px; }
 .queue-state { margin: 8px 16px 0; padding: 8px 12px; border-radius: 8px; background: var(--err-bg); color: var(--err); font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
 .queue-state:empty { display: none; }
-.queue-state.ok { background: var(--ok-bg); color: var(--ok); }
+/* Short notices (a project deleted): slide in from the bottom-right, out after 3 s. */
+.toast-stack { position: fixed; right: 16px; bottom: 16px; z-index: 1000; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; pointer-events: none; }
+.toast { max-width: min(380px, calc(100vw - 32px)); padding: 10px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--raised); color: var(--text); font-size: 13.5px; line-height: 1.45; overflow-wrap: anywhere; box-shadow: 0 8px 24px oklch(0 0 0 / .35);
+  opacity: 0; transform: translateX(calc(100% + 24px)); transition: transform .28s var(--ease), opacity .28s var(--ease); }
+.toast.shown { opacity: 1; transform: none; }
+.toast.ok { border-left: 3px solid var(--ok); }
+.toast.err { border-left: 3px solid var(--err); }
+@media (prefers-reduced-motion: reduce) { .toast { transition: opacity .2s; transform: none; } }
 /* A project row's delete button (Phim tài liệu, Tổng hợp): shown on hover, keyboard focus or when the row is open. */
 .project-row { position: relative; }
 .project-row .job-main { padding-right: 24px; }
