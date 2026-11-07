@@ -125,7 +125,7 @@ fn resolve_sources(request: &DocuRequest) -> Result<Vec<ResolvedSource>, String>
     if !["none", "letterbox_235", "overscan_108"].contains(&request.cinematic_framing_preset.as_str()) {
         return Err(fail("Kiểu khung hình không hợp lệ"));
     }
-    if !(2..=5).contains(&request.sources.len()) { return Err(fail("Hãy chọn từ 2 đến 5 nguồn")); }
+    if !(2..=15).contains(&request.sources.len()) { return Err(fail("Hãy chọn từ 2 đến 15 nguồn")); }
     let mut resolved = Vec::with_capacity(request.sources.len());
     for (index, source) in request.sources.iter().enumerate() {
         if !text(&source.title, 120, true) { return Err(fail(format!("Nguồn {}: tiêu đề từ 1 đến 120 ký tự", index + 1))); }
@@ -741,6 +741,13 @@ mod tests {
         let (video, subtitles) = file_fixture(&base);
         let good = vec![local_source(&video, &subtitles, "Nguồn một"), local_source(&video, &subtitles, "Nguồn hai")];
         assert!(resolve_sources(&request(good.clone())).is_ok());
+        // Tier-3: up to 15 sources, ids src_01..src_15; the 16th is refused.
+        let many: Vec<Value> = (0..15).map(|index| local_source(&video, &subtitles, &format!("Nguồn {index}"))).collect();
+        let resolved = resolve_sources(&request(many.clone())).unwrap();
+        assert_eq!(resolved.last().unwrap().id, "src_15");
+        let mut too_many = many;
+        too_many.push(local_source(&video, &subtitles, "Nguồn thừa"));
+        assert!(resolve_sources(&request(too_many)).is_err());
         let parsed = |value: Value| serde_json::from_value::<DocuRequest>(value).unwrap();
         let valid = json!({"title":"Công trình lớn","topic":"Ghi chú", "targetMinutes":11,
             "cinematicFramingPreset":"none", "burnEndCredits":false, "sources":good, "outputRoot":null});
