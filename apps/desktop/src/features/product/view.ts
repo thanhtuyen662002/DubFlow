@@ -856,10 +856,10 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
     if (current) {
       // From an earlier video: first back to the form being typed.
       select("");
-      if (hasDraft()) $("#product-render-state").textContent = "Đây là nội dung đang nhập. Bấm “Tạo video mới” lần nữa nếu muốn làm trống để làm sản phẩm khác.";
+      if (hasDraft()) $("#product-render-state").textContent = "Đây là nội dung đang nhập. Bấm “Thêm mới” lần nữa nếu muốn làm trống để làm sản phẩm khác.";
     } else if (hasDraft()) {
       const clear = await confirmDialog({
-        title: "Tạo video mới",
+        title: "Thêm video bán hàng mới",
         message: "Làm trống ảnh/clip, mô tả, thông tin sản phẩm và kịch bản đang nhập để bắt đầu sản phẩm khác? Giọng đọc, mẫu video và nhạc nền giữ nguyên. Các video đã tạo không bị ảnh hưởng.",
         confirmLabel: "Làm trống, bắt đầu mới",
         cancelLabel: "Giữ nội dung đang nhập",

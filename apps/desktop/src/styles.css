@@ -2049,3 +2049,12 @@ body:is(.panel-dragging-x, .panel-dragging-y) :is(iframe, video) { pointer-event
 .flash { animation: flash-ring 1.2s ease-out 1; }
 @keyframes flash-ring { 0% { box-shadow: 0 0 0 2px var(--accent); } 100% { box-shadow: 0 0 0 2px transparent; } }
 @media (prefers-reduced-motion: reduce) { .flash { animation: none; } }
+/* List head: title, then the reset icon and "Thêm mới" on its right (Bán hàng, Ghép video, Phim tài liệu). */
+.col-head-actions { display: inline-flex; flex: none; align-items: center; gap: 4px; }
+.queue-col-head:has(.col-head-actions) { align-items: center; padding-top: 10px; padding-bottom: 6px; }
+.col-refresh { width: 30px; height: 30px; color: var(--text-3); }
+.col-new { height: 30px; padding: 0 10px 0 8px; gap: 5px; font-size: 13px; }
+.col-new.selected, .col-new[aria-pressed="true"] { border-color: color-mix(in oklch, var(--accent) 55%, var(--line)); color: var(--accent-text); }
+.col-refresh.spin svg { animation: spin-once .6s ease-out 1; }
+@keyframes spin-once { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .col-refresh.spin svg { animation: none; } }

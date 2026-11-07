@@ -1148,6 +1148,23 @@ $("#add-files").addEventListener("click", () => void pickFiles());
 $("#add-files-inline").addEventListener("click", () => void pickFiles());
 $("#dub-pick").addEventListener("click", () => void pickForDub());
 $("#dub-pick-inline").addEventListener("click", () => void pickForDub());
+/** A short turn of a reset icon, so the click visibly registers. */
+function spinOnce(button: HTMLElement): void {
+  button.classList.remove("spin");
+  void button.offsetWidth;
+  button.classList.add("spin");
+}
+document.addEventListener("click", (event) => {
+  const button = (event.target as Element | null)?.closest?.<HTMLElement>(".col-refresh");
+  if (button) spinOnce(button);
+});
+$("#dub-new").addEventListener("click", () => void pickForDub());
+// Làm mới: read again the state of every video not finished yet.
+$("#queue-refresh").addEventListener("click", () => {
+  for (const job of queue.getSnapshot().jobs) {
+    if (["RUNNING", "WAITING_RESOURCE", "WAITING_EXTERNAL", "WORKER_LOST"].includes(job.status.state)) void refreshJob(job.id);
+  }
+});
 
 // Batch: start queued videos one at a time (each job keeps its own options),
 // so a long queue never runs several CPU-heavy pipelines at once.
