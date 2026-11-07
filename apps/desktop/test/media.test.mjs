@@ -73,3 +73,10 @@ assert.equal(over.refused, 1);
 assert.deepEqual(over.entries.map((entry) => entry.path), ["c:/1.MP4", "C:\\2.mp4"]);
 
 console.log("media ok");
+
+const { clock } = await import("../src/features/media/player_bar.ts");
+assert.equal(clock(0), "0:00");
+assert.equal(clock(75.9), "1:15");
+assert.equal(clock(3725), "1:02:05");
+assert.equal(clock(Number.NaN), "0:00");
+assert.equal(clock(-3), "0:00");

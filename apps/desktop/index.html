@@ -186,7 +186,7 @@
                 <ul id="product-runs" class="queue-list" aria-label="Video bán hàng đã tạo"></ul>
                 <p id="product-runs-empty" class="queue-empty">Chưa có video bán hàng nào. Các lần tạo trước được tìm trong thư mục “DubFlow Output”.</p>
               </div>
-              <div class="queue-col-foot"><button id="product-new" class="btn block" type="button" aria-pressed="true">Tạo video mới</button></div>
+              <div class="queue-col-foot pick-foot"><button id="product-from-queue" class="btn block queue-pick" type="button" title="Chọn video đã tải về hoặc thêm từ máy"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" fill="none"/><path d="M18 15v6m-3-3h6" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/></svg>Chọn từ Hàng đợi</button><button id="product-new" class="btn block" type="button" aria-pressed="true">Tạo video mới</button></div>
             </section>
             <div class="product-main">
             <header class="topbar">
@@ -201,7 +201,7 @@
                 <section class="product-card" aria-labelledby="product-media-title">
                   <div class="product-card-head">
                     <h2 id="product-media-title"><b>1</b> Ảnh và clip</h2>
-                    <span class="product-pick-actions"><button id="product-from-queue" class="btn" type="button" title="Dùng video trong Hàng đợi làm clip">Chọn từ Hàng đợi</button><button id="product-pick" class="btn" type="button">Thêm ảnh/clip…</button></span>
+                    <span class="product-pick-actions"><button id="product-pick" class="btn" type="button">Thêm ảnh/clip…</button></span>
                   </div>
                   <ul id="product-photos" class="product-thumbs" aria-label="Ảnh và clip sản phẩm"></ul>
                   <p id="product-photos-hint" class="hint"></p>
@@ -328,7 +328,7 @@
                     </figure>
                   <figure id="product-player-wrap" class="product-preview-wrap product-player-wrap" hidden>
                       <figcaption id="product-player-title" class="product-player-title"></figcaption>
-                      <video id="product-player" class="product-player" controls playsinline preload="metadata"></video>
+                      <div class="product-player-frame"><video id="product-player" class="product-player" playsinline preload="metadata"></video></div>
                       <p id="product-player-note" class="hint" hidden>Không xem được video này trong ứng dụng; hãy bấm “Mở” để xem bằng trình phát của máy.</p>
                       <div class="product-player-actions">
                         <button id="product-player-close" class="btn" type="button">Xem trước mẫu</button>
@@ -358,9 +358,9 @@
                 <ul id="queue-list" class="queue-list" hidden></ul>
                 <p id="queue-empty" class="queue-empty">Chưa có video nào để lồng tiếng. Chọn video từ Hàng đợi ở nút bên dưới.</p>
               </div>
-              <div id="queue-col-foot" class="queue-col-foot dub-foot">
+              <div id="queue-col-foot" class="queue-col-foot pick-foot dub-foot">
+                <button id="dub-pick" class="btn block queue-pick" type="button" title="Chọn video đã tải về hoặc thêm từ máy"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" fill="none"/><path d="M18 15v6m-3-3h6" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/></svg>Chọn từ Hàng đợi</button>
                 <button id="run-all" class="btn primary block" type="button" hidden>Bắt đầu video đang chờ</button>
-                <button id="dub-pick" class="btn block" type="button">Chọn video từ Hàng đợi</button>
               </div>
             </section>
 

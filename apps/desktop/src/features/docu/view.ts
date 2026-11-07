@@ -856,7 +856,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
   $("#docu-refresh").addEventListener("click", () => void refreshRuns());
   $("#docu-minutes").addEventListener("change", showMidrollHint);
   $("#docu-mcp-open").addEventListener("click", () => { const dir = $("#docu-mcp-open").dataset.dir; if (dir) void openRun(dir); });
-  $("#docu-new").addEventListener("click", () => { setListOpen(false); newProject(); });
+  $("#docu-new").addEventListener("click", () => { setListOpen(false); newProject(); $<HTMLInputElement>("#docu-title").focus(); });
   const setListOpen = (open: boolean) => {
     screen.classList.toggle("list-open", open); $("#docu-list-toggle").setAttribute("aria-expanded", String(open));
   };
