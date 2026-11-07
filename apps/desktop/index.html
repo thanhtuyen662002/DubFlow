@@ -18,11 +18,6 @@
           <div class="rail-logo" aria-hidden="true">
           <span class="logo-tile"><svg viewBox="0 0 256 256" width="24" height="24"><path d="M84 52H128C176 52 206 86 206 128S176 204 128 204H100L62 232V74Q62 52 84 52Z" fill="currentColor"/><rect x="98" y="104" width="18" height="48" rx="9" fill="#3D6BE0"/><rect x="125" y="86" width="18" height="84" rx="9" fill="#3D6BE0"/><rect x="152" y="108" width="18" height="40" rx="9" fill="#3D6BE0"/></svg></span>
         </div>
-          <button id="nav-create" class="rail-item" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="create-pop">
-            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.6" fill="none"/><path d="M12 8v8M8 12h8" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/></svg>
-            <span>Tạo mới</span>
-          </button>
-          <span class="rail-sep" aria-hidden="true"></span>
           <a id="nav-discover" class="rail-item" href="#">
             <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M11 4.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13zM16 16l4 4" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" fill="none"/></svg>
             <span>Khám phá</span>
@@ -1480,20 +1475,13 @@
         </div>
       </div>
     </div>
-    <div id="create-pop" class="create-pop" role="dialog" aria-modal="false" aria-labelledby="create-title" hidden>
-      <span class="eyebrow">Tạo mới</span>
-      <h2 id="create-title">Thêm video để làm</h2>
-      <p class="subtitle">Dán link Douyin, Bilibili hoặc Kuaishou (có thể dán nhiều link), hoặc chọn video có sẵn trên máy. Video vào Hàng đợi.</p>
+    <!-- The link box lives at the top of Hàng đợi; main.ts moves it there once that screen is mounted. -->
+    <div id="link-park" hidden>
       <form id="link-form" class="link-form" autocomplete="off">
             <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1" stroke="currentColor" stroke-width="1.75" fill="none" stroke-linecap="round"/></svg>
             <input id="link-input" type="text" inputmode="url" placeholder="Dán link Douyin, Bilibili hoặc Kuaishou" title="Có thể dán nhiều link cùng lúc" aria-label="Link video" />
             <button id="link-submit" class="btn ghost" type="submit">Tải về</button>
           </form>
-      <div class="create-or"><span>hoặc</span></div>
-      <button id="add-files" class="btn block" type="button">
-            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-            <span class="add-files-label">Thêm từ máy</span>
-          </button>
     </div>
     <div id="settings-dialog" class="review settings-dialog" role="dialog" aria-modal="false" aria-labelledby="settings-title" hidden>
       <div class="review-panel settings-panel">
