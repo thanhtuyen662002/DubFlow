@@ -1552,7 +1552,6 @@ label.cover-docu-row { justify-content: flex-start; cursor: pointer; }
 
 /* Tổng hợp (Issue #426): the queue's three columns. */
 .compilation-screen { flex: 1; }
-.compilation-col #compilation-new.selected { border-color: var(--accent); background: var(--select); }
 .compilation-player-col .player-frame video[hidden] { display: none; }
 #compilation-play .icon-pause, #compilation-play.playing .icon-play { display: none; }
 #compilation-play.playing .icon-pause { display: block; }
@@ -2066,7 +2065,9 @@ body:is(.panel-dragging-x, .panel-dragging-y) :is(iframe, video) { pointer-event
 .queue-col-head:has(.col-head-actions) { align-items: center; padding-top: 10px; padding-bottom: 6px; }
 .col-refresh { width: 30px; height: 30px; color: var(--text-3); }
 .col-new { height: 30px; padding: 0 10px 0 8px; gap: 5px; font-size: 13px; }
-.col-new.selected, .col-new[aria-pressed="true"] { border-color: color-mix(in oklch, var(--accent) 55%, var(--line)); color: var(--accent-text); }
+/* Every "Thêm mới" looks the same on every page, whether or not its new form is open. */
+.col-new, .col-new.selected, .col-new[aria-pressed="true"] { border-color: color-mix(in oklch, var(--accent) 50%, var(--line)); background: transparent; color: var(--accent-text); }
+.col-new:hover:not(:disabled) { border-color: var(--accent); background: color-mix(in oklch, var(--accent) 14%, transparent); color: var(--accent-text); }
 .col-refresh.spin svg { animation: spin-once .6s ease-out 1; }
 @keyframes spin-once { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .col-refresh.spin svg { animation: none; } }
@@ -2164,7 +2165,7 @@ select, textarea, input[type="text"], input[type="search"], input[type="number"]
 .review-head .eyebrow { margin-bottom: 2px; font-size: 12.5px; }
 .settings-section:has(> .settings, > fieldset) { padding: 0; border: 0; background: none; }
 
-/* Shell: the rail runs the full height with the logo and "Tạo mới" on top; a slim title bar sits over the page. */
+/* Shell: the rail runs the full height with the logo on top; a slim title bar sits over the page. */
 .app-body { flex: 1; min-height: 0; }
 .app-col { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; }
 .rail { padding: 0 0 12px; }
@@ -2177,17 +2178,10 @@ select, textarea, input[type="text"], input[type="search"], input[type="number"]
 .header-drag { flex: 1; min-width: 24px; }
 body:is([data-page="discover"], [data-page="product"]) .header-title { visibility: hidden; }
 
-/* "Tạo mới": link box and "Thêm từ máy" in a panel beside the rail. */
-.create-pop { position: fixed; z-index: 30; top: 76px; left: 100px; display: flex; flex-direction: column; gap: 10px; width: min(460px, calc(100vw - 120px)); padding: 20px 20px 18px; border: 1px solid var(--line-strong); border-radius: 16px; background: oklch(0.20 0.010 260); box-shadow: var(--shadow-pop); }
-.create-pop h2 { font-size: 20px; font-weight: 750; letter-spacing: -.01em; }
-.create-pop .subtitle { margin: 0 0 4px; color: var(--text-2); font-size: 13px; line-height: 1.5; }
-.create-pop .link-form { flex: none; width: 100%; height: 44px; padding-left: 14px; background: var(--canvas); }
-.create-pop .link-form .btn { height: 34px; padding: 0 14px; background: var(--accent); color: var(--on-accent); font-weight: 650; }
-.create-pop .link-form .btn:hover:not(:disabled) { background: var(--accent-hover); }
-.create-or { display: flex; align-items: center; gap: 10px; color: var(--text-3); font-size: 12px; }
-.create-or::before, .create-or::after { content: ""; flex: 1; height: 1px; background: var(--line); }
-.create-pop #add-files { height: 42px; }
-.create-pop .add-files-label { display: inline; }
+/* Hàng đợi: the link box at the top of the list. */
+.media-col .link-form { flex: none; box-sizing: border-box; width: auto; align-self: stretch; min-width: 0; height: 40px; margin: 0 16px 10px; padding-left: 12px; background: var(--canvas); }
+.media-col .link-form .btn { height: 30px; padding: 0 12px; background: var(--accent); color: var(--on-accent); font-weight: 650; }
+.media-col .link-form .btn:hover:not(:disabled) { background: var(--accent-hover); }
 body[data-page="edit"]:has(#edit-view:not([hidden])) .header-title { visibility: hidden; }
 .el-hero { flex: none; }
 .edit-library .el-toolbar { padding: 4px 32px 14px; border-bottom: 0; }
@@ -2203,7 +2197,7 @@ body[data-page="edit"]:has(#edit-view:not([hidden])) .header-title { visibility:
 .settings-dialog .settings-body { gap: 8px; padding: 0 24px 0 28px; }
 .settings-dialog .settings-tabs { width: 220px; padding: 6px 0; border-right: 0; background: transparent; }
 .settings-dialog .settings-panes { border: 1px solid oklch(0.25 0.010 260); border-bottom: 0; border-radius: 18px 18px 0 0; background: oklch(0.17 0.008 260); }
-.settings-dialog .settings-pane { max-width: 980px; padding: 28px 36px 18px; }
+.settings-dialog .settings-pane { padding: 28px 36px 18px; }
 .settings-dialog .review-foot { padding: 12px 40px; border-top-color: oklch(0.23 0.008 260); background: transparent; }
 body.settings-open .header-title { visibility: hidden; }
 body.settings-open .rail-item.active:not(#nav-settings) { background: transparent; color: var(--text-3); box-shadow: none; }
@@ -2300,3 +2294,70 @@ body.settings-open .rail-item.active:not(#nav-settings)::before { display: none;
 .edit-panel > .edit-modes button[aria-selected="true"] { color: var(--accent-text); background: transparent; box-shadow: none; }
 .edit-panel > .edit-modes button[aria-selected="true"]::after { content: ""; position: absolute; left: 10px; right: 10px; bottom: 0; height: 2px; border-radius: 2px 2px 0 0; background: var(--accent); }
 .edit-panel > .edit-modes button[hidden] { display: none; }
+
+/* Cài đặt on wide windows: split into columns and areas instead of stretching
+   every row and select across the whole width. */
+.settings-dialog .settings-pane { container: settings-pane / inline-size; }
+.settings-pane select, .settings-pane .ai-field select { max-width: 520px; }
+.settings-pane .settings-row select { width: auto; min-width: 200px; max-width: 320px; }
+@container settings-pane (min-width: 960px) {
+  /* Rows become cards, two per line. */
+  .settings-pane .settings-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 0; border: 0; background: none; }
+  .settings-pane .settings-list .settings-row { align-items: flex-start; padding: 16px 18px; border: 1px solid oklch(0.25 0.010 260); border-radius: 14px; background: var(--card-grad); }
+  .settings-pane .settings-list .settings-row:last-child { border-bottom: 1px solid oklch(0.25 0.010 260); }
+  /* Dịch phụ đề: the two cards side by side. */
+  #settings-pane-translate .settings-section { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
+  /* Tài khoản: providers on the left, the chosen provider's key and model on the right. */
+  .ai-settings-keys { display: grid; grid-template-columns: minmax(0, 1fr) minmax(360px, 420px); column-gap: 20px; row-gap: 10px; align-items: start; }
+  .ai-settings-keys > * { grid-column: 1; min-width: 0; }
+  .ai-settings-keys > .ai-key-card { grid-column: 2; grid-row: 1 / span 6; position: sticky; top: 0; }
+  .ai-settings-keys .ai-provider-grid { grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); }
+  .ai-settings-keys .ai-free-banner { flex-wrap: wrap; }
+}
+
+/* Bố cục: "tools" = the tool column runs the full height, the timeline sits under the player only. */
+:root[data-edit-layout="tools"] .queue-screen.editing .edit-panel { grid-row: 1 / span 2; }
+:root[data-edit-layout="tools"] .queue-screen.editing .edit-timeline { grid-column: 1; }
+#edit-layout[aria-pressed="true"] { color: var(--accent-text); }
+.settings-subhead { margin-top: 28px; }
+.layout-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; margin-top: 14px; }
+.layout-choice { display: flex; align-items: center; gap: 14px; padding: 14px; border: 1px solid oklch(0.27 0.010 260); border-radius: 12px; background: oklch(0.19 0.009 260); color: var(--text); text-align: left; cursor: pointer; }
+.layout-choice:hover { border-color: var(--line-strong); }
+.layout-choice[aria-checked="true"] { border-color: color-mix(in oklch, var(--accent) 85%, transparent); background: color-mix(in oklch, var(--accent) 12%, transparent); }
+.layout-choice span { display: grid; gap: 3px; }
+.layout-choice strong { font-weight: 650; }
+.layout-choice small { color: var(--text-3); font-size: 12.5px; line-height: 1.4; }
+/* Little pictures: player (1), tools (2), timeline (3). */
+.layout-pic { flex: none; display: grid; width: 64px; height: 44px; gap: 3px; padding: 3px; border: 1px solid var(--line-strong); border-radius: 6px; }
+.layout-pic b { border-radius: 2px; background: oklch(0.32 0.012 260); }
+.layout-pic b:nth-child(2) { background: color-mix(in oklch, var(--accent) 60%, transparent); }
+.layout-pic.tools { grid-template: 1fr 12px / 1fr 18px; }
+.layout-pic.tools b:nth-child(2) { grid-column: 2; grid-row: 1 / span 2; }
+.layout-pic.tools b:nth-child(3) { grid-column: 1; grid-row: 2; }
+.layout-pic.timeline { grid-template: 1fr 12px / 1fr 18px; }
+.layout-pic.timeline b:nth-child(2) { grid-column: 2; grid-row: 1; }
+.layout-pic.timeline b:nth-child(3) { grid-column: 1 / span 2; grid-row: 2; }
+
+/* One shape for every list column: title + count on the left, actions on the right, search under the head. */
+.queue-col-head { align-items: center; }
+.queue-col-head h2 { flex: none; }
+.queue-col-head .col-count { flex: 1; min-width: 0; overflow: hidden; color: var(--text-3); font-size: 12px; white-space: nowrap; text-overflow: ellipsis; }
+.queue-col-head .col-count:empty { visibility: hidden; }
+.queue-col .search-miss { display: none !important; }
+.queue-col > .queue-filter { margin-bottom: 8px; }
+.queue-col > .media-search { margin: 0 16px 8px; }
+.docu-thumb { display: grid; place-items: center; background: oklch(0.24 0.02 260); color: var(--text-3); }
+/* Column heads line up: the player head, the details tabs and the editor's tool tabs share one bottom line. */
+.tabs button { height: 47px; }
+.queue-screen.editing .player-head { height: 62px; }
+.queue-col-head { box-sizing: border-box; height: 48px; margin-bottom: 10px; padding: 0 16px; border-bottom: 1px solid var(--line); }
+
+/* Đổi tên: a pencil on each row (shown on hover or when selected) and an inline text box. */
+.queue-list li, .el-card { position: relative; }
+.rename-btn { position: absolute; top: 7px; right: 6px; width: 26px; height: 26px; border-radius: 7px; background: oklch(0.22 0.010 260); color: var(--text-2); opacity: 0; }
+.queue-list li:hover > .rename-btn, .queue-list li:focus-within > .rename-btn, .queue-list li.selected > .rename-btn, .queue-list li:has(.selected) > .rename-btn { opacity: 1; }
+.queue-list li:has(.project-delete) > .rename-btn { right: 34px; }
+.rename-btn:hover { color: var(--text); background: oklch(0.27 0.012 260); }
+.el-card > .rename-btn { top: 10px; right: 10px; }
+.el-card:hover > .rename-btn, .el-card:focus-within > .rename-btn { opacity: 1; }
+.rename-input { width: 100%; height: 26px; padding: 0 8px; border: 1px solid var(--accent); border-radius: 6px; background: var(--canvas); color: var(--text); font: inherit; font-weight: 600; outline: none; }

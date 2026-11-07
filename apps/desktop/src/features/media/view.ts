@@ -86,7 +86,7 @@ export function mountMediaScreen(deps: {
   root.innerHTML = `
     <div id="media-screen" class="queue-screen media-screen">
       <section id="media-col" class="queue-col media-col" aria-labelledby="media-col-title">
-        <div class="queue-col-head"><h2 id="media-col-title">Video</h2><span id="media-count" class="hint"></span></div>
+        <div class="queue-col-head"><h2 id="media-col-title">Video</h2><span id="media-count" class="hint col-count"></span><span class="col-head-actions"><button id="media-new" class="btn col-new" type="button" title="Thêm video có sẵn trên máy"><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>Thêm mới</button></span></div>
         <div id="media-filter" class="seg queue-filter" role="tablist" aria-label="Lọc danh sách"></div>
         <label class="media-search"><span class="visually-hidden">Tìm video</span><input id="media-search" type="search" placeholder="Tìm theo tên, link hoặc thư mục" autocomplete="off" /></label>
         <div class="media-bulk" id="media-bulk" hidden>
@@ -105,7 +105,7 @@ export function mountMediaScreen(deps: {
             <button id="media-bulk-compile" class="btn" type="button">Ghép video</button>
             <button id="media-bulk-remove" class="btn ghost" type="button" title="Bỏ khỏi Hàng đợi (không xóa file)">Bỏ khỏi danh sách</button>
           </div>
-          <button id="media-add" class="btn block" type="button">${ICON_PLUS}Thêm video từ máy</button>
+          <button id="media-add" class="btn block queue-pick" type="button">${ICON_PLUS}Thêm video từ máy</button>
         </div>
       </section>
       <section class="player-col media-player-col" aria-label="Xem video">
@@ -263,7 +263,7 @@ export function mountMediaScreen(deps: {
     $("empty").hidden = shown.length > 0 || (downloading > 0 && !entries.length);
     $("empty").textContent = entries.length
       ? "Không có video khớp. Thử từ khóa khác hoặc xem “Tất cả”."
-      : "Chưa có video. Bấm “Tạo mới” để dán link, chọn video ở Khám phá, hoặc thêm video từ máy.";
+      : "Chưa có video. Dán link ở ô phía trên, chọn video ở Khám phá, hoặc thêm video từ máy.";
     // Several chosen: the actions work on all of them at once.
     const count = picked.size;
     $("bulk").hidden = count === 0;
@@ -435,6 +435,7 @@ export function mountMediaScreen(deps: {
     renderList();
   });
   $("add").addEventListener("click", () => deps.addFiles());
+  $("new").addEventListener("click", () => deps.addFiles());
   $("busy-cancel").addEventListener("click", () => deps.downloads().find((row) => `dl:${row.id}` === current)?.cancel?.());
   $<HTMLInputElement>("search").addEventListener("input", (event) => { query = (event.target as HTMLInputElement).value; renderList(); });
 

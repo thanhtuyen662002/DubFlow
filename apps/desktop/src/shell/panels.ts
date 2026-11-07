@@ -47,6 +47,10 @@ export type PanelHandle = {
   setCollapsed(collapsed: boolean): void;
   /** Re-apply limits (window or layout changed). */
   refit(): void;
+  /** Forget the dragged size and fold state: back to the page's own size. */
+  reset(): void;
+  /** Read the stored state again (another panel with the same key changed it). */
+  reload(): void;
 };
 
 export function clampSize(size: number, min: number, max: number): number {
@@ -272,7 +276,8 @@ export function mountPanel(options: PanelOptions): PanelHandle {
   });
 
   apply();
-  const api: PanelHandle = { state: () => ({ ...state }), setCollapsed, refit: apply };
+  const api: PanelHandle = { state: () => ({ ...state }), setCollapsed, refit: apply, reset: () => commit({ size: null, collapsed: false }),
+    reload: () => { state = readState(key); apply(); } };
   mounted.push(api);
   if (!resizeHooked && typeof window.addEventListener === "function") {
     resizeHooked = true;
@@ -288,6 +293,11 @@ export function mountPanel(options: PanelOptions): PanelHandle {
     });
   }
   return api;
+}
+
+/** Every panel back to its default size, unfolded (Cài đặt › Giao diện). */
+export function resetPanels(): void {
+  for (const item of mounted) item.reset();
 }
 
 /** Re-apply every panel's limits, e.g. after a page becomes visible. */

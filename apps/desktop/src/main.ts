@@ -3,7 +3,9 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { connectDesktopShell, type DesktopShellModel } from "./shell/desktop_shell.ts";
 import { confirmDialog } from "./shell/confirm.ts";
-import { mountLayoutPanels, refitPanels } from "./shell/layout_panels.ts";
+import { mountLayoutPanels, refitPanels, resetPanels } from "./shell/layout_panels.ts";
+import { mountListTools } from "./shell/list_tools.ts";
+import { mountNamedHeading, mountRenames } from "./shell/names.ts";
 import { PREVIEW_EDIT_LIBRARY, previewInvoke } from "./shell/preview_invoke.ts";
 import { createVoiceSampler } from "./features/voices/sample.ts";
 import { QueueController, type QueueJob, type SnapshotStorage } from "./features/queue/model.ts";
@@ -1116,7 +1118,7 @@ async function pickForDub(): Promise<void> {
     title: "Chọn video để lồng tiếng", hint: "Video trong Hàng đợi. Có thể chọn nhiều video, mỗi video thành một việc lồng tiếng.",
     confirmLabel: "Thêm vào Lồng tiếng", entries: media?.entries() ?? [], thumb: mediaThumb,
     taken: (entry) => jobs.some((job) => job.sourcePath === entry.path),
-    empty: "Hàng đợi chưa có video. Bấm “Tạo mới” để dán link hoặc thêm video từ máy trước.", openQueue: () => void navigate("media"),
+    empty: "Hàng đợi chưa có video. Dán link ở ô trên cùng của Hàng đợi hoặc thêm video từ máy trước.", openQueue: () => void navigate("media"),
   });
   dubEntries(chosen);
 }
@@ -1144,7 +1146,6 @@ async function pickFiles(): Promise<void> {
   }
 }
 
-$("#add-files").addEventListener("click", () => void pickFiles());
 $("#add-files-inline").addEventListener("click", () => void pickFiles());
 $("#dub-pick").addEventListener("click", () => void pickForDub());
 $("#dub-pick-inline").addEventListener("click", () => void pickForDub());
@@ -1811,7 +1812,7 @@ async function pickForProduct(): Promise<void> {
   const chosen = await pickFromMedia({
     title: "Chọn clip cho video bán hàng", hint: "Các video được chọn thành clip trong video bán hàng, theo thứ tự trong danh sách ảnh/clip.",
     confirmLabel: "Thêm làm clip", entries: media?.entries() ?? [], thumb: mediaThumb, max: 12,
-    empty: "Hàng đợi chưa có video. Bấm “Tạo mới” để dán link hoặc thêm video từ máy trước.", openQueue: () => void navigate("media"),
+    empty: "Hàng đợi chưa có video. Dán link ở ô trên cùng của Hàng đợi hoặc thêm video từ máy trước.", openQueue: () => void navigate("media"),
   });
   if (chosen.length) productEntries(chosen);
 }
@@ -1827,7 +1828,7 @@ async function pickForCompilation(): Promise<void> {
     confirmLabel: "Thêm vào video ghép", entries: media?.entries() ?? [], thumb: mediaThumb, max: 30,
     blocked: (entry) => finishedDubFor(entry, jobs) ? "" : mediaUse(entry, jobs) === "dubbing" ? "Đang lồng tiếng" : "Chưa lồng tiếng",
     note: (entry) => finishedDubFor(entry, jobs) ? USE_LABELS.dubbed : "",
-    empty: "Hàng đợi chưa có video. Bấm “Tạo mới” để dán link hoặc thêm video từ máy trước.", openQueue: () => void navigate("media"),
+    empty: "Hàng đợi chưa có video. Dán link ở ô trên cùng của Hàng đợi hoặc thêm video từ máy trước.", openQueue: () => void navigate("media"),
   });
   if (chosen.length) compileEntries(chosen);
 }
@@ -1886,6 +1887,8 @@ media = mountMediaScreen({
   reveal: (entry) => void invoke("reveal_download", { path: entry.path }).catch((error) => showError(`Không mở được thư mục: ${String(error).slice(0, 160)}`)),
   confirm: (title, message, confirmLabel) => confirmDialog({ title, message, confirmLabel, danger: true }),
 });
+// The link box sits at the top of Hàng đợi, where downloaded videos land.
+$("#media-col .queue-col-head").after($("#link-form"));
 if (!parsedMedia) mediaStore.write(serializeMedia(media.entries()));
 if (storedState.state === "corrupt") showError("Danh sách Hàng đợi đã lưu bị hỏng nên được dựng lại từ các video ở Lồng tiếng. Bản cũ được giữ riêng; file video trên máy không bị ảnh hưởng.");
 else if (storedState.state === "ok" && storedState.dropped) showError(`${storedState.dropped} mục hỏng trong danh sách Hàng đợi đã được bỏ qua.`);
@@ -1899,6 +1902,15 @@ const docu = mountDocu(invoke, claudeKey, { jobs: () => queue.getSnapshot().jobs
 });
 // Every page's side panels: drag to resize, fold into a strip, sizes remembered.
 mountLayoutPanels();
+// Every list column gets the same count and search box as Hàng đợi.
+mountListTools(document.querySelector("#queue-col"), "#queue-list", "video", "Tìm theo tên");
+mountListTools(document.querySelector("#product-list"), "#product-runs", "video", "Tìm theo tên");
+mountListTools(document.querySelector("#compilation-col"), "#compilation-runs", "video", "Tìm theo tên");
+mountListTools(document.querySelector(".docu-col"), "#docu-runs", "dự án", "Tìm dự án theo tên");
+// Đổi tên: every list, the Chỉnh sửa cards and the open video's heading show the user's own names.
+for (const id of ["#media-list", "#queue-list", "#product-runs", "#compilation-runs", "#docu-runs"]) mountRenames(document.querySelector(id));
+mountRenames(document.querySelector("#edit-view"), ".el-title");
+for (const id of ["#media-name", "#detail-name", "#compilation-name", "#docu-project-name", "#product-player-title"]) mountNamedHeading(document.querySelector(id));
 /** The Chỉnh sửa screen's list: finished videos of every page and videos on the computer (Issue #497). */
 const editLibrary = mountEditLibrary(invoke, {
   jobs: () => queue.getSnapshot().jobs.filter((job) => job.status.state === "COMPLETED" && job.outputPath)
@@ -2078,33 +2090,6 @@ $("#link-form").addEventListener("submit", async (event) => {
   ];
   showError(notes.length ? `${links.length - failures.length}/${links.length} link đang được tải về Hàng đợi. ${notes.join(" · ")}`.slice(0, 600) : "");
 });
-// "Tạo mới" on the rail opens a small panel with the link box and "Thêm từ máy".
-const createPop = $("#create-pop");
-const createButton = $("#nav-create");
-function setCreateOpen(open: boolean): void {
-  createPop.hidden = !open;
-  createButton.classList.toggle("active-pop", open);
-  createButton.setAttribute("aria-expanded", String(open));
-  if (open) $<HTMLInputElement>("#link-input").focus();
-}
-createButton.addEventListener("click", (event) => {
-  event.stopPropagation();
-  setCreateOpen(createPop.hidden);
-});
-document.addEventListener("mousedown", (event) => {
-  if (createPop.hidden) return;
-  const target = event.target as Node;
-  if (!createPop.contains(target) && !createButton.contains(target)) setCreateOpen(false);
-});
-createPop.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") {
-    event.stopPropagation();
-    setCreateOpen(false);
-    createButton.focus();
-  }
-});
-$("#link-form").addEventListener("submit", () => setCreateOpen(false));
-$("#add-files").addEventListener("click", () => setCreateOpen(false));
 // Pasting several lines into the one-line box keeps the line breaks as spaces.
 $<HTMLInputElement>("#link-input").addEventListener("paste", (event) => {
   const text = event.clipboardData?.getData("text") ?? "";
@@ -2751,6 +2736,35 @@ function applyAccent(id: string): void {
   let saved = "blue";
   try { saved = window.localStorage.getItem(ACCENT_KEY) ?? "blue"; } catch { /* default */ }
   applyAccent(saved);
+}
+// Bố cục màn Chỉnh sửa: tool column full height ("tools", default) or timeline full width ("timeline").
+// Chosen in Cài đặt › Giao diện or with the button in the editor's top bar; remembered on this computer.
+const EDIT_LAYOUT_KEY = "dubflow.editLayout.v1";
+function applyEditLayout(layout: string, save: boolean): void {
+  const known = layout === "timeline" ? "timeline" : "tools";
+  document.documentElement.dataset.editLayout = known;
+  for (const choice of document.querySelectorAll<HTMLElement>("#layout-grid .layout-choice")) {
+    choice.setAttribute("aria-checked", String(choice.dataset.layout === known));
+  }
+  $("#edit-layout").setAttribute("aria-pressed", String(known === "timeline"));
+  if (save) {
+    try { window.localStorage.setItem(EDIT_LAYOUT_KEY, known); } catch { /* this session only */ }
+  }
+  // The player and the timeline lay themselves out on resize.
+  window.dispatchEvent(new Event("resize"));
+  refitPanels();
+}
+{
+  for (const choice of document.querySelectorAll<HTMLElement>("#layout-grid .layout-choice")) {
+    choice.addEventListener("click", () => applyEditLayout(choice.dataset.layout ?? "tools", true));
+  }
+  $("#edit-layout").addEventListener("click", () => {
+    applyEditLayout(document.documentElement.dataset.editLayout === "timeline" ? "tools" : "timeline", true);
+  });
+  $("#layout-reset").addEventListener("click", () => resetPanels());
+  let saved = "tools";
+  try { saved = window.localStorage.getItem(EDIT_LAYOUT_KEY) ?? "tools"; } catch { /* default */ }
+  applyEditLayout(saved, false);
 }
 // Settings dialog, opened from the rail and from the header's update button.
 // Groups are tabs on the left; the chosen one shows on the right and is remembered.

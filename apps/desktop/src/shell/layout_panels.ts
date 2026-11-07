@@ -2,7 +2,7 @@
  * Every page's side panels become resizable and foldable (see panels.ts).
  * Called once after the pages have built their markup.
  */
-import { mountPanel, refitPanels } from "./panels.ts";
+import { mountPanel, refitPanels, resetPanels, type PanelHandle } from "./panels.ts";
 
 /** The list turns into a drawer under this window width (styles.css). */
 const DRAWER_BELOW = 1200;
@@ -25,17 +25,24 @@ function sideMax(screen: HTMLElement, other: string, hardMax: number): () => num
   };
 }
 
+/** Every page's video list shares one width and fold state: resizing it on one page resizes it everywhere. */
+const LIST_KEY = "lists.v1";
+const lists: PanelHandle[] = [];
+
 function mountThreeColumns(prefix: string, screen: HTMLElement | null): void {
   if (!screen) return;
   const list = screen.querySelector<HTMLElement>(":scope > .queue-col");
   const details = screen.querySelector<HTMLElement>(":scope > .inspector");
   if (list) {
-    mountPanel({
-      key: `${prefix}.list`, panel: list, edge: "right", label: "danh sách",
+    let self: PanelHandle | null = null;
+    self = mountPanel({
+      key: LIST_KEY, panel: list, edge: "right", label: "danh sách",
+      onChange: () => { for (const other of lists) if (other !== self) other.reload(); },
       min: 200, max: sideMax(screen, ".inspector", 560), fallback: () => 284,
       // Under 1200 px the list is a drawer the "Danh sách" button opens; it only resizes there.
       foldable: () => window.innerWidth >= DRAWER_BELOW,
     });
+    lists.push(self);
   }
   if (details) {
     mountPanel({
@@ -54,6 +61,7 @@ export function mountLayoutPanels(): void {
   mountThreeColumns("product", document.querySelector("#product-screen"));
 
   // Chỉnh sửa: the tool panel beside the player and the timeline under both.
+  // The timeline key is v2 since it gained a lane per layer: heights saved for the old single-row timeline hid the new lanes.
   const editPanel = document.querySelector<HTMLElement>("#edit-panel");
   if (queueScreen && editPanel) {
     mountPanel({
@@ -65,7 +73,7 @@ export function mountLayoutPanels(): void {
   const timeline = document.querySelector<HTMLElement>("#edit-timeline");
   if (queueScreen && timeline) {
     mountPanel({
-      key: "edit.timeline", panel: timeline, edge: "top", label: "dòng thời gian",
+      key: "edit.timeline.v2", panel: timeline, edge: "top", label: "dòng thời gian",
       min: 110, max: () => Math.max(110, (queueScreen.getBoundingClientRect().height || window.innerHeight) - MAIN_MIN_H),
       fallback: () => timeline.getBoundingClientRect().height || 170,
     });
@@ -106,4 +114,4 @@ export function mountLayoutPanels(): void {
   refitPanels();
 }
 
-export { refitPanels };
+export { refitPanels, resetPanels };
