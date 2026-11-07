@@ -215,7 +215,7 @@ class RunTests(unittest.TestCase):
         argv = overlays.bed_argv(Path("ffmpeg"), spans, 66.0, Path("bed.wav"))
         graph = argv[argv.index("-filter_complex") + 1]
         self.assertIn("adelay=20000:all=1", graph)
-        self.assertIn("loudnorm=I=-30", graph)
+        self.assertIn("loudnorm=I=-20", graph)
         self.assertNotEqual(overlays.mood_expression("curious_pulse"), overlays.mood_expression("dark_suspense"))
         self.assertEqual(overlays.chapter_moods({"chapters": []}, {"chapters": []}, 10.0), [("reflective_ambient", 0.0, 10.0)])
 

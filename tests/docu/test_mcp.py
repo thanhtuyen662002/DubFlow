@@ -219,6 +219,14 @@ class BoundaryTests(unittest.TestCase):
         result = reply["result"]
         return result["isError"], result["content"][0].get("text", "")
 
+    def test_a_call_records_the_project_for_the_app(self):
+        self.assertFalse(self.call("inspect_timeline_state", project=str(self.run))[0])
+        records = list((Path(self.temp.name).parent / "control" / "runs").glob("*.json"))
+        found = [json.loads(path.read_text(encoding="utf-8")) for path in records]
+        for path in records:
+            path.unlink()
+        self.assertIn({"schema_version": 1, "kind": "docu", "dir": str(self.run.resolve())}, found)
+
     def refused(self, project: Path, why: str) -> None:
         calls = {"inspect_timeline_state": {}, "apply_smart_label_overlay": {"scene_id": "sc_001", "text_en": "x", "pos_x": 0.5, "pos_y": 0.5, "width": 0.3},
                  "remove_label": {"label_id": "l001"}, "replace_timeline_clip": {"scene_id": "sc_001", "clip_index": 0, "new_source_id": "src_01", "start_time": 2.0},
