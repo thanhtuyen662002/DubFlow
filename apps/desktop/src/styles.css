@@ -2300,3 +2300,23 @@ body.settings-open .rail-item.active:not(#nav-settings)::before { display: none;
 .edit-panel > .edit-modes button[aria-selected="true"] { color: var(--accent-text); background: transparent; box-shadow: none; }
 .edit-panel > .edit-modes button[aria-selected="true"]::after { content: ""; position: absolute; left: 10px; right: 10px; bottom: 0; height: 2px; border-radius: 2px 2px 0 0; background: var(--accent); }
 .edit-panel > .edit-modes button[hidden] { display: none; }
+
+/* Cài đặt on wide windows: split into columns and areas instead of stretching
+   every row and select across the whole width. */
+.settings-dialog .settings-pane { container: settings-pane / inline-size; }
+.settings-pane select, .settings-pane .ai-field select { max-width: 520px; }
+.settings-pane .settings-row select { width: auto; min-width: 200px; max-width: 320px; }
+@container settings-pane (min-width: 960px) {
+  /* Rows become cards, two per line. */
+  .settings-pane .settings-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 0; border: 0; background: none; }
+  .settings-pane .settings-list .settings-row { align-items: flex-start; padding: 16px 18px; border: 1px solid oklch(0.25 0.010 260); border-radius: 14px; background: var(--card-grad); }
+  .settings-pane .settings-list .settings-row:last-child { border-bottom: 1px solid oklch(0.25 0.010 260); }
+  /* Dịch phụ đề: the two cards side by side. */
+  #settings-pane-translate .settings-section { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
+  /* Tài khoản: providers on the left, the chosen provider's key and model on the right. */
+  .ai-settings-keys { display: grid; grid-template-columns: minmax(0, 1fr) minmax(360px, 420px); column-gap: 20px; row-gap: 10px; align-items: start; }
+  .ai-settings-keys > * { grid-column: 1; min-width: 0; }
+  .ai-settings-keys > .ai-key-card { grid-column: 2; grid-row: 1 / span 6; position: sticky; top: 0; }
+  .ai-settings-keys .ai-provider-grid { grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); }
+  .ai-settings-keys .ai-free-banner { flex-wrap: wrap; }
+}
