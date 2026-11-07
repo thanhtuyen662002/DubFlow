@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from array import array
 import math
+import os
+import subprocess
+from unittest import mock
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -90,6 +93,51 @@ class BeepTests(unittest.TestCase):
             missing = Path(temp) / "nope.mp3"
             with self.assertRaises(beep_sounds.BeepSoundError):
                 beep_sounds.clip_for("custom", RATE, sound_file=str(missing), ffmpeg=Path("ffmpeg"))
+
+    def check_custom(self, clip, rate: int) -> None:
+        self.assertGreater(len(clip), 0)
+        self.assertLessEqual(len(clip), int(beep_sounds.MAX_CUSTOM_SECONDS * rate) + 1, "at most the first 10 s")
+        self.assertAlmostEqual(max(abs(value) for value in clip), beep_sounds.CUSTOM_PEAK, places=5)
+        self.assertGreaterEqual(abs(clip[0]), beep_sounds.CUSTOM_PEAK * 0.05 - 1e-6, "leading silence is trimmed")
+
+    def test_custom_sound_is_decoded_trimmed_and_normalized(self):
+        # The decoder's output (mono f32le): 0.5 s of silence, then a quiet tone.
+        silence = [0.0] * (RATE // 2)
+        tone = [0.2 * math.sin(2 * math.pi * 440 * index / RATE) for index in range(2 * RATE)]
+        decoded = array("f", silence + tone).tobytes()
+        with TemporaryDirectory() as temp:
+            own = Path(temp) / "meo.wav"
+            own.write_bytes(b"RIFF")
+            with mock.patch.object(beep_sounds.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, decoded, b"")) as run:
+                clip = beep_sounds.clip_for("custom", RATE, sound_file=str(own), ffmpeg=Path("ffmpeg.exe"))
+            command = run.call_args.args[0]
+            self.assertEqual(command[0], "ffmpeg.exe")
+            self.assertEqual(command[command.index("-t") + 1], str(beep_sounds.MAX_CUSTOM_SECONDS))
+            self.assertEqual((command[command.index("-ac") + 1], command[command.index("-ar") + 1]), ("1", str(RATE)))
+            self.check_custom(clip, RATE)
+            self.assertLess(len(clip), len(silence + tone) - RATE // 4)
+            # A failed decode or a silent file is an error (the job then falls back to the beep).
+            for result in (subprocess.CompletedProcess([], 1, decoded, b"bad"), subprocess.CompletedProcess([], 0, b"", b""),
+                           subprocess.CompletedProcess([], 0, array("f", [0.0] * RATE).tobytes(), b"")):
+                with mock.patch.object(beep_sounds.subprocess, "run", return_value=result), self.assertRaises(beep_sounds.BeepSoundError):
+                    beep_sounds.custom_clip(own, RATE, Path("ffmpeg.exe"))
+            with mock.patch.object(beep_sounds.subprocess, "run", side_effect=OSError("missing")), self.assertRaises(beep_sounds.BeepSoundError):
+                beep_sounds.custom_clip(own, RATE, Path("ffmpeg.exe"))
+
+    @unittest.skipUnless(os.environ.get("DUBFLOW_TEST_FFMPEG"), "set DUBFLOW_TEST_FFMPEG to a real ffmpeg.exe to run")
+    def test_custom_sound_through_the_real_ffmpeg(self):
+        ffmpeg = Path(os.environ["DUBFLOW_TEST_FFMPEG"])
+        with TemporaryDirectory() as temp:
+            # 12 s stereo, the tone from 0.5 s: decoded to mono, cut at 10 s, started at the tone, peak -6 dBFS.
+            own = Path(temp) / "meo.wav"
+            write(own, 12.0, (0.5, 12.0), channels=2)
+            clip = beep_sounds.custom_clip(own, 48_000, ffmpeg)
+            self.check_custom(clip, 48_000)
+            self.assertGreater(len(clip), int(9 * 48_000))
+            broken = Path(temp) / "hong.wav"
+            broken.write_bytes(b"not audio at all" * 64)
+            with self.assertRaises(beep_sounds.BeepSoundError):
+                beep_sounds.custom_clip(broken, 48_000, ffmpeg)
 
     def test_policy_reads_the_chosen_sound(self):
         words = [{"from": "chết", "to": "chớt"}]

@@ -4,7 +4,7 @@ import {
   askJson, checkProvider, noRedirectFetch, configureHostAi, createAiSession, hostRequest, isKeyError, isProvider, MODEL_CATALOG, PROVIDER_IDS, PROVIDERS,
 } from "../src/features/ai/provider.ts";
 import { DEFAULT_SENSITIVE_WORDS, formatWordList, normalizePrefs, parseWordList, sensitiveArgs, translationJobArgs } from "../src/features/ai/translation_prefs.ts";
-import { birdClip, dogClip, soundClip } from "../src/features/ai/beep_sound.ts";
+import { birdClip, dogClip, playFor, soundClip } from "../src/features/ai/beep_sound.ts";
 
 // Every provider id is known, labelled and has a console to get a key from.
 assert.equal(PROVIDER_IDS.length, 12);
@@ -116,6 +116,21 @@ first.close();
 other.close();
 
 console.log("ai providers ok");
+
+// Nghe thử on a file twice: the first preview's 3 s timer stops only the first player.
+{
+  const timers = [];
+  const player = () => ({ playing: false, play() { this.playing = true; return Promise.resolve(); }, pause() { this.playing = false; } });
+  const first = player();
+  const second = player();
+  playFor(first, 3000, (run) => timers.push(run));
+  first.pause();
+  playFor(second, 3000, (run) => timers.push(run));
+  timers[0]();
+  assert.equal(second.playing, true, "the second preview keeps playing when the first one's timer fires");
+  timers[1]();
+  assert.equal(second.playing, false);
+}
 
 // Nghe thử plays the engine's recipes (same samples as engine/dubflow/worker/beep_sounds.py at 16 kHz).
 assert.equal(birdClip(16000).length, 13204);

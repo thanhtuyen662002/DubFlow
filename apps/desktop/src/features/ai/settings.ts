@@ -5,7 +5,7 @@ import {
 import {
   DEFAULT_SENSITIVE_WORDS, formatWordList, loadPrefs, parseWordList, savePrefs, type SensitiveMode, type TranslationPrefs,
 } from "./translation_prefs.ts";
-import { playSamples, soundClip, type BeepSound } from "./beep_sound.ts";
+import { playFor, playSamples, soundClip, type BeepSound } from "./beep_sound.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 
@@ -377,10 +377,10 @@ export function mountAiSettings(session: AiSession, reveal: () => void, invoke?:
       $("#sensitive-sound-file").textContent = "Không mở được file này để nghe thử; hãy bấm “Chọn file âm thanh…” lại.";
       return;
     }
-    previewAudio = new Audio(url);
-    void previewAudio.play().catch(() => undefined);
-    // The video uses at most its first seconds per word; the preview stops after 3 s.
-    window.setTimeout(() => previewAudio?.pause(), 3000);
+    const playing = new Audio(url);
+    previewAudio = playing;
+    // The video uses at most its first seconds per word; this preview stops after 3 s (a later one keeps its own 3 s).
+    playFor(playing, 3000);
   });
   $("#sensitive-reset").addEventListener("click", () => {
     prefs = { ...prefs, words: [...DEFAULT_SENSITIVE_WORDS] };

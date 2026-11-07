@@ -94,6 +94,13 @@ export function soundClip(sound: BeepSound, rate: number): Float32Array | null {
 
 let context: AudioContext | null = null;
 
+/** Play a chosen file for `ms`, then stop that very player (a later preview keeps its own time). */
+export function playFor(player: { play(): Promise<void>; pause(): void }, ms: number,
+  later: (run: () => void, ms: number) => unknown = (run, wait) => window.setTimeout(run, wait)): void {
+  void player.play().catch(() => undefined);
+  later(() => player.pause(), ms);
+}
+
 /** Play samples once (a second press restarts nothing: each press plays its own copy). */
 export function playSamples(samples: Float32Array, rate: number): void {
   const Context = (window as unknown as { AudioContext?: typeof AudioContext }).AudioContext;
