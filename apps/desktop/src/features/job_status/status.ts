@@ -106,7 +106,7 @@ export function activeStageIndex(status: JobStatus): number {
   return index;
 }
 
-const LONG_PATH_HINT = "Đường dẫn thư mục kết quả quá dài với Windows. Hãy xóa video khỏi hàng đợi rồi thêm lại; nếu vẫn lỗi, chọn thư mục lưu kết quả ngắn hơn (ví dụ D:\\DubFlow).";
+const LONG_PATH_HINT = "Đường dẫn thư mục kết quả quá dài với Windows. Hãy xóa video khỏi Lồng tiếng rồi thêm lại từ Hàng đợi; nếu vẫn lỗi, chọn thư mục lưu kết quả ngắn hơn (ví dụ D:\\DubFlow).";
 
 /** Plain-language explanations for failures users can act on. */
 const FAILURE_HINTS: Array<[RegExp, string]> = [

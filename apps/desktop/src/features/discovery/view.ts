@@ -17,7 +17,7 @@ const NO_TITLE = "(không có tiêu đề)";
 const HOVER_KEY = "dubflow.discoverHover.v1";
 const AUTO_ZH_KEY = "dubflow.discoverAutoZh.v1";
 const HOVER_DELAY_MS = 450;
-const ADDED_NOTE = " Xem tiến độ ở Hàng đợi video.";
+const ADDED_NOTE = " Xem tiến độ tải ở Hàng đợi.";
 
 const readStorage = (key: string): string | null => {
   try {
@@ -582,7 +582,7 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
     selectedCount.textContent = videos.length ? `Đã chọn ${count}/${videos.length}` : "";
     selectAll.checked = videos.length > 0 && count === videos.length;
     addButton.disabled = count === 0;
-    addButton.textContent = count ? `Thêm ${count} video vào hàng đợi` : "Thêm vào hàng đợi";
+    addButton.textContent = count ? `Thêm ${count} video vào Hàng đợi` : "Thêm vào Hàng đợi";
   }
 
   function resetResults(): void {
@@ -1020,7 +1020,7 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
         failures.push(String(error).slice(0, 120));
       }
     }
-    state.textContent = `Đã đưa ${added} video vào hàng đợi tải.` + (failures.length ? ` ${failures.length} video lỗi: ${failures[0]}` : ADDED_NOTE);
+    state.textContent = `Đã đưa ${added} video về Hàng đợi.` + (failures.length ? ` ${failures.length} video lỗi: ${failures[0]}` : ADDED_NOTE);
     renderResults();
   });
 
@@ -1058,7 +1058,7 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
     if (!playing) return;
     const { video } = playing;
     playerDownload.disabled = true;
-    playerState.textContent = "Đang thêm vào hàng đợi…";
+    playerState.textContent = "Đang thêm vào Hàng đợi…";
     try {
       await enqueue(video.fetchUrl, downloadTitle(video));
     } catch (error) {
@@ -1070,7 +1070,7 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
     }
     setSelected(video, false);
     if (playing?.video === video) closePlayer();
-    state.textContent = `Đã đưa 1 video vào hàng đợi tải.${ADDED_NOTE}`;
+    state.textContent = `Đã đưa 1 video về Hàng đợi.${ADDED_NOTE}`;
   });
   $("#pop-close").addEventListener("click", () => closePlayer());
   player.addEventListener("keydown", (event) => {

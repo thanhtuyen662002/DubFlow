@@ -48,6 +48,7 @@ function mountThreeColumns(prefix: string, screen: HTMLElement | null): void {
 export function mountLayoutPanels(): void {
   const queueScreen = document.querySelector<HTMLElement>("#queue-content");
   mountThreeColumns("queue", queueScreen);
+  mountThreeColumns("media", document.querySelector("#media-screen"));
   mountThreeColumns("compilation", document.querySelector("#compilation-screen"));
   mountThreeColumns("docu", document.querySelector("#docu-screen"));
   mountThreeColumns("product", document.querySelector("#product-screen"));
@@ -96,8 +97,8 @@ export function mountLayoutPanels(): void {
   const studio = productSide?.parentElement;
   if (productSide && studio) {
     mountPanel({
-      key: "product.side", panel: productSide, host: studio, cssVar: "--product-side-w", edge: "left", label: "mẫu và xem trước",
-      min: 320, max: () => Math.min(720, studio.getBoundingClientRect().width - 460), fallback: () => 400, outset: 11,
+      key: "product.side", panel: productSide, host: studio, cssVar: "--product-side-w", edge: "left", label: "xem trước",
+      min: 280, max: () => Math.min(560, studio.getBoundingClientRect().width - 460), fallback: () => 340, outset: 11,
       // Side by side only while the page beside the run list is wide enough (styles.css).
       enabled: () => window.innerWidth >= DRAWER_BELOW && studio.getBoundingClientRect().width >= 900,
     });

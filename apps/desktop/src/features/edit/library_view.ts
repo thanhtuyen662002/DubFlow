@@ -258,7 +258,7 @@ export function mountEditLibrary(invoke: Invoke, host: EditLibraryHost): EditLib
       : filter === "file" ? "Chưa mở video nào từ máy" : `Chưa có video ${KIND_LABELS[filter as Exclude<LibraryFilter, "all">].toLowerCase()} đã xong`;
     const hint = searching ? (filter === "all" ? "Thử từ khóa khác." : "Thử từ khóa khác hoặc xem “Tất cả”.")
       : filter === "file" ? "Bấm “Mở video trên máy” hoặc kéo thả một video vào cửa sổ. Video đã mở được nhớ ở đây."
-      : "Video đã xong ở Lồng tiếng, Bán hàng, Tổng hợp và Phim tài liệu sẽ hiện ở đây. Bạn cũng có thể mở bất kỳ video nào trên máy.";
+      : "Video đã xong ở Lồng tiếng, Bán hàng, Ghép video và Phim tài liệu sẽ hiện ở đây. Bạn cũng có thể mở bất kỳ video nào trên máy.";
     box.append(icon, element("p", "el-empty-title", title), element("p", "el-empty-hint", hint));
     if (searching) {
       const clear = element("button", "btn", "Xóa tìm kiếm");

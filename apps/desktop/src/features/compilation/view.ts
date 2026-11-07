@@ -29,7 +29,7 @@ function clock(seconds: number): string {
 
 /**
  * The Tổng hợp page, laid out like the queue (Issue #426): compilations on
- * the left (earlier runs found in the output folders, "Tạo tổng hợp mới"),
+ * the left (earlier runs found in the output folders, "Ghép video mới"),
  * the player (or the new compilation's preview) in the middle, and the
  * Thiết lập / Kết quả tabs on the right. The draft (selection, order and
  * editorial content) stays in memory across navigation.
@@ -42,22 +42,24 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
   mediaUrl?(path: string): Promise<string | null>;
   /** Open a finished compilation in the editor. */
   edit?(video: CompilationVideo): void;
-}): { show(): void } {
+  /** "Chọn từ Hàng đợi": the page asks the app to open the picker. */
+  fromQueue?(): void;
+}): { show(): void; pick(jobIds: readonly string[]): number } {
   const root = document.querySelector<HTMLElement>("#compilation-view")!;
   root.innerHTML = `
     <div id="compilation-screen" class="queue-screen compilation-screen">
       <section id="compilation-col" class="queue-col compilation-col" aria-labelledby="compilation-col-title">
-        <div class="queue-col-head"><h2 id="compilation-col-title">Video tổng hợp</h2><button id="compilation-refresh" class="quiet-btn" type="button">Làm mới</button></div>
+        <div class="queue-col-head"><h2 id="compilation-col-title">Video đã ghép</h2><button id="compilation-refresh" class="quiet-btn" type="button">Làm mới</button></div>
         <div class="queue-scroll">
-          <ul id="compilation-runs" class="queue-list" aria-label="Video tổng hợp"></ul>
-          <p id="compilation-runs-empty" class="queue-empty">Chưa có video tổng hợp nào. Các lần tạo trước được tìm trong thư mục “DubFlow Output”.</p>
+          <ul id="compilation-runs" class="queue-list" aria-label="Video đã ghép"></ul>
+          <p id="compilation-runs-empty" class="queue-empty">Chưa có video ghép nào. Các lần tạo trước được tìm trong thư mục “DubFlow Output”.</p>
         </div>
-        <div class="queue-col-foot"><button id="compilation-new" class="btn block" type="button">Tạo tổng hợp mới</button></div>
+        <div class="queue-col-foot"><button id="compilation-new" class="btn block" type="button">Ghép video mới</button></div>
       </section>
       <section class="player-col compilation-player-col" aria-label="Xem video tổng hợp">
         <div class="player-head">
           <button id="compilation-list-toggle" class="btn ghost list-toggle" type="button" aria-controls="compilation-col" aria-expanded="false">Danh sách</button>
-          <h2 id="compilation-name" class="player-title">Tạo tổng hợp mới</h2>
+          <h2 id="compilation-name" class="player-title">Ghép video mới</h2>
           <button id="compilation-edit" class="btn edit-open" type="button" hidden title="Cắt ghép, chèn video, âm thanh và chữ">${ICON_EDIT}Chỉnh sửa</button>
         </div>
         <div class="player-stage">
@@ -66,13 +68,13 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
             <div id="compilation-preview" class="compilation-preview" aria-label="Xem trước phần đang soạn"></div>
             <div id="compilation-placeholder" class="player-placeholder" hidden><span id="compilation-placeholder-text"></span></div>
             <div id="compilation-busy" class="player-overlay" role="status" hidden>
-              <strong id="compilation-busy-title">Đang tạo video tổng hợp</strong>
+              <strong id="compilation-busy-title">Đang ghép video</strong>
               <div class="bar busy-bar"><span id="compilation-busy-bar"></span></div>
               <span id="compilation-busy-detail" class="overlay-detail"></span>
-              <div class="overlay-actions"><button id="compilation-busy-cancel" class="btn" type="button">Hủy tổng hợp</button></div>
+              <div class="overlay-actions"><button id="compilation-busy-cancel" class="btn" type="button">Hủy ghép</button></div>
             </div>
             <div id="compilation-failed" class="player-overlay failed" role="alert" hidden>
-              <strong id="compilation-failed-title">Không tạo được video tổng hợp</strong>
+              <strong id="compilation-failed-title">Không ghép được video</strong>
               <span id="compilation-failed-detail" class="overlay-detail"></span>
               <div class="overlay-actions"><button id="compilation-failed-reuse" class="btn primary" type="button">Dùng lại thiết lập</button></div>
             </div>
@@ -99,10 +101,11 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
               <button id="compilation-reuse" class="btn block" type="button">Dùng lại thiết lập này cho bản mới</button>
             </div>
             <fieldset id="compilation-fields" class="compilation-fields">
-              <legend class="visually-hidden">Thiết lập video tổng hợp</legend>
+              <legend class="visually-hidden">Thiết lập ghép video</legend>
               <section class="compilation-group">
-                <h3 class="setup-group">Chọn video</h3><p class="hint">Chọn 2–30 video đã hoàn tất. Dùng ↑ ↓ để sắp xếp các phần.</p>
-                <p id="compilation-empty" class="hint">Chưa có video đã hoàn tất trong hàng đợi.</p>
+                <div class="setup-group-head"><h3 class="setup-group">Chọn video</h3><button id="compilation-from-queue" class="btn" type="button">Chọn từ Hàng đợi</button></div>
+                <p class="hint">Chọn 2–30 video đã lồng tiếng xong. Dùng ↑ ↓ để sắp xếp các phần.</p>
+                <p id="compilation-empty" class="hint">Chưa có video lồng tiếng xong. Chọn video ở Hàng đợi rồi bấm “Lồng tiếng” trước.</p>
                 <ul id="compilation-available" class="compilation-list"></ul>
                 <ol id="compilation-order" class="compilation-list compilation-order"></ol>
               </section>
@@ -134,7 +137,7 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
             </fieldset>
           </div>
           <div class="actions tab-foot">
-            <button id="compilation-render" type="button" class="btn primary block">Tạo video tổng hợp</button>
+            <button id="compilation-render" type="button" class="btn primary block">Ghép video</button>
             <button id="compilation-cancel" type="button" class="btn danger block" hidden>Hủy</button>
             <p id="compilation-state" class="hint center" role="status"></p>
           </div>
@@ -384,7 +387,7 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
     previewIndex = 0;
     renderSelection();
     renderEditors();
-    $("state").textContent = "Đã chép thiết lập của bản cũ. Sửa rồi bấm “Tạo video tổng hợp” để tạo bản mới.";
+    $("state").textContent = "Đã chép thiết lập của bản cũ. Sửa rồi bấm “Ghép video” để tạo bản mới.";
     select(NEW, "setup");
   }
 
@@ -538,7 +541,7 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
     const run = current === NEW ? null : runOf(current) ?? null;
     const state = run?.status?.state;
     const done = !!run && state === "COMPLETED" && !!run.video;
-    $("name").textContent = run ? run.title : "Tạo tổng hợp mới";
+    $("name").textContent = run ? run.title : "Ghép video mới";
     $("name").title = run?.dir ?? "";
     $("edit").hidden = !done || !settings.edit;
     // The middle column: the draft's preview, or the run's video, progress or failure.
@@ -549,19 +552,19 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
     $("failed").hidden = !run || !(state === "FAILED" || state === "CANCELLED" || !run.status);
     if (run && state === "RUNNING") {
       const fraction = runFraction(run.status);
-      $("busy-title").textContent = fraction === null ? "Đang tạo video tổng hợp" : `Đang tạo video tổng hợp · ${Math.floor(fraction * 100)}%`;
+      $("busy-title").textContent = fraction === null ? "Đang ghép video" : `Đang ghép video · ${Math.floor(fraction * 100)}%`;
       $("busy-bar").style.width = `${Math.round((fraction ?? 0) * 100)}%`;
       $("busy-detail").textContent = `${run.status!.message}${run.status!.total ? ` (${run.status!.done}/${run.status!.total} đoạn)` : ""}`;
       $<HTMLButtonElement>("busy-cancel").hidden = run.dir !== output;
     }
     if (run && !$("failed").hidden) {
-      $("failed-title").textContent = state === "CANCELLED" ? "Đã hủy tổng hợp này" : "Không tạo được video tổng hợp";
+      $("failed-title").textContent = state === "CANCELLED" ? "Đã hủy lần ghép này" : "Không ghép được video";
       $("failed-detail").textContent = run.status?.message ?? "Không đọc được trạng thái của lần tạo này.";
     }
     void play(done ? run!.video : null);
     $("meta").textContent = run ? [`${run.parts} phần`, LAYOUT_NAMES[run.layout], shortDate(run.created)].filter(Boolean).join(" · ") : "";
     if (!run) renderPreview();
-    // Thiết lập: the draft for "Tạo tổng hợp mới", an earlier run's request read-only.
+    // Thiết lập: the draft for "Ghép video mới", an earlier run's request read-only.
     $("setup-past").hidden = !run;
     $("fields").hidden = !!run;
     $("render").hidden = !!run;
@@ -571,7 +574,7 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
 
   function renderPast(run: CompilationRun): void {
     const form = specToForm(run.spec);
-    $("past-note").textContent = "Thiết lập của video tổng hợp này. Muốn đổi, hãy dùng lại thiết lập cho một bản mới.";
+    $("past-note").textContent = "Thiết lập của video ghép này. Muốn đổi, hãy dùng lại thiết lập cho một bản mới.";
     const facts: Array<[string, string]> = form ? [
       ["Tiêu đề", form.title], ["Bố cục", LAYOUT_NAMES[form.layout] ?? form.layout], ["Tốc độ đọc", String(form.speed).replace(".", ",")],
       ["Nhạc", form.music ? fileName(form.music) : "Không có"], ["Mở đầu", form.intro || "—"], ["Kết thúc", form.outro || "—"],
@@ -595,7 +598,7 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
     $("result-card").hidden = !done;
     $("results").hidden = !done;
     $<HTMLButtonElement>("result-edit").hidden = !settings.edit;
-    $("result-note").textContent = !run ? "Kết quả hiện ở đây khi video tổng hợp được tạo xong."
+    $("result-note").textContent = !run ? "Kết quả hiện ở đây khi ghép video xong."
       : done ? "" : run.status?.state === "RUNNING" ? `${run.status.message} Kết quả hiện ở đây khi xong.` : run.status?.message ?? "";
     $("result-note").hidden = done;
     resultPath = done ? run!.video! : "";
@@ -687,17 +690,17 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
     const ready = new Set(completedVideos(jobs).map(job => job.id));
     const known = new Set(jobs.map(job => job.id));
     // Parts from the queue must still be finished; parts reused from an earlier request are checked by the host.
-    if (selected.some(item => known.has(item.id) && !ready.has(item.id))) { $("state").textContent = "Có video không còn hoàn tất trong hàng đợi. Hãy chọn lại."; return; }
+    if (selected.some(item => known.has(item.id) && !ready.has(item.id))) { $("state").textContent = "Có video không còn lồng tiếng xong. Hãy chọn lại."; return; }
     const request = buildRequest({ title: field("title").value, layout: field("layout").value, intro: field("intro").value,
       outro: field("outro").value, items: selected, voiceId: field("voice").value, speed: Number(field("speed").value),
       music, musicVolume: Number(field("volume").value) / 100, outputRoot: settings.outputRoot(), cpuOnly: settings.cpuOnly() });
     if (typeof request === "string") { $("state").textContent = request; return; }
-    lock(true); $("results").hidden = true; $("state").textContent = "Đang khởi động tổng hợp…";
+    lock(true); $("results").hidden = true; $("state").textContent = "Đang bắt đầu ghép…";
     try {
       output = await invoke<string>("compilation_render", { request });
       $("cancel").hidden = false;
       runs = [{ dir: output, title: request.title, layout: request.layout, created: Math.floor(Date.now() / 1000), parts: request.items.length,
-        status: { state: "RUNNING", message: "Đang khởi động tổng hợp…", done: 0, total: 0, path: null }, video: null,
+        status: { state: "RUNNING", message: "Đang bắt đầu ghép…", done: 0, total: 0, path: null }, video: null,
         spec: { schema_version: 1, title: request.title, layout: request.layout, voice_id: request.voiceId, speed: request.speed, music: request.music,
           music_volume: request.musicVolume, intro: request.intro, outro: request.outro,
           items: request.items.map((item) => ({ video: item.video, title: item.title, lead: item.lead, score: item.score, pros: item.pros, cons: item.cons,
@@ -783,7 +786,23 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
     try { await navigator.clipboard.writeText(await invoke<string>("compilation_description", { outputDir: current === NEW ? output : current })); $("state").textContent = "Đã sao chép mô tả và nguồn."; }
     catch (error) { $("state").textContent = message(error); }
   });
-  return { show: () => {
+  $("from-queue").addEventListener("click", () => settings.fromQueue?.());
+  $("from-queue").hidden = !settings.fromQueue;
+  return { pick: (jobIds) => {
+    // From Hàng đợi: the chosen dubbed videos join a new draft, in the order given.
+    if (busy) return 0;
+    if (current !== NEW) select(NEW, "setup");
+    const ready = completedVideos(settings.jobs());
+    let added = 0;
+    for (const id of jobIds) {
+      const job = ready.find((candidate) => candidate.id === id);
+      if (!job || selected.some((item) => item.id === id) || selected.length >= 30) continue;
+      selected = [...selected, newItem(job)];
+      added += 1;
+    }
+    renderSelection(); renderEditors(); renderPreview();
+    return added;
+  }, show: () => {
     showProvider();
     if (!busy) { renderSelection(); renderEditors(); }
     renderSelected();

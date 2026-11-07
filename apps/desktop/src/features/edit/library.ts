@@ -20,12 +20,12 @@ export const FILTERS: ReadonlyArray<{ id: LibraryFilter; label: string }> = [
   { id: "all", label: "Tất cả" },
   { id: "job", label: "Lồng tiếng" },
   { id: "product", label: "Bán hàng" },
-  { id: "compilation", label: "Tổng hợp" },
+  { id: "compilation", label: "Ghép video" },
   { id: "docu", label: "Phim tài liệu" },
   { id: "file", label: "Trên máy" },
 ];
 export const KIND_LABELS: Record<LibraryKind, string> = {
-  job: "Lồng tiếng", product: "Bán hàng", compilation: "Tổng hợp", docu: "Phim tài liệu", file: "Trên máy",
+  job: "Lồng tiếng", product: "Bán hàng", compilation: "Ghép video", docu: "Phim tài liệu", file: "Trên máy",
 };
 /** Files remembered under "Trên máy". */
 export const MAX_RECENT = 40;
