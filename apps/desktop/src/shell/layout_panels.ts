@@ -50,6 +50,7 @@ export function mountLayoutPanels(): void {
   mountThreeColumns("queue", queueScreen);
   mountThreeColumns("compilation", document.querySelector("#compilation-screen"));
   mountThreeColumns("docu", document.querySelector("#docu-screen"));
+  mountThreeColumns("product", document.querySelector("#product-screen"));
 
   // Chỉnh sửa: the tool panel beside the player and the timeline under both.
   const editPanel = document.querySelector<HTMLElement>("#edit-panel");
@@ -90,14 +91,15 @@ export function mountLayoutPanels(): void {
     });
   }
 
-  // Bán hàng: the template and preview column beside the form (side by side from 1200 px).
+  // Bán hàng: the template and preview column beside the form (side by side from 1200 px and a 900 px page).
   const productSide = document.querySelector<HTMLElement>(".product-side");
   const studio = productSide?.parentElement;
   if (productSide && studio) {
     mountPanel({
       key: "product.side", panel: productSide, host: studio, cssVar: "--product-side-w", edge: "left", label: "mẫu và xem trước",
       min: 320, max: () => Math.min(720, studio.getBoundingClientRect().width - 460), fallback: () => 400, outset: 11,
-      enabled: () => window.innerWidth >= DRAWER_BELOW,
+      // Side by side only while the page beside the run list is wide enough (styles.css).
+      enabled: () => window.innerWidth >= DRAWER_BELOW && studio.getBoundingClientRect().width >= 900,
     });
   }
   refitPanels();

@@ -884,17 +884,26 @@ button.job.selected { background: var(--select); }
 .product-player { display: block; width: 100%; aspect-ratio: 9 / 16; border-radius: 12px; background: #000; object-fit: contain; }
 .product-player-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
 .product-player-actions .btn { height: 32px; padding: 0 12px; }
-.product-recent { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
-.product-recent-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 2px 12px; min-width: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
-.product-recent-list li > .hint { grid-column: 1; margin: 0; }
-.product-recent-actions { display: flex; grid-column: 2; grid-row: 1 / span 2; gap: 12px; }
-.product-recent-name { min-width: 0; overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+/* Bán hàng: the run list on the left, like the queue (list | page). */
+.product-main { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; container: product-main / inline-size; }
+.product-main > .topbar { justify-content: flex-start; }
+.product-main > .topbar > div { flex: 1; min-width: 0; }
+.product-run-videos { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.product-run-videos .btn.chip { height: 24px; padding: 0 8px; font-size: 12px; }
 @media (max-width: 1199.98px) {
   .product-studio { grid-template-columns: minmax(0, 1fr); max-width: 980px; }
   /* One column: the cards read 1 → 5 in order. */
   .product-studio > .product-col { display: contents; }
   .product-studio .product-side > .product-card { order: 1; }
   #product-create-card { order: 2; }
+}
+/* The list leaves the form less room: one column also when the page itself is narrow. */
+@container product-main (max-width: 899.98px) {
+  .product-studio { grid-template-columns: minmax(0, 1fr); max-width: 980px; }
+  .product-studio > .product-col { display: contents; }
+  .product-studio .product-side > .product-card { order: 1; }
+  #product-create-card { order: 2; }
+  .product-side { position: static !important; }
 }
 
 .compilation-fields { display: grid; gap: 16px; min-width: 0; padding: 0; border: 0; }

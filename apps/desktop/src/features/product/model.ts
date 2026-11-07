@@ -237,21 +237,27 @@ export function shortDate(seconds: number): string {
   return `${two(when.getDate())}/${two(when.getMonth() + 1)} ${two(when.getHours())}:${two(when.getMinutes())}`;
 }
 
-/** The finished videos of the runs, newest run first, at most `limit`. */
-/** One finished video of an earlier run; `run` and `runName` are its run's folder and name (for deleting the run). */
-export type RecentVideo = { outputPath: string; displayName: string; meta: string; run: string; runName: string };
+/** One row of the Bán hàng list: a run with its finished videos and how far it got. */
+export type RunRow = {
+  dir: string; title: string; state: ProductStatus["state"] | null; text: string; fraction: number | null;
+  videos: Array<{ index: number; outputPath: string; displayName: string; seconds: number | null }>;
+};
 
-export function recentVideos(runs: readonly ProductRun[], limit: number): RecentVideo[] {
-  const videos: RecentVideo[] = [];
-  for (const run of runs) {
-    for (const video of run.status?.videos ?? []) {
-      if (!video.ok || !video.path || videos.length >= limit) continue;
-      const seconds = video.duration_ms ? `${Math.round(video.duration_ms / 1000)} giây` : "";
-      videos.push({ outputPath: video.path, displayName: `${run.name || "Video bán hàng"} · video ${video.index}`,
-        meta: [seconds, shortDate(run.created)].filter(Boolean).join(" · "), run: run.dir, runName: run.name || "Video bán hàng" });
-    }
-  }
-  return videos;
+export function runRow(run: ProductRun): RunRow {
+  const title = run.name || "Video bán hàng";
+  const status = run.status;
+  const videos = (status?.videos ?? []).filter((video) => video.ok && video.path).map((video) => ({
+    index: video.index, outputPath: video.path!, displayName: `${title} · video ${video.index}`,
+    seconds: video.duration_ms ? Math.round(video.duration_ms / 1000) : null,
+  }));
+  const state = status?.state ?? null;
+  const fraction = state === "RUNNING" && status && status.total > 0 ? Math.min(1, status.done / status.total) : null;
+  const count = videos.length ? `${videos.length} video` : "";
+  const text = state === "RUNNING" ? status!.message || "Đang tạo…"
+    : state === "COMPLETED" ? [count, shortDate(run.created)].filter(Boolean).join(" · ")
+      : state === "CANCELLED" ? [count ? `Đã hủy, giữ ${count}` : "Đã hủy", shortDate(run.created)].filter(Boolean).join(" · ")
+        : state === "FAILED" ? status!.message || "Lỗi" : "Chưa rõ trạng thái";
+  return { dir: run.dir, title, state, text, fraction, videos };
 }
 
 /** What one product video was made from (`product_spec`), as the editor's Mẫu mode edits it. */
