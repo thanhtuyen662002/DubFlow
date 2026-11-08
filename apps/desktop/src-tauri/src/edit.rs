@@ -69,7 +69,15 @@ const EXPORTS_KEPT: usize = 200;
 const QUALITIES: [&str; 3] = ["source", "1080p", "720p"];
 /// Xuất video options (Issue #526): frame rates, frame shapes and how the bars are filled.
 const EXPORT_FPS: [u32; 5] = [24, 25, 30, 50, 60];
-const ASPECTS: [&str; 4] = ["16:9", "9:16", "1:1", "4:5"];
+/// Khung hình (Issue #626): any "W:H" of whole numbers 1–100 between 1:4 and 4:1.
+fn aspect_parts(aspect: &str) -> Option<(u32, u32)> {
+    let (w, h) = aspect.split_once(':')?;
+    let (w, h) = (w.parse::<u32>().ok()?, h.parse::<u32>().ok()?);
+    let ratio = f64::from(w) / f64::from(h.max(1));
+    ((1..=100).contains(&w) && (1..=100).contains(&h) && (0.25..=4.0).contains(&ratio)).then_some((w, h))
+}
+/// The longest side an export frame gets (H.264 levels and players stop at about 4K).
+const MAX_SIDE: f64 = 4096.0;
 // Encoders: NVIDIA NVENC when it really works here, then Media Foundation's
 // H.264, then the bundled OpenH264 (the LGPL FFmpeg has no libx264): gpu.rs.
 const BUSY: &str = "Video này đang được xuất ở cửa sổ DubFlow khác";
@@ -482,7 +490,7 @@ pub struct ExportRequest {
     /// Dung lượng: "low" or "high"; None is the usual bitrate.
     #[serde(default)]
     bitrate: Option<String>,
-    /// Khung hình: the picture fitted into this shape, with black ("black") or blurred ("blur") bars.
+    /// Khung hình: the picture in this shape ("W:H"), with blurred ("blur") or black ("black") bars, or cropped to fill ("fill").
     #[serde(default)]
     aspect: Option<String>,
     #[serde(default)]
@@ -529,20 +537,24 @@ struct Finish {
     audio_only: bool,
 }
 
-/// A frame of `aspect` ("9:16"…) that keeps the export's short side.
+/// A frame of `aspect` ("9:16", "21:9", "5:4"…) that keeps the export's short side, its long side at most `MAX_SIDE`.
 fn aspect_size(width: u32, height: u32, aspect: &str) -> (u32, u32) {
-    let Some((w, h)) = aspect.split_once(':').and_then(|(w, h)| Some((w.parse::<f64>().ok()?, h.parse::<f64>().ok()?))) else {
+    let Some((w, h)) = aspect_parts(aspect) else {
         return (width, height);
     };
-    let short = f64::from(width.min(height));
+    let (w, h) = (f64::from(w), f64::from(h));
+    let short = f64::from(width.min(height)).min(MAX_SIDE * w.min(h) / w.max(h));
     let even = |value: f64| ((value / 2.0).round() as u32 * 2).max(2);
     if w >= h { (even(short * w / h), even(short)) } else { (even(short), even(short * h / w)) }
 }
 
-/// The picture fitted whole into `width`×`height`, over black or over a blurred, darkened copy of itself.
-fn reframe_filter(width: u32, height: u32, blur: bool) -> String {
+/// How a picture fills another frame shape: "blur" (whole, over a blurred copy), "black" (whole, black bars) or "fill" (cropped to fill).
+fn reframe_filter(width: u32, height: u32, fill: &str) -> String {
     let fit = format!("scale={width}:{height}:force_original_aspect_ratio=decrease");
-    if !blur {
+    if fill == "fill" {
+        return format!("scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1");
+    }
+    if fill != "blur" {
         return format!("{fit},pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1");
     }
     format!("split[rf0][rf1];[rf0]scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},gblur=sigma=40,\
@@ -2880,6 +2892,9 @@ struct ExportJob {
     stems: Option<StemLevels>,
     /// The texts as requested, for exports.json.
     texts: Vec<TextClip>,
+    /// Khung hình as requested, for exports.json.
+    aspect: Option<String>,
+    fill: Option<String>,
     /// Chỉ âm thanh: an .m4a, kept out of exports.json (it is no edited video).
     audio_only: bool,
     /// A long export, rendered as parts side by side when it can be (`parts`).
@@ -3013,7 +3028,7 @@ fn run_export(job: &ExportJob, running: &Running) {
     append_export(&job.work, json!({"path": display_path(&target), "srt_path": srt, "created": unix_now(),
         "duration": (job.seconds * 1000.0).round() / 1000.0, "quality": job.quality, "segments": job.edit.segments,
         "media": job.media, "luts": job.edit.luts, "transitions": job.edit.transitions, "overlays": job.edit.overlays, "audio": job.audio, "main_volume": job.main_volume, "main_denoise": job.main_denoise, "main_eq": job.main_eq,
-        "stems": job.stems, "texts": job.texts}));
+        "stems": job.stems, "texts": job.texts, "aspect": job.aspect, "fill": job.aspect.as_ref().and(job.fill.as_ref())}));
     write_status(&job.work, "COMPLETED", 100.0, "Đã xuất video.", Some(&target));
 }
 
@@ -3069,8 +3084,8 @@ fn start_export(request: ExportRequest) -> Result<Value, String> {
     mix.main_clean = Clean { denoise: request.main_denoise, eq: request.main_eq };
     let texts = validate_texts(&request.texts, total)?;
     if request.fps.is_some_and(|fps| !EXPORT_FPS.contains(&fps)) || request.bitrate.as_deref().is_some_and(|rate| rate != "low" && rate != "high")
-        || request.aspect.as_deref().is_some_and(|aspect| !ASPECTS.contains(&aspect))
-        || request.fill.as_deref().is_some_and(|fill| fill != "black" && fill != "blur") {
+        || request.aspect.as_deref().is_some_and(|aspect| aspect_parts(aspect).is_none())
+        || request.fill.as_deref().is_some_and(|fill| !["black", "blur", "fill"].contains(&fill)) {
         return Err(fail("Tùy chọn xuất không hợp lệ"));
     }
     let folder = target_folder(&request.folder)?;
@@ -3112,7 +3127,7 @@ fn start_export(request: ExportRequest) -> Result<Value, String> {
         Some(subtitles_filter(&display_path(&file)))
     };
     let reframe = ((out_width, out_height) != (width, height))
-        .then(|| reframe_filter(out_width, out_height, request.fill.as_deref() == Some("blur")));
+        .then(|| reframe_filter(out_width, out_height, request.fill.as_deref().unwrap_or("black")));
     let finish = Finish { texts: layer, reframe, normalize: request.normalize, audio_only: request.audio_only };
     let (text, has_audio) = export_script(&edit, &streams, &frame, &request.quality, &mix, &finish);
     // Xuất song song: the whole sound on its own, for a long export rendered as parts.
@@ -3159,6 +3174,7 @@ fn start_export(request: ExportRequest) -> Result<Value, String> {
         seconds: output_seconds(&edit.segments, &edit.transitions), has_audio, bitrate, fps, ffmpeg, audio_only: request.audio_only,
         quality: request.quality, edit, audio: request.audio, main_volume: request.main_volume, texts: request.texts,
         main_denoise: request.main_denoise, main_eq: request.main_eq, stems: request.stems, parts,
+        aspect: request.aspect, fill: request.fill,
     };
     write_status(&work, "RUNNING", 0.0, "Đang bắt đầu xuất video…", Some(&target));
     let entry = Arc::new(Running { children: Mutex::new(Vec::new()), cancelled: AtomicBool::new(false) });
@@ -5455,9 +5471,20 @@ aloop=loop=-1:size=144000,atrim=duration=8,adelay=2000:all=1"), "{script}");
         assert_eq!(aspect_size(1080, 1920, "16:9"), (1920, 1080));
         assert_eq!(aspect_size(1280, 720, "1:1"), (720, 720));
         assert_eq!(aspect_size(1280, 720, "4:5"), (720, 900));
-        assert_eq!(reframe_filter(720, 900, false), "scale=720:900:force_original_aspect_ratio=decrease,pad=720:900:(ow-iw)/2:(oh-ih)/2,setsar=1");
-        assert!(reframe_filter(720, 900, true).contains("gblur=sigma=40"));
-        let finish = Finish { texts: Some("subtitles=filename=t.ass".into()), reframe: Some(reframe_filter(720, 720, false)), audio_only: true, ..Finish::default() };
+        assert_eq!(aspect_size(1920, 1080, "4:3"), (1440, 1080));
+        assert_eq!(aspect_size(1920, 1080, "21:9"), (2520, 1080));
+        assert_eq!(aspect_size(3840, 2160, "21:9"), (4096, 1756), "the long side stops at 4096");
+        assert_eq!(aspect_size(1280, 720, "5:4"), (900, 720), "a custom shape");
+        assert_eq!(aspect_size(1280, 720, "nope"), (1280, 720));
+        assert_eq!(aspect_parts("21:9"), Some((21, 9)));
+        assert_eq!(aspect_parts("3:4"), Some((3, 4)));
+        for bad in ["0:9", "9:0", "1:5", "101:100", "16/9", "a:b", "-1:2", ""] {
+            assert_eq!(aspect_parts(bad), None, "{bad}");
+        }
+        assert_eq!(reframe_filter(720, 900, "black"), "scale=720:900:force_original_aspect_ratio=decrease,pad=720:900:(ow-iw)/2:(oh-ih)/2,setsar=1");
+        assert!(reframe_filter(720, 900, "blur").contains("gblur=sigma=40"));
+        assert_eq!(reframe_filter(720, 900, "fill"), "scale=720:900:force_original_aspect_ratio=increase,crop=720:900,setsar=1");
+        let finish = Finish { texts: Some("subtitles=filename=t.ass".into()), reframe: Some(reframe_filter(720, 720, "black")), audio_only: true, ..Finish::default() };
         let mix = Mix { sounds: vec![], main_volume: 1.0, ..Default::default() };
         let (graph, audio) = export_script(&whole(10.0), &[Input { has_audio: true }], &frame(), "source", &mix, &finish);
         assert!(audio);

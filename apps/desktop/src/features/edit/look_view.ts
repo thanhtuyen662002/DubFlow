@@ -489,9 +489,11 @@ export function mountLook(context: LookContext): LookPanel {
       if (tint) tint.style.opacity = "0";
       return;
     }
-    // The player shows its own picture letterboxed (object-fit: contain) in the same box as the output frame.
+    // The player shows its own picture letterboxed (object-fit: contain) in the same box as the output frame,
+    // or covering it when Tỉ lệ khung hình fills the frame (object-fit: cover).
     const box = { width: player.clientWidth || picture.width, height: player.clientHeight || picture.height };
-    const scale = Math.min(box.width / source.width, box.height / source.height);
+    const cover = !!player.closest(".canvas-fill");
+    const scale = (cover ? Math.max : Math.min)(box.width / source.width, box.height / source.height);
     const shown = { left: (box.width - source.width * scale) / 2, top: (box.height - source.height * scale) / 2, width: source.width * scale, height: source.height * scale };
     const crop = look.crop ?? { x: 0, y: 0, w: 1, h: 1 };
     const cut = { left: shown.left + crop.x * shown.width, top: shown.top + crop.y * shown.height, width: crop.w * shown.width, height: crop.h * shown.height };

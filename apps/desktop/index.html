@@ -434,6 +434,7 @@
                   </ol>
                 </div>
                 <div id="player-frame" class="player-frame" hidden>
+                  <canvas id="edit-backdrop" class="edit-backdrop" aria-hidden="true"></canvas>
                   <video id="player-video" preload="metadata" playsinline></video>
                   <canvas id="edit-ghost" class="edit-ghost" aria-hidden="true"></canvas>
                   <div id="edit-tint" class="edit-tint" aria-hidden="true"></div>
@@ -484,6 +485,12 @@
                 </button>
                 <span id="player-time" class="player-time">0:00 / 0:00</span>
                 <span class="spacer"></span>
+                <button id="edit-ratio" class="ratio-btn edit-only" type="button" aria-haspopup="dialog" aria-expanded="false" title="Tỉ lệ khung hình của video xuất (16:9, 9:16, 1:1…)">
+                  <span id="edit-ratio-shape" class="ratio-shape" aria-hidden="true"></span>
+                  <span>Tỉ lệ</span>
+                  <strong id="edit-ratio-label">Gốc</strong>
+                  <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="m7 10 5 5 5-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </button>
                 <span id="detail-timing" class="status-timing"></span>
               </div>
               <div id="stages-strip" class="stages-strip view-only" hidden>
@@ -1998,18 +2005,11 @@
               <summary>Tùy chọn khác <span id="export-more-summary" class="export-hint"></span></summary>
               <div class="export-field">
                 <span class="export-label">Khung hình</span>
-                <div id="export-aspect" class="seg export-seg" role="radiogroup" aria-label="Khung hình">
-                  <button type="button" role="radio" data-aspect="" aria-checked="true">Như gốc</button>
-                  <button type="button" role="radio" data-aspect="16:9" aria-checked="false">16:9</button>
-                  <button type="button" role="radio" data-aspect="9:16" aria-checked="false">9:16</button>
-                  <button type="button" role="radio" data-aspect="1:1" aria-checked="false">1:1</button>
-                  <button type="button" role="radio" data-aspect="4:5" aria-checked="false">4:5</button>
+                <div class="export-aspect-row">
+                  <strong id="export-aspect-value">Như gốc</strong>
+                  <button id="export-aspect-change" class="btn" type="button" title="Đổi tỉ lệ khung hình (16:9, 9:16, 1:1…); khung xem trước đổi theo">Đổi tỉ lệ…</button>
                 </div>
-                <div id="export-fill" class="seg export-seg" role="radiogroup" aria-label="Phần thừa" hidden>
-                  <button type="button" role="radio" data-fill="blur" aria-checked="true">Nền mờ</button>
-                  <button type="button" role="radio" data-fill="black" aria-checked="false">Viền đen</button>
-                </div>
-                <small id="export-aspect-hint" class="export-hint" hidden></small>
+                <small id="export-aspect-hint" class="export-hint"></small>
               </div>
               <div class="export-field">
                 <span class="export-label">Số khung hình/giây</span>
@@ -2067,6 +2067,29 @@
       <button type="button" role="menuitem" data-action="split">Tách tại đầu phát<kbd>S</kbd></button>
       <hr />
       <button type="button" role="menuitem" data-action="delete" class="danger">Xóa đoạn<kbd>Delete</kbd></button>
+    </div>
+    <div id="ratio-pop" class="tl-pop ratio-pop" role="dialog" aria-labelledby="ratio-pop-title" hidden>
+      <div class="tl-pop-head"><strong id="ratio-pop-title">Tỉ lệ khung hình</strong><span id="ratio-pop-size" class="tl-pop-where"></span></div>
+      <div id="ratio-presets" class="ratio-grid" role="radiogroup" aria-label="Tỉ lệ khung hình"></div>
+      <div class="ratio-custom">
+        <span class="edit-label">Tùy chỉnh</span>
+        <div class="ratio-custom-row">
+          <input id="ratio-w" type="text" inputmode="numeric" maxlength="3" autocomplete="off" spellcheck="false" aria-label="Chiều ngang" placeholder="Ngang" />
+          <span aria-hidden="true">:</span>
+          <input id="ratio-h" type="text" inputmode="numeric" maxlength="3" autocomplete="off" spellcheck="false" aria-label="Chiều dọc" placeholder="Dọc" />
+          <button id="ratio-apply" class="btn" type="button">Áp dụng</button>
+        </div>
+        <small id="ratio-error" class="edit-note ratio-error" role="alert" hidden></small>
+      </div>
+      <div class="ratio-fill-field">
+        <span class="edit-label">Phần thừa</span>
+        <div id="ratio-fill" class="seg ratio-fill" role="radiogroup" aria-label="Phần thừa">
+          <button type="button" role="radio" data-fill="blur" aria-checked="true" title="Giữ trọn hình, phần thừa là bản mờ của chính video">Nền mờ</button>
+          <button type="button" role="radio" data-fill="black" aria-checked="false" title="Giữ trọn hình, phần thừa là viền đen">Viền đen</button>
+          <button type="button" role="radio" data-fill="fill" aria-checked="false" title="Phóng hình cho kín khung, cắt bớt phần tràn ra ngoài">Lấp đầy</button>
+        </div>
+        <small id="ratio-fill-hint" class="edit-note"></small>
+      </div>
     </div>
     <div id="tl-transition" class="tl-pop" role="dialog" aria-labelledby="tl-pop-title" hidden>
       <div class="tl-pop-head"><strong id="tl-pop-title">Chuyển cảnh</strong><span id="tl-pop-where" class="tl-pop-where"></span></div>

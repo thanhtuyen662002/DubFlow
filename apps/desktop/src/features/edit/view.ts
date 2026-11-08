@@ -12,7 +12,7 @@ import type { ConfirmOptions } from "../../shell/confirm.ts";
 import type { AiSession } from "../ai/provider.ts";
 import { isAudioPath, type SfxLibrary } from "../sfx/library.ts";
 import {
-  addAudio, addedId, addOverlay, addText, append, createEdit, defaultExportName, EditHistory, estimateExportBytes, exportPlan, exportSize,
+  addAudio, addedId, addOverlay, addText, append, CANVAS_FILL_NAMES, canvasSize, createEdit, defaultExportName, EditHistory, estimateExportBytes, exportPlan, exportSize,
   formatClock, formatSpeed, insertAt, isUnchanged, MAIN, mainLevel, MAX_MEDIA, MAX_OVERLAYS, MAX_SEGMENTS, matchesExport, MIN_SEGMENT,
   MIN_TRANSITION, mediaOf, moveOverlay, outputDuration, outputStarts, outputToSource, overlayHeight, overlayLength,
   overlayPreset, overlayPresetOf, parseClock, parseProject, RECENT_LIMIT, remapCues, remove, removeOverlay, resizeOverlay,
@@ -40,6 +40,7 @@ import { mountStems } from "./stems_view.ts";
 import { mountText } from "./text_view.ts";
 import { mountTemplate } from "./template_view.ts";
 import { mountLook } from "./look_view.ts";
+import { mountCanvas } from "./canvas_view.ts";
 import { lookBadges } from "./look.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
@@ -397,7 +398,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   let folder = "";
   let quality: Quality = "source";
   /** Tùy chọn khác of the export dialog (Issue #526); kept while the app runs. */
-  const options = { aspect: "", fill: "blur", fps: "", rate: "", range: "all" as "all" | "marked", audioOnly: false };
+  const options = { fps: "", rate: "", range: "all" as "all" | "marked", audioOnly: false };
   /** Which placement of the selected overlay drag, size and presets change (Chuyển động). */
   let overlayKey: OverlayKey = "start";
   let overlayKeyFor: string | null = null;
@@ -762,11 +763,11 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
 
   // ---------- Transitions and overlays on the player ----------
 
-  /** The video picture inside the player frame (object-fit: contain). */
+  /** The video picture inside the player frame (object-fit: contain; cover when Tỉ lệ khung hình fills the frame). */
   function pictureRect(): { left: number; top: number; width: number; height: number } {
     const width = frame.clientWidth, height = frame.clientHeight;
     const sourceWidth = session?.facts.width || video.videoWidth || 16, sourceHeight = session?.facts.height || video.videoHeight || 9;
-    const scale = Math.min(width / sourceWidth, height / sourceHeight);
+    const scale = (canvasView.fill() === "fill" ? Math.max : Math.min)(width / sourceWidth, height / sourceHeight);
     const shownWidth = sourceWidth * scale, shownHeight = sourceHeight * scale;
     return { left: (width - shownWidth) / 2, top: (height - shownHeight) / 2, width: shownWidth, height: shownHeight };
   }
@@ -804,6 +805,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       lookPanel.apply(active, segment, progress, pictureRect(), { width: media?.width || active.videoWidth || 16, height: media?.height || active.videoHeight || 9 });
     }
     renderOverlays(edit, time);
+    canvasView.frame();
     subs.frame();
     plainCoverFrame();
     // Sound clips play along at normal speed only (L twice plays faster).
@@ -1198,6 +1200,13 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     },
     note,
     redraw: () => { if (session) render(); },
+  });
+
+  const canvasView = mountCanvas({
+    edit: () => (session ? current() : null),
+    commit: (next) => commit(next),
+    source: () => ({ width: session?.facts.width || video.videoWidth || 0, height: session?.facts.height || video.videoHeight || 0 }),
+    active: () => active,
   });
 
   const lookPanel = mountLook({
@@ -2381,6 +2390,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
 
   function render(): void {
     if (!session) return;
+    canvasView.render();
     oneSelection();
     renderPanel();
     renderTimeline();
@@ -3501,6 +3511,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     stems.end();
     textMode.end();
     templateMode.end();
+    canvasView.end();
     restorePlayer();
     lightReset();
     timeline.style.height = "";
@@ -3690,8 +3701,6 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
         button.setAttribute("aria-checked", String(button.dataset[key] === value));
       }
     };
-    group("#export-aspect", "aspect", options.aspect);
-    group("#export-fill", "fill", options.fill);
     group("#export-fps", "fps", options.fps);
     group("#export-rate", "rate", options.rate);
     const range = markedRange();
@@ -3701,20 +3710,26 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     $("#export-range-hint").textContent = range
       ? `Đã đánh dấu ${formatClock(Math.min(range.from, range.to), true)} – ${formatClock(Math.max(range.from, range.to), true)}`
       : "Nhấn I và O trên dòng thời gian để đánh dấu một đoạn.";
-    $("#export-fill").hidden = !options.aspect;
     $<HTMLInputElement>("#export-audio-only").checked = options.audioOnly;
-    for (const id of ["#export-aspect", "#export-fill", "#export-fps", "#export-rate"]) {
+    for (const id of ["#export-fps", "#export-rate"]) {
       for (const button of document.querySelectorAll<HTMLButtonElement>(`${id} button`)) button.disabled = options.audioOnly;
     }
-    const hint = $("#export-aspect-hint");
-    hint.hidden = !options.aspect || options.audioOnly;
-    hint.textContent = options.fill === "blur" ? "Giữ trọn hình, phần thừa là nền mờ của chính video." : "Giữ trọn hình, phần thừa là viền đen.";
-    const chosen = [options.range === "marked" ? "đoạn I–O" : "", options.audioOnly ? "chỉ âm thanh" : options.aspect,
+    const shape = session?.history.current.canvas;
+    $<HTMLButtonElement>("#export-aspect-change").disabled = options.audioOnly;
+    $("#export-aspect-value").textContent = shape ? `${shape.aspect} · ${CANVAS_FILL_NAMES[shape.fill]}` : "Như gốc";
+    $("#export-aspect-hint").textContent = options.audioOnly ? "" : shape
+      ? "Theo Tỉ lệ dưới khung xem trước; video xuất ra giống hệt khung xem trước."
+      : "Đổi bằng nút Tỉ lệ dưới khung xem trước: 16:9, 9:16, 1:1, 4:5, 21:9 hoặc tỉ lệ tùy chỉnh.";
+    const chosen = [options.range === "marked" ? "đoạn I–O" : "", options.audioOnly ? "chỉ âm thanh" : shape?.aspect ?? "",
       options.audioOnly || !options.fps ? "" : `${options.fps} hình/giây`, options.audioOnly ? "" : options.rate === "low" ? "nhẹ" : options.rate === "high" ? "nét" : ""];
     $("#export-more-summary").textContent = chosen.filter(Boolean).join(" · ");
   }
 
-  for (const [selector, key] of [["#export-aspect", "aspect"], ["#export-fill", "fill"], ["#export-fps", "fps"], ["#export-rate", "rate"], ["#export-range", "range"]] as const) {
+  $("#export-aspect-change").addEventListener("click", () => {
+    closeDialog();
+    canvasView.open();
+  });
+  for (const [selector, key] of [["#export-fps", "fps"], ["#export-rate", "rate"], ["#export-range", "range"]] as const) {
     for (const button of document.querySelectorAll<HTMLButtonElement>(`${selector} [data-${key}]`)) {
       button.addEventListener("click", () => {
         (options as Record<string, unknown>)[key] = button.dataset[key] ?? "";
@@ -3740,10 +3755,12 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     $("#export-folder").textContent = folder;
     $("#export-folder").title = folder;
     for (const button of qualityButtons) button.setAttribute("aria-checked", String(button.dataset.quality === quality));
-    const size = exportSize(facts.width, facts.height, quality);
-    const upscale = size.height * size.width > facts.width * facts.height;
+    const scaled = exportSize(facts.width, facts.height, quality);
+    const size = canvasSize(scaled.width, scaled.height, options.audioOnly ? null : edit.canvas);
+    const upscale = scaled.height * scaled.width > facts.width * facts.height;
+    const shaped = size.width !== scaled.width || size.height !== scaled.height;
     $("#export-quality-hint").textContent = facts.width
-      ? `${size.width}×${size.height}${quality === "source" ? " · giữ nguyên khung hình" : upscale ? " · phóng lên, file to hơn" : " · nhẹ, đăng nhanh"}`
+      ? `${size.width}×${size.height}${shaped ? ` · khung ${edit.canvas?.aspect}` : quality === "source" ? " · giữ nguyên khung hình" : upscale ? " · phóng lên, file to hơn" : " · nhẹ, đăng nhanh"}`
       : "";
     const inserts = edit.segments.filter((segment) => segment.mediaId !== MAIN).length;
     const extras = $("#export-extras");
@@ -3799,10 +3816,14 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       await flush();
       const normalize = $<HTMLInputElement>("#export-loudness").checked;
       try { localStorage.setItem(LOUDNESS_KEY, normalize ? "1" : "0"); } catch { /* the choice is only a convenience */ }
-      await invoke("edit_export", { request: { outputPath, kind, quality, folder, fileName: nameInput.value.trim(), cues, ...exportPlan(edit), normalize,
+      const plan = exportPlan(edit);
+      if (options.audioOnly) {
+        delete plan.aspect;
+        delete plan.fill;
+      }
+      await invoke("edit_export", { request: { outputPath, kind, quality, folder, fileName: nameInput.value.trim(), cues, ...plan, normalize,
         audioOnly: options.audioOnly, ...(options.audioOnly ? {} : {
-          ...(options.fps ? { fps: Number(options.fps) } : {}), ...(options.rate ? { bitrate: options.rate } : {}),
-          ...(options.aspect ? { aspect: options.aspect, fill: options.fill } : {}) }),
+          ...(options.fps ? { fps: Number(options.fps) } : {}), ...(options.rate ? { bitrate: options.rate } : {}) }),
         ...(session.plainCover && cover.document() ? { cover: cover.document() } : {}), ...burns } });
       if (session?.outputPath !== outputPath) return;
       // Only a whole video counts as the export of this edit (a range or its sound does not).
