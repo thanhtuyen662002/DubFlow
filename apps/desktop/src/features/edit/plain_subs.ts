@@ -5,7 +5,7 @@
  * burns them in when "In phụ đề vào video khi xuất" is on.
  */
 import { MAIN, outputToSource, type Cue, type Edit } from "./model.ts";
-import { cleanText, DEFAULT_STYLE, normalizeStyle, parseStyle, type SubtitleCue, type SubtitleStyle } from "./subtitles.ts";
+import { cleanText, DEFAULT_STYLE, normalizeStyle, parseStyle, withoutPosition, type SubtitleCue, type SubtitleStyle } from "./subtitles.ts";
 
 export type PlainLine = { id: string; start_ms: number; end_ms: number; text: string };
 export type PlainSubtitles = { burn: boolean; style: SubtitleStyle; lines: PlainLine[] };
@@ -104,4 +104,124 @@ export function burnRequest(subtitles: PlainSubtitles): { style: SubtitleStyle; 
 /** `project.subtitles` in the draft. */
 export function serializePlain(subtitles: PlainSubtitles): unknown {
   return { burn: subtitles.burn, style: normalizeStyle(subtitles.style), lines: subtitles.lines.map((line) => ({ ...line })) };
+}
+
+// ---------- Lớp phụ đề: several subtitle layers (Issue: two-layer subtitles) ----------
+
+/**
+ * One subtitle layer: its lines and look as before, plus a name, the
+ * language its lines are in ("zh", "vi", … or "" when unknown) and whether
+ * it is hidden (not drawn on the preview, not burned, not in the .srt).
+ */
+export type PlainTrack = PlainSubtitles & { id: string; name: string; lang: string; hidden: boolean };
+/** Every layer of a plain video, in drawing order (later on top), and the one being edited. */
+export type PlainLayers = { tracks: PlainTrack[]; active: string };
+
+export const MAX_TRACKS = 4;
+const MAX_NAME = 40;
+/** The original-language layer sits above the Vietnamese one, a little smaller. */
+export const SOURCE_STYLE: Partial<SubtitleStyle> = { size: 0.8, x: 0.5, y: 0.8 };
+export const LANGUAGE_LABELS: Record<string, string> = { zh: "Tiếng Trung", en: "Tiếng Anh", vi: "Tiếng Việt" };
+
+function parseTrack(raw: unknown, remembered: SubtitleStyle | null, taken: Set<string>): PlainTrack | null {
+  const value = obj(raw);
+  if (!value || typeof value.id !== "string" || !value.id || value.id.length > 40 || taken.has(value.id)) return null;
+  const subtitles = plainSubtitles({ subtitles: { burn: value.burn, style: value.style, lines: Array.isArray(value.lines) ? value.lines : [] } }, [], remembered);
+  taken.add(value.id);
+  return {
+    ...subtitles, id: value.id, name: typeof value.name === "string" && value.name.trim() ? value.name.trim().slice(0, MAX_NAME) : "Phụ đề",
+    lang: typeof value.lang === "string" && /^[a-z]{0,3}$/.test(value.lang) ? value.lang : "", hidden: value.hidden === true,
+  };
+}
+
+/** The draft's layers; a draft from before layers (or none) is one layer, "Phụ đề". */
+export function plainLayers(project: unknown, cues: readonly Cue[], remembered: SubtitleStyle | null): PlainLayers {
+  const saved = obj(obj(project)?.subtitles);
+  if (saved && Array.isArray(saved.tracks)) {
+    const taken = new Set<string>();
+    const tracks = saved.tracks.slice(0, MAX_TRACKS).flatMap((raw) => parseTrack(raw, remembered, taken) ?? []);
+    if (tracks.length) {
+      const active = typeof saved.active === "string" && tracks.some((track) => track.id === saved.active) ? saved.active : tracks[tracks.length - 1].id;
+      return { tracks, active };
+    }
+  }
+  return { tracks: [{ ...plainSubtitles(project, cues, remembered), id: "t1", name: "Phụ đề", lang: "", hidden: false }], active: "t1" };
+}
+
+export function activeTrack(layers: PlainLayers): PlainTrack {
+  return layers.tracks.find((track) => track.id === layers.active) ?? layers.tracks[0];
+}
+
+function freshTrackId(layers: PlainLayers): string {
+  let number = layers.tracks.length + 1;
+  while (layers.tracks.some((track) => track.id === `t${number}`)) number += 1;
+  return `t${number}`;
+}
+
+/** A new layer (on top), made the one being edited; null when there are MAX_TRACKS already. */
+export function addTrack(layers: PlainLayers, track: { name: string; lang?: string; lines?: Array<Omit<PlainLine, "id">>; style: SubtitleStyle; burn?: boolean }): PlainTrack | null {
+  if (layers.tracks.length >= MAX_TRACKS) return null;
+  const lines = sortLines((track.lines ?? []).slice(0, MAX_LINES).map((line, index) => ({
+    id: `c${index + 1}`, start_ms: Math.max(0, Math.round(line.start_ms)), end_ms: Math.round(line.end_ms), text: line.text.slice(0, MAX_LINE_TEXT),
+  })).filter((line) => line.end_ms > line.start_ms));
+  const made: PlainTrack = { id: freshTrackId(layers), name: track.name.slice(0, MAX_NAME), lang: track.lang ?? "", hidden: false,
+    burn: track.burn ?? true, style: normalizeStyle(track.style), lines };
+  layers.tracks.push(made);
+  layers.active = made.id;
+  return made;
+}
+
+/** Remove a layer; the last one left stays (emptied instead). */
+export function removeTrack(layers: PlainLayers, id: string): void {
+  if (layers.tracks.length <= 1) {
+    const only = layers.tracks[0];
+    if (only) only.lines = [];
+    return;
+  }
+  const index = layers.tracks.findIndex((track) => track.id === id);
+  if (index < 0) return;
+  layers.tracks.splice(index, 1);
+  if (layers.active === id) layers.active = layers.tracks[Math.min(index, layers.tracks.length - 1)].id;
+}
+
+/**
+ * The two layers of Tách phụ đề: the original words above, the Vietnamese
+ * below. A lone empty layer (nothing written yet) is replaced; others stay.
+ */
+export function addExtracted(layers: PlainLayers, language: string, source: Array<Omit<PlainLine, "id">>, vi: Array<Omit<PlainLine, "id">>,
+  look: SubtitleStyle): { source: PlainTrack | null; vi: PlainTrack | null } {
+  if (layers.tracks.length === 1 && !layers.tracks[0].lines.some((line) => cleanText(line.text))) layers.tracks = [];
+  const room = MAX_TRACKS - layers.tracks.length;
+  const base = withoutPosition(normalizeStyle(look));
+  const original = room >= 2 ? addTrack(layers, { name: LANGUAGE_LABELS[language] ?? "Lời gốc", lang: language, lines: source,
+    style: normalizeStyle({ ...base, ...SOURCE_STYLE }) }) : null;
+  const vietnamese = room >= 1 ? addTrack(layers, { name: "Tiếng Việt", lang: "vi", lines: vi, style: base }) : null;
+  if (!layers.tracks.length) layers.tracks.push({ ...plainSubtitles({}, [], look), id: "t1", name: "Phụ đề", lang: "", hidden: false });
+  if (!layers.tracks.some((track) => track.id === layers.active)) layers.active = layers.tracks[0].id;
+  return { source: original, vi: vietnamese };
+}
+
+/** The layers shown and burned: not hidden. */
+export function shownTracks(layers: PlainLayers): PlainTrack[] {
+  return layers.tracks.filter((track) => !track.hidden);
+}
+
+/** The .srt's lines: the Vietnamese layer when shown, else the one being edited (when shown), else the first shown. */
+export function srtLines(layers: PlainLayers): Cue[] {
+  const shown = shownTracks(layers);
+  const track = shown.find((each) => each.lang === "vi") ?? shown.find((each) => each.id === layers.active) ?? shown[0];
+  return track ? exportLines(track) : [];
+}
+
+/** What edit_export burns: `burn` (the first) and `burnExtra` (drawn over it), from the shown layers that burn. */
+export function burnRequests(layers: PlainLayers): { burn?: { style: SubtitleStyle; lines: Cue[] }; burnExtra?: Array<{ style: SubtitleStyle; lines: Cue[] }> } {
+  const all = shownTracks(layers).flatMap((track) => burnRequest(track) ?? []);
+  if (!all.length) return {};
+  return { burn: all[0], ...(all.length > 1 ? { burnExtra: all.slice(1) } : {}) };
+}
+
+/** `project.subtitles` with layers; the layer being edited also stays at the top level for older versions of the app. */
+export function serializeLayers(layers: PlainLayers): unknown {
+  const tracks = layers.tracks.map((track) => ({ ...(serializePlain(track) as object), id: track.id, name: track.name, lang: track.lang, hidden: track.hidden }));
+  return { ...(serializePlain(activeTrack(layers)) as object), tracks, active: layers.active };
 }

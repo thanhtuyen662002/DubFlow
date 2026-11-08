@@ -9,7 +9,10 @@ import type { QueueJob } from "../queue/model.ts";
 import type { ConfirmOptions } from "../../shell/confirm.ts";
 import { COVER_STORAGE_KEY, type AutoRegion, type CoverDocument } from "./cover.ts";
 import { formatClock, MAIN, outputToSource, parseClock, type Edit } from "./model.ts";
-import { addLine, asCues, mainMs, retime, sortLines, type PlainSubtitles } from "./plain_subs.ts";
+import {
+  activeTrack, addExtracted, addLine, addTrack, asCues, LANGUAGE_LABELS, mainMs, MAX_TRACKS, removeTrack, retime, sortLines,
+  type PlainLayers, type PlainLine, type PlainTrack,
+} from "./plain_subs.ts";
 import {
   applyPreset, changeSummary, cleanText, cueAt, cueOutputTime, DEFAULT_STYLE, dragPosition, isColor, normalizeStyle, parseStyle,
   presetOf, PRESETS, previewMetrics, rgba, sameStyle, STYLE_STORAGE_KEY, SUBTITLE_FONTS, subtitleChanges, BOX_SWATCHES,
@@ -69,13 +72,15 @@ export type SubtitleContext = {
   plainChanged: (burst?: string) => void;
   /** Draw a plain video's Che at a time of the main video, when it shows. */
   plainCover: (seconds: number | null) => void;
+  /** Tách phụ đề: the open video and the user's AI translation settings, for edit_subs_extract. */
+  extractArgs: () => Record<string, unknown> | null;
 };
 
 export type SubtitleMode = {
   /** A new editing session. */
   begin(job: QueueJob, outputPath: string): void;
   /** A new session on a video without a dubbing job: its lines live in the draft (Issue #523). */
-  beginPlain(outputPath: string, subtitles: PlainSubtitles): void;
+  beginPlain(outputPath: string, layers: PlainLayers): void;
   /** The plain lines were put back by Hoàn tác / Làm lại: show them again. */
   plainRestored(): void;
   /** The subtitle layer shows: under Phụ đề, or a plain video's lines that are burned in. */
@@ -142,6 +147,11 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
   const layer = $("#edit-subs-layer");
   const block = $("#subs-block");
   const text = $("#subs-text");
+  const textNode = text;
+  const currentStyle = (): SubtitleStyle => style;
+  /** The other shown layers, drawn under or over the one being edited (not draggable here). */
+  const extras = new Map<string, { block: HTMLElement; text: HTMLElement; painted: string }>();
+  let extrasOrder = "";
   const covers = $("#subs-covers");
   // A corner knob on the subtitle line: drag it away from the line to enlarge the text, towards it to shrink it.
   const sizeKnob = document.createElement("span");
@@ -168,12 +178,19 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
   const audio = new Audio();
   audio.preload = "auto";
   const plainBar = $("#subs-plain-bar");
+  const layerList = $<HTMLOListElement>("#subs-layers");
+  const layerAdd = $<HTMLButtonElement>("#subs-layer-add");
+  const extractLang = $<HTMLSelectElement>("#subs-extract-lang");
+  const extractStart = $<HTMLButtonElement>("#subs-extract-start");
+  const extractCancel = $<HTMLButtonElement>("#subs-extract-cancel");
+  const extractStatus = $("#subs-extract-status");
   const burnToggle = $<HTMLInputElement>("#subs-burn");
   const addButton = $<HTMLButtonElement>("#subs-add");
 
   let job: QueueJob | null = null;
-  /** A video without a dubbing job: the draft's lines, edited in place. */
-  let plain: PlainSubtitles | null = null;
+  /** A video without a dubbing job: the draft's subtitle layers, and the one being edited (its lines edited in place). */
+  let layers: PlainLayers | null = null;
+  let plain: PlainTrack | null = null;
   let outputPath = "";
   let data: LoadResponse | null = null;
   let loadToken = 0;
@@ -202,7 +219,9 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
   const cues = (): SubtitleCue[] => data?.cues ?? [];
   const draftOf = (cueId: string): string => drafts.get(cueId) ?? cues().find((cue) => cue.cue_id === cueId)?.text ?? "";
   /** Plain lines burned at export show over the video in every mode. */
-  const visible = (): boolean => active || (!!plain && plain.burn && plain.lines.length > 0);
+  const visible = (): boolean => active || (!!layers && layers.tracks.some((track) => !track.hidden && track.burn && track.lines.length > 0));
+  /** A layer is drawn on the preview when not hidden: always under Phụ đề, else when it is burned in. */
+  const drawn = (track: PlainTrack): boolean => !track.hidden && (active || (track.burn && track.lines.length > 0));
   const dubbed = (): boolean => !!data?.dubbed;
 
   // ---------- Loading ----------
@@ -307,7 +326,9 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
     return point && point.segment.mediaId === MAIN ? point.sourceTime : null;
   }
 
-  function placeBlock(rect: Rect): void {
+  function placeBlock(rect: Rect, node: HTMLElement = block, look: SubtitleStyle = style): void {
+    const style = look;
+    const block = node;
     const metrics = previewMetrics(style, rect);
     const width = Math.max(0, rect.width - metrics.marginX * 2);
     Object.assign(block.style, { width: `${width}px`, left: "", top: "", bottom: "", transform: "" });
@@ -326,7 +347,8 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
    * A wrapped inline block is as wide as its container; libass's box hugs
    * the widest line, so the block is narrowed to it.
    */
-  function fitBox(): void {
+  function fitBox(text: HTMLElement = textNode, style: SubtitleStyle = currentStyle()): void {
+    const block = text.parentElement as HTMLElement;
     text.style.width = "";
     if (!style.box || block.hidden || !text.textContent) return;
     const range = document.createRange();
@@ -350,7 +372,8 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
     Object.assign(layer.style, { left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px`, height: `${rect.height}px` });
     const seconds = mainSeconds();
     const cue = seconds === null ? null : cueAt(cues(), seconds);
-    const line = cue ? cleanText(draftOf(cue.cue_id)) : "";
+    const line = cue && !(plain && !drawn(plain)) ? cleanText(draftOf(cue.cue_id)) : "";
+    renderExtras(rect, seconds);
     // On the style tab or while dragging an empty moment shows a sample line to place.
     const sample = !line && active && panel === "subs" && (pane === "style" || !!drag) && !!data;
     block.hidden = !line && !sample;
@@ -368,6 +391,54 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
     renderCovers(seconds);
     markCurrent(cue?.cue_id ?? null);
     syncAudio();
+  }
+
+  /** The other layers of a plain video at a time of the main video, each in its own look and order. */
+  function renderExtras(rect: Rect, seconds: number | null): void {
+    const others = layers ? layers.tracks.filter((track) => track !== plain && drawn(track)) : [];
+    for (const [id, extra] of extras) {
+      if (!others.some((track) => track.id === id)) {
+        extra.block.remove();
+        extras.delete(id);
+      }
+    }
+    if (!layers) return;
+    const order = layers.tracks;
+    const editing = order.indexOf(plain as PlainTrack);
+    const placing = (track: PlainTrack): HTMLElement => {
+      let extra = extras.get(track.id);
+      if (!extra) {
+        const node = element("div", "subs-extra");
+        const words = element("span", "subs-text");
+        node.append(words);
+        extra = { block: node, text: words, painted: "" };
+        extras.set(track.id, extra);
+      }
+      return extra.block;
+    };
+    // Later layers draw on top, as they burn: the ones before the edited layer go under its block, the rest over it.
+    const under = others.filter((track) => order.indexOf(track) < editing).map(placing);
+    const over = others.filter((track) => order.indexOf(track) > editing).map(placing);
+    const key = others.map((track) => track.id).join(",") + `|${plain?.id ?? ""}`;
+    if (key !== extrasOrder) {
+      extrasOrder = key;
+      block.before(...under);
+      block.after(...over);
+    }
+    for (const track of others) {
+      const extra = extras.get(track.id)!;
+      const line = seconds === null ? null : cueAt(track.lines, seconds);
+      const shown = line ? cleanText(line.text) : "";
+      extra.block.hidden = !shown;
+      const key = `${shown}\n${JSON.stringify(track.style)}\n${rect.width}x${rect.height}`;
+      if (shown && key !== extra.painted) {
+        extra.painted = key;
+        extra.text.textContent = shown;
+        paintSubtitle(extra.text, track.style, rect);
+        placeBlock(rect, extra.block, track.style);
+        fitBox(extra.text, track.style);
+      }
+    }
   }
 
   /**
@@ -726,24 +797,35 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
     return start === null || end === null ? null : { start, end: Math.max(start + 0.05, end) };
   }
 
+  /** The layers on the timeline: every layer with lines (or the edited one under Phụ đề), one row each, the top layer first. */
+  function laneTracks(): PlainTrack[] {
+    if (!layers) return [];
+    return layers.tracks.filter((track) => track === plain ? active || (track.burn && track.lines.length > 0) : track.lines.length > 0 && (active || (track.burn && !track.hidden)))
+      .reverse();
+  }
+
   function renderTrack(row: HTMLElement, pad: number): number {
     laneRow = row;
     lanePad = pad;
-    const shown = !!plain && (active || (plain.burn && plain.lines.length > 0));
-    row.hidden = !shown;
-    if (!shown || !plain) {
+    const tracks = laneTracks();
+    row.hidden = !tracks.length;
+    if (!tracks.length || !plain) {
       row.replaceChildren();
       return 0;
     }
-    if (laneDrag) return LANE_PX;
+    const height = LANE_PX * tracks.length;
+    if (laneDrag) return height;
     const pps = context.pps();
-    const blocks: HTMLElement[] = plain.lines.flatMap((line) => {
+    const several = tracks.length > 1;
+    const blocks: HTMLElement[] = tracks.flatMap((track, index) => track.lines.flatMap((line) => {
       const span = outputSpan(line);
       if (!span) return [];
-      const block = element("div", `tl-sub${line.id === current ? " selected" : ""}${cleanText(line.text) ? "" : " empty"}`);
+      const editing = track === plain;
+      const block = element("div", `tl-sub${editing && line.id === current ? " selected" : ""}${cleanText(line.text) ? "" : " empty"}${editing ? "" : " other"}${track.hidden ? " muted" : ""}`);
       block.dataset.id = line.id;
-      Object.assign(block.style, { left: `${pad + span.start * pps}px`, width: `${Math.max(LANE_MIN_PX, (span.end - span.start) * pps)}px` });
-      block.title = `${cleanText(line.text) || "(trống)"} · ${formatClock(span.start, true)} – ${formatClock(span.end, true)} · kéo để dời, kéo mép để đổi thời gian`;
+      block.dataset.track = track.id;
+      Object.assign(block.style, { top: `${index * LANE_PX}px`, left: `${pad + span.start * pps}px`, width: `${Math.max(LANE_MIN_PX, (span.end - span.start) * pps)}px` });
+      block.title = `${several ? `${track.name}: ` : ""}${cleanText(line.text) || "(trống)"} · ${formatClock(span.start, true)} – ${formatClock(span.end, true)} · kéo để dời, kéo mép để đổi thời gian`;
       block.append(element("span", "tl-sub-name", cleanText(line.text) || "…"));
       {
         // Short lines are drawn LANE_MIN_PX wide so both edges stay grabbable.
@@ -754,15 +836,15 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
         block.append(start, end);
       }
       return [block];
-    });
+    }));
     if (!blocks.length) {
-      const hint = element("span", "tl-au-hint", "Phụ đề: bấm Thêm câu trong bảng Phụ đề");
+      const hint = element("span", "tl-au-hint", "Phụ đề: bấm Thêm câu hoặc Tách phụ đề bằng AI trong bảng Phụ đề");
       hint.style.left = `${pad}px`;
       blocks.push(hint);
     }
     row.replaceChildren(...blocks);
-    row.style.height = `${LANE_PX}px`;
-    return LANE_PX;
+    row.style.height = `${height}px`;
+    return height;
   }
 
   /** Where a lane drag would put the line, in the main video's time; null when it would leave the main video. */
@@ -781,9 +863,19 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
 
   const laneElement = document.querySelector<HTMLElement>("#tl-subs");
   laneElement?.addEventListener("pointerdown", (event) => {
-    if (!plain || event.button !== 0) return;
+    if (!plain || !layers || event.button !== 0) return;
     const target = event.target as HTMLElement;
     const block = target.closest<HTMLElement>(".tl-sub");
+    // A line of another layer: that layer becomes the one being edited.
+    if (block?.dataset.track && block.dataset.track !== plain.id) {
+      event.stopPropagation();
+      event.preventDefault();
+      selectTrack(block.dataset.track);
+      const picked = plain.lines.find((each) => each.id === block.dataset.id);
+      const span = picked && outputSpan(picked);
+      if (span) context.seek(span.start + 0.001);
+      return;
+    }
     const line = block && plain.lines.find((each) => each.id === block.dataset.id);
     const span = line && outputSpan(line);
     if (!block || !line || !span) return;
@@ -1003,6 +1095,7 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
         : `${count} câu · ${plain.burn ? "in vào video khi xuất" : "chỉ xuất file .srt"}`;
       summary.title = "Câu thoại và kiểu chữ được tự lưu vào bản nháp";
       summary.classList.toggle("warn", empty > 0);
+      renderLayers();
       context.changed();
       return;
     }
@@ -1065,6 +1158,179 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
   }
   applyButton.addEventListener("click", () => void apply());
 
+  // ---------- Lớp phụ đề (plain videos) ----------
+
+  /** Edit another layer: its lines in the list, its look in Kiểu chữ. */
+  function selectTrack(id: string): void {
+    if (!layers || !layers.tracks.some((track) => track.id === id) || plain?.id === id) return;
+    layers.active = id;
+    showTrack();
+    context.plainChanged("layer-select");
+  }
+
+  /** The list, the look and the drawing again from the layer being edited. */
+  function showTrack(): void {
+    if (!layers) return;
+    plain = activeTrack(layers);
+    data = { cues: asCues(plain.lines), style: null, source_path: null, mix_path: null, dubbed: false, blur_regions: [] };
+    style = normalizeStyle(plain.style);
+    baseStyle = style;
+    current = null;
+    limit = Math.max(LIST_STEP, plain.lines.length);
+    renderList();
+    renderStyle();
+    renderFoot();
+    renderLayers();
+    painted = "";
+    extrasOrder = "";
+    frame();
+    if (laneRow) renderTrack(laneRow, lanePad);
+  }
+
+  function renderLayers(): void {
+    if (!layers) {
+      layerList.replaceChildren();
+      return;
+    }
+    const all = layers;
+    // The top layer first, as on the timeline.
+    layerList.replaceChildren(...[...all.tracks].reverse().map((track) => {
+      const row = element("li", `subs-layer${track === plain ? " active" : ""}${track.hidden ? " hidden-layer" : ""}`);
+      const pick = element("button", "subs-layer-pick");
+      pick.type = "button";
+      pick.title = track === plain ? "Lớp đang sửa" : "Sửa lớp này";
+      pick.setAttribute("aria-pressed", String(track === plain));
+      const words = track.lines.filter((line) => cleanText(line.text)).length;
+      pick.append(element("span", "subs-layer-name", track.name), element("span", "subs-layer-count", `${words} câu${track.burn ? "" : " · không in"}`));
+      pick.addEventListener("click", () => selectTrack(track.id));
+      const eye = element("button", "subs-layer-btn", track.hidden ? "◌" : "👁");
+      eye.type = "button";
+      eye.title = track.hidden ? "Hiện lớp này (đang ẩn: không hiện trên video, không in khi xuất)" : "Ẩn lớp này";
+      eye.setAttribute("aria-label", track.hidden ? `Hiện lớp ${track.name}` : `Ẩn lớp ${track.name}`);
+      eye.setAttribute("aria-pressed", String(track.hidden));
+      eye.addEventListener("click", () => {
+        track.hidden = !track.hidden;
+        layersChanged("layer-hide");
+      });
+      const remove = element("button", "subs-layer-btn", "✕");
+      remove.type = "button";
+      remove.title = all.tracks.length > 1 ? "Xóa lớp này" : "Xóa hết câu của lớp này";
+      remove.setAttribute("aria-label", `Xóa lớp ${track.name}`);
+      remove.addEventListener("click", () => void dropTrack(track));
+      row.append(pick, eye, remove);
+      return row;
+    }));
+    layerAdd.disabled = all.tracks.length >= MAX_TRACKS;
+    layerAdd.title = layerAdd.disabled ? `Tối đa ${MAX_TRACKS} lớp phụ đề` : "Thêm một lớp phụ đề trống ở trên cùng";
+  }
+
+  function layersChanged(burst?: string): void {
+    showTrack();
+    context.plainChanged(burst);
+  }
+
+  async function dropTrack(track: PlainTrack): Promise<void> {
+    if (!layers) return;
+    const words = track.lines.filter((line) => cleanText(line.text)).length;
+    if (words && !await host.confirm({
+      title: layers.tracks.length > 1 ? `Xóa lớp "${track.name}"?` : `Xóa hết câu của lớp "${track.name}"?`,
+      message: `Lớp này có ${words} câu. Có thể lấy lại bằng Hoàn tác.`,
+      confirmLabel: "Xóa", cancelLabel: "Giữ lại",
+    })) return;
+    removeTrack(layers, track.id);
+    layersChanged();
+  }
+
+  layerAdd.addEventListener("click", () => {
+    if (!layers) return;
+    const number = layers.tracks.length + 1;
+    if (!addTrack(layers, { name: `Phụ đề ${number}`, style: withoutPosition(style), burn: true })) return;
+    layersChanged();
+  });
+
+  // Tách phụ đề bằng AI: the video's own words and their Vietnamese, as two layers.
+  let extractToken = 0;
+  let extractTimer: number | null = null;
+  let extracting = false;
+
+  function extractState(message: string | null, running: boolean): void {
+    extracting = running;
+    extractStatus.hidden = !message;
+    extractStatus.textContent = message ?? "";
+    extractStart.disabled = running;
+    extractStart.textContent = running ? "Đang tách phụ đề…" : "Tách phụ đề bằng AI";
+    extractCancel.hidden = !running;
+    extractLang.disabled = running;
+  }
+
+  function stopPolling(): void {
+    extractToken += 1;
+    if (extractTimer !== null) window.clearTimeout(extractTimer);
+    extractTimer = null;
+  }
+
+  type ExtractStatus = { state: string; progress?: number; message?: string; language?: string; source?: Array<Omit<PlainLine, "id">>; vi?: Array<Omit<PlainLine, "id">>; warnings?: string[] };
+
+  /** Follow a running Tách phụ đề; `quiet` on opening a video (an old finished one is not offered again). */
+  function poll(target: { outputPath: string; kind: string }, quiet: boolean): void {
+    stopPolling();
+    const token = extractToken;
+    const tick = async (): Promise<void> => {
+      let status: ExtractStatus;
+      try {
+        status = await invoke<ExtractStatus>("edit_subs_extract_status", target);
+      } catch (error) {
+        if (token !== extractToken) return;
+        extractState(`Không đọc được tiến độ tách phụ đề: ${String(error).slice(0, 160)}`, false);
+        return;
+      }
+      if (token !== extractToken || !layers) return;
+      if (status.state === "RUNNING") {
+        extractState(`${status.message ?? "Đang tách phụ đề…"} ${Math.round(status.progress ?? 0)}%`, true);
+        extractTimer = window.setTimeout(() => void tick(), 1000);
+        return;
+      }
+      if (quiet) {
+        extractState(null, false);
+        return;
+      }
+      if (status.state === "COMPLETED") {
+        const language = status.language === "en" ? "en" : "zh";
+        const made = addExtracted(layers, language, status.source ?? [], status.vi ?? [], style);
+        if (!made.vi && !made.source) {
+          extractState(`Đã tách xong nhưng đã đủ ${MAX_TRACKS} lớp phụ đề; hãy xóa bớt một lớp rồi bấm lại.`, false);
+          return;
+        }
+        if (made.vi) layers.active = made.vi.id;
+        layersChanged();
+        const skipped = !made.source ? ` Chưa thêm lớp ${LANGUAGE_LABELS[language].toLowerCase()} vì đã đủ ${MAX_TRACKS} lớp.` : "";
+        extractState(`${status.message ?? "Đã tách phụ đề."}${skipped}`, false);
+        return;
+      }
+      extractState(status.state === "NONE" ? null : status.message ?? "Không tách được phụ đề.", false);
+    };
+    void tick();
+  }
+
+  extractStart.addEventListener("click", async () => {
+    if (!layers || extracting) return;
+    const args = context.extractArgs();
+    if (!args) return;
+    extractState("Đang bắt đầu tách phụ đề…", true);
+    try {
+      await invoke("edit_subs_extract", { ...args, language: extractLang.value });
+      poll({ outputPath: String(args.outputPath), kind: String(args.kind) }, false);
+    } catch (error) {
+      extractState(`Không tách được phụ đề: ${String(error).slice(0, 200)}`, false);
+    }
+  });
+  extractCancel.addEventListener("click", async () => {
+    const args = context.extractArgs();
+    if (!args) return;
+    extractCancel.hidden = true;
+    await invoke("edit_subs_extract_cancel", { outputPath: args.outputPath, kind: args.kind }).catch(() => undefined);
+  });
+
   // ---------- Mode ----------
 
   function show(on: boolean): void {
@@ -1085,28 +1351,26 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
     },
     get showing() { return visible(); },
     plainRestored() {
-      if (!plain) return;
-      style = normalizeStyle(plain.style);
-      baseStyle = style;
-      renderStyle();
-      syncPlain();
+      if (!layers) return;
+      showTrack();
     },
     renderTrack,
-    beginPlain(path, subtitles) {
+    beginPlain(path, next) {
       this.begin(null as unknown as QueueJob, path);
       job = null;
-      plain = subtitles;
-      data = { cues: asCues(subtitles.lines), style: null, source_path: null, mix_path: null, dubbed: false, blur_regions: [] };
-      style = normalizeStyle(subtitles.style);
-      baseStyle = style;
+      layers = next;
       loading.hidden = true;
-      renderList();
-      renderStyle();
-      renderFoot();
-      frame();
+      showTrack();
+      // A Tách phụ đề still running for this video (the editor was closed meanwhile) is followed again.
+      const args = context.extractArgs();
+      if (args) poll({ outputPath: String(args.outputPath), kind: String(args.kind) }, true);
     },
     begin(next, path) {
       plain = null;
+      layers = null;
+      stopPolling();
+      extractState(null, false);
+      renderLayers();
       job = next;
       outputPath = path;
       data = null;
@@ -1125,6 +1389,10 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
     end() {
       this.leave();
       plain = null;
+      layers = null;
+      stopPolling();
+      extractState(null, false);
+      renderExtras(context.picture(), null);
       layer.hidden = true;
       job = null;
       data = null;

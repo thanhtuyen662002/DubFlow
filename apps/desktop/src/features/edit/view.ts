@@ -25,7 +25,8 @@ import {
   type Cue, type Edit, type StemKey, type Media, type MediaInfo, type Overlay, type OverlayPreset, type Quality, type Segment, type TransitionType,
 } from "./model.ts";
 import { mountSubtitles } from "./subtitles_view.ts";
-import { burnRequest, exportLines, plainSubtitles, serializePlain, type PlainSubtitles } from "./plain_subs.ts";
+import { activeTrack, burnRequests, plainLayers, serializeLayers, srtLines, type PlainLayers } from "./plain_subs.ts";
+import { loadPrefs, translationJobArgs } from "../ai/translation_prefs.ts";
 import { STYLE_STORAGE_KEY, storedStyle } from "./subtitles.ts";
 import { COVER_STORAGE_KEY, plainCover } from "./cover.ts";
 import { mountCover } from "./cover_view.ts";
@@ -166,7 +167,8 @@ type Session = {
   /** Che drawn here and applied at export (Issue #510): every video that is not a re-runnable dubbing job. */
   plainCover: boolean;
   /** Phụ đề kept in the draft (Issue #523), for the same videos; `touched` once changed or saved before. */
-  plainSubs: PlainSubtitles | null;
+  /** A plain video's subtitle layers (Lớp phụ đề), saved in the draft. */
+  plainSubs: PlainLayers | null;
   /** Hoàn tác across both histories: which kind each step was, newest last (subtitles live outside the Edit). */
   steps: Array<"edit" | "subs">;
   redoSteps: Array<"edit" | "subs">;
@@ -1064,7 +1066,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     }
     if (edit !== current()) commit(edit);
     if (layers.burnCaptions && session.plainSubs) {
-      session.plainSubs.burn = true;
+      activeTrack(session.plainSubs).burn = true;
       session.subsShadow = JSON.stringify(session.plainSubs);
       session.subsTouched = true;
       subs.refresh();
@@ -1092,7 +1094,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       session.subsTouched = true;
       recordSubs(burst);
       try {
-        window.localStorage.setItem(STYLE_STORAGE_KEY, JSON.stringify(session.plainSubs.style));
+        window.localStorage.setItem(STYLE_STORAGE_KEY, JSON.stringify(activeTrack(session.plainSubs).style));
       } catch {
         // The remembered look is a convenience.
       }
@@ -1100,6 +1102,10 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       renderPanel();
     },
     plainCover: (seconds) => cover.draw(session?.plainCover && (mode === "cover" || !!cover.document()) ? seconds : null),
+    extractArgs: () => session ? {
+      outputPath: session.outputPath, kind: session.target.kind,
+      ...translationJobArgs(loadPrefs(), host.ai, session.outputPath.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, "") ?? ""),
+    } : null,
   });
   const revisionReady = $("#edit-revision-ready");
   const audio = mountAudio(invoke, {
@@ -1122,7 +1128,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     seek: (time) => seekOutput(time),
     pps: () => pps,
     timeAt: (clientX) => timeAt(clientX),
-    cues: () => session ? remapCues(session.plainSubs ? exportLines(session.plainSubs) : session.facts.cues, current()) : [],
+    cues: () => session ? remapCues(session.plainSubs ? srtLines(session.plainSubs) : session.facts.cues, current()) : [],
     enterMode: () => {
       if (!session) return;
       session.overlay = null;
@@ -1272,7 +1278,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   /** Put plain subtitles back from a recorded snapshot. */
   function restoreSubs(snapshot: string): void {
     if (!session?.plainSubs) return;
-    Object.assign(session.plainSubs, JSON.parse(snapshot) as PlainSubtitles);
+    Object.assign(session.plainSubs, JSON.parse(snapshot) as PlainLayers);
     session.subsShadow = snapshot;
     session.subsAt = 0;
     session.subsBurst = null;
@@ -1351,7 +1357,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     try {
       const project = serializeProject(history.current, history.changes, selected, recent);
       if (session.plainCover) project.cover = cover.document();
-      if (session.plainSubs && session.subsTouched) (project as Record<string, unknown>).subtitles = serializePlain(session.plainSubs);
+      if (session.plainSubs && session.subsTouched) (project as Record<string, unknown>).subtitles = serializeLayers(session.plainSubs);
       await invoke("edit_project_save", { outputPath, kind, project });
       $("#edit-save-state").textContent = "";
     } catch (error) {
@@ -3394,7 +3400,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
         } catch {
           // The remembered look is a convenience.
         }
-        session.plainSubs = plainSubtitles(loaded.project, facts.cues, remembered);
+        session.plainSubs = plainLayers(loaded.project, facts.cues, remembered);
         session.subsTouched = !!(loaded.project && typeof loaded.project === "object" && "subtitles" in loaded.project);
         session.subsShadow = JSON.stringify(session.plainSubs);
         subs.beginPlain(outputPath, session.plainSubs);
@@ -3762,8 +3768,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     const whole = edit === current();
     const { outputPath, target: { kind } } = session;
     // A plain video's lines from Phụ đề, else its own captions, go in the .srt.
-    const cues = remapCues(session.plainSubs ? exportLines(session.plainSubs) : session.facts.cues, edit).filter((cue) => cue.end_ms > cue.start_ms);
-    const burn = session.plainSubs ? burnRequest(session.plainSubs) : null;
+    const cues = remapCues(session.plainSubs ? srtLines(session.plainSubs) : session.facts.cues, edit).filter((cue) => cue.end_ms > cue.start_ms);
+    const burns = session.plainSubs ? burnRequests(session.plainSubs) : {};
     const start = $<HTMLButtonElement>("#export-start");
     const error = $("#export-error");
     start.disabled = true;
@@ -3776,7 +3782,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
         audioOnly: options.audioOnly, ...(options.audioOnly ? {} : {
           ...(options.fps ? { fps: Number(options.fps) } : {}), ...(options.rate ? { bitrate: options.rate } : {}),
           ...(options.aspect ? { aspect: options.aspect, fill: options.fill } : {}) }),
-        ...(session.plainCover && cover.document() ? { cover: cover.document() } : {}), ...(burn ? { burn } : {}) } });
+        ...(session.plainCover && cover.document() ? { cover: cover.document() } : {}), ...burns } });
       if (session?.outputPath !== outputPath) return;
       // Only a whole video counts as the export of this edit (a range or its sound does not).
       session.exporting = whole && !options.audioOnly ? edit : null;

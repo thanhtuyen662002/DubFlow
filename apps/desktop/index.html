@@ -932,8 +932,22 @@
                   <div id="subs-lines-pane" class="subs-pane" role="tabpanel" aria-labelledby="subs-tab-lines">
                     <button id="subs-full-review" class="btn ghost subs-full-review" type="button" title="Lọc câu cần xem lại, đổi giọng theo người nói rồi xử lý lại">Bảng bản dịch đầy đủ…</button>
                     <div id="subs-plain-bar" class="subs-plain-bar" hidden>
+                      <div class="subs-layers-head">
+                        <span class="edit-label">Lớp phụ đề</span>
+                        <button id="subs-layer-add" class="btn ghost small" type="button" title="Thêm một lớp phụ đề trống ở trên cùng">+ Lớp trống</button>
+                      </div>
+                      <ol id="subs-layers" class="subs-layers" aria-label="Các lớp phụ đề"></ol>
+                      <div id="subs-extract" class="subs-extract">
+                        <select id="subs-extract-lang" aria-label="Ngôn ngữ gốc của video">
+                          <option value="zh">Lời gốc: tiếng Trung</option>
+                          <option value="en">Lời gốc: tiếng Anh</option>
+                        </select>
+                        <button id="subs-extract-start" class="btn small" type="button" title="Nghe lời thoại của video, dịch sang tiếng Việt bằng AI và tạo hai lớp phụ đề">Tách phụ đề bằng AI</button>
+                        <button id="subs-extract-cancel" class="btn ghost small" type="button" hidden>Hủy</button>
+                        <p id="subs-extract-status" class="edit-note" role="status" hidden></p>
+                      </div>
                       <label class="subs-row">
-                        <span>In phụ đề vào video khi xuất</span>
+                        <span>In lớp này vào video khi xuất</span>
                         <input id="subs-burn" class="switch" type="checkbox" role="switch" />
                       </label>
                       <p class="edit-note">Sửa chữ, giờ bắt đầu và kết thúc của từng câu; mọi thay đổi được tự lưu. Nếu video đã có phụ đề in sẵn, dùng Che để che dải phụ đề cũ.</p>

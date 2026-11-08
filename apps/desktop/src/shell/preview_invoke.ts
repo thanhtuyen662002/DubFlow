@@ -8,6 +8,8 @@ import { parseSourceCredit, type SourceCredit } from "../features/credit/model.t
 type Running = { startedAt: number; dubbing: boolean; cancelled: boolean };
 
 const running = new Map<string, Running>();
+/** Tách phụ đề in the browser preview: when it started, per video, and its language. */
+const previewExtracts = new Map<string, { at: number; language: string; cancelled: boolean }>();
 const previewSplits = new Map<string, number>();
 const DURATION_MS = 24_000;
 const STEPS: Array<[number, string]> = [
@@ -522,6 +524,25 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
         split: splitAt === undefined ? null : splitDone ? { state: "COMPLETED", progress: 100, message: "Đã tách nhạc và tiếng động." }
           : { state: "RUNNING", progress: splitProgress, message: "Đang tách nhạc và tiếng động…" },
       } as T;
+    }
+    case "edit_subs_extract": previewExtracts.set(String(args.outputPath), { at: Date.now(), language: String(args.language ?? "zh"), cancelled: false }); return undefined as T;
+    case "edit_subs_extract_cancel": {
+      const run = previewExtracts.get(String(args.outputPath));
+      if (run) run.cancelled = true;
+      return undefined as T;
+    }
+    case "edit_subs_extract_status": {
+      const run = previewExtracts.get(String(args.outputPath));
+      if (!run) return { state: "NONE" } as T;
+      if (run.cancelled) return { state: "CANCELLED", progress: 0, message: "Đã hủy tách phụ đề." } as T;
+      const progress = Math.min(100, (Date.now() - run.at) / 40);
+      if (progress < 100) return { state: "RUNNING", progress, message: progress < 60 ? "Đang nghe lời thoại…" : "Đang dịch theo ngữ cảnh bằng Claude…" } as T;
+      const zh = ["大家好，欢迎来到我的频道", "今天我们去看一座养猪的高楼", "这里一共有二十六层", "每一层都住着上千头猪"];
+      const en = ["Hello everyone, welcome to my channel", "Today we visit a pig skyscraper", "It has twenty-six floors", "Each floor houses a thousand pigs"];
+      const vi = ["Chào mọi người, chào mừng đến với kênh của mình", "Hôm nay chúng ta đi xem tòa nhà nuôi lợn", "Ở đây có tất cả hai mươi sáu tầng", "Mỗi tầng nuôi hàng nghìn con lợn"];
+      const at = (index: number) => ({ start_ms: 1000 + index * 3000, end_ms: 3600 + index * 3000 });
+      return { state: "COMPLETED", progress: 100, message: `Đã tách 4 câu ${run.language === "en" ? "tiếng Anh" : "tiếng Trung"}, 4 câu dịch bằng Claude.`, language: run.language,
+        source: (run.language === "en" ? en : zh).map((text, index) => ({ ...at(index), text })), vi: vi.map((text, index) => ({ ...at(index), text })), warnings: [] } as T;
     }
     case "edit_split": previewSplits.set(String(args.outputPath), Date.now()); return undefined as T;
     case "edit_separate": previewSeparations.set(String(args.outputPath), Date.now()); return undefined as T;
