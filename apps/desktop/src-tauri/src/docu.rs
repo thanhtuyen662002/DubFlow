@@ -408,6 +408,11 @@ const VISUAL_JOB: Job = Job { work: ".dubflow-work/visual", busy: "Kế hoạch 
 
 /// Run `python -B -m engine.dubflow.docu <args>` in the background with a status file the page polls; one at a time per kind.
 fn spawn_job(dir: &Path, job: &Job, args: Vec<OsString>) -> Result<(), String> {
+    spawn_job_with(dir, job, args, None)
+}
+
+/// `spawn_job` with one secret for the engine's environment (the Vibi.pro key, #632).
+fn spawn_job_with(dir: &Path, job: &Job, args: Vec<OsString>, secret: Option<(&str, String)>) -> Result<(), String> {
     let root = version_root()?;
     let work = dir.join(job.work);
     if crate::product::read_small_json(&work.join("status.json"), 64 * 1024).is_some_and(|status| status["state"] == "RUNNING") {
@@ -419,6 +424,9 @@ fn spawn_job(dir: &Path, job: &Job, args: Vec<OsString>) -> Result<(), String> {
     let log = fs::File::create(work.join("engine.log")).map_err(|_| fail("Không ghi được nhật ký"))?;
     let mut command = Command::new(root.join("runtime/python.exe"));
     command.current_dir(root.join("app")).args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::from(log));
+    if let Some((name, value)) = secret {
+        command.env(name, value);
+    }
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
     let mut child = command.spawn().map_err(|_| {
@@ -444,9 +452,17 @@ fn cancel_job(dir: &str, job: &Job) -> Result<(), String> {
 
 /// Speak the saved script in the background; `docu_narration_status` follows it.
 #[tauri::command]
-pub fn docu_narrate(dir: String, voice: String, speed: f64) -> Result<(), String> {
+pub fn docu_narrate(dir: String, voice: String, speed: f64, vibi: Option<Value>) -> Result<(), String> {
     let dir = docu_dir(&dir)?;
     let root = version_root()?;
+    // A Vibi.pro voice (#632): its own settings, the key through the environment.
+    if let Some(settings) = vibi.filter(|value| !value.is_null()) {
+        if !dir.join("documentary_script.json").is_file() { return Err(fail("Hãy viết và lưu kịch bản trước khi tạo lời đọc")); }
+        let (extra, key) = crate::vibi::narration_settings(&dir.join(NARRATION_JOB.work), &settings)?;
+        let mut args = narration_args(&dir, &root, &control_root()?.join("models"), "vibi", 1.0);
+        args.extend(extra);
+        return spawn_job_with(&dir, &NARRATION_JOB, args, Some((crate::vibi::KEY_ENV, key)));
+    }
     let known = voice_profile(&root)?["voices"].as_array().into_iter().flatten().any(|item| item["voice_id"] == voice.as_str());
     if !known { return Err(fail("Giọng đọc tiếng Anh đã chọn không có trong phiên bản này")); }
     if !speed.is_finite() || !(SPEEDS.0..=SPEEDS.1).contains(&speed) { return Err(fail("Tốc độ đọc phải từ 0,8 đến 1,2")); }
@@ -597,27 +613,29 @@ pub async fn docu_slices(dir: String, scenes: Value) -> Result<Value, String> {
     Ok(result)
 }
 
-fn options_args(dir: &Path, graphics: bool, captions: bool, music: &str, music_path: Option<&Path>, sfx: Option<bool>) -> Vec<OsString> {
+fn options_args(dir: &Path, graphics: bool, captions: bool, music: &str, music_path: Option<&Path>, sfx: Option<bool>, mix: Option<&str>) -> Vec<OsString> {
     let mut args: Vec<OsString> = vec!["-m".into(), "engine.dubflow.docu".into(), "options".into(), "--run-dir".into(), dir.into(),
         "--graphics".into(), graphics.to_string().into(), "--captions".into(), captions.to_string().into(), "--music".into(), music.into()];
     if let Some(path) = music_path { args.extend(["--music-path".into(), path.into()]); }
     // Left out, the saved choice stays (callers that only move the cards and music, such as the layer split).
     if let Some(sfx) = sfx { args.extend(["--sfx".into(), sfx.to_string().into()]); }
+    if let Some(mix) = mix { args.extend(["--mix".into(), mix.into()]); }
     args
 }
 
 /// What the next rough cut draws (number cards, captions) and plays (music bed); saved in the project.
 #[tauri::command]
 pub async fn docu_render_options(dir: String, graphics: bool, captions: bool, music: String, music_path: Option<String>,
-                                 sfx: Option<bool>) -> Result<Value, String> {
+                                 sfx: Option<bool>, mix: Option<String>) -> Result<Value, String> {
     let dir = docu_dir(&dir)?;
     if !["generated", "file", "none"].contains(&music.as_str()) { return Err(fail("Lựa chọn nhạc nền không hợp lệ")); }
+    if mix.as_deref().is_some_and(|mix| !["standard", "mega"].contains(&mix)) { return Err(fail("Lựa chọn hậu kỳ âm thanh không hợp lệ")); }
     let path = match music_path.as_deref().filter(|value| !value.is_empty()) {
         Some(value) => Some(absolute_file(value, &["mp3", "wav", "m4a", "aac", "flac", "ogg", "opus"], Some(512 * 1024 * 1024))
             .map_err(|_| fail("Chọn file nhạc MP3, WAV, M4A, AAC, FLAC, OGG hoặc OPUS"))?),
         None => None,
     };
-    let result = python_json(options_args(&dir, graphics, captions, &music, path.as_deref(), sfx), "bộ xử lý phim tài liệu").await?;
+    let result = python_json(options_args(&dir, graphics, captions, &music, path.as_deref(), sfx, mix.as_deref()), "bộ xử lý phim tài liệu").await?;
     if result["state"] != "COMPLETED" { return Err(fail(script_error(&result))); }
     Ok(result["options"].clone())
 }
@@ -651,7 +669,7 @@ pub async fn docu_layers(dir: String) -> Result<Value, String> {
     } else {
         None
     };
-    let result = python_json(options_args(&dir, false, false, "none", None, None), "bộ xử lý phim tài liệu").await?;
+    let result = python_json(options_args(&dir, false, false, "none", None, None, None), "bộ xử lý phim tài liệu").await?;
     if result["state"] != "COMPLETED" { return Err(fail(script_error(&result))); }
     let root = version_root()?;
     spawn_job(&dir, &RENDER_JOB, render_args(&dir, &root))?;
@@ -883,11 +901,11 @@ mod tests {
 
     #[test]
     fn options_command_passes_every_choice() {
-        let args = options_args(Path::new(r"C:\run"), true, false, "file", Some(Path::new(r"C:\music.mp3")), Some(false));
+        let args = options_args(Path::new(r"C:\run"), true, false, "file", Some(Path::new(r"C:\music.mp3")), Some(false), Some("mega"));
         let text: Vec<String> = args.iter().map(|arg| arg.to_string_lossy().into_owned()).collect();
         assert_eq!(text, ["-m", "engine.dubflow.docu", "options", "--run-dir", r"C:\run", "--graphics", "true", "--captions", "false",
-            "--music", "file", "--music-path", r"C:\music.mp3", "--sfx", "false"]);
-        let kept = options_args(Path::new(r"C:\run"), false, false, "none", None, None);
+            "--music", "file", "--music-path", r"C:\music.mp3", "--sfx", "false", "--mix", "mega"]);
+        let kept = options_args(Path::new(r"C:\run"), false, false, "none", None, None, None);
         assert!(!kept.iter().any(|arg| arg == "--sfx"));
     }
 
@@ -1092,7 +1110,7 @@ mod tests {
         fs::write(run.join("documentary.mp4"), b"mp4").unwrap();
         let before = snapshot(&store);
         let dir = display_path(&run);
-        refused(docu_narrate(dir.clone(), "am_michael".into(), 1.0));
+        refused(docu_narrate(dir.clone(), "am_michael".into(), 1.0, None));
         refused(docu_plan(dir.clone()));
         refused(docu_render(dir.clone()));
         refused(docu_narration_cancel(dir.clone()));

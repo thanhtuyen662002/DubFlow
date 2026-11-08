@@ -1528,6 +1528,10 @@
               <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path d="M4 6h9M8.5 4v2M6 6c.6 3 2.6 5.4 5 6.6M11 6c-.6 3.4-3 6.2-6.4 7.6M13 20l3.5-8 3.5 8M14.2 17.4h4.6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
               <span>Dịch phụ đề</span>
             </button>
+            <button id="settings-tab-voices" class="settings-tab" type="button" role="tab" data-tab="voices" aria-controls="settings-pane-voices" aria-selected="false" tabindex="-1">
+              <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><rect x="9" y="3.5" width="6" height="11" rx="3" stroke="currentColor" stroke-width="1.7" fill="none"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v2.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" fill="none"/></svg>
+              <span>Giọng đọc</span>
+            </button>
             <button id="settings-tab-processing" class="settings-tab" type="button" role="tab" data-tab="processing" aria-controls="settings-pane-processing" aria-selected="false" tabindex="-1">
               <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" stroke="currentColor" stroke-width="1.7" fill="none"/><path d="M9.5 2.5v3.5M14.5 2.5v3.5M9.5 18v3.5M14.5 18v3.5M2.5 9.5H6M2.5 14.5H6M18 9.5h3.5M18 14.5h3.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
               <span>Xử lý &amp; máy</span>
@@ -1624,6 +1628,16 @@
                     <p class="hint">Chỉ thay đúng cả từ (“dao động” vẫn giữ nguyên). Áp dụng cho video xử lý từ giờ trở đi; bản dịch gốc để sửa vẫn giữ nguyên. <button id="sensitive-reset" class="link" type="button">Dùng danh sách mặc định</button></p>
                   </div>
                 </section>
+              </div>
+            </section>
+            <section id="settings-pane-voices" class="settings-pane" role="tabpanel" aria-labelledby="settings-tab-voices" tabindex="0" hidden>
+              <header class="settings-pane-head">
+                <h3>Giọng đọc</h3>
+                <p>Giọng ElevenLabs và MiniMax qua Vibi.pro, thay cho giọng trong máy khi lồng tiếng và đọc phim tài liệu.</p>
+              </header>
+              <div class="settings-section">
+                <div class="settings-section-head"><h4>Vibi.pro</h4></div>
+                <div id="vibi-settings" class="vibi-settings"></div>
               </div>
             </section>
             <section id="settings-pane-processing" class="settings-pane" role="tabpanel" aria-labelledby="settings-tab-processing" tabindex="0" hidden>

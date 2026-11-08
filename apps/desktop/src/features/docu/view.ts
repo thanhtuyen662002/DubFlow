@@ -11,6 +11,8 @@ import {
 import { writeScript } from "./ai.ts";
 import { closeDrawerOutside } from "../../shell/drawer.ts";
 import { addText, type Edit } from "../edit/model.ts";
+import { loadChoice as loadVibiChoice, settingsFor as vibiSettingsFor } from "../vibi/model.ts";
+import { vibiVoiceRow, type VibiStudio } from "../vibi/view.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 type Settings = {
@@ -19,6 +21,8 @@ type Settings = {
   edit?(video: { outputPath: string; displayName: string }, seed: (edit: Edit) => Edit): void;
   /** What Claude is doing over MCP now (null when idle), for the rail. */
   mcpBusy?(label: string | null): void;
+  /** The Vibi.pro voice studio (#632): narration in an ElevenLabs or MiniMax voice. */
+  vibi?: VibiStudio;
 };
 const escapeHtml = (value: unknown): string => String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]!));
 const videoName = (path: string): string => path.split(/[\\/]/).at(-1) ?? path;
@@ -172,6 +176,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
                 <label>Nhạc nền<select id="docu-opt-music"><option value="generated">Tự tạo theo không khí từng chương</option><option value="none">Không có</option><option value="file" hidden>File nhạc đã chọn</option></select></label>
                 <button id="docu-opt-music-file" class="btn" type="button">Chọn file nhạc…</button>
                 <label title="Tiếng gió, máy móc, nước… theo thẻ âm thanh của từng cảnh, và tiếng nhấn khi sang hồi mới"><input id="docu-opt-sfx" type="checkbox" checked /> Âm thanh môi trường theo cảnh</label>
+                <label title="Mega Projects: nén nhẹ giọng đọc cho âm lượng luôn đều, nhạc nền -24 dB, hiệu ứng âm thanh tối đa -15 dB">Hậu kỳ âm thanh<select id="docu-opt-mix"><option value="standard">Chuẩn</option><option value="mega">Mega Projects: nén giọng, nhạc -24 dB, SFX -15 dB</option></select></label>
               </div>
               <button id="docu-render" class="btn primary block" type="button">Dựng bản nháp</button>
               <div id="docu-render-progress" class="docu-narration-progress" hidden>
@@ -496,7 +501,8 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
     fileOption.hidden = !options.music_path;
     fileOption.textContent = options.music_path ? `File: ${options.music_path.split(/[\\/]/).pop()}` : "File nhạc đã chọn";
     music.value = options.music;
-    for (const id of ["#docu-opt-graphics", "#docu-opt-captions", "#docu-opt-music", "#docu-opt-music-file", "#docu-opt-sfx"]) $<HTMLInputElement>(id).disabled = running || !selected;
+    $<HTMLSelectElement>("#docu-opt-mix").value = options.mix;
+    for (const id of ["#docu-opt-graphics", "#docu-opt-captions", "#docu-opt-music", "#docu-opt-music-file", "#docu-opt-sfx", "#docu-opt-mix"]) $<HTMLInputElement>(id).disabled = running || !selected;
   }
 
   /** What the next render draws and plays; saved in the project, applied on "Dựng lại bản nháp". */
@@ -506,7 +512,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
     try {
       const saved = await invoke("docu_render_options", { dir, graphics: $<HTMLInputElement>("#docu-opt-graphics").checked,
         captions: $<HTMLInputElement>("#docu-opt-captions").checked, music: musicPath ? "file" : $<HTMLSelectElement>("#docu-opt-music").value,
-        musicPath: musicPath ?? null, sfx: $<HTMLInputElement>("#docu-opt-sfx").checked });
+        musicPath: musicPath ?? null, sfx: $<HTMLInputElement>("#docu-opt-sfx").checked, mix: $<HTMLSelectElement>("#docu-opt-mix").value });
       if (selected?.dir !== dir) return;
       render = { ...render, options: parseRenderOptions(saved) };
       renderRough();
@@ -588,7 +594,15 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
 
   function renderNarration(): void {
     const info = narration, running = info.status?.state === "RUNNING";
-    $<HTMLButtonElement>("#docu-narrate").disabled = running || !selected || !voices.length;
+    const cloud = settings.vibi ? loadVibiChoice() : null;
+    const onVibi = Boolean(cloud?.use.documentary && cloud.settings);
+    // On Vibi the on-device voice and speed do not apply: hide them.
+    $("#docu-voice").closest("label")!.hidden = onVibi;
+    $("#docu-speed").closest("label")!.hidden = onVibi;
+    $("#docu-narration-note").textContent = onVibi
+      ? "Đọc bằng giọng Vibi.pro với thông số đã chọn (tốc độ chỉnh trong “Đổi giọng…”). Lời đọc được chuẩn hóa ở -16 LUFS; câu đã đọc được lưu lại, tạo lại không tốn thêm credit."
+      : "Lần đầu DubFlow tải giọng đọc tiếng Anh (khoảng 370 MB). Lời đọc được chuẩn hóa ở -16 LUFS; câu nào không đổi sẽ không phải đọc lại.";
+    $<HTMLButtonElement>("#docu-narrate").disabled = running || !selected || (!voices.length && !onVibi);
     $<HTMLButtonElement>("#docu-narrate").textContent = info.timeline ? "Tạo lại lời đọc" : "Tạo lời đọc";
     $("#docu-narration-progress").hidden = !running;
     const total = info.status?.total ?? 0;
@@ -645,7 +659,9 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
     await checkScript();
     if (!currentScript.script_sha256) return;
     try {
-      await invoke("docu_narrate", { dir: selected.dir, voice: $<HTMLSelectElement>("#docu-voice").value, speed: Number($<HTMLSelectElement>("#docu-speed").value) });
+      const cloud = loadVibiChoice();
+      const vibi = settings.vibi && cloud.use.documentary && cloud.settings ? vibiSettingsFor(cloud.settings, "documentary") : null;
+      await invoke("docu_narrate", { dir: selected.dir, voice: $<HTMLSelectElement>("#docu-voice").value, speed: Number($<HTMLSelectElement>("#docu-speed").value), vibi });
       narration = parseNarration(await invoke("docu_narration_status", { dir: selected.dir }));
       renderNarration(); followNarration();
     } catch (error) { $("#docu-narration-state").textContent = error instanceof Error ? error.message : String(error); }
@@ -887,10 +903,13 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
   $("#docu-create").addEventListener("click", () => void createProject());
   $("#docu-write").addEventListener("click", () => void writeAllChapters());
   $("#docu-check").addEventListener("click", () => void checkScript());
+  // Vibi.pro (#632): the row above "Tạo lời đọc"; on, the on-device voice and speed step aside.
+  const vibiRow = settings.vibi ? vibiVoiceRow(settings.vibi, "documentary", () => renderNarration()) : null;
+  if (vibiRow) $("#docu-narrate").before(vibiRow.element);
   $("#docu-narrate").addEventListener("click", () => void narrate());
   $("#docu-plan").addEventListener("click", () => void makePlan());
   $("#docu-render").addEventListener("click", () => void makeRoughCut());
-  for (const id of ["#docu-opt-graphics", "#docu-opt-captions", "#docu-opt-music", "#docu-opt-sfx"]) $(id).addEventListener("change", () => void saveRenderOptions());
+  for (const id of ["#docu-opt-graphics", "#docu-opt-captions", "#docu-opt-music", "#docu-opt-sfx", "#docu-opt-mix"]) $(id).addEventListener("change", () => void saveRenderOptions());
   $("#docu-opt-music-file").addEventListener("click", async () => {
     const path = await invoke("docu_pick_file", { kind: "music" }).catch(() => null) as string | null;
     if (path) void saveRenderOptions(path);

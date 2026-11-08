@@ -607,6 +607,7 @@ def run_b2_audio(
     tts_device: Any = None,
     on_progress: Callable[[int, int], None] | None = None,
     revoice_cue_ids: Iterable[str] = (),
+    cloud_voice: Any = None,
 ) -> B2AudioResult:
     """Execute TTS/AUD-0; optional VieNeu casting keeps per-voice provenance.
 
@@ -614,6 +615,8 @@ def run_b2_audio(
     receives (settled phrases, all phrases) across every voice group; the
     final (total, total) call comes before the mix starts. ``revoice_cue_ids``
     bypass the shared synthesis cache, so a reviewed line is spoken anew.
+    ``cloud_voice`` is ``(VoiceSettings, key)`` for a Vibi.pro voice (#632): it
+    takes the VieNeu voice's place, one voice for the whole video.
     """
 
     if not translated_cues:
@@ -635,7 +638,15 @@ def run_b2_audio(
     try:
         selection = _read_json(Path(profile_path))
         recipe = _read_json(_child(Path(app_root).absolute(), selection.get("tts_neural_profile", "")))
-        if recipe.get("backend") == vieneu.ENGINE_ID:
+        if recipe.get("backend") == vieneu.ENGINE_ID and cloud_voice is not None:
+            from engine.dubflow.tts import vibi
+            settings, key = cloud_voice
+            pack, voice, engine = vibi.dubbing_engine(settings, key, media.ffmpeg_path,
+                                                      cache_root=Path(model_root or root / "model-cache") / "vibi-cache")
+            backend_id, producer_version, runtime_id = vieneu.ENGINE_ID, B2_TTS_PRODUCER_VERSION, "vibi-pro-api-v1"
+            resources = TtsResourceProfile(max_threads=1, max_memory_mb=1024, max_batch_items=1)
+            voice_by_cue = None
+        elif recipe.get("backend") == vieneu.ENGINE_ID:
             pack, voice = vieneu.load_vieneu_voice(app_root, model_root or root / "model-cache", profile_path, voice_id=tts_voice_id)
             engine = vieneu.VieNeuVietnameseTtsEngine(pack, ffmpeg_path=media.ffmpeg_path, accelerator=accelerator)
             backend_id, producer_version, runtime_id = vieneu.ENGINE_ID, B2_TTS_PRODUCER_VERSION, vieneu.RUNTIME_ID

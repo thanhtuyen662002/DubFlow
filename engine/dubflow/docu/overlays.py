@@ -31,8 +31,18 @@ from .project import DocuError, work_dir, write_json
 from .units import BENCHMARKS
 
 OPTIONS = "render_options.json"
-DEFAULTS: dict[str, Any] = {"graphics": True, "captions": False, "music": "generated", "music_path": None, "sfx": True}
+DEFAULTS: dict[str, Any] = {"graphics": True, "captions": False, "music": "generated", "music_path": None, "sfx": True,
+                            "mix": "standard"}
 MUSIC_CHOICES = ("generated", "file", "none")
+# "mega" (#632): Oscar's retention mix for Mega Projects videos: a light
+# compressor keeps the voice even, the bed sits lower (-24 LUFS, between his
+# -22 and -25 dB) and the sound effects come up to a -15 dB ceiling.
+MIX_CHOICES = ("standard", "mega")
+MEGA_BED_LUFS = -24.0
+MEGA_SFX_BOOST_DB = 6.0
+MEGA_SFX_CEILING = 0.178  # -15 dBFS
+# Light: about 2.5:1 above -18 dBFS, with the level it took back made up.
+VOICE_COMPRESSOR = "acompressor=threshold=0.125:ratio=2.5:attack=15:release=250:makeup=1.4"
 CALLOUT_SECONDS = 6.0
 LOWER_THIRD_SECONDS = 5.0
 FADE_MS = 250
@@ -56,13 +66,15 @@ def load_options(run_dir: Path) -> dict[str, Any]:
             options["music"] = value["music"]
         if isinstance(value.get("music_path"), str) and value["music_path"].strip():
             options["music_path"] = value["music_path"]
+        if value.get("mix") in MIX_CHOICES:
+            options["mix"] = value["mix"]
     if options["music"] == "file" and not options["music_path"]:
         options["music"] = "generated"
     return options
 
 
 def save_options(run_dir: Path, *, graphics: bool | None = None, captions: bool | None = None, music: str | None = None,
-                 music_path: str | None = None, sfx: bool | None = None) -> dict[str, Any]:
+                 music_path: str | None = None, sfx: bool | None = None, mix: str | None = None) -> dict[str, Any]:
     options = load_options(run_dir)
     for key, value in (("graphics", graphics), ("captions", captions), ("sfx", sfx)):
         if value is not None:
@@ -80,6 +92,10 @@ def save_options(run_dir: Path, *, graphics: bool | None = None, captions: bool 
         if music == "file" and not options["music_path"]:
             raise DocuError("Chọn file nhạc (music_path) trước")
         options["music"] = music
+    if mix is not None:
+        if mix not in MIX_CHOICES:
+            raise DocuError("mix phải là standard hoặc mega")
+        options["mix"] = mix
     write_json(work_dir(run_dir) / OPTIONS, {"schema_version": 1, **options})
     return options
 
@@ -311,7 +327,7 @@ def chapter_moods(script: dict[str, Any], timeline: dict[str, Any], total: float
     return [span for span in spans if span[2] - span[1] >= 1.0] or [("reflective_ambient", 0.0, total)]
 
 
-def bed_argv(ffmpeg: Path, spans: Sequence[tuple[str, float, float]], total: float, output: Path) -> list[str]:
+def bed_argv(ffmpeg: Path, spans: Sequence[tuple[str, float, float]], total: float, output: Path, bed_lufs: float = BED_LUFS) -> list[str]:
     """One WAV under the whole film: each chapter's pad and pulse, crossfading into the next chapter's."""
     argv = [str(ffmpeg), "-nostdin", "-hide_banner", "-v", "error", "-y"]
     graph = []
@@ -326,29 +342,32 @@ def bed_argv(ffmpeg: Path, spans: Sequence[tuple[str, float, float]], total: flo
                      f"adelay={int(round(start * 1000))}:all=1[m{index}]")
     mixed = "".join(f"[m{index}]" for index in range(len(spans)))
     graph.append(f"{mixed}amix=inputs={len(spans)}:normalize=0:duration=longest,aresample=48000,pan=stereo|c0=c0|c1=c0,"
-                 f"aecho=0.8:0.6:90|170:0.25|0.15,atrim=0:{total:.3f},loudnorm=I={BED_LUFS:g}:TP=-8:LRA=6[bed]")
+                 f"aecho=0.8:0.6:90|170:0.25|0.15,atrim=0:{total:.3f},loudnorm=I={bed_lufs:g}:TP=-8:LRA=6[bed]")
     return argv + ["-filter_complex", ";".join(graph), "-map", "[bed]", "-ar", "48000", "-ac", "2", "-c:a", "pcm_s16le", str(output)]
 
 
-def file_bed_argv(ffmpeg: Path, music: Path, total: float, output: Path) -> list[str]:
+def file_bed_argv(ffmpeg: Path, music: Path, total: float, output: Path, bed_lufs: float = BED_LUFS) -> list[str]:
     """The user's track, looped to the film's length and faded out."""
     fade = min(4.0, total / 4)
     return [str(ffmpeg), "-nostdin", "-hide_banner", "-v", "error", "-y", "-stream_loop", "-1", "-i", str(music),
             "-filter_complex", f"[0:a]atrim=0:{total:.3f},afade=t=out:st={max(0.0, total - fade):.3f}:d={fade:.3f},"
-            f"loudnorm=I={BED_LUFS:g}:TP=-8:LRA=6[bed]", "-map", "[bed]", "-ar", "48000", "-ac", "2", "-c:a", "pcm_s16le", str(output)]
+            f"loudnorm=I={bed_lufs:g}:TP=-8:LRA=6[bed]", "-map", "[bed]", "-ar", "48000", "-ac", "2", "-c:a", "pcm_s16le", str(output)]
 
 
-def ducked_mix(bed: bool = True, ambience: int | None = None) -> str:
+def ducked_mix(bed: bool = True, ambience: int | None = None, mega: bool = False) -> str:
     """Narration over the bed, the bed pulled down while the narrator speaks; the room tone (input ``ambience``)
-    sits under both without ducking, already far below the voice."""
+    sits under both without ducking, already far below the voice. ``mega``: the voice lightly compressed and
+    the effects raised to a -15 dB ceiling."""
+    voice = f"[1:a]{VOICE_COMPRESSOR},apad" if mega else "[1:a]apad"
     if not bed and ambience is None:
-        return "[1:a]apad[audio]"
-    parts, layers = ["[1:a]apad,asplit=2[voice][key]" if bed else "[1:a]apad[voice]"], ["[voice]"]
+        return f"{voice}[audio]"
+    parts, layers = [f"{voice},asplit=2[voice][key]" if bed else f"{voice}[voice]"], ["[voice]"]
     if bed:
         parts.append("[2:a][key]sidechaincompress=threshold=0.05:ratio=3:attack=20:release=450:makeup=1[bed]")
         layers.append("[bed]")
     if ambience is not None:
-        parts.append(f"[{ambience}:a]anull[room]")
+        parts.append(f"[{ambience}:a]volume={MEGA_SFX_BOOST_DB:g}dB,alimiter=limit={MEGA_SFX_CEILING}:level=disabled[room]" if mega
+                     else f"[{ambience}:a]anull[room]")
         layers.append("[room]")
     parts.append(f"{''.join(layers)}amix=inputs={len(layers)}:normalize=0:duration=first,alimiter=limit=0.95[audio]")
     return ";".join(parts)
@@ -357,5 +376,5 @@ def ducked_mix(bed: bool = True, ambience: int | None = None) -> str:
 def describe(options: dict[str, Any]) -> dict[str, Any]:
     music = options["music"]
     return {"graphics": options["graphics"], "captions": options["captions"], "music": music,
-            "music_path": options["music_path"] if music == "file" else None, "sfx": options["sfx"]}
+            "music_path": options["music_path"] if music == "file" else None, "sfx": options["sfx"], "mix": options.get("mix", "standard")}
 

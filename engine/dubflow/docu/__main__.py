@@ -18,6 +18,8 @@ def _narrate(args: argparse.Namespace) -> dict[str, object]:
     run_dir = args.run_dir
     load_spec(spec_path(run_dir))
     script_value = script.load_draft(script_path(run_dir))
+    if args.vibi is not None:
+        return _narrate_vibi(args, run_dir, script_value)
     profile = args.app_root / kokoro.PROFILE_PATH
     producer = hashlib.sha256(profile.read_bytes()).hexdigest() if profile.is_file() else ""
 
@@ -30,6 +32,45 @@ def _narrate(args: argparse.Namespace) -> dict[str, object]:
             raise DocuError(error.message) from error
     return narration.run(run_dir, script_value, speaker=speaker, voice_id=args.voice, speed=args.speed,
                          ffmpeg=args.ffmpeg, producer=producer)
+
+
+def _narrate_vibi(args: argparse.Namespace, run_dir: Path, script_value: dict) -> dict[str, object]:
+    """The narration in a Vibi.pro voice (#632): settings in a JSON file, the key in DUBFLOW_VIBI_KEY."""
+    import os
+    from engine.dubflow.tts import vibi
+
+    key = os.environ.pop(vibi.KEY_ENV, "")
+    try:
+        settings = vibi.VoiceSettings.from_mapping(json.loads(args.vibi.read_text(encoding="utf-8")))
+    except (OSError, ValueError) as error:
+        raise DocuError(f"Không đọc được cài đặt giọng Vibi.pro ({type(error).__name__})") from error
+    except vibi.VibiError as error:
+        raise DocuError(error.message) from error
+    cancel = run_dir / ".dubflow-work" / "narration" / "cancel"
+
+    def speaker(_report):
+        try:
+            return vibi.VibiSpeaker(settings, key, args.ffmpeg, cache_root=args.model_root / "vibi-cache", cancelled=cancel.exists)
+        except vibi.VibiError as error:
+            raise DocuError(error.message) from error
+
+    class _Speaker:
+        """Vibi's errors as the page's plain messages."""
+
+        def __init__(self, inner):
+            self.inner = inner
+            self.sample_rate = inner.sample_rate
+
+        def speak(self, text):
+            try:
+                return self.inner.speak(text)
+            except vibi.VibiError as error:
+                raise DocuError(error.message) from error
+
+        def close(self):
+            self.inner.close()
+    return narration.run(run_dir, script_value, speaker=lambda report: _Speaker(speaker(report)), voice_id=settings.label(),
+                         speed=settings.speed, ffmpeg=args.ffmpeg, producer="vibi:" + settings.identity())
 
 
 def _plan(args: argparse.Namespace) -> dict[str, object]:
@@ -65,6 +106,7 @@ def main(argv: list[str] | None = None) -> int:
         speak.add_argument(f"--{name}", type=Path, required=True)
     speak.add_argument("--voice", required=True)
     speak.add_argument("--speed", type=float, default=1.0)
+    speak.add_argument("--vibi", type=Path, help="a Vibi.pro voice's settings (JSON) instead of the on-device voice")
     visuals = commands.add_parser("plan", help="cut the sources into the visual plan the rough cut follows")
     for name in ("run-dir", "app-root", "model-root", "ffmpeg"):
         visuals.add_argument(f"--{name}", type=Path, required=True)
@@ -90,6 +132,7 @@ def main(argv: list[str] | None = None) -> int:
     options.add_argument("--music", choices=("generated", "file", "none"))
     options.add_argument("--music-path")
     options.add_argument("--sfx", choices=("true", "false"))
+    options.add_argument("--mix", choices=("standard", "mega"))
     listen = commands.add_parser("transcribe", help="recognise a plain video's speech into transcript.json")
     listen.add_argument("--video", type=Path, required=True)
     listen.add_argument("--out-dir", type=Path, required=True)
@@ -123,7 +166,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "options":
             flag = {"true": True, "false": False, None: None}
             chosen = overlays.save_options(args.run_dir, graphics=flag[args.graphics], captions=flag[args.captions],
-                                           music_path=args.music_path, music=args.music, sfx=flag[args.sfx])
+                                           music_path=args.music_path, music=args.music, sfx=flag[args.sfx], mix=args.mix)
             result = {"state": "COMPLETED", "message": "", "options": overlays.describe(chosen)}
         elif args.command == "transcribe":
             path = transcribe.transcribe(args.video, args.out_dir, app_root=args.app_root, model_root=args.model_root,

@@ -26,8 +26,11 @@ pub(crate) const JOB_KEY_ENV: &str = "DUBFLOW_AI_KEY";
 const MAX_REQUEST_BYTES: usize = 32 * 1024 * 1024;
 const MAX_KEY_CHARS: usize = 512;
 
+/// Keys saved here that are not AI chat providers: the Vibi.pro voices (#632).
+pub(crate) const VOICE_PROVIDERS: [&str; 1] = ["vibi"];
+
 fn target(provider: &str) -> Result<String, String> {
-    if !PROVIDERS.contains(&provider) {
+    if !PROVIDERS.contains(&provider) && !VOICE_PROVIDERS.contains(&provider) {
         return Err(fail("Nhà cung cấp AI không hợp lệ"));
     }
     Ok(format!("DubFlow/ai-key/{provider}"))
@@ -138,7 +141,7 @@ mod store {
 #[tauri::command]
 pub fn ai_key_status() -> Result<Value, String> {
     let mut status = serde_json::Map::new();
-    for provider in PROVIDERS {
+    for provider in PROVIDERS.iter().chain(VOICE_PROVIDERS.iter()) {
         let saved = store::read(&target(provider)?)?;
         status.insert(provider.to_owned(), json!(saved.as_deref().map(masked)));
     }
@@ -178,6 +181,8 @@ pub(crate) fn key_page(provider: &str) -> Option<&'static str> {
         "openrouter" => "https://openrouter.ai/keys",
         "groq" => "https://console.groq.com/keys",
         "mistral" => "https://console.mistral.ai/api-keys",
+        // The key is shown in the header of the API docs once signed in.
+        "vibi" => "https://vibi.pro/docs",
         _ => return None,
     })
 }
@@ -202,7 +207,9 @@ pub(crate) fn job_key(provider: &str) -> Result<Option<String>, String> {
 #[tauri::command]
 pub async fn ai_ask(request: Value, key: Option<String>) -> Result<Value, String> {
     let provider = request.get("provider").and_then(Value::as_str).unwrap_or_default().to_owned();
-    target(&provider)?;
+    if !PROVIDERS.contains(&provider.as_str()) {
+        return Err(fail("Nhà cung cấp AI không hợp lệ"));
+    }
     if !matches!(request.get("action").and_then(Value::as_str), Some("ask" | "models")) {
         return Err(fail("Yêu cầu AI không hợp lệ"));
     }
@@ -249,6 +256,7 @@ mod tests {
         assert_eq!(target("deepseek").unwrap(), "DubFlow/ai-key/deepseek");
         assert!(target("unknown").is_err());
         assert!(target("../claude").is_err());
+        assert_eq!(target("vibi").unwrap(), "DubFlow/ai-key/vibi");
         assert_eq!(checked_key("  sk-ant-api03-abcdef \n").unwrap(), "sk-ant-api03-abcdef");
         assert!(checked_key("short").is_err());
         assert!(checked_key("has a space inside").is_err());
@@ -262,6 +270,7 @@ mod tests {
         assert_eq!(key_page("gemini"), Some("https://aistudio.google.com/apikey"));
         assert_eq!(key_page("custom"), None);
         assert_eq!(key_page("https://example.com"), None);
+        assert_eq!(key_page("vibi"), Some("https://vibi.pro/docs"));
         for provider in PROVIDERS.iter().filter(|id| **id != "custom") {
             assert!(key_page(provider).is_some_and(|url| url.starts_with("https://")), "{provider}");
         }

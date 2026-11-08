@@ -480,7 +480,7 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
     case "docu_render_options": {
       // A cancelled split puts the cards and music back.
       if (args.graphics || args.music !== "none") docuSplit.delete(String(args.dir));
-      return { graphics: !!args.graphics, captions: !!args.captions, music: String(args.music), music_path: args.musicPath ?? null, sfx: args.sfx !== false } as T;
+      return { graphics: !!args.graphics, captions: !!args.captions, music: String(args.music), music_path: args.musicPath ?? null, sfx: args.sfx !== false, mix: args.mix === "mega" ? "mega" : "standard" } as T;
     }
     case "docu_capcut": return { state: "COMPLETED", folder: "C:\\Users\\me\\AppData\\Local\\CapCut\\User Data\\Projects\\com.lveditor.draft\\DubFlow - Three Gorges",
       name: "DubFlow - Three Gorges", clips: 18, duration: 64.1, captions: "D:\\Videos\\captions_en.srt" } as T;
@@ -734,10 +734,38 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
       sourceCredits.set(String(args.outputPath), credit);
       return null as T;
     }
+    case "ai_key_status": return Object.fromEntries([...previewKeys].map(([id, key]) => [id, `…${key.slice(-4)}`])) as T;
     case "ai_key_get": return (previewKeys.get(String(args.provider)) ?? null) as T;
     case "ai_key_set": previewKeys.set(String(args.provider), String(args.key).trim()); return `…${String(args.key).trim().slice(-4)}` as T;
     case "ai_key_delete": previewKeys.delete(String(args.provider)); return null as T;
     case "ai_key_page": return null as T;
+    // Vibi.pro (#632): a few voices per page, the models and a balance; previews play the sample tone.
+    case "vibi_call": {
+      const request = (args.request ?? {}) as Record<string, unknown>;
+      if (request.action !== "presets" && !previewKeys.get("vibi") && !args.key) throw new Error("Chưa có khóa Vibi.pro; hãy dán khóa trong Cài đặt › Giọng đọc Vibi.pro");
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      if (request.action === "me") return { ok: true, email: "oscar@example.com", name: "Oscar", credit_balance: 182500 } as T;
+      if (request.action === "models") return { ok: true, models: request.provider === "minimax"
+        ? [{ model_id: "speech-2.8-hd", name: "Speech 2.8 HD", description: "Chất lượng cao nhất" }, { model_id: "speech-2.8-turbo", name: "Speech 2.8 Turbo", description: "Nhanh, tiết kiệm" }]
+        : [{ model_id: "eleven_multilingual_v2", name: "Eleven Multilingual v2", description: "Giọng tự nhiên nhất", can_use_style: true, can_use_speaker_boost: true },
+          { model_id: "eleven_turbo_v2_5", name: "Eleven Turbo v2.5", description: "Nhanh, rẻ hơn khoảng 50 %", can_use_style: true, can_use_speaker_boost: true },
+          { model_id: "eleven_flash_v2_5", name: "Eleven Flash v2.5", description: "Nhanh nhất", can_use_style: false, can_use_speaker_boost: true }] } as T;
+      const filters = (request.filters ?? {}) as Record<string, string>;
+      const page = Number(request.page ?? 0);
+      const minimax = request.provider === "minimax";
+      const names = minimax ? ["Deep Narrator", "Calm Woman", "Trusted Speaker", "Epic Trailer", "Wise Elder", "Young Explorer"]
+        : ["Arnold", "Brian", "Rachel", "Adam", "Charlotte", "Daniel", "Matilda", "Josh", "Bella", "George", "Lily", "Callum"];
+      const all = names.map((name, index) => ({ provider: minimax ? "minimax" : "elevenlabs", voice_id: minimax ? `English_${name.replace(/ /g, "")}` : `voice${index}${page}`,
+        name: page ? `${name} ${page + 1}` : name, gender: index % 3 === 2 ? "female" : "male", age: ["middle aged", "young", "old"][index % 3],
+        accent: ["american", "british", "australian"][index % 3], language: "en", languages: index % 2 ? ["en"] : ["en", "vi"],
+        description: index % 2 ? "Giọng trầm, chắc, hợp thuyết minh tài liệu" : "Ấm, rõ, kể chuyện cuốn hút",
+        preview_url: `https://storage.example/${index}.mp3`, image_url: "", tags: minimax ? ["Narration", "English"] : ["deep", "narrative story"], popularity: 1000 - index }))
+        .filter((voice) => (!filters.search || voice.name.toLowerCase().includes(filters.search.toLowerCase()))
+          && (!filters.gender || voice.gender === filters.gender.toLowerCase()));
+      return { ok: true, voices: all, has_more: page < 2, total: minimax ? 312 : null } as T;
+    }
+    case "vibi_preview":
+    case "vibi_sample": await new Promise((resolve) => setTimeout(resolve, 600)); return "C:\\Users\\preview\\AppData\\Local\\DubFlow\\vibi-samples\\sample.mp3" as T;
     case "release_info": return { version: "0.1.0", channel: "preview", backend: "mock" } as T;
     // Nghe thử: a short tone stands in for the voice; the first one takes a moment, like the real model.
     case "voice_sample": await new Promise((resolve) => setTimeout(resolve, 1200)); return `C:\\Users\\preview\\AppData\\Local\\DubFlow\\voice-samples\\${String(args.voiceId)}.wav` as T;

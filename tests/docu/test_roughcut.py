@@ -165,7 +165,7 @@ class RunTests(unittest.TestCase):
                 Path(cwd, Path(argv[-1]).name).write_bytes(b"data")
             result = roughcut.run(run, spec, ffmpeg=Path("ffmpeg"), probe=lambda video: (1920, 1080), ffmpeg_runner=runner)
             self.assertEqual(result["state"], "COMPLETED", result)
-            self.assertEqual(result["overlays"], {"graphics": True, "captions": True, "music": "generated", "music_path": None, "sfx": True})
+            self.assertEqual(result["overlays"], {"graphics": True, "captions": True, "music": "generated", "music_path": None, "sfx": True, "mix": "standard"})
             work = run / ".dubflow-work" / "render"
             first, second = (work / "slice-0001.ass").read_text(encoding="utf-8"), (work / "slice-0002.ass").read_text(encoding="utf-8")
             # The hook's first number is a hero callout (#548): it slides in on slice 1 (0.6 s) and fades out on
