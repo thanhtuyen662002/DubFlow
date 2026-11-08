@@ -23,10 +23,10 @@ import argparse
 import json
 import os
 from pathlib import Path
-import stat
 import sys
-import tempfile
 import wave
+
+from engine.dubflow.separation.outdir import OutDir, UnsafeFolder
 
 RECIPE = "hpss-median-v1"
 N_FFT = 2048
@@ -102,7 +102,7 @@ def split_block(block):
     return music, block - music
 
 
-def _voice(source: Path, background: Path, out_dir: Path, *, cancelled=None) -> None:
+def _voice(source: Path, background: Path, folder: OutDir, *, cancelled=None) -> None:
     """``voice.wav``: the source minus the accompaniment (what the Lời lane draws), when both line up."""
     import numpy as np
 
@@ -111,11 +111,9 @@ def _voice(source: Path, background: Path, out_dir: Path, *, cancelled=None) -> 
         if shape != (right.getnchannels(), right.getsampwidth(), right.getframerate()) or shape[1] != 2:
             return
         frames = min(left.getnframes(), right.getnframes())
-        plain_out_dir(out_dir)
-        descriptor, temp = tempfile.mkstemp(prefix=".voice-", suffix=".wav", dir=out_dir)
-        os.close(descriptor)
+        temp = folder.create(".voice-", ".wav")
         try:
-            with wave.open(temp, "wb") as writer:
+            with wave.open(temp.file, "wb") as writer:
                 writer.setnchannels(shape[0])
                 writer.setsampwidth(2)
                 writer.setframerate(shape[2])
@@ -128,62 +126,43 @@ def _voice(source: Path, background: Path, out_dir: Path, *, cancelled=None) -> 
                     b = np.frombuffer(right.readframes(count), dtype="<i2").astype(np.int32)
                     size = min(a.size, b.size)
                     writer.writeframes(np.clip(a[:size] - b[:size], -32768, 32767).astype("<i2").tobytes())
-            plain_out_dir(out_dir)
-            os.replace(temp, out_dir / "voice.wav")
+            temp.publish("voice.wav")
         finally:
-            Path(temp).unlink(missing_ok=True)
-
-
-FILE_ATTRIBUTE_REPARSE_POINT = 0x400
-
-
-def _linked(status: os.stat_result) -> bool:
-    """A symlink, or on Windows any reparse point (junction, mount point, cloud placeholder)."""
-    return stat.S_ISLNK(status.st_mode) or bool(getattr(status, "st_file_attributes", 0) & FILE_ATTRIBUTE_REPARSE_POINT)
+            temp.discard()
 
 
 def plain_out_dir(out_dir: Path, *, make: bool = False) -> None:
-    """Refuse ``out_dir`` unless it and the two folders above it (the editor's draft folder and its
-    parent) are real folders, none a link or reparse point, and ``out_dir`` resolves right inside
-    its parent. With ``make``, a missing ``out_dir`` is created on its own (never its parents).
-    Runs before anything is removed or written there, and again before each publication."""
-    unsafe = SplitError("thư mục tách không an toàn (là liên kết hoặc không phải thư mục)")
-    for level in (out_dir.parent, out_dir.parent.parent):
-        try:
-            status = os.lstat(level)
-        except OSError:
-            raise unsafe from None
-        if _linked(status) or not stat.S_ISDIR(status.st_mode):
-            raise unsafe
+    """Refuse ``out_dir`` unless it and the two folders above it are real folders (no link or reparse
+    point), each opened relative to the one above. With ``make``, a missing ``out_dir`` is created on
+    its own (never its parents). A preflight: the writes themselves go through ``OutDir``."""
     try:
-        status = os.lstat(out_dir)
-    except FileNotFoundError:
-        if not make:
-            raise unsafe from None
-        os.mkdir(out_dir)
-        status = os.lstat(out_dir)
-    if _linked(status) or not stat.S_ISDIR(status.st_mode):
-        raise unsafe
-    inside = os.path.join(os.path.realpath(out_dir.parent), out_dir.name)
-    if os.path.normcase(os.path.realpath(out_dir)) != os.path.normcase(inside):
-        raise unsafe
+        OutDir.open(out_dir, make=make).close()
+    except UnsafeFolder as error:
+        raise SplitError(str(error)) from None
 
 
-def _publish(target: Path, text: str) -> None:
-    """Write ``target`` through a temporary file beside it and an atomic replace (a link there is replaced, not followed).
-    The folder is checked again right before the temporary file is made and right before the replace."""
-    plain_out_dir(target.parent)
-    descriptor, temp = tempfile.mkstemp(prefix=f".{target.stem}-", suffix=target.suffix, dir=target.parent)
+def open_out_dir(out_dir: Path, *, make: bool = False) -> OutDir:
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(text)
-        plain_out_dir(target.parent)
-        os.replace(temp, target)
+        return OutDir.open(out_dir, make=make)
+    except UnsafeFolder as error:
+        raise SplitError(str(error)) from None
+
+
+def _publish(folder: OutDir, target: str, text: str) -> None:
+    """Write ``target`` in the held folder through a temporary file and a rename relative to the folder
+    (a link named ``target`` is replaced, not followed)."""
+    temp = folder.create(f".{Path(target).stem}-", Path(target).suffix)
+    try:
+        temp.file.write(text.encode("utf-8"))
+        temp.publish(target)
     finally:
-        Path(temp).unlink(missing_ok=True)
+        temp.discard()
 
 
-def split(background: Path, out_dir: Path, *, source: Path | None = None, progress=None, cancelled=None) -> dict:
+def split(background: Path, out_dir: Path, *, source: Path | None = None, progress=None, cancelled=None,
+          folder: OutDir | None = None) -> dict:
+    """Split into ``out_dir``. Every write, publication and removal is relative to the folder as opened
+    (``folder``, or opened here): a path swapped for a link meanwhile is never followed."""
     import numpy as np
 
     with wave.open(str(background), "rb") as reader:
@@ -191,25 +170,32 @@ def split(background: Path, out_dir: Path, *, source: Path | None = None, progre
         if width != 2 or reader.getcomptype() != "NONE" or not 1 <= channels <= 2 or frames <= 0:
             raise SplitError("nhạc nền phải là WAV PCM 16-bit")
         identity = identity_of(background)
-        plain_out_dir(out_dir, make=True)
-        # The old marker goes first: until the new one is written, no music/SFX pair counts as current
-        # (an interrupted run may leave one new part beside an old one).
-        (out_dir / SPLIT_FILE).unlink(missing_ok=True)
-        block, context = int(BLOCK_SECONDS * rate), int(CONTEXT_SECONDS * rate)
-        temps = []
-        try:
+    own = folder is None
+    folder = folder or open_out_dir(out_dir, make=True)
+    try:
+        return _split(background, folder, channels, rate, frames, identity, source, progress, cancelled, np)
+    finally:
+        if own:
+            folder.close()
+
+
+def _split(background, folder, channels, rate, frames, identity, source, progress, cancelled, np) -> dict:
+    # The old marker goes first: until the new one is written, no music/SFX pair counts as current
+    # (an interrupted run may leave one new part beside an old one).
+    folder.unlink(SPLIT_FILE)
+    block, context = int(BLOCK_SECONDS * rate), int(CONTEXT_SECONDS * rate)
+    temps = []
+    try:
+        with wave.open(str(background), "rb") as reader:
             writers = []
-            for name in ("music", "sfx"):
-                plain_out_dir(out_dir)
-                descriptor, temp = tempfile.mkstemp(prefix=f".{name}-", suffix=".wav", dir=out_dir)
-                os.close(descriptor)
-                temps.append(Path(temp))
-                writer = wave.open(temp, "wb")
-                writer.setnchannels(channels)
-                writer.setsampwidth(2)
-                writer.setframerate(rate)
-                writers.append(writer)
             try:
+                for name in ("music", "sfx"):
+                    temps.append(folder.create(f".{name}-", ".wav"))
+                    writer = wave.open(temps[-1].file, "wb")
+                    writer.setnchannels(channels)
+                    writer.setsampwidth(2)
+                    writer.setframerate(rate)
+                    writers.append(writer)
                 for first in range(0, frames, block):
                     if cancelled and cancelled():
                         raise SplitError("cancelled")
@@ -227,24 +213,19 @@ def split(background: Path, out_dir: Path, *, source: Path | None = None, progre
             finally:
                 for writer in writers:
                     writer.close()
-            # Each publication checks the folder again: one swapped for a link meanwhile stops the run.
-            plain_out_dir(out_dir)
-            os.replace(temps[0], out_dir / "music.wav")
-            plain_out_dir(out_dir)
-            os.replace(temps[1], out_dir / "sfx.wav")
-            temps = []
-        finally:
-            for temp in temps:
-                temp.unlink(missing_ok=True)
-    plain_out_dir(out_dir)
-    (out_dir / "voice.wav").unlink(missing_ok=True)
+        temps[0].publish("music.wav")
+        temps[1].publish("sfx.wav")
+    finally:
+        for temp in temps:
+            temp.discard()
+    folder.unlink("voice.wav")
     if source is not None and source.is_file():
         try:
-            _voice(source, background, out_dir, cancelled=cancelled)
+            _voice(source, background, folder, cancelled=cancelled)
         except (OSError, EOFError, wave.Error):
             pass  # Only the Lời lane's picture needs it.
     document = {"schema_version": 1, **identity}
-    _publish(out_dir / SPLIT_FILE, json.dumps(document, ensure_ascii=True))
+    _publish(folder, SPLIT_FILE, json.dumps(document, ensure_ascii=True))
     return document
 
 
@@ -257,25 +238,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--source", type=Path)
     args = parser.parse_args(argv)
     try:
-        plain_out_dir(args.out_dir, make=True)
+        folder = open_out_dir(args.out_dir, make=True)
     except (SplitError, OSError) as error:
         # Nothing is written there, not even a status: the host reads this line instead.
         print(json.dumps({"schema_version": 1, "state": "FAILED", "progress": 0,
                           "message": f"Không tách được nhạc và tiếng động ({error})."}, ensure_ascii=True))
         return 1
-    status = Status(args.out_dir / "split-status.json")
-    status.write(state="RUNNING", progress=0, message="Đang tách nhạc và tiếng động…")
-    cancel = args.out_dir / "split-cancel"
-    try:
-        split(args.background, args.out_dir, source=args.source,
-              progress=lambda fraction: status.write(force=False, progress=round(100 * fraction, 1), message="Đang tách nhạc và tiếng động…"),
-              cancelled=cancel.exists)
-        status.write(state="COMPLETED", progress=100, message="Đã tách nhạc và tiếng động.")
-    except Exception as error:  # noqa: BLE001 - every failure becomes a readable status.
-        if str(error) == "cancelled":
-            status.write(state="CANCELLED", progress=0, message="Đã hủy tách nhạc và tiếng động.")
-        else:
-            status.write(state="FAILED", progress=0, message=f"Không tách được nhạc và tiếng động ({' '.join(str(error).split())[:200]}).")
+    with folder:
+        status = Status(args.out_dir / "split-status.json", folder=folder)
+        status.write(state="RUNNING", progress=0, message="Đang tách nhạc và tiếng động…")
+        try:
+            split(args.background, args.out_dir, source=args.source, folder=folder,
+                  progress=lambda fraction: status.write(force=False, progress=round(100 * fraction, 1), message="Đang tách nhạc và tiếng động…"),
+                  cancelled=lambda: folder.exists("split-cancel"))
+            status.write(state="COMPLETED", progress=100, message="Đã tách nhạc và tiếng động.")
+        except Exception as error:  # noqa: BLE001 - every failure becomes a readable status.
+            if str(error) == "cancelled":
+                status.write(state="CANCELLED", progress=0, message="Đã hủy tách nhạc và tiếng động.")
+            else:
+                status.write(state="FAILED", progress=0, message=f"Không tách được nhạc và tiếng động ({' '.join(str(error).split())[:200]}).")
     print(json.dumps(status.value, ensure_ascii=True))
     return 0 if status.value["state"] == "COMPLETED" else 1
 

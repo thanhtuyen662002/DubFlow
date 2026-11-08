@@ -14,7 +14,7 @@ import wave
 
 import numpy as np
 
-from engine.dubflow.separation import split
+from engine.dubflow.separation import outdir, split
 
 RATE = 16000
 
@@ -43,6 +43,14 @@ def link_dir(target: Path, link: Path) -> None:
     else:
         os.symlink(target, link, target_is_directory=True)
     assert os.path.lexists(link) and os.path.realpath(link) != os.path.abspath(link), "the link was not made"
+
+
+def unlink_link(link: Path) -> None:
+    """Remove a folder link without touching its target (a junction is removed as a folder)."""
+    try:
+        os.rmdir(link) if sys.platform == "win32" else os.unlink(link)
+    except OSError:
+        os.unlink(link)
 
 
 def snapshot(folder: Path) -> dict:
@@ -132,15 +140,15 @@ class MusicSplitTest(unittest.TestCase):
             # An old valid marker, one part missing; the retry stops after replacing the first part.
             (out / "sfx.wav").unlink()
             self.assertTrue((out / split.SPLIT_FILE).is_file())
-            real = os.replace
+            real = outdir._Temp.publish
             calls = []
 
-            def replace(source, target):
-                calls.append(Path(target).name)
+            def publish(temp, target):
+                calls.append(target)
                 if len(calls) == 2:
                     raise OSError("interrupted")
-                return real(source, target)
-            with mock.patch.object(split.os, "replace", side_effect=replace), self.assertRaises(OSError):
+                return real(temp, target)
+            with mock.patch.object(outdir._Temp, "publish", publish), self.assertRaises(OSError):
                 split.split(background, out)
             self.assertEqual(calls[0], "music.wav")
             self.assertFalse((out / split.SPLIT_FILE).exists(), "no marker blesses the new music beside a missing/old SFX")
@@ -186,54 +194,105 @@ class MusicSplitTest(unittest.TestCase):
             self.assertFalse((folder / "missing").exists())
 
 
-    def test_a_folder_swapped_for_a_link_between_publications_gets_nothing_more(self):
-        """The out folder is swapped for a link (junction on Windows) right after the music part, the SFX part
-        or the voice is published: the next publication refuses, and nothing appears or changes outside."""
-        for after in (1, 2, 3):  # replaces in order: music.wav, sfx.wav, voice.wav, then split.json
-            with self.subTest(after=after), TemporaryDirectory() as temp:
-                folder = Path(temp)
-                background = folder / "background.wav"
-                write(background, np.full((RATE, 2), 0.1))
-                outside = folder / "outside"
-                outside.mkdir()
-                (outside / split.SPLIT_FILE).write_text("keep", encoding="utf-8")
-                before = snapshot(outside)
-                (folder / "work").mkdir()
-                out = folder / "work" / "stems"
-                real = os.replace
-                done = []
+    def _race(self, *, when: str, level: str):
+        """Run a split while the stems folder (``level="stems"``) or the draft folder above it
+        (``level="work"``) is renamed and its path swapped for a link (a junction on Windows) to an
+        outside folder seeded with every name the split writes, including its temporary files (made
+        predictable here). ``when``: right after the folder is checked and opened, before the first
+        operation; mid-run with the parts' temporary files open; or after each publication."""
+        with TemporaryDirectory() as temp:
+            folder = Path(temp)
+            background = folder / "background.wav"
+            write(background, np.full((RATE, 2), 0.1))
+            (folder / "drafts" / "work" / "stems").mkdir(parents=True)
+            out = folder / "drafts" / "work" / "stems"
+            moved = folder / "drafts" / f"{level}-moved"
+            swapped = out if level == "stems" else out.parent
+            outside = folder / "outside"
+            target = outside / "stems" if level == "work" else outside
+            target.mkdir(parents=True)
+            names = [split.SPLIT_FILE, "music.wav", "sfx.wav", "voice.wav", "split-status.json",
+                     ".music-x.wav", ".sfx-x.wav", ".voice-x.wav", ".split-x.json", ".status-x.json"]
+            for name in names:
+                (target / name).write_text(f"keep {name}", encoding="utf-8")
+            before = snapshot(outside)
+            state = {"swapped": None, "events": 0}
 
-                def replace(source, target, out=out, outside=outside, after=after, done=done):
-                    real(source, target)
-                    done.append(Path(target).name)
-                    if len(done) == after:
-                        real(out, out.with_name("stems-moved"))
-                        link_dir(outside, out)
-                with mock.patch.object(split.os, "replace", side_effect=replace), self.assertRaises(split.SplitError):
-                    split.split(background, out, source=background)
-                self.assertEqual(done, ["music.wav", "sfx.wav", "voice.wav"][:after])
-                self.assertEqual(snapshot(outside), before, "no part, temp or marker is written outside")
-                self.assertFalse((folder / "work" / "stems-moved" / split.SPLIT_FILE).exists(), "no marker for a partial run")
+            def swap():
+                if state["swapped"] is not None:
+                    return
+                try:
+                    os.rename(swapped, moved)
+                except PermissionError:
+                    # Windows may refuse to rename a folder while files in it are open: no swap, nothing to follow.
+                    self.assertEqual(sys.platform, "win32", "only Windows refuses the rename")
+                    state["swapped"] = False
+                    return
+                link_dir(outside, swapped)
+                state["swapped"] = True
 
-    def test_a_status_is_never_written_through_a_swapped_folder(self):
+            real_open, real_unlink, real_publish = outdir.OutDir.open.__func__, outdir.OutDir.unlink, outdir._Temp.publish
+
+            def opened(cls, path, **kwargs):
+                handle = real_open(cls, path, **kwargs)
+                if when == "open":
+                    swap()  # between the check (the open) and the first operation (the old marker's removal)
+                return handle
+
+            def published(temp, target_name):
+                real_publish(temp, target_name)
+                state["events"] += 1
+                if when.startswith("publish-") and state["events"] == int(when.split("-")[1]):
+                    swap()
+
+            progress = (lambda _fraction: swap()) if when == "mid-run" else None
+            with mock.patch.object(outdir, "temp_name", lambda prefix, suffix: f"{prefix}x{suffix}"), \
+                    mock.patch.object(outdir.OutDir, "open", classmethod(opened)), \
+                    mock.patch.object(outdir._Temp, "publish", published):
+                document = split.split(background, out, source=background, progress=progress)
+            self.assertEqual(document["recipe"], split.RECIPE)
+            if sys.platform != "win32":
+                self.assertTrue(state["swapped"], "the swap happened")
+            self.assertEqual(snapshot(outside), before, "nothing outside is deleted, replaced, added or changed")
+            if state["swapped"]:
+                real_out = moved / "stems" if level == "work" else moved
+                self.assertEqual(sorted(p.name for p in real_out.iterdir()), sorted([split.SPLIT_FILE, "music.wav", "sfx.wav", "voice.wav"]),
+                                 "every write landed in the folder that was opened")
+                unlink_link(swapped)
+            print(f"race when={when} level={level} swapped={state['swapped']}")
+
+    def test_a_swap_between_check_and_operation_is_never_followed(self):
+        for when in ("open", "mid-run", "publish-1", "publish-2", "publish-3"):
+            for level in ("stems", "work"):
+                with self.subTest(when=when, level=level):
+                    self._race(when=when, level=level)
+
+    def test_repeated_status_writes_never_follow_a_swapped_folder(self):
         from engine.dubflow.separation.__main__ import Status
 
         with TemporaryDirectory() as temp:
             folder = Path(temp)
+            (folder / "drafts" / "work" / "stems").mkdir(parents=True)
+            out = folder / "drafts" / "work" / "stems"
             outside = folder / "outside"
             outside.mkdir()
-            (outside / "split-status.json").write_text("keep", encoding="utf-8")
+            for name in ("split-status.json", ".status-x.json"):
+                (outside / name).write_text("keep", encoding="utf-8")
             before = snapshot(outside)
-            (folder / "work").mkdir()
-            out = folder / "work" / "stems"
-            status = Status(out / "split-status.json")
-            status.write(progress=1)
-            self.assertTrue((out / "split-status.json").is_file())
-            os.replace(out, folder / "work" / "stems-moved")
-            link_dir(outside, out)
-            status.write(progress=50)
+            with mock.patch.object(outdir, "temp_name", lambda prefix, suffix: f"{prefix}x{suffix}"):
+                with split.open_out_dir(out) as held:
+                    status = Status(out / "split-status.json", folder=held)
+                    status.write(progress=1)
+                    os.rename(out, folder / "drafts" / "work" / "stems-moved")
+                    link_dir(outside, out)
+                    for progress in (20, 40, 60):
+                        status.write(progress=progress)
+                    # Without a held folder each write opens the path again and refuses the link.
+                    Status(out / "split-status.json").write(progress=99)
             self.assertEqual(snapshot(outside), before)
-
+            moved = json.loads((folder / "drafts" / "work" / "stems-moved" / "split-status.json").read_text(encoding="utf-8"))
+            self.assertEqual(moved["progress"], 60, "the held folder kept getting the status")
+            unlink_link(out)
 
 if __name__ == "__main__":
     unittest.main()
