@@ -20,6 +20,11 @@ on:
       - tests/production/media/**
       - engine/dubflow/worker/beep_sounds.py
       - tests/production/worker/test_beep.py
+      - engine/dubflow/separation/split.py
+      - tests/separation/test_music_split.py
+      - engine/dubflow/separation/__main__.py
+      - engine/dubflow/separation/outdir.py
+      - tests/separation/test_editor_cli.py
   pull_request:
     paths:
       - .github/workflows/pr-desktop-editor-windows.yml
@@ -33,6 +38,11 @@ on:
       - tests/production/media/**
       - engine/dubflow/worker/beep_sounds.py
       - tests/production/worker/test_beep.py
+      - engine/dubflow/separation/split.py
+      - tests/separation/test_music_split.py
+      - engine/dubflow/separation/__main__.py
+      - engine/dubflow/separation/outdir.py
+      - tests/separation/test_editor_cli.py
 
 permissions:
   contents: read
@@ -127,3 +137,17 @@ jobs:
           if ($text -match '\.\.\. skipped') { throw 'Custom beep-sound test was skipped' }
           if ($text -notmatch '(?m)^Ran 1 test in ') { throw 'Custom beep-sound test did not run' }
           Write-Host 'Custom beep-sound decode test passed through the pinned FFmpeg, not skipped'
+
+      - name: Run the music/SFX split tests on Windows
+        shell: pwsh
+        run: |
+          # The runtime's own numpy pin (packaging/runtime/requirements-windows-x64.txt); no new dependency.
+          python -m pip install --disable-pip-version-check --no-input numpy==2.2.6
+          if ($LASTEXITCODE -ne 0) { throw 'numpy install failed' }
+          $log = Join-Path $env:RUNNER_TEMP 'music-split-tests.log'
+          python -B -m unittest tests.separation.test_music_split tests.separation.test_editor_cli -v 2>&1 | Tee-Object -FilePath $log
+          if ($LASTEXITCODE -ne 0) { throw 'Music/SFX split tests failed' }
+          $text = Get-Content -LiteralPath $log -Raw
+          if ($text -match '\.\.\. skipped') { throw 'Music/SFX split tests skipped some cases' }
+          if ($text -notmatch '(?m)^Ran 15 tests in ') { throw 'Expected 15 music/SFX split and separation CLI tests (junctions included)' }
+          Write-Host 'Music/SFX split + separation CLI tests passed on Windows: 15, none skipped'

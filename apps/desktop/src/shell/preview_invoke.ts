@@ -8,6 +8,7 @@ import { parseSourceCredit, type SourceCredit } from "../features/credit/model.t
 type Running = { startedAt: number; dubbing: boolean; cancelled: boolean };
 
 const running = new Map<string, Running>();
+const previewSplits = new Map<string, number>();
 const DURATION_MS = 24_000;
 const STEPS: Array<[number, string]> = [
   [0.02, "Đang kiểm tra media nguồn"],
@@ -505,16 +506,24 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
       const progress = run ? Math.min(100, (Date.now() - run) / 60) : 0;
       const done = run !== undefined && progress >= 100;
       const job = /[\\/]final_vi\.mp4$/i.test(path);
+      const splitAt = previewSplits.get(path);
+      const splitProgress = splitAt === undefined ? 0 : Math.min(100, (Date.now() - splitAt) / 40);
+      const splitDone = splitProgress >= 100;
       return {
         voice: job ? `${dir}\\editable\\dialogue_stem.wav` : null,
         source: job ? `${dir}\\editable\\source_audio.wav` : done ? `${dir}\\.dubflow-work\\edit\\stems\\source.wav` : null,
         // A job's own accompaniment came from the older model until Tách giọng runs again.
         background: done ? `${dir}\\.dubflow-work\\edit\\stems\\background.wav` : job ? `${dir}\\editable\\background_stem.wav` : null,
-        separation: run === undefined ? null : done ? { state: "COMPLETED", progress: 100, message: "Đã tách giọng." }
+        separation: run === undefined ? null : done ? { state: "COMPLETED", progress: 100, message: "Đã tách giọng, nhạc và tiếng động." }
           : { state: "RUNNING", progress, message: progress < 8 ? "Đang tải bộ tách giọng lần đầu: 31/67 MB" : "Đang tách giọng gốc khỏi nhạc nền…" },
         outdated: job && !done,
+        // Tách giọng also splits the accompaniment; a job's older one splits on request (edit_split).
+        ...(done || (splitAt !== undefined && splitDone) ? { music: `${dir}\\.dubflow-work\\edit\\stems\\music.wav`, sfx: `${dir}\\.dubflow-work\\edit\\stems\\sfx.wav` } : {}),
+        split: splitAt === undefined ? null : splitDone ? { state: "COMPLETED", progress: 100, message: "Đã tách nhạc và tiếng động." }
+          : { state: "RUNNING", progress: splitProgress, message: "Đang tách nhạc và tiếng động…" },
       } as T;
     }
+    case "edit_split": previewSplits.set(String(args.outputPath), Date.now()); return undefined as T;
     case "edit_separate": previewSeparations.set(String(args.outputPath), Date.now()); return undefined as T;
     case "edit_separate_cancel": previewSeparations.delete(String(args.outputPath)); return undefined as T;
     case "edit_file_sizes": return (args.paths as string[]).map(() => 46_000_000) as T;

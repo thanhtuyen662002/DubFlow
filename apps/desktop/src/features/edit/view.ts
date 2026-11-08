@@ -22,7 +22,7 @@ import {
   setMarker, snapPoints, snapTime, MAX_MARKERS, type SegmentClip, lookOf, playsForward, sourceAt,
   isStillPath, overlayLanes, moveOverlayLayer, overlaps, overlayStyle, setOverlayStyle, rangeEdit, overlayAt, placementOf, setOverlayFades, setOverlayMotion,
   type OverlayKey,
-  type Cue, type Edit, type Media, type MediaInfo, type Overlay, type OverlayPreset, type Quality, type Segment, type TransitionType,
+  type Cue, type Edit, type StemKey, type Media, type MediaInfo, type Overlay, type OverlayPreset, type Quality, type Segment, type TransitionType,
 } from "./model.ts";
 import { mountSubtitles } from "./subtitles_view.ts";
 import { burnRequest, exportLines, plainSubtitles, serializePlain, type PlainSubtitles } from "./plain_subs.ts";
@@ -291,6 +291,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   const track = $("#tl-track");
   /** The video's own sound, apart from the pictures: one block per segment, its level dragged up or down. */
   const vaTrack = $("#tl-vaudio");
+  /** Lớp âm thanh as lanes (Lời, Nhạc, SFX…): drag a lane's line to set its level for the whole video. */
+  const stemsTrack = $("#tl-stems");
   /** Lanes with nothing in them yet stay on the timeline, each with a button to its tab. */
   const emptyLanes = $("#tl-empty");
   emptyLanes.addEventListener("pointerdown", (event) => event.stopPropagation());
@@ -1136,6 +1138,12 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     },
   });
   const stems = mountStems(invoke, {
+    addMusic: () => document.querySelector<HTMLButtonElement>("#au-pick-files")?.click(),
+    addSfx: () => {
+      const tab = document.querySelector<HTMLButtonElement>("#au-tab-library");
+      tab?.click();
+      document.querySelector("#au-library")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    },
     edit: () => current(),
     base: () => session!.history.current,
     busy: () => !session || !!session.draft,
@@ -2177,6 +2185,36 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     });
     vaTrack.replaceChildren(...sounds);
     vaTrack.hidden = sounds.length === 0;
+    const stemLanes = stems.lanes(edit);
+    stemsTrack.hidden = stemLanes.length === 0;
+    stemsTrack.replaceChildren(...stemLanes.map((lane) => {
+      const row = element("div", "tl-vatrack tl-lane tl-stemlane");
+      row.dataset.label = lane.label;
+      row.dataset.stem = lane.key;
+      row.setAttribute("aria-label", `${lane.label}: ${Math.round(lane.level * 100)}%`);
+      row.append(...edit.segments.flatMap((segment, index) => {
+        if (segment.mediaId !== MAIN || lookOf(segment).freeze !== null) return [];
+        const length = segmentLength(segment) * pps;
+        const block = element("div", `tl-va tl-stem${lane.level === 0 ? " muted" : ""}`);
+        block.dataset.stem = lane.key;
+        block.style.left = `${PAD + starts[index] * pps}px`;
+        block.style.width = `${Math.max(2, length)}px`;
+        block.title = `${lane.label}: ${Math.round(lane.level * 100)}% cả video · kéo vạch lên xuống để đổi âm lượng, bấm đúp để tắt hoặc bật lớp này`;
+        if (lane.level > 0 && length >= 8) {
+          const wave = element("canvas", "tl-wave");
+          wave.dataset.path = lane.path;
+          wave.dataset.id = segment.id;
+          wave.dataset.level = String(lane.level);
+          block.append(wave);
+        }
+        const level = element("span", "tl-va-level");
+        level.style.bottom = `${Math.min(100, lane.level / 2 * 100)}%`;
+        block.append(level);
+        if (length >= 48) block.append(element("span", "tl-va-name", lane.level === 0 ? "Tắt" : `${Math.round(lane.level * 100)}%`));
+        return [block];
+      }));
+      return row;
+    }));
     drawWaves(edit);
     // Overlay row.
     overlayTrack.hidden = !edit.overlays.length;
@@ -2223,7 +2261,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       lane.append(add);
       return lane;
     }));
-    const rows = 22 + (edit.overlays.length ? ovRows * OV_ROW + 2 : 0) + 80 + (sounds.length ? VA_PX + 6 : 0) + (textHeight ? 6 + textHeight : 0) + (audioHeight ? 6 + audioHeight : 0) + emptyLanes.childElementCount * 32 + 16;
+    const rows = 22 + (edit.overlays.length ? ovRows * OV_ROW + 2 : 0) + 80 + (sounds.length ? VA_PX + 6 : 0) + stemLanes.length * (VA_PX + 6) + (textHeight ? 6 + textHeight : 0) + (audioHeight ? 6 + audioHeight : 0) + emptyLanes.childElementCount * 32 + 16;
     // At most 40% of the window: further rows scroll, the video keeps its room.
     // Never lower than the timeline without rows (lower in short windows, see styles.css), so it does not jump.
     const least = window.innerHeight <= 600 ? SHORT_TIMELINE_PX : TIMELINE_PX;
@@ -2275,7 +2313,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   /** Draw each segment's sound under its thumbnails (50 levels a second of its media). */
   function drawWaves(edit: Edit): void {
     const ratio = Math.min(2, window.devicePixelRatio || 1);
-    for (const canvas of vaTrack.querySelectorAll<HTMLCanvasElement>("canvas.tl-wave")) {
+    for (const canvas of [...vaTrack.querySelectorAll<HTMLCanvasElement>("canvas.tl-wave"), ...stemsTrack.querySelectorAll<HTMLCanvasElement>("canvas.tl-wave")]) {
       const path = canvas.dataset.path ?? "";
       const segment = edit.segments.find((candidate) => candidate.id === canvas.dataset.id);
       const levels = peaks.get(path);
@@ -2295,7 +2333,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       if (!context) continue;
       context.scale(ratio, ratio);
       context.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--accent-text").trim() || "oklch(0.80 0.10 255)";
-      const gain = Math.min(1, 0.35 + segment.volume * 0.65);
+      const gain = Math.min(1, 0.35 + segment.volume * Number(canvas.dataset.level ?? 1) * 0.65);
       for (let x = 0; x < width; x += 2) {
         const a = sourceAt(segment, x / pps), b = sourceAt(segment, (x + 2) / pps);
         const from = Math.floor(Math.min(a, b) * 50);
@@ -2498,6 +2536,53 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     levelDrag = null;
     if (session?.draft) commit(session.draft);
   };
+  let stemDrag: { key: StemKey; block: HTMLElement; pointer: number } | null = null;
+  let lastStemClick: { key: StemKey; at: number } | null = null;
+  stemsTrack.addEventListener("pointerdown", (event) => {
+    const block = (event.target as HTMLElement).closest<HTMLElement>(".tl-stem");
+    if (!session || !block || event.button !== 0 || session.draft) return;
+    event.stopPropagation();
+    event.preventDefault();
+    if ((event.target as HTMLElement).closest(".tl-va-level") || event.altKey) {
+      stemDrag = { key: block.dataset.stem as StemKey, block, pointer: event.pointerId };
+      stemsTrack.setPointerCapture(event.pointerId);
+      block.classList.add("leveling");
+      stems.setLevel(stemDrag.key, levelAt(block, event.clientY), false);
+      return;
+    }
+    // A second click soon after on the same lane turns it off or on (the first click redraws the lanes, so no dblclick).
+    const key = block.dataset.stem as StemKey;
+    const now = performance.now();
+    if (lastStemClick && lastStemClick.key === key && now - lastStemClick.at < 400) {
+      lastStemClick = null;
+      stems.toggle(key);
+      return;
+    }
+    lastStemClick = { key, at: now };
+    seekOutput(timeAt(event.clientX));
+    render();
+  });
+  stemsTrack.addEventListener("pointermove", (event) => {
+    if (!session || !stemDrag || event.pointerId !== stemDrag.pointer) return;
+    const value = levelAt(stemDrag.block, event.clientY);
+    stems.setLevel(stemDrag.key, value, false);
+    // Every block of the lane follows the line.
+    for (const block of stemsTrack.querySelectorAll<HTMLElement>(`.tl-stem[data-stem="${stemDrag.key}"]`)) {
+      const line = block.querySelector<HTMLElement>(".tl-va-level");
+      if (line) line.style.bottom = `${Math.min(100, value / 2 * 100)}%`;
+      const name = block.querySelector<HTMLElement>(".tl-va-name");
+      if (name) name.textContent = value === 0 ? "Tắt" : `${Math.round(value * 100)}%`;
+    }
+  });
+  const endStem = (event: PointerEvent): void => {
+    if (!stemDrag || event.pointerId !== stemDrag.pointer) return;
+    const { key, block } = stemDrag;
+    block.classList.remove("leveling");
+    stemDrag = null;
+    stems.setLevel(key, levelAt(block, event.clientY), true);
+  };
+  stemsTrack.addEventListener("pointerup", endStem);
+  stemsTrack.addEventListener("pointercancel", endStem);
   vaTrack.addEventListener("pointerup", endLevel);
   vaTrack.addEventListener("pointercancel", endLevel);
   vaTrack.addEventListener("dblclick", (event) => {
