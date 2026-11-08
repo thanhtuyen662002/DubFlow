@@ -2455,3 +2455,72 @@ body.settings-open .rail-item.active:not(#nav-settings)::before { display: none;
 .docu-cut-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .docu-cut-foot { display: flex; gap: 6px; }
 .cover-box.ghost { outline: 1px dashed oklch(1 0 0 / .45); background: oklch(1 0 0 / .06); pointer-events: none; }
+
+/* Vibi.pro voices (#632): the studio dialog, the rows on the pages and Cài đặt › Giọng đọc. */
+.vibi-studio { z-index: 30; }
+.vibi-studio-panel { width: min(1180px, 100%); height: min(820px, 100%); }
+.vibi-studio .review-head h2 { margin: 2px 0 0; }
+.vibi-balance { display: block; margin-top: 2px; }
+.vibi-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(320px, 1fr); }
+.vibi-browser { display: flex; flex-direction: column; min-height: 0; padding: 14px 16px 12px 20px; border-right: 1px solid var(--line); }
+.vibi-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.vibi-tab { height: 30px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 999px; background: transparent; color: var(--text-2); font-weight: 600; font-size: 13px; cursor: pointer; }
+.vibi-tab:hover { background: var(--hover); color: var(--text); }
+.vibi-tab[aria-selected="true"] { border-color: transparent; background: var(--select); color: var(--accent-text); }
+.vibi-filters { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.vibi-filters select, .vibi-search { height: 32px; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface); color: var(--text); font: inherit; font-size: 13px; }
+.vibi-search { flex: 1 1 100%; padding: 0 10px; }
+.vibi-filters select { flex: 1 1 130px; min-width: 0; }
+.vibi-count { margin: 2px 0 6px; }
+.vibi-list { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 4px; padding-right: 4px; }
+.vibi-voice { display: flex; align-items: flex-start; gap: 10px; padding: 9px 10px; border: 1px solid transparent; border-radius: 9px; cursor: pointer; }
+.vibi-voice:hover { background: var(--hover); }
+.vibi-voice:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.vibi-voice[aria-selected="true"] { border-color: var(--accent); background: var(--select); }
+.vibi-avatar { flex: none; display: grid; place-items: center; width: 32px; height: 32px; border-radius: 50%; background: var(--line-strong); color: var(--text); font-weight: 700; }
+.vibi-voice-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.vibi-voice-text strong { font-size: 14px; }
+.vibi-desc { color: var(--text-2); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.vibi-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
+.vibi-tag { padding: 0 7px; border-radius: 999px; background: var(--surface); color: var(--text-3); font-size: 11.5px; line-height: 20px; }
+.vibi-play { flex: none; width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--line-strong); }
+.vibi-play.on { border-color: transparent; background: var(--accent); color: var(--on-accent); }
+.vibi-play-none { flex: none; width: 32px; }
+.vibi-more { align-self: center; margin-top: 8px; }
+.vibi-panel { min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 12px; padding: 14px 20px 14px 18px; }
+.vibi-chosen { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border-radius: 9px; background: var(--surface); }
+.vibi-chosen-name { font-size: 16px; }
+.vibi-field { display: flex; flex-direction: column; gap: 4px; font-weight: 600; font-size: 13px; color: var(--text-2); }
+.vibi-field select { height: 34px; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface); color: var(--text); font: inherit; }
+.vibi-presets { display: flex; align-items: center; gap: 12px; }
+.vibi-sliders { display: flex; flex-direction: column; gap: 12px; }
+.vibi-slider { display: flex; flex-direction: column; gap: 3px; }
+.vibi-slider-head { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 13px; }
+.vibi-slider-head > span:first-child { flex: 1; }
+.vibi-value { color: var(--accent-text); font-variant-numeric: tabular-nums; }
+.vibi-number { width: 62px; height: 26px; padding: 0 6px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--surface); color: var(--text); font: inherit; font-size: 12.5px; }
+.vibi-track { position: relative; display: block; }
+.vibi-track input[type="range"] { position: relative; z-index: 1; width: 100%; margin: 0; accent-color: var(--accent); background: transparent; }
+.vibi-band { position: absolute; top: 50%; height: 12px; transform: translateY(-50%); border-radius: 6px; background: var(--ok-bg); outline: 1px solid var(--ok); opacity: .55; pointer-events: none; }
+.vibi-check { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2); }
+.vibi-check input { accent-color: var(--accent); }
+.vibi-advice { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; }
+.vibi-advice li { padding: 6px 10px; border-radius: 7px; background: var(--warn-bg); color: var(--warn); font-size: 12.5px; }
+.vibi-sample { display: flex; flex-direction: column; gap: 6px; }
+.vibi-sample-text { width: 100%; resize: vertical; padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface); color: var(--text); font: inherit; font-size: 13px; }
+.vibi-sample-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.vibi-tip { margin: 0; }
+.vibi-foot { display: flex; align-items: center; gap: 10px; padding: 12px 20px; border-top: 1px solid var(--line); }
+.vibi-state { flex: 1; min-width: 0; margin: 0; color: var(--text-2); font-size: 13px; }
+.vibi-row { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 4px 10px; margin: 4px 0 8px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); }
+.vibi-row .switch-row { flex: 1 1 240px; min-width: 0; margin: 0; padding: 2px 0; }
+.vibi-row-summary { display: block; overflow-wrap: anywhere; }
+.vibi-uses { display: flex; flex-direction: column; gap: 4px; margin-top: 12px; }
+.vibi-key-card { margin-top: 4px; }
+@media (max-width: 860px) {
+  .vibi-body { grid-template-columns: 1fr; overflow: auto; }
+  .vibi-browser { border-right: 0; border-bottom: 1px solid var(--line); min-height: 420px; }
+}
+.vibi-studio .hint, .vibi-row .hint, .vibi-settings .vibi-uses .hint { margin-top: 0; }
+.vibi-row-fallback { flex: 1 1 100%; color: var(--text-3); font-size: 12px; }
+.voice-picker.vibi-on > .filters, .voice-picker.vibi-on > .voice-list { opacity: .55; }

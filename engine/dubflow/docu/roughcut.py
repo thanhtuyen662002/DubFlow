@@ -228,16 +228,17 @@ def card_argv(ffmpeg: Path, ass: str, frames: int, encoder: str, output: Path) -
 
 
 def mux_argv(ffmpeg: Path, concat: str, narration: Path, seconds: float, output: Path, bed: Path | None = None,
-             ambience: Path | None = None) -> list[str]:
+             ambience: Path | None = None, mega: bool = False) -> list[str]:
     """Picture, narration and, when given, the ducked music bed and the scenes' room tone with the act hits."""
     head = [str(ffmpeg), "-nostdin", "-hide_banner", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", concat, "-i", str(narration)]
-    if bed is None and ambience is None:
+    if bed is None and ambience is None and not mega:
         audio = ["-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-af", "apad"]
     else:
         inputs = [path for path in (bed, ambience) if path is not None]
         for path in inputs:
             head += ["-i", str(path)]
-        audio = ["-filter_complex", overlays.ducked_mix(bed=bed is not None, ambience=(2 + int(bed is not None)) if ambience else None),
+        audio = ["-filter_complex", overlays.ducked_mix(bed=bed is not None, ambience=(2 + int(bed is not None)) if ambience else None,
+                                                             mega=mega),
                  "-map", "0:v:0", "-map", "[audio]", "-c:v", "copy"]
     return head + audio + ["-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2", "-t", f"{seconds:.3f}",
                            "-movflags", "+faststart", "-f", "mp4", str(output)]
@@ -534,17 +535,19 @@ def run(run_dir: Path, spec: Spec, *, ffmpeg: Path, probe: Probe, ffmpeg_runner:
             seconds += END_CARD
         (work / "concat.txt").write_text("".join(f"file '{part}'\n" for part in parts), encoding="utf-8")
         bed = None
+        mega = options.get("mix") == "mega"
+        bed_lufs = overlays.MEGA_BED_LUFS if mega else overlays.BED_LUFS
         if options["music"] != "none":
             status.write(message="Đang tạo nhạc nền…")
             if options["music"] == "file":
                 music = Path(options["music_path"])
                 if not music.is_file():
                     raise DocuError(f"Không tìm thấy file nhạc nền: {music.name}")
-                argv = overlays.file_bed_argv(ffmpeg, music, seconds, work / "bed.partial.wav")
+                argv = overlays.file_bed_argv(ffmpeg, music, seconds, work / "bed.partial.wav", bed_lufs)
                 stat = music.stat()
                 key = {"argv": argv[1:], "music": [stat.st_size, stat.st_mtime_ns]}
             else:
-                argv = overlays.bed_argv(ffmpeg, overlays.chapter_moods(script, timeline, seconds), seconds, work / "bed.partial.wav")
+                argv = overlays.bed_argv(ffmpeg, overlays.chapter_moods(script, timeline, seconds), seconds, work / "bed.partial.wav", bed_lufs)
                 key = {"argv": argv[1:]}
             bed = work / "bed.wav"
             if _receipt(work / "bed.json") != {"key": key} or not bed.is_file():
@@ -566,7 +569,7 @@ def run(run_dir: Path, spec: Spec, *, ffmpeg: Path, probe: Probe, ffmpeg_runner:
                     write_json(work / "ambience.json", {"key": key})
         status.write(message="Đang ghép hình với lời đọc…")
         partial = work / "documentary.partial.mp4"
-        ffmpeg_runner(mux_argv(ffmpeg, "concat.txt", narration, seconds, partial, bed, ambience), work, cancel.exists)
+        ffmpeg_runner(mux_argv(ffmpeg, "concat.txt", narration, seconds, partial, bed, ambience, mega), work, cancel.exists)
         try:
             replace(partial, run_dir / VIDEO)
         except PermissionError as error:

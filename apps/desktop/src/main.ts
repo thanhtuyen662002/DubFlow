@@ -30,6 +30,8 @@ import { mountShorts } from "./features/shorts/view.ts";
 import { mountReframe } from "./features/reframe/view.ts";
 import { mountCompilation } from "./features/compilation/view.ts";
 import { mountDocu } from "./features/docu/view.ts";
+import { dubbingVoice, loadChoice as loadVibiChoice } from "./features/vibi/model.ts";
+import { createVibiStudio, mountVibiSettings, vibiVoiceRow } from "./features/vibi/view.ts";
 import { mountProductStudio } from "./features/product/view.ts";
 import { shortDate } from "./features/product/model.ts";
 import { jobTarget, mountEditor, type EditTarget, type ProxyState } from "./features/edit/view.ts";
@@ -1341,8 +1343,11 @@ async function startJob(job: QueueJob): Promise<void> {
   queue.updateStatus(job.id, { ...job.status, state: "RUNNING", reason: "starting", message: "Đang khởi động xử lý" });
   try {
     await aiRestored;
+    const request = startJobRequest(job, outputRoot(), cpuOnly(), rememberedSubtitleStyle(), rememberedCoverStyle());
     const started = await invoke<{ output_dir: string } | null>("start_job", {
-      ...startJobRequest(job, outputRoot(), cpuOnly(), rememberedSubtitleStyle(), rememberedCoverStyle()),
+      ...request,
+      // The Vibi.pro voice when "Giọng Vibi.pro" is on; the host adds the saved key.
+      cloudVoice: dubbingVoice(loadVibiChoice(), request.enableDubbing === true),
       // "Dịch phụ đề bằng AI theo ngữ cảnh" and "Từ nhạy cảm" (Cài đặt › Tài khoản); the host adds the saved key.
       ...translationJobArgs(loadPrefs(), claudeKey, job.displayName),
     });
@@ -1782,6 +1787,12 @@ const discovery = mountDiscovery(invoke, async (url, title) => { await startFetc
   return key ? chineseKeyword(claudeKey.provider(), key, text) : null;
 });
 const aiSettings = mountAiSettings(claudeKey, () => openSettings("account"), invoke, playableUrl);
+// Vibi.pro voices (#632): the studio, Cài đặt › Giọng đọc, and the row in the dubbing options.
+const vibiStudio = createVibiStudio(invoke, playableUrl, () => openSettings("voices"));
+const vibiSettings = mountVibiSettings($("#vibi-settings"), invoke, vibiStudio, () => dubbingVibiRow.refresh());
+const dubbingVibiRow = vibiVoiceRow(vibiStudio, "dubbing", () => vibiSettings.refresh());
+$("#voice-picker").prepend(dubbingVibiRow.element);
+dubbingVibiRow.refresh();
 mountSfxSettings(sfxLibrary, showError);
 /** Folders whose "DubFlow Output" may hold earlier Bán hàng and Tổng hợp runs: the chosen one and the queue's. */
 function outputRoots(): string[] {
@@ -1893,7 +1904,7 @@ $("#media-col .queue-col-head").after($("#link-form"));
 if (!parsedMedia) mediaStore.write(serializeMedia(media.entries()));
 if (storedState.state === "corrupt") showError("Danh sách Hàng đợi đã lưu bị hỏng nên được dựng lại từ các video ở Lồng tiếng. Bản cũ được giữ riêng; file video trên máy không bị ảnh hưởng.");
 else if (storedState.state === "ok" && storedState.dropped) showError(`${storedState.dropped} mục hỏng trong danh sách Hàng đợi đã được bỏ qua.`);
-const docu = mountDocu(invoke, claudeKey, { jobs: () => queue.getSnapshot().jobs, outputRoot, roots: outputRoots, mediaUrl: playableUrl,
+const docu = mountDocu(invoke, claudeKey, { jobs: () => queue.getSnapshot().jobs, outputRoot, roots: outputRoots, mediaUrl: playableUrl, vibi: vibiStudio,
   edit: (video, seed) => void editVideo({ id: video.outputPath, kind: "docu", outputPath: video.outputPath, displayName: video.displayName, seed }, "docu"),
   // Claude working over MCP: a pulsing dot on "Phim tài liệu" wherever the user is.
   mcpBusy: label => {
@@ -2814,6 +2825,7 @@ function openSettings(tab?: string): void {
   if (settingsDialog.hidden) {
     settingsReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     aiSettings.refresh();
+    vibiSettings.refresh();
   }
   settingsDialog.hidden = false;
   // Cài đặt is a page of its own: the rail lights it instead of the page underneath.

@@ -886,6 +886,42 @@ def _translation_settings(config: WorkerConfig, warnings: list[str]) -> Translat
     return TranslationSettings(route, sensitive, " ".join(title.split())[:200])
 
 
+CLOUD_VOICE_FILE = "cloud_voice.json"
+# The desktop puts the user's saved Vibi.pro key here for this job only (#632).
+VIBI_KEY_ENV = "DUBFLOW_VIBI_KEY"
+
+
+def _cloud_voice(config: Any, warnings: list[str]) -> tuple[Any, str] | None:
+    """cloud_voice.json beside the outputs: a Vibi.pro voice chosen for the dubbing, and its key.
+
+    A missing key, a refused key or an empty balance never fails the job: it
+    keeps the built-in Vietnamese voice and says why.
+    """
+    key = os.environ.pop(VIBI_KEY_ENV, "") or ""
+    path = Path(config.output_dir) / CLOUD_VOICE_FILE
+    if not getattr(config, "enable_dubbing", False) or not path.is_file():
+        return None
+    from engine.dubflow.tts import vibi
+    try:
+        if path.stat().st_size > 64 * 1024:
+            raise ValueError("file is too large")
+        document = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(document, dict) or document.get("schema_version") != 1:
+            raise ValueError("schema_version 1 is required")
+        settings = vibi.VoiceSettings.from_mapping(document.get("vibi"))
+        account = vibi.VibiClient(key).me()
+        balance = account.get("credit_balance")
+        if isinstance(balance, (int, float)) and balance <= 0:
+            raise vibi.VibiError("NO_CREDITS", "Tài khoản Vibi.pro đã hết credit")
+    except (OSError, ValueError) as error:
+        warnings.append(f"CLOUD_VOICE_SKIPPED: {path.name}: {str(error)[:200]} Lồng tiếng dùng giọng có sẵn.")
+        return None
+    except vibi.VibiError as error:
+        warnings.append(f"CLOUD_VOICE_SKIPPED: {error.message} Lồng tiếng dùng giọng có sẵn.")
+        return None
+    return settings, key
+
+
 def _placement_seconds(point: Mapping[str, Any]) -> float:
     """A time point of dubbing_placement.json in seconds (ticks and the time base are written as decimal strings)."""
     base = point["time_base"]
@@ -2014,7 +2050,11 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
         try:
             from engine.dubflow.worker.b2_audio import tts_recipe_identity, mix_recipe_identity
             selected_voice = getattr(config, "tts_voice_id", None)
+            cloud = _cloud_voice(config, warnings)
+            if cloud is not None:
+                voice_by_cue = None  # One Vibi voice speaks the whole video.
             def dub(cue_voices):
+                nonlocal cloud
                 nonlocal background_path, background_summary
                 casting_identity = json.dumps({"casting": casting, "voice_by_cue": cue_voices,
                     "speaker_by_cue": speaker_result.labels}, sort_keys=True) if cue_voices is not None else ""
@@ -2027,7 +2067,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
                         background_path, background_summary = None, {"mode": "original"}
                 bed_identity = json.dumps({"requested": True, "mode": background_summary["mode"],
                     "input_hash": background_summary.get("input_hash"), "sha256": bed_hash}, sort_keys=True) if getattr(config, "separate_background", False) else ""
-                generation_identity = sha256((translation_input + (overrides_identity or "") + (voice_identity or "") + audio_identity + _sha256(profile_path) + _sha256(Path(__file__).with_name("b2_audio.py")) + tts_recipe_identity(config.app_root, profile_path) + mix_recipe_identity() + json.dumps(selected_voice) + casting_identity + bed_identity + ("|tts-cuda" if tts_device.device == "cuda" else "")).encode()).hexdigest()
+                generation_identity = sha256((translation_input + (overrides_identity or "") + (voice_identity or "") + audio_identity + _sha256(profile_path) + _sha256(Path(__file__).with_name("b2_audio.py")) + tts_recipe_identity(config.app_root, profile_path) + mix_recipe_identity() + json.dumps(selected_voice) + ("|vibi:" + cloud[0].identity() if cloud is not None else "") + casting_identity + bed_identity + ("|tts-cuda" if tts_device.device == "cuda" else "")).encode()).hexdigest()
                 try:
                     return run_b2_audio(
                         media=media,
@@ -2049,8 +2089,13 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
                         **({"background_path": background_path} if background_path is not None else {}),
                         **({"tts_device": tts_device} if tts_device.device == "cuda" else {}),
                         on_progress=dubbing_progress,
+                        **({"cloud_voice": cloud} if cloud is not None else {}),
                     )
                 except B2AudioError as error:
+                    if cloud is not None:
+                        warnings.append(f"CLOUD_VOICE_SKIPPED: giọng Vibi.pro lỗi ({error.code}: {error.condition[:200]}). Lồng tiếng dùng giọng có sẵn.")
+                        cloud = None
+                        return dub(cue_voices)  # One changed-condition retry with the built-in voice.
                     if background_path is None or error.code != "SEPARATION_BED_FAILED":
                         raise
                     warnings.append(f"SEPARATION_SKIPPED: {error.code}: {error.condition}")

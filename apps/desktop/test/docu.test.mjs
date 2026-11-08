@@ -188,7 +188,7 @@ assert.equal(planStale({ chapters: [], script_sha256: "abc" }, null, visualInfo.
 assert.equal(planStale({ chapters: [] }, timed, null), false, "no plan is not stale");
 
 // Rough cut (phase 2b-2).
-const defaultOptions = { graphics: true, captions: false, music: "generated", music_path: null, sfx: true };
+const defaultOptions = { graphics: true, captions: false, music: "generated", music_path: null, sfx: true, mix: "standard" };
 assert.deepEqual(parseRender({ video: "D:/run/documentary.mp4", status: { state: "COMPLETED", done: 6, total: 6, message: "ok" } }),
   { video: "D:/run/documentary.mp4", status: { state: "COMPLETED", done: 6, total: 6, message: "ok" }, options: defaultOptions });
 assert.deepEqual(parseRender({ video: 5, status: { state: "?" } }), { video: null, status: null, options: defaultOptions });
@@ -196,7 +196,7 @@ assert.deepEqual(parseRender({ video: 5, status: { state: "?" } }), { video: nul
 const burned = parseRender({ video: "D:/run/documentary.mp4", status: { state: "COMPLETED", done: 6, total: 6, message: "ok", overlays: { graphics: true, captions: false, music: "generated" } },
   options: { schema_version: 1, graphics: false, captions: true, music: "file", music_path: "D:/music/bed.mp3" } });
 assert.deepEqual(burned.status.overlays, { graphics: true, captions: false, music: "generated", music_path: null, sfx: true }, "a 1.1.75 status without sfx played the ambience");
-assert.deepEqual(burned.options, { graphics: false, captions: true, music: "file", music_path: "D:/music/bed.mp3", sfx: true });
+assert.deepEqual(burned.options, { graphics: false, captions: true, music: "file", music_path: "D:/music/bed.mp3", sfx: true, mix: "standard" });
 assert.equal(parseRenderOptions({ sfx: false }).sfx, false, "the ambience can be turned off");
 // The draft is stale when it was made with other options, including another music file in "file" mode.
 const madeWith = (overlays) => parseRender({ status: { state: "COMPLETED", done: 1, total: 1, message: "", overlays } }).status.overlays;
