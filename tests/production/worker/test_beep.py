@@ -63,6 +63,13 @@ class BeepTests(unittest.TestCase):
         middle = int(0.65 * RATE) * 2
         self.assertNotEqual(before[middle:middle + 200], after[middle:middle + 200])
 
+    def test_the_dog_clip_matches_the_settings_preview(self):
+        # apps/desktop/test/ai_providers.test.mjs checks the same samples of dogClip (Nghe thử).
+        clip = beep_sounds.dog_clip(16000)
+        self.assertEqual(len(clip), 12960)
+        self.assertAlmostEqual(clip[2000], 0.010015049294533878, places=6)
+        self.assertAlmostEqual(clip[9000], 0.04836787203578464, places=6)
+
     def test_bird_and_dog_replace_the_span_with_their_own_sound(self):
         with TemporaryDirectory() as temp:
             source = Path(temp) / "mix.wav"

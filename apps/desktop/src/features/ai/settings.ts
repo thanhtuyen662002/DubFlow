@@ -314,7 +314,7 @@ export function mountAiSettings(session: AiSession, reveal: () => void, invoke?:
     $("#sensitive-sound-pick").hidden = prefs.beepSound !== "custom";
     const name = prefs.beepFile ? prefs.beepFile.split(/[\\/]/).pop() ?? "" : "";
     const fileNote = $("#sensitive-sound-file");
-    fileNote.textContent = prefs.beepSound === "custom" ? (name ? `Đang dùng: ${name}` : "Chưa chọn file: video sẽ dùng tiếng bíp.") : "";
+    fileNote.textContent = prefs.beepSound === "custom" ? (name ? `Đang dùng: ${name}` : "Chưa chọn file: bấm “Chọn file âm thanh…” (chưa có file thì video dùng tiếng bíp).") : "";
     fileNote.title = prefs.beepSound === "custom" ? prefs.beepFile ?? "" : "";
     const provider = session.provider();
     const ready = provider === "custom" ? Boolean(session.options(provider).baseUrl && session.options(provider).model) : session.saved(provider) !== null;
@@ -351,13 +351,12 @@ export function mountAiSettings(session: AiSession, reveal: () => void, invoke?:
   }
   sensitiveSound.addEventListener("change", async () => {
     const sound = sensitiveSound.value as BeepSound;
-    if (sound === "custom" && !prefs.beepFile && !await pickBeepFile()) {
-      renderPrefs();
-      return;
-    }
+    // Âm thanh tự chọn stays chosen even if the file dialog is closed: its "Chọn file âm thanh…"
+    // button stays in view (until a file is picked, the video uses the beep).
     prefs = { ...prefs, beepSound: sound };
     savePrefs(prefs);
     renderPrefs();
+    if (sound === "custom" && !prefs.beepFile && await pickBeepFile()) renderPrefs();
   });
   $("#sensitive-sound-pick").addEventListener("click", async () => {
     if (await pickBeepFile()) renderPrefs();
