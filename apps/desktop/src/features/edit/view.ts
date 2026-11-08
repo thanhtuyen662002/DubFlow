@@ -43,6 +43,7 @@ import { mountTemplate } from "./template_view.ts";
 import { mountLook } from "./look_view.ts";
 import { mountCanvas } from "./canvas_view.ts";
 import { lookBadges } from "./look.ts";
+import { exportFolder } from "./library.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 type Facts = { duration: number; width: number; height: number; fps?: number; size_bytes: number; has_audio: boolean; cues: Cue[] };
@@ -116,6 +117,8 @@ export type EditorHost = {
   saveRecording: (bytes: ArrayBuffer, outputPath: string, kind: string) => Promise<string>;
   /** Mẫu: render on the CPU only (Cài đặt). */
   cpuOnly: () => boolean;
+  /** Cài đặt › Thư mục lưu kết quả, or null to save beside each video. */
+  outputRoot?: () => string | null;
   /** Edit mode ended for `target` (to go back to the page it came from). */
   left: (target: EditTarget) => void;
 };
@@ -3699,7 +3702,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     const running = listStatus?.status?.state === "RUNNING";
     if (!running) {
       nameInput.value = defaultExportName(session.target.displayName, (listStatus?.exports ?? []).map((entry) => entry.path));
-      folder = folderOf(session.outputPath);
+      folder = exportFolder(session.outputPath, host.outputRoot?.() ?? null);
       quality = "source";
       dialogDone = null;
       $("#export-error").hidden = true;
