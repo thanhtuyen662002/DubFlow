@@ -1,0 +1,3 @@
+# Issue #632 Vibi.pro voices
+
+Owner request in the project thread (2026-11-08): use Vibi.pro (ElevenLabs, MiniMax) voices with the owner's own key instead of the built-in voices, choose from many voices and adjust every setting in the UI, with the "Mega Projects" settings as a preset and the post-production tips as a mix option. Scope: `engine/dubflow/tts/vibi.py`, the dubbing worker (`b2_audio.py`, `production_job.py`), docu narration and mix (`docu/__main__.py`, `overlays.py`, `roughcut.py`), the host (`vibi.rs`, `ai_keys.rs`, `docu.rs`, `main.rs`) and the webview (`features/vibi`, Cài đặt › Giọng đọc, Lồng tiếng and Phim tài liệu rows). Real-app check on the owner's PC is part of acceptance.
