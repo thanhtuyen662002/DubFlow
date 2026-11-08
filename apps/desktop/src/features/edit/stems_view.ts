@@ -18,12 +18,41 @@ type Separation = { state: string; progress?: number; message?: string; split_er
 type StemsResponse = {
   voice: string | null; source: string | null; background: string | null; separation: Separation | null; outdated?: boolean;
   music?: string | null; sfx?: string | null; split?: Separation | null;
-  /** The original voice alone (source − accompaniment), only drawn on the timeline. */
+  /** The original voice alone (source − accompaniment): the Lời lane, played as is. */
   spoken?: string | null;
 };
 /** A part as a timeline lane: its file to draw and its level. */
 export type StemLane = { key: StemKey; label: string; path: string; level: number };
-type FileKey = "voice" | "source" | "background" | "music" | "sfx";
+type FileKey = "voice" | "source" | "spoken" | "background" | "music" | "sfx";
+/** How far a part may drift from the picture while playing before its speed is nudged (seconds). */
+export const DRIFT_NUDGE = 0.015;
+/** Past this (or 40 ms while paused) the part jumps to the picture instead. */
+export const DRIFT_SEEK = 0.3;
+/** How much faster or slower a drifting part plays until it is back on the picture. */
+export const DRIFT_RATE = 0.03;
+
+/**
+ * One step of keeping a part on the picture's clock, run on every frame while the video
+ * plays. The parts play together as one sound, so a few milliseconds apart they echo: a
+ * small drift is nudged back by playing a little faster or slower (no audible jump), a large
+ * one (a seek, a part that became ready late) jumps. Paused: back to normal speed, and
+ * lined up within 40 ms so the next start is together.
+ */
+/** The parts stop following the picture (reverse, shuttle, another clip, pause): paused, at `rate`. */
+export function stopParts(parts: Iterable<{ paused: boolean; pause(): void; playbackRate: number }>, rate: number): void {
+  for (const part of parts) {
+    if (!part.paused) part.pause();
+    part.playbackRate = rate;
+  }
+}
+
+export function followClock(part: { currentTime: number; readyState: number }, videoTime: number, videoRate: number, playing: boolean): { seekTo: number | null; rate: number } {
+  if (part.readyState < 1) return { seekTo: null, rate: videoRate };
+  const drift = part.currentTime - videoTime;
+  if (Math.abs(drift) > (playing ? DRIFT_SEEK : 0.04)) return { seekTo: videoTime, rate: videoRate };
+  if (!playing || Math.abs(drift) <= DRIFT_NUDGE) return { seekTo: null, rate: videoRate };
+  return { seekTo: null, rate: videoRate * (drift > 0 ? 1 - DRIFT_RATE : 1 + DRIFT_RATE) };
+}
 
 export type StemsContext = {
   /** "Thêm nhạc nền" / "Thêm SFX": the Âm thanh tools that add sounds. */
@@ -493,8 +522,8 @@ export function mountStems(invoke: Invoke, context: StemsContext): StemsMode {
     return player.element;
   }
 
-  function pause(): void {
-    for (const player of players.values()) if (!player.element.paused) player.element.pause();
+  function pause(rate = 1): void {
+    stopParts([...players.values()].map((player) => player.element), rate);
   }
 
   return {
@@ -552,16 +581,17 @@ export function mountStems(invoke: Invoke, context: StemsContext): StemsMode {
     sync(video, level, on, playing) {
       const edit = context.edit();
       if (!on || !edit.mainStems || !files?.source) {
-        pause();
+        // Reversed, shuttling, or another clip playing: the parts stop and leave the clock.
+        pause(video.playbackRate > 0 ? video.playbackRate : 1);
         return;
       }
       const heard = solo ? Object.fromEntries(ALL_STEM_KEYS.map((key) => [key, key === solo ? stemLevel(edit.mainStems!, key) : 0])) as StemLevels : edit.mainStems;
-      const weights = stemWeights(heard, separated(), split());
+      const weights = stemWeights(heard, separated(), split(), !!files.spoken);
       if (playing) wake();
-      for (const key of ["voice", "source", "background", "music", "sfx"] as const) {
+      for (const key of ["voice", "source", "spoken", "background", "music", "sfx"] as const) {
         const path = files[key];
-        if (path && weights[key] === 0 && (key === "music" || key === "sfx" || key === "background")) {
-          // A silent part does not need to play (the split parts are big files).
+        if (path && weights[key] === 0 && key !== "voice") {
+          // A silent part does not need to play (the parts are big files).
           const idle = players.get(key);
           if (idle && !idle.element.paused) idle.element.pause();
           continue;
@@ -569,8 +599,10 @@ export function mountStems(invoke: Invoke, context: StemsContext): StemsMode {
         if (!path) continue;
         const player = playerFor(key, path);
         setLevel(player, weights[key] * level);
-        player.playbackRate = video.playbackRate;
-        if (player.readyState >= 1 && Math.abs(player.currentTime - video.currentTime) > (playing ? 0.25 : 0.04)) player.currentTime = video.currentTime;
+        // Called on every frame while the main video plays (tick → renderEffects → applyLevel).
+        const step = followClock(player, video.currentTime, video.playbackRate, playing);
+        if (step.seekTo !== null) player.currentTime = step.seekTo;
+        player.playbackRate = step.rate;
         if (playing && player.paused && player.readyState >= 2) void player.play().catch(() => undefined);
         else if (!playing && !player.paused) player.pause();
       }
