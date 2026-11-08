@@ -652,6 +652,7 @@ const editor = mountEditor(invoke, {
     : previewInvoke<string>("edit_save_recording", { bytes: bytes.byteLength, outputPath, kind }),
   openReview: () => void openReview(),
   cpuOnly: () => cpuOnly(),
+  outputRoot: () => outputRoot(),
   // Back to the page the video was opened from: the Chỉnh sửa list, the queue or another page.
   left: () => {
     const origin = editOrigin ?? "queue";

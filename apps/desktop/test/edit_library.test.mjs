@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import {
-  ageGroup, countByKind, fileTitle, filterEntries, fold, folderOf, forgetFile, isVideoPath, MAX_RECENT, mergeEntries, parseLibrary, parseRecent,
+  ageGroup, countByKind, exportFolder, fileTitle, filterEntries, fold, folderOf, forgetFile, isVideoPath, MAX_RECENT, mergeEntries, parseLibrary, parseRecent,
   pathKey, rememberFile, sizeLabel, distinctTitles,
 } from "../src/features/edit/library.ts";
 
@@ -48,6 +48,9 @@ assert.deepEqual([at(0, 1), at(1), at(5), at(9), 0].map((seconds) => ageGroup(se
 assert.deepEqual([sizeLabel(9_800_000), sizeLabel(2_500_000_000), sizeLabel(undefined), sizeLabel(10)], ["9 MB", "2,3 GB", "", "1 MB"]);
 assert.equal(fileTitle("D:\\Videos\\Phim hay.final.mp4"), "Phim hay.final");
 assert.equal(folderOf("D:\\Videos\\a.mp4"), "D:\\Videos");
+assert.equal(exportFolder("D:\\Videos\\DubFlow Output\\a - vi\\run-1\\final_vi.mp4", null), "D:\\Videos\\DubFlow Output\\a - vi\\run-1");
+assert.equal(exportFolder("D:\\Videos\\a.mp4", "D:\\Resource\\Edited"), "D:\\Resource\\Edited", "Cài đặt’s results folder wins");
+assert.equal(exportFolder("D:\\Videos\\a.mp4", "  "), "D:\\Videos");
 assert.equal(pathKey("C:/A/b.MP4"), "c:\\a\\b.mp4");
 assert.ok(isVideoPath("x.MKV") && !isVideoPath("x.srt"));
 
