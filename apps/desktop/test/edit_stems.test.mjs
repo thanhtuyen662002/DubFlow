@@ -68,3 +68,12 @@ console.log("edit_stems tests passed");
     Date.now = now;
   }
 }
+
+// ---------- Timeline: a finished separation shows its lanes, with their sound drawn ----------
+{
+  const { readFileSync } = await import("node:fs");
+  const view = readFileSync(new URL("../src/features/edit/view.ts", import.meta.url), "utf8");
+  assert.match(view, /if \(lanes !== stemLaneKey\) renderTimeline\(\);/, "new Lời/Nhạc/SFX lanes redraw the timeline");
+  const host = readFileSync(new URL("../src-tauri/src/edit.rs", import.meta.url), "utf8");
+  assert.match(host, /fn edit_audio_peaks[\s\S]{0,300}sfx::playable_audio/, "a stem lane's .wav gets its waveform");
+}
