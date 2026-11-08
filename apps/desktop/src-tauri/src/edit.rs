@@ -3684,21 +3684,32 @@ pub fn edit_subs_extract(output_path: String, kind: String, language: String, ai
 #[tauri::command]
 pub fn edit_subs_extract_status(output_path: String, kind: String) -> Result<Value, String> {
     let target = edit_target(&output_path, &kind)?;
-    let out = target.work.join(SUBS_AI_DIR);
+    Ok(subs_extract_status(&target.work))
+}
+
+fn subs_extract_status(work: &Path) -> Value {
+    let out = work.join(SUBS_AI_DIR);
     let read = |name: &str, limit: u64| -> Option<Value> {
         let path = out.join(name);
         fs::metadata(&path).ok().filter(|metadata| metadata.len() <= limit)?;
         serde_json::from_slice(&fs::read(&path).ok()?).ok()
     };
-    let Some(status) = read("status.json", 64 * 1024) else { return Ok(json!({"state": "NONE"})) };
-    let running = EXTRACTING.lock().is_ok_and(|set| set.contains(&target.work));
+    let running = EXTRACTING.lock().is_ok_and(|set| set.contains(work));
+    let Some(status) = read("status.json", 64 * 1024) else {
+        // Just started: the engine has not written its first status yet.
+        return if running {
+            json!({"state": "RUNNING", "progress": 0, "message": "Đang khởi động bộ tách phụ đề…"})
+        } else {
+            json!({"state": "NONE"})
+        };
+    };
     if status["state"] == "RUNNING" && !running {
-        return Ok(json!({"state": "FAILED", "progress": 0, "message": "Tách phụ đề đã dừng giữa chừng; hãy bấm lại."}));
+        return json!({"state": "FAILED", "progress": 0, "message": "Tách phụ đề đã dừng giữa chừng; hãy bấm lại."});
     }
     let mut value = json!({"state": status["state"], "progress": status["progress"], "message": status["message"]});
     if status["state"] == "COMPLETED" {
         let Some(layers) = read("layers.json", 32 * 1024 * 1024) else {
-            return Ok(json!({"state": "FAILED", "progress": 0, "message": "Không đọc được phụ đề vừa tách; hãy bấm lại."}));
+            return json!({"state": "FAILED", "progress": 0, "message": "Không đọc được phụ đề vừa tách; hãy bấm lại."});
         };
         let lines = |key: &str| -> Vec<Value> {
             layers[key].as_array().into_iter().flatten().take(MAX_CUES).filter_map(|line| {
@@ -3711,7 +3722,7 @@ pub fn edit_subs_extract_status(output_path: String, kind: String) -> Result<Val
         value["vi"] = json!(lines("vi"));
         value["warnings"] = layers["warnings"].clone();
     }
-    Ok(value)
+    value
 }
 
 /// Stop Tách phụ đề (at its next step).
@@ -4030,6 +4041,22 @@ mod tests {
     /// A job's `editable` files count only as plain files in a plain folder: a linked `editable`
     /// folder (symlink or junction) or a linked file inside it gives nothing, and Tách giọng
     /// falls back to the video itself.
+    /// Right after Tách phụ đề starts (before the engine's first status) the editor sees it running.
+    #[test]
+    fn a_just_started_subtitle_extraction_reads_as_running() {
+        let work = std::env::temp_dir().join(format!("dubflow-subs-start-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&work);
+        fs::create_dir_all(work.join(SUBS_AI_DIR)).unwrap();
+        assert_eq!(subs_extract_status(&work)["state"], "NONE");
+        EXTRACTING.lock().unwrap().insert(work.clone());
+        assert_eq!(subs_extract_status(&work)["state"], "RUNNING");
+        fs::write(work.join(SUBS_AI_DIR).join("status.json"), br#"{"state":"RUNNING","progress":12,"message":"x"}"#).unwrap();
+        assert_eq!(subs_extract_status(&work)["progress"], 12);
+        EXTRACTING.lock().unwrap().remove(&work);
+        assert_eq!(subs_extract_status(&work)["state"], "FAILED", "a run that stopped without finishing");
+        let _ = fs::remove_dir_all(&work);
+    }
+
     #[test]
     fn a_jobs_linked_editable_folder_or_file_gives_no_stems() {
         let root = std::env::temp_dir().join(format!("dubflow-linked-editable-{}", std::process::id()));
