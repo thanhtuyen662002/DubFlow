@@ -90,7 +90,13 @@ console.log("edit_stems tests passed");
 
 // ---------- Preview: every part stays on the picture's clock ----------
 {
-  const { followClock, DRIFT_SEEK, DRIFT_NUDGE } = await import("../src/features/edit/stems_view.ts");
+  const { followClock, stopParts, DRIFT_SEEK, DRIFT_NUDGE } = await import("../src/features/edit/stems_view.ts");
+  // Reverse/shuttle, another clip, or pause: every part stops and its nudged speed is reset.
+  {
+    const parts = [{ paused: false, playbackRate: 0.97 }, { paused: true, playbackRate: 1.03 }].map((part) => ({ ...part, pause() { this.paused = true; } }));
+    stopParts(parts, 1);
+    assert.deepEqual(parts.map(({ paused, playbackRate }) => ({ paused, playbackRate })), [{ paused: true, playbackRate: 1 }, { paused: true, playbackRate: 1 }]);
+  }
   // Continuous correction: a part 40 ms ahead slows down, 40 ms behind speeds up, frame after frame,
   // until it is back within the nudge window, then plays at the picture's speed.
   const part = { currentTime: 10.04, readyState: 4 };

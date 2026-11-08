@@ -36,8 +36,16 @@ export const DRIFT_RATE = 0.03;
  * plays. The parts play together as one sound, so a few milliseconds apart they echo: a
  * small drift is nudged back by playing a little faster or slower (no audible jump), a large
  * one (a seek, a part that became ready late) jumps. Paused: back to normal speed, and
- * lined up exactly so the next start is together.
+ * lined up within 40 ms so the next start is together.
  */
+/** The parts stop following the picture (reverse, shuttle, another clip, pause): paused, at `rate`. */
+export function stopParts(parts: Iterable<{ paused: boolean; pause(): void; playbackRate: number }>, rate: number): void {
+  for (const part of parts) {
+    if (!part.paused) part.pause();
+    part.playbackRate = rate;
+  }
+}
+
 export function followClock(part: { currentTime: number; readyState: number }, videoTime: number, videoRate: number, playing: boolean): { seekTo: number | null; rate: number } {
   if (part.readyState < 1) return { seekTo: null, rate: videoRate };
   const drift = part.currentTime - videoTime;
@@ -514,8 +522,8 @@ export function mountStems(invoke: Invoke, context: StemsContext): StemsMode {
     return player.element;
   }
 
-  function pause(): void {
-    for (const player of players.values()) if (!player.element.paused) player.element.pause();
+  function pause(rate = 1): void {
+    stopParts([...players.values()].map((player) => player.element), rate);
   }
 
   return {
@@ -573,7 +581,8 @@ export function mountStems(invoke: Invoke, context: StemsContext): StemsMode {
     sync(video, level, on, playing) {
       const edit = context.edit();
       if (!on || !edit.mainStems || !files?.source) {
-        pause();
+        // Reversed, shuttling, or another clip playing: the parts stop and leave the clock.
+        pause(video.playbackRate > 0 ? video.playbackRate : 1);
         return;
       }
       const heard = solo ? Object.fromEntries(ALL_STEM_KEYS.map((key) => [key, key === solo ? stemLevel(edit.mainStems!, key) : 0])) as StemLevels : edit.mainStems;
