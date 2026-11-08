@@ -2599,7 +2599,8 @@ pub fn push_peaks(pcm: &[u8], per_bucket: usize, carry: &mut (i32, usize), out: 
 /// (see `bucket_level`), empty when it has no sound.
 #[tauri::command]
 pub async fn edit_audio_peaks(path: String) -> Result<tauri::ipc::Response, String> {
-    let file = crate::playable_media(&path)?;
+    // A video on the computer, or a sound the editor may already play (a Lời/Nhạc/SFX lane's stem file).
+    let file = crate::playable_media(&path).or_else(|error| crate::sfx::playable_audio(&path).map_err(|_| error))?;
     let ffmpeg = media_tool("ffmpeg.exe")?;
     let peaks = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<u8>, String> {
         use std::io::Read;

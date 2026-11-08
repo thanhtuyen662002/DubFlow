@@ -1143,6 +1143,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       if (session) applyLevel(current().segments[session.index] ?? current().segments[0], active);
     },
   });
+  /** The Lời/Nhạc/SFX lanes last drawn, to redraw the timeline when a separation adds lanes. */
+  let stemLaneKey = "";
   const stems = mountStems(invoke, {
     addMusic: () => document.querySelector<HTMLButtonElement>("#au-pick-files")?.click(),
     addSfx: () => {
@@ -1162,7 +1164,13 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     },
     note,
     mediaUrl: (path) => host.mediaUrl(path),
-    changed: () => { if (session) applyLevel(current().segments[session.index] ?? current().segments[0], active); },
+    changed: () => {
+      if (!session) return;
+      applyLevel(current().segments[session.index] ?? current().segments[0], active);
+      // Tách giọng / tách nhạc finished: the timeline shows the new Lời, Nhạc and SFX lanes.
+      const lanes = stems.lanes(current()).map((lane) => `${lane.key}=${lane.path}`).join("|");
+      if (lanes !== stemLaneKey) renderTimeline();
+    },
   });
   const textMode = mountText({
     edit: () => current(),
@@ -2192,6 +2200,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     vaTrack.replaceChildren(...sounds);
     vaTrack.hidden = sounds.length === 0;
     const stemLanes = stems.lanes(edit);
+    stemLaneKey = stemLanes.map((lane) => `${lane.key}=${lane.path}`).join("|");
     stemsTrack.hidden = stemLanes.length === 0;
     stemsTrack.replaceChildren(...stemLanes.map((lane) => {
       const row = element("div", "tl-vatrack tl-lane tl-stemlane");
