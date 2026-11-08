@@ -3243,7 +3243,8 @@ struct StemFiles {
     /// The accompaniment split in two (`engine.dubflow.separation.split`): both or neither.
     music: Option<PathBuf>,
     sfx: Option<PathBuf>,
-    /// The original voice alone (source − accompaniment), drawn as the Lời lane; never mixed.
+    /// The original voice alone (source − accompaniment): the Lời lane. The preview plays it as is;
+    /// export mixes source and parts with weights that give the same sound (see `stem_weights`).
     spoken: Option<PathBuf>,
 }
 

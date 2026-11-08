@@ -2170,7 +2170,11 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       blocks.push(joint);
     }
     track.replaceChildren(...blocks);
-    // Tiếng gốc: each segment's sound in a lane of its own, under the pictures.
+    // Tiếng gốc: each segment's sound in a lane of its own, under the pictures. Once the sound is in
+    // parts (Lời, Nhạc, SFX) this lane is their common level per segment: named so, since turning it
+    // off silences every part.
+    const parted = stems.active(edit);
+    vaTrack.dataset.label = parted ? "Tổng tiếng" : "Tiếng gốc";
     const sounds: HTMLElement[] = [];
     let soundNumber = 0;
     edit.segments.forEach((segment, index) => {
@@ -2184,7 +2188,9 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       block.style.left = `${PAD + starts[index] * pps}px`;
       block.style.width = `${Math.max(2, length)}px`;
       const percent = Math.round(segment.volume * 100);
-      block.title = `Tiếng ${inserted ? "đoạn chèn" : `đoạn ${soundNumber}`}: ${percent}% · kéo vạch lên xuống để đổi âm lượng, bấm đúp để tắt hoặc bật tiếng`;
+      block.title = parted && !inserted
+        ? `Tổng tiếng đoạn ${soundNumber} (gồm Lời, Nhạc, SFX): ${percent}% · kéo vạch lên xuống để đổi âm lượng cả đoạn, bấm đúp để tắt hoặc bật. Muốn bỏ riêng một lớp, tắt lớp đó ở dòng bên dưới`
+        : `Tiếng ${inserted ? "đoạn chèn" : `đoạn ${soundNumber}`}: ${percent}% · kéo vạch lên xuống để đổi âm lượng, bấm đúp để tắt hoặc bật tiếng`;
       if (segment.volume > 0 && length >= 8) {
         const wave = element("canvas", "tl-wave");
         wave.dataset.path = media ? mediaPath(media) : "";
@@ -2605,6 +2611,9 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     const segment = block && session?.history.current.segments.find((candidate) => candidate.id === block.dataset.id);
     if (!session || !segment) return;
     commit(setVolume(session.history.current, segment.id, segment.volume === 0 ? 1 : 0));
+    if (segment.volume > 0 && segment.mediaId === MAIN && stems.active(current())) {
+      note("Đã tắt tổng tiếng của đoạn này: cả Lời, Nhạc và SFX đều im. Muốn bỏ riêng một lớp, bấm đúp vào lớp đó ở dòng bên dưới.");
+    }
   });
 
   content.addEventListener("pointerdown", (event) => {

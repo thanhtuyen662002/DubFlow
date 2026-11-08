@@ -187,16 +187,22 @@ export function defaultStems(separated: boolean): StemLevels {
   return { voice: 1, original: separated ? 0 : 0.35, background: 1 };
 }
 /**
- * The weight each file gets in the mix, as the host computes it: the source
- * at `original` and the accompaniment at `background − original` (the
- * source's own accompaniment cancels out).
+ * The weight each file gets in the mix, as the host computes it. With the
+ * original voice on its own (`spoken`, Tách giọng's voice.wav) every part
+ * plays at its own level and nothing is subtracted. Without it, the source
+ * plays at `original` and the accompaniment at `background − original` (the
+ * source's own accompaniment cancels out), as for a dubbing job's parts.
  */
-export function stemWeights(levels: StemLevels, separated: boolean, split = false): { voice: number; source: number; background: number; music: number; sfx: number } {
+export function stemWeights(levels: StemLevels, separated: boolean, split = false, spoken = false): { voice: number; source: number; spoken: number; background: number; music: number; sfx: number } {
+  const sfx = stemLevel(levels, "sfx");
+  if (separated && spoken) {
+    return { voice: levels.voice, source: 0, spoken: levels.original, background: split ? 0 : levels.background, music: split ? levels.background : 0, sfx: split ? sfx : 0 };
+  }
   if (separated && split) {
     // Music + SFX add up to the accompaniment: each cancels its share of the source.
-    return { voice: levels.voice, source: levels.original, background: 0, music: levels.background - levels.original, sfx: stemLevel(levels, "sfx") - levels.original };
+    return { voice: levels.voice, source: levels.original, spoken: 0, background: 0, music: levels.background - levels.original, sfx: sfx - levels.original };
   }
-  return { voice: levels.voice, source: levels.original, background: separated ? levels.background - levels.original : 0, music: 0, sfx: 0 };
+  return { voice: levels.voice, source: levels.original, spoken: 0, background: separated ? levels.background - levels.original : 0, music: 0, sfx: 0 };
 }
 
 /** A named point on the output, anchored to output time like sound clips. */

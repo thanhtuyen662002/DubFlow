@@ -18,12 +18,22 @@ assert.equal(setStems(loud, { voice: Number.NaN, original: 0, background: 1 }), 
 assert.equal(setStems(loud, null).mainStems, undefined);
 
 // The weights cancel the source's accompaniment: only the original voice keeps `original`.
-assert.deepEqual(stemWeights({ voice: 1.5, original: 0.2, background: 1 }, true), { voice: 1.5, source: 0.2, background: 0.8, music: 0, sfx: 0 });
-assert.deepEqual(stemWeights({ voice: 0, original: 1, background: 0 }, true), { voice: 0, source: 1, background: -1, music: 0, sfx: 0 });
-assert.deepEqual(stemWeights({ voice: 1, original: 0.35, background: 1 }, false), { voice: 1, source: 0.35, background: 0, music: 0, sfx: 0 });
+assert.deepEqual(stemWeights({ voice: 1.5, original: 0.2, background: 1 }, true), { voice: 1.5, source: 0.2, spoken: 0, background: 0.8, music: 0, sfx: 0 });
+assert.deepEqual(stemWeights({ voice: 0, original: 1, background: 0 }, true), { voice: 0, source: 1, spoken: 0, background: -1, music: 0, sfx: 0 });
+assert.deepEqual(stemWeights({ voice: 1, original: 0.35, background: 1 }, false), { voice: 1, source: 0.35, spoken: 0, background: 0, music: 0, sfx: 0 });
 // Split into music and SFX: each cancels its share of the source; SFX follows the music until set.
-assert.deepEqual(stemWeights({ voice: 0, original: 0, background: 1, sfx: 0.5 }, true, true), { voice: 0, source: 0, background: 0, music: 1, sfx: 0.5 });
-assert.deepEqual(stemWeights({ voice: 0, original: 1, background: 0 }, true, true), { voice: 0, source: 1, background: 0, music: -1, sfx: -1 });
+assert.deepEqual(stemWeights({ voice: 0, original: 0, background: 1, sfx: 0.5 }, true, true), { voice: 0, source: 0, spoken: 0, background: 0, music: 1, sfx: 0.5 });
+assert.deepEqual(stemWeights({ voice: 0, original: 1, background: 0 }, true, true), { voice: 0, source: 1, spoken: 0, background: 0, music: -1, sfx: -1 });
+// With the original voice on its own (voice.wav), each part plays at its own level: nothing cancels, so the
+// preview's separate players cannot leave the music in "Bỏ nhạc" or double it in "Bỏ lời".
+assert.deepEqual(stemWeights({ voice: 0, original: 1, background: 0, sfx: 1 }, true, true, true), { voice: 0, source: 0, spoken: 1, background: 0, music: 0, sfx: 1 }, "Bỏ nhạc");
+assert.deepEqual(stemWeights({ voice: 0, original: 0, background: 1, sfx: 1 }, true, true, true), { voice: 0, source: 0, spoken: 0, background: 0, music: 1, sfx: 1 }, "Bỏ lời");
+assert.deepEqual(stemWeights({ voice: 1, original: 0.2, background: 0.6 }, true, false, true), { voice: 1, source: 0, spoken: 0.2, background: 0.6, music: 0, sfx: 0 });
+for (const levels of [{ voice: 0, original: 1, background: 0, sfx: 1 }, { voice: 0.5, original: 0.3, background: 1.4, sfx: 0.2 }]) {
+  // Same sound either way, as voice = source − music − sfx.
+  const direct = stemWeights(levels, true, true, true), cancel = stemWeights(levels, true, true);
+  assert.ok(Math.abs((direct.music - direct.spoken) - cancel.music) < 1e-9 && Math.abs((direct.sfx - direct.spoken) - cancel.sfx) < 1e-9 && direct.spoken === cancel.source);
+}
 assert.equal(stemLevel({ voice: 0, original: 1, background: 0.4 }, "sfx"), 0.4);
 assert.equal(stemLevel({ voice: 0, original: 1, background: 0.4, sfx: 0 }, "sfx"), 0);
 
