@@ -46,6 +46,15 @@ export function folderOf(path: string): string {
   return index > 0 ? path.slice(0, index) : "";
 }
 
+/**
+ * Where "Xuất video" saves by default: the results folder chosen in Cài đặt
+ * (Thư mục lưu kết quả) when there is one, else beside the open video.
+ */
+export function exportFolder(outputPath: string, outputRoot: string | null): string {
+  const chosen = outputRoot?.trim();
+  return chosen || folderOf(outputPath);
+}
+
 /** Windows paths ignore case and either slash. */
 export function pathKey(path: string): string {
   return path.trim().replace(/\//g, "\\").toLowerCase();
