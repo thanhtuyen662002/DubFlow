@@ -2430,11 +2430,11 @@ body.settings-open .rail-item.active:not(#nav-settings)::before { display: none;
 /* Documentary cuts (Issue #630): one block per planned slice under Video, and the panel of the picked one. */
 .tl-cutstrack { position: relative; height: 26px; margin-top: 6px; }
 .tl-cutstrack[hidden] { display: none; }
-.tl-cut { position: absolute; top: 2px; height: 22px; box-sizing: border-box; overflow: hidden; border-radius: 4px; background: oklch(0.30 0.05 190); box-shadow: inset 0 0 0 1px oklch(0.46 0.08 190); cursor: grab; touch-action: none; }
-.tl-cut.scene-start { box-shadow: inset 2px 0 0 oklch(0.80 0.10 190), inset 0 0 0 1px oklch(0.46 0.08 190); }
-.tl-cut.generated { background: oklch(0.32 0.06 300); box-shadow: inset 0 0 0 1px oklch(0.50 0.09 300); }
 .tl-cut.covered::after { content: ""; position: absolute; top: 3px; right: 3px; width: 6px; height: 6px; border-radius: 50%; background: var(--voice); }
-.tl-cut.changed { background: oklch(0.34 0.08 75); box-shadow: inset 0 0 0 1px oklch(0.55 0.11 75); }
+.tl-cut { --cut-h: 195; position: absolute; top: 2px; height: 22px; box-sizing: border-box; overflow: hidden; border-radius: 4px; background: oklch(0.36 0.08 var(--cut-h)); box-shadow: inset 0 0 0 1px oklch(0.55 0.11 var(--cut-h)); cursor: grab; touch-action: none; }
+.tl-cut.scene-start { box-shadow: inset 2px 0 0 oklch(0.85 0.08 var(--cut-h)), inset 0 0 0 1px oklch(0.55 0.11 var(--cut-h)); }
+.tl-cut.generated { background: repeating-linear-gradient(135deg, oklch(0.30 0.05 300) 0 6px, oklch(0.26 0.04 300) 6px 12px); box-shadow: inset 0 0 0 1px oklch(0.50 0.09 300); }
+.tl-cut.changed::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 3px; background: oklch(0.80 0.15 75); }
 .tl-cut:hover { z-index: 2; filter: brightness(1.12); }
 .tl-cut.selected { z-index: 3; box-shadow: inset 0 0 0 2px var(--accent); outline: 2px solid var(--accent); outline-offset: 0; }
 .tl-cut.dragging { z-index: 4; opacity: .75; cursor: grabbing; }
@@ -2454,7 +2454,8 @@ body.settings-open .rail-item.active:not(#nav-settings)::before { display: none;
 .docu-cut-fields select { width: 100%; min-width: 0; height: 32px; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--canvas); color: var(--text); font-size: 12.5px; }
 .docu-cut-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .docu-cut-foot { display: flex; gap: 6px; }
-.cover-box.ghost { outline: 1px dashed oklch(1 0 0 / .45); background: oklch(1 0 0 / .06); pointer-events: none; }
+.docu-cut-scope { display: flex; }
+.docu-cut-scope button { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; padding: 0 6px; font-size: 12.5px; }
 
 /* Vibi.pro voices (#632): the studio dialog, the rows on the pages and Cài đặt › Giọng đọc. */
 .vibi-studio { z-index: 30; }

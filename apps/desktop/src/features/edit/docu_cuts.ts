@@ -197,6 +197,20 @@ export function setCutCover(plan: CutPlan, index: number, cover: CutCover | null
   return withCuts(plan, cuts);
 }
 
+/** Give every footage cut of ``source`` the same cover (null: back to the source's own). */
+export function setSourceCover(plan: CutPlan, source: string, cover: CutCover | null): CutPlan {
+  return withCuts(plan, plan.cuts.map((cut) => cut.source === source && cut.kind === null ? { ...cut, cover: cover ? structuredClone(cover) : null } : cut));
+}
+
+/** Hues that tell sources apart on the dark timeline (purple is kept for generated pictures). */
+export const SOURCE_HUES = [195, 30, 140, 340, 85, 250, 165, 55, 275, 5, 115, 220];
+
+/** The hue of a source's cuts: by the source's order in the plan. */
+export function sourceHue(plan: CutPlan, source: string): number {
+  const at = Object.keys(plan.durations).indexOf(source);
+  return SOURCE_HUES[(at < 0 ? 0 : at) % SOURCE_HUES.length];
+}
+
 function sceneKey(plan: CutPlan, scene: string): string {
   return JSON.stringify(plan.cuts.filter((cut) => cut.scene === scene));
 }
