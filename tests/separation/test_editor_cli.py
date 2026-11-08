@@ -122,5 +122,40 @@ class EditorSeparationTest(unittest.TestCase):
             self.assertEqual(snapshot(outside), before)
 
 
+    def test_a_plain_video_is_read_through_the_trusted_media_folder(self):
+        """A video (not a WAV) is probed and extracted with the app's media folder as the trusted root;
+        without one the adapter refuses (EXECUTABLE_ROOT_REQUIRED), which broke Tách giọng on plain videos."""
+        from engine.dubflow.media import adapter
+
+        with TemporaryDirectory() as temp:
+            media = Path(temp) / "runtime" / "media"
+            media.mkdir(parents=True)
+            for name in ("ffmpeg.exe", "ffprobe.exe"):
+                (media / name).write_bytes(b"x")
+            seen = {}
+
+            class Probe:
+                def __init__(self, path, **kwargs):
+                    seen["probe"] = kwargs.get("trusted_root")
+
+                def probe(self, source):
+                    class Result:
+                        has_audio = True
+                        video = None
+                    return Result()
+
+            class Media:
+                def __init__(self, path, **kwargs):
+                    seen["ffmpeg"] = kwargs.get("trusted_root")
+
+                def extract_audio(self, *args, **kwargs):
+                    seen["extracted"] = True
+            with patch.object(adapter, "MediaProbe", Probe), patch.object(adapter, "FfmpegMediaAdapter", Media):
+                cli._extract(Path(temp) / "a.mp4", Path(temp) / "source.wav", ffmpeg=media / "ffmpeg.exe", ffprobe=media / "ffprobe.exe")
+            self.assertEqual(seen, {"probe": media, "ffmpeg": media, "extracted": True})
+        with self.assertRaises(adapter.MediaAdapterError):
+            adapter.MediaProbe(Path(temp) / "ffprobe.exe")
+
+
 if __name__ == "__main__":
     unittest.main()

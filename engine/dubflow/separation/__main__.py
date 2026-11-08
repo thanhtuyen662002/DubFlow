@@ -139,11 +139,12 @@ def _stop(status: Status) -> dict:
 def _extract(source: Path, target: Path, *, ffmpeg: Path, ffprobe: Path) -> None:
     from engine.dubflow.media.adapter import FfmpegMediaAdapter, MediaProbe
 
-    probe = MediaProbe(ffprobe, timeout_seconds=600).probe(source)
+    # The app's own media folder (runtime\media) is the trusted root the adapter requires.
+    probe = MediaProbe(ffprobe, trusted_root=ffprobe.parent, timeout_seconds=600).probe(source)
     if not probe.has_audio:
         raise SeparationError("SEPARATION_NO_AUDIO", "video has no sound")
     # Same alignment as the dubbing jobs: the WAV starts with the picture.
-    FfmpegMediaAdapter(ffmpeg, timeout_seconds=6 * 3600).extract_audio(
+    FfmpegMediaAdapter(ffmpeg, trusted_root=ffmpeg.parent, timeout_seconds=6 * 3600).extract_audio(
         source, target, sample_rate=SAMPLE_RATE, channels=2, video_stream=probe.video, overwrite=True)
 
 
