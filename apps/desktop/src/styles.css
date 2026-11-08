@@ -2391,3 +2391,38 @@ body.settings-open .rail-item.active:not(#nav-settings)::before { display: none;
 /* Cài đặt › Dịch phụ đề: the sound over flagged words. */
 .sensitive-sound-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .sensitive-sound-row .hint { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+
+/* Tỉ lệ khung hình (Issue #626): the output frame's shape under the preview. */
+.ratio-btn { display: inline-flex; flex: none; align-items: center; gap: 7px; height: 32px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 10px; background: transparent; color: var(--text-2); font-size: 13px; cursor: pointer; }
+.ratio-btn:hover, .ratio-btn[aria-expanded="true"] { background: var(--hover); color: var(--text); }
+.ratio-btn strong { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.ratio-btn.on { border-color: var(--accent); }
+.ratio-btn.on strong { color: var(--accent-text); }
+.ratio-shape { display: inline-block; flex: none; box-sizing: border-box; border: 1.5px solid currentColor; border-radius: 2px; }
+.ratio-pop { width: 340px; gap: 12px; }
+.ratio-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+.ratio-tile { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; height: 64px; padding: 4px; border: 1px solid var(--line); border-radius: 9px; background: var(--canvas); color: var(--text-2); font-size: 12.5px; font-variant-numeric: tabular-nums; cursor: pointer; }
+.ratio-tile:hover { border-color: var(--line-strong); color: var(--text); }
+.ratio-tile[aria-checked="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--text); font-weight: 600; }
+.ratio-tile .ratio-shape { border-radius: 3px; }
+.ratio-custom, .ratio-fill-field { display: flex; flex-direction: column; gap: 6px; }
+.ratio-custom-row { display: flex; align-items: center; gap: 6px; color: var(--text-3); }
+.ratio-custom-row input { width: 64px; height: 32px; box-sizing: border-box; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--canvas); color: var(--text); font: inherit; text-align: center; font-variant-numeric: tabular-nums; }
+.ratio-custom-row .btn { height: 32px; margin-left: auto; }
+.ratio-pop.custom-on .ratio-custom-row input { border-color: var(--accent); }
+.ratio-error { color: var(--err); }
+.ratio-error[hidden] { display: none; }
+.ratio-fill button { padding: 0 6px; font-size: 12.5px; }
+.ratio-fill button:disabled { opacity: .45; cursor: default; }
+.export-aspect-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--text); }
+.export-aspect-row .btn { height: 30px; }
+
+/* The player frame in that shape: blurred copy, black bars, or the picture cropped to fill. */
+.edit-backdrop { position: absolute; inset: 0; display: none; width: 100%; height: 100%; filter: blur(14px) brightness(.6); transform: scale(1.12); pointer-events: none; }
+.player-frame.canvas-on { background: #000; }
+.player-frame.canvas-blur > .edit-backdrop { display: block; }
+.player-frame.canvas-blur > video { position: relative; }
+.player-frame.canvas-blur > video.edit-alt { position: absolute; background: transparent; }
+.player-frame.canvas-fill > video, .player-frame.canvas-fill > .edit-ghost { object-fit: cover; }
+.queue-screen:not(.editing) .edit-backdrop { display: none !important; }
+.ratio-custom-row input::placeholder { color: var(--text-3); opacity: .7; font-size: 12px; }

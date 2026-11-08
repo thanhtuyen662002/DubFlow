@@ -161,8 +161,75 @@ export type Edit = {
   readonly texts: readonly TextClip[];
   /** Đánh dấu: named points at output times, in time order (not exported). */
   readonly markers: readonly Marker[];
+  /** Khung hình (Issue #626): the output frame's shape; absent keeps the main video's. */
+  readonly canvas?: Canvas;
   readonly nextId: number;
 };
+
+/** How the picture fills a frame of another shape: whole over a blurred copy, whole with black bars, or cropped to fill. */
+export const CANVAS_FILLS = ["blur", "black", "fill"] as const;
+export type CanvasFill = typeof CANVAS_FILLS[number];
+export const CANVAS_FILL_NAMES: Readonly<Record<CanvasFill, string>> = { blur: "Nền mờ", black: "Viền đen", fill: "Lấp đầy" };
+/** The output frame: `aspect` is "W:H" in whole numbers (1–100, between 1:4 and 4:1). */
+export type Canvas = { readonly aspect: string; readonly fill: CanvasFill };
+export const ASPECT_PRESETS: ReadonlyArray<{ readonly aspect: string; readonly hint: string }> = [
+  { aspect: "16:9", hint: "YouTube, màn hình ngang" },
+  { aspect: "9:16", hint: "TikTok, Shorts, Reels" },
+  { aspect: "1:1", hint: "Vuông: Facebook, Instagram" },
+  { aspect: "4:5", hint: "Bài đăng Instagram, Facebook" },
+  { aspect: "4:3", hint: "Màn hình cũ, máy chiếu" },
+  { aspect: "3:4", hint: "Dọc nhẹ, Pinterest" },
+  { aspect: "21:9", hint: "Màn ảnh rộng, điện ảnh" },
+];
+const isFill = (value: unknown): value is CanvasFill => (CANVAS_FILLS as readonly unknown[]).includes(value);
+const gcd = (a: number, b: number): number => b ? gcd(b, a % b) : a;
+
+/** "16:9", "16x9", "16 / 9", "32:18" → "16:9", "7:3" → "21:9"; null when it is no frame shape the export takes. */
+export function parseAspect(text: unknown): string | null {
+  if (typeof text !== "string") return null;
+  const match = /^\s*(\d{1,4})\s*[:x×/]\s*(\d{1,4})\s*$/i.exec(text);
+  if (!match) return null;
+  let w = Number(match[1]), h = Number(match[2]);
+  if (!w || !h) return null;
+  const divisor = gcd(w, h);
+  w /= divisor;
+  h /= divisor;
+  if (w > 100 || h > 100 || w / h < 0.25 || w / h > 4) return null;
+  // 7:3 reads as the preset's 21:9.
+  return ASPECT_PRESETS.find((preset) => Math.abs(aspectRatio(preset.aspect) - w / h) < 1e-9)?.aspect ?? `${w}:${h}`;
+}
+
+/** Width over height of an aspect "W:H" (1 when it is none). */
+export function aspectRatio(aspect: string): number {
+  const [w, h] = aspect.split(":").map(Number);
+  return w > 0 && h > 0 ? w / h : 1;
+}
+
+export function normalizeCanvas(raw: unknown): Canvas | null {
+  if (!raw || typeof raw !== "object") return null;
+  const { aspect, fill } = raw as Record<string, unknown>;
+  const shape = parseAspect(aspect);
+  return shape ? { aspect: shape, fill: isFill(fill) ? fill : "blur" } : null;
+}
+
+/** Khung hình on (a shape and a fill) or back to the main video's own (null). */
+export function setCanvas(edit: Edit, canvas: Canvas | null): Edit {
+  const next = canvas ? normalizeCanvas(canvas) : null;
+  if (next?.aspect === edit.canvas?.aspect && next?.fill === edit.canvas?.fill) return edit;
+  if (next) return { ...edit, canvas: next };
+  const { canvas: _, ...rest } = edit;
+  return rest;
+}
+
+/** The exported frame for a `width`×`height` export (as the host's `aspect_size`): the short side kept, the long side at most 4096. */
+export function canvasSize(width: number, height: number, canvas: Canvas | null | undefined): { width: number; height: number } {
+  const shape = canvas ? parseAspect(canvas.aspect) : null;
+  if (!shape || !(width > 0 && height > 0)) return { width, height };
+  const [w, h] = shape.split(":").map(Number);
+  const short = Math.min(Math.min(width, height), (4096 * Math.min(w, h)) / Math.max(w, h));
+  const even = (value: number): number => Math.max(2, Math.round(value / 2) * 2);
+  return w >= h ? { width: even((short * w) / h), height: even(short) } : { width: even(short), height: even((short * h) / w) };
+}
 /**
  * Lớp âm thanh: how loud each part of the main video's sound plays, 0–2.
  * `voice` is the Vietnamese dub; `original` the original voice when the
@@ -1362,7 +1429,7 @@ export function isUnchanged(edit: Edit, duration: number): boolean {
   const [only] = edit.segments;
   return edit.segments.length === 1 && only.mediaId === MAIN && only.start <= 0.001 && only.end >= duration - 0.001
     && only.speed === 1 && only.volume === 1 && !only.look && !edit.overlays.length && !edit.audio.length && edit.mainVolume === 1 && !edit.texts.length
-    && !edit.mainDenoise && !edit.mainEq && !edit.mainStems;
+    && !edit.mainDenoise && !edit.mainEq && !edit.mainStems && !edit.canvas;
 }
 
 export function sameSegments(a: readonly Segment[], b: readonly Pick<Segment, "start" | "end" | "speed" | "volume">[]): boolean {
@@ -1396,6 +1463,8 @@ export type ExportPlan = {
   stems?: StemLevels;
   /** LUT màu files the segments' `lut` index into. */
   luts: string[];
+  /** Khung hình, only when set. */
+  aspect?: string; fill?: CanvasFill;
 };
 
 export function exportPlan(edit: Edit): ExportPlan {
@@ -1428,7 +1497,8 @@ export function exportPlan(edit: Edit): ExportPlan {
   const texts = edit.texts.filter((text) => text.text.trim() && textLength(text, total) >= 0.05).map((text) => planText(text, total));
   return { media, segments, transitions, overlays, audio, mainVolume: edit.mainVolume, texts, luts,
     ...(edit.mainDenoise ? { mainDenoise: true } : {}), ...(edit.mainEq ? { mainEq: edit.mainEq } : {}),
-    ...(edit.mainStems ? { stems: { ...edit.mainStems } } : {}) };
+    ...(edit.mainStems ? { stems: { ...edit.mainStems } } : {}),
+    ...(edit.canvas ? { aspect: edit.canvas.aspect, fill: edit.canvas.fill } : {}) };
 }
 
 function planText({ id: _, shadow, ...text }: TextClip, total: number): PlanText {
@@ -1455,7 +1525,7 @@ const near = (a: unknown, b: unknown, tolerance = 0.0005): boolean => typeof a =
 /** An edit renders the same as an exported one (4a exports list only main segments, 4e adds sounds and the main volume, 4f texts). */
 export function matchesExport(edit: Edit, exported: {
   media?: unknown; segments?: unknown; transitions?: unknown; overlays?: unknown; audio?: unknown; main_volume?: unknown; texts?: unknown; luts?: unknown;
-  main_denoise?: unknown; main_eq?: unknown; stems?: unknown;
+  main_denoise?: unknown; main_eq?: unknown; stems?: unknown; aspect?: unknown; fill?: unknown;
 }): boolean {
   const plan = exportPlan(edit);
   const list = (value: unknown): Array<Record<string, unknown>> => Array.isArray(value) ? value.filter((item) => item && typeof item === "object") : [];
@@ -1473,6 +1543,7 @@ export function matchesExport(edit: Edit, exported: {
     const value = (other ?? {}) as Record<string, unknown>;
     return value.kind === source.kind && (source.kind === "sfx" ? value.id === source.id : typeof value.path === "string" && samePath(value.path, source.path));
   };
+  if ((exported.aspect ?? null) !== (plan.aspect ?? null) || (plan.aspect && exported.fill !== plan.fill)) return false;
   const stems = parseStems(exported.stems);
   if (!!stems !== !!plan.stems || (stems && plan.stems && !ALL_STEM_KEYS.every((key) => stems[key] === plan.stems?.[key]))) return false;
   return (exported.main_volume ?? 1) === plan.mainVolume
@@ -1651,6 +1722,7 @@ export function serializeProject(edit: Edit, changes: number, selected: string |
     ...(edit.mainStems ? { main_stems: { ...edit.mainStems } } : {}),
     texts: edit.texts.map((text) => ({ ...text })),
     markers: edit.markers.map(({ id, at, label }) => ({ id, at, label })),
+    ...(edit.canvas ? { canvas: { ...edit.canvas } } : {}),
   };
 }
 
@@ -1902,7 +1974,8 @@ export function parseProject(value: unknown, duration: number, info: Partial<Omi
   const edit = pruneMedia({ duration, media: [main, ...[...known.values()].filter((media) => media.id !== MAIN)], segments, transitions, overlays,
     audio, mainVolume, texts, markers, nextId,
     ...(data.main_denoise === true ? { mainDenoise: true } : {}), ...(isEq(data.main_eq) ? { mainEq: data.main_eq } : {}),
-    ...(schema === 4 && parseStems(data.main_stems) ? { mainStems: parseStems(data.main_stems) } : {}) });
+    ...(schema === 4 && parseStems(data.main_stems) ? { mainStems: parseStems(data.main_stems) } : {}),
+    ...(schema === 4 && normalizeCanvas(data.canvas) ? { canvas: normalizeCanvas(data.canvas)! } : {}) });
   return { edit, changes, selected, recent };
 }
 
