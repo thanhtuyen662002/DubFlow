@@ -87,3 +87,46 @@ console.log("edit_stems tests passed");
   const host = readFileSync(new URL("../src-tauri/src/edit.rs", import.meta.url), "utf8");
   assert.match(host, /fn edit_audio_peaks[\s\S]{0,300}sfx::playable_audio/, "a stem lane's .wav gets its waveform");
 }
+
+// ---------- Preview: every part stays on the picture's clock ----------
+{
+  const { followClock, DRIFT_SEEK, DRIFT_NUDGE } = await import("../src/features/edit/stems_view.ts");
+  // Continuous correction: a part 40 ms ahead slows down, 40 ms behind speeds up, frame after frame,
+  // until it is back within the nudge window, then plays at the picture's speed.
+  const part = { currentTime: 10.04, readyState: 4 };
+  let video = 10, frames = 0;
+  while (Math.abs(part.currentTime - video) > DRIFT_NUDGE && frames < 600) {
+    const step = followClock(part, video, 1, true);
+    assert.equal(step.seekTo, null, "a small drift never jumps");
+    assert.ok(step.rate < 1);
+    part.currentTime += step.rate / 60;
+    video += 1 / 60;
+    frames += 1;
+  }
+  assert.ok(frames > 0 && frames < 600, "the drift closes within seconds");
+  assert.deepEqual(followClock(part, video, 1, true), { seekTo: null, rate: 1 }, "on the clock: normal speed");
+  assert.ok(followClock({ currentTime: 9.96, readyState: 4 }, 10, 1, true).rate > 1, "behind: faster");
+  assert.equal(followClock({ currentTime: 9.96, readyState: 4 }, 10, 2, true).rate, 2 * 1.03, "follows the picture's own speed");
+  // A large drift (a seek, a part that became ready late) jumps to the picture.
+  assert.deepEqual(followClock({ currentTime: 0, readyState: 2 }, 42, 1, true), { seekTo: 42, rate: 1 });
+  assert.deepEqual(followClock({ currentTime: 42 + DRIFT_SEEK + 0.01, readyState: 4 }, 42, 1, true), { seekTo: 42, rate: 1 });
+  // Not ready yet: nothing to line up (the next frame does it).
+  assert.deepEqual(followClock({ currentTime: 0, readyState: 0 }, 42, 1, true), { seekTo: null, rate: 1 });
+  // Paused: normal speed, lined up exactly so play resumes together.
+  assert.deepEqual(followClock({ currentTime: 10.02, readyState: 4 }, 10, 1, false), { seekTo: null, rate: 1 });
+  assert.deepEqual(followClock({ currentTime: 10.05, readyState: 4 }, 10, 1, false), { seekTo: 10, rate: 1 });
+  // The loop that drives it: every playing frame redraws effects, which re-syncs the parts.
+  const { readFileSync } = await import("node:fs");
+  const source = readFileSync(new URL("../src/features/edit/view.ts", import.meta.url), "utf8");
+  const tick = source.slice(source.indexOf("function tick(): void {"), source.indexOf("function startLoop(): void {"));
+  assert.match(tick, /session\.outputTime = starts\[index\] \+ Math\.max\(0, now - segment\.start\) \/ segment\.speed;\s*renderEffects\(\);/, "each forward frame calls renderEffects");
+  assert.match(tick, /loop = requestAnimationFrame\(tick\)/);
+  const effects = source.slice(source.indexOf("function renderEffects(): void {"), source.indexOf("function renderEffects(): void {") + 4000);
+  assert.match(effects, /if \(segment\) applyLevel\(segment, active\);/, "renderEffects applies the level");
+  assert.match(source, /function applyLevel[\s\S]{0,700}stems\.sync\(video, level, parts && playsForward\(segment\), !!session\?\.playing && active === video\);/, "applyLevel syncs the parts (paused or reversed: they stop)");
+  const pause = source.slice(source.indexOf("function pausePlayback(): void {"), source.indexOf("function pausePlayback(): void {") + 600);
+  assert.match(pause, /session\.playing = false;[\s\S]*renderEffects\(\);/, "pausing re-syncs with playing = false");
+  // The aggregate lane names the parts the lanes actually show (no SFX before the split).
+  assert.match(source, /stems\.lanes\(edit\)\.map\(\(lane\) => lane\.label\)\.join\(", "\)/);
+  assert.doesNotMatch(source, /gồm Lời, Nhạc, SFX/);
+}

@@ -2174,6 +2174,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     // parts (Lời, Nhạc, SFX) this lane is their common level per segment: named so, since turning it
     // off silences every part.
     const parted = stems.active(edit);
+    // The parts this lane covers, as the lanes below name them (no SFX before the music/SFX split).
+    const partNames = parted ? stems.lanes(edit).map((lane) => lane.label).join(", ") : "";
     vaTrack.dataset.label = parted ? "Tổng tiếng" : "Tiếng gốc";
     const sounds: HTMLElement[] = [];
     let soundNumber = 0;
@@ -2189,7 +2191,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       block.style.width = `${Math.max(2, length)}px`;
       const percent = Math.round(segment.volume * 100);
       block.title = parted && !inserted
-        ? `Tổng tiếng đoạn ${soundNumber} (gồm Lời, Nhạc, SFX): ${percent}% · kéo vạch lên xuống để đổi âm lượng cả đoạn, bấm đúp để tắt hoặc bật. Muốn bỏ riêng một lớp, tắt lớp đó ở dòng bên dưới`
+        ? `Tổng tiếng đoạn ${soundNumber} (gồm ${partNames || "các lớp âm thanh"}): ${percent}% · kéo vạch lên xuống để đổi âm lượng cả đoạn, bấm đúp để tắt hoặc bật. Muốn bỏ riêng một lớp, tắt lớp đó ở dòng bên dưới`
         : `Tiếng ${inserted ? "đoạn chèn" : `đoạn ${soundNumber}`}: ${percent}% · kéo vạch lên xuống để đổi âm lượng, bấm đúp để tắt hoặc bật tiếng`;
       if (segment.volume > 0 && length >= 8) {
         const wave = element("canvas", "tl-wave");
@@ -2612,7 +2614,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     if (!session || !segment) return;
     commit(setVolume(session.history.current, segment.id, segment.volume === 0 ? 1 : 0));
     if (segment.volume > 0 && segment.mediaId === MAIN && stems.active(current())) {
-      note("Đã tắt tổng tiếng của đoạn này: cả Lời, Nhạc và SFX đều im. Muốn bỏ riêng một lớp, bấm đúp vào lớp đó ở dòng bên dưới.");
+      const names = stems.lanes(current()).map((lane) => lane.label).join(", ");
+      note(`Đã tắt tổng tiếng của đoạn này: mọi lớp đang bật (${names}) đều im. Muốn bỏ riêng một lớp, bấm đúp vào lớp đó ở dòng bên dưới.`);
     }
   });
 

@@ -25,9 +25,26 @@ type StemsResponse = {
 export type StemLane = { key: StemKey; label: string; path: string; level: number };
 type FileKey = "voice" | "source" | "spoken" | "background" | "music" | "sfx";
 /** How far a part may drift from the picture while playing before its speed is nudged (seconds). */
-const DRIFT_NUDGE = 0.015;
-/** Past this the part jumps to the picture instead. */
-const DRIFT_SEEK = 0.3;
+export const DRIFT_NUDGE = 0.015;
+/** Past this (or 40 ms while paused) the part jumps to the picture instead. */
+export const DRIFT_SEEK = 0.3;
+/** How much faster or slower a drifting part plays until it is back on the picture. */
+export const DRIFT_RATE = 0.03;
+
+/**
+ * One step of keeping a part on the picture's clock, run on every frame while the video
+ * plays. The parts play together as one sound, so a few milliseconds apart they echo: a
+ * small drift is nudged back by playing a little faster or slower (no audible jump), a large
+ * one (a seek, a part that became ready late) jumps. Paused: back to normal speed, and
+ * lined up exactly so the next start is together.
+ */
+export function followClock(part: { currentTime: number; readyState: number }, videoTime: number, videoRate: number, playing: boolean): { seekTo: number | null; rate: number } {
+  if (part.readyState < 1) return { seekTo: null, rate: videoRate };
+  const drift = part.currentTime - videoTime;
+  if (Math.abs(drift) > (playing ? DRIFT_SEEK : 0.04)) return { seekTo: videoTime, rate: videoRate };
+  if (!playing || Math.abs(drift) <= DRIFT_NUDGE) return { seekTo: null, rate: videoRate };
+  return { seekTo: null, rate: videoRate * (drift > 0 ? 1 - DRIFT_RATE : 1 + DRIFT_RATE) };
+}
 
 export type StemsContext = {
   /** "Thêm nhạc nền" / "Thêm SFX": the Âm thanh tools that add sounds. */
@@ -573,11 +590,10 @@ export function mountStems(invoke: Invoke, context: StemsContext): StemsMode {
         if (!path) continue;
         const player = playerFor(key, path);
         setLevel(player, weights[key] * level);
-        // The parts play together as one sound: keep each on the picture's clock within a few
-        // milliseconds (a nudge of speed, no audible jump), or two parts drift apart and echo.
-        const drift = player.readyState >= 1 ? player.currentTime - video.currentTime : 0;
-        if (player.readyState >= 1 && Math.abs(drift) > (playing ? DRIFT_SEEK : 0.04)) player.currentTime = video.currentTime;
-        player.playbackRate = video.playbackRate * (!playing || Math.abs(drift) <= DRIFT_NUDGE || Math.abs(drift) > DRIFT_SEEK ? 1 : drift > 0 ? 0.97 : 1.03);
+        // Called on every frame while the main video plays (tick → renderEffects → applyLevel).
+        const step = followClock(player, video.currentTime, video.playbackRate, playing);
+        if (step.seekTo !== null) player.currentTime = step.seekTo;
+        player.playbackRate = step.rate;
         if (playing && player.paused && player.readyState >= 2) void player.play().catch(() => undefined);
         else if (!playing && !player.paused) player.pause();
       }
