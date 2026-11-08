@@ -3,6 +3,7 @@ from __future__ import annotations
 from array import array
 import math
 import os
+import re
 import subprocess
 from unittest import mock
 from pathlib import Path
@@ -66,9 +67,21 @@ class BeepTests(unittest.TestCase):
     def test_the_dog_clip_matches_the_settings_preview(self):
         # apps/desktop/test/ai_providers.test.mjs checks the same samples of dogClip (Nghe thử).
         clip = beep_sounds.dog_clip(16000)
-        self.assertEqual(len(clip), 12960)
-        self.assertAlmostEqual(clip[2000], 0.010015049294533878, places=6)
-        self.assertAlmostEqual(clip[9000], 0.04836787203578464, places=6)
+        self.assertEqual(len(clip), 13760)
+        self.assertAlmostEqual(clip[2000], -0.3331146240234375, places=6)
+        self.assertAlmostEqual(clip[9000], 0.09040451049804688, places=6)
+
+    def test_the_dog_is_the_embedded_recording(self):
+        # A real CC0 recording (docs/licenses/dog-bark-sfx.md), not a synthesised one.
+        clip = beep_sounds.dog_clip(beep_sounds.dog_bark_data.RATE)
+        self.assertEqual(len(clip), 18963)
+        self.assertAlmostEqual(max(abs(value) for value in clip), 0.55, places=3)
+
+    def test_the_preview_embeds_the_same_recording(self):
+        ts = (Path(__file__).resolve().parents[3] / "apps/desktop/src/features/ai/dog_bark_data.ts").read_text(encoding="utf-8")
+        body = ts.split("DOG_BARK_PCM_BASE64 =", 1)[1]
+        self.assertEqual("".join(re.findall(r'"([A-Za-z0-9+/=]+)"', body)), beep_sounds.dog_bark_data.PCM_BASE64)
+        self.assertIn(f"DOG_BARK_RATE = {beep_sounds.dog_bark_data.RATE};", ts)
 
     def test_bird_and_dog_replace_the_span_with_their_own_sound(self):
         with TemporaryDirectory() as temp:
