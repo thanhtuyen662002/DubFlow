@@ -141,7 +141,7 @@ mod store {
 #[tauri::command]
 pub fn ai_key_status() -> Result<Value, String> {
     let mut status = serde_json::Map::new();
-    for provider in PROVIDERS.iter().chain(VOICE_PROVIDERS.iter()) {
+    for provider in PROVIDERS.iter().chain(VOICE_PROVIDERS.iter()).copied() {
         let saved = store::read(&target(provider)?)?;
         status.insert(provider.to_owned(), json!(saved.as_deref().map(masked)));
     }
