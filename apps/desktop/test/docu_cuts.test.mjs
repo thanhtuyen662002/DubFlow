@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import {
   changedCuts, changedFlags, changedScenes, cutAt, cutEnd, cutLength, cutsFrom, edgeRange, firstOfScene, removeCut, replaceFootage, setCutCover,
-  slicesRequest, swapCuts, trimEdge,
+  setSourceCover, sourceHue, SOURCE_HUES, slicesRequest, swapCuts, trimEdge,
 } from "../src/features/edit/docu_cuts.ts";
 
 // Issue #630: every planned slice of a documentary as its own cut.
@@ -77,5 +77,17 @@ assert.deepEqual(slicesRequest(covered, ["sc_001"]), [{ scene_id: "sc_001", slic
   { from: ["sc_001", 0], source_id: "src_01", start: 1, at: 0, cover: { band: null, logos: [[0.5, 0.5, 0.1, 0.1]] } },
   { from: ["sc_001", 1], source_id: "src_02", start: 2, at: 6, cover: { band: { top: 0.8, bottom: 0.9 }, logos: [[0.1, 0.1, 0.2, 0.2]] } }] }]);
 assert.equal(setCutCover(covered, 0, null).cuts[0].cover, null);
+
+// A cover for every cut of one source at once (Oscar 2026-11-08: "chỉnh riêng" or "ảnh hưởng các lát còn lại").
+const shared = setSourceCover(plan, "src_01", { band: null, logos: [[0.2, 0.2, 0.1, 0.1]] });
+assert.deepEqual(shared.cuts[0].cover, { band: null, logos: [[0.2, 0.2, 0.1, 0.1]] });
+assert.equal(shared.cuts[1].cover, plan.cuts[1].cover, "another source keeps its cover");
+assert.equal(shared.cuts[2].cover, null, "a generated picture has no cover");
+assert.notEqual(shared.cuts[0].cover, setSourceCover(plan, "src_01", shared.cuts[0].cover).cuts[0].cover, "each cut gets its own copy");
+assert.equal(setSourceCover(shared, "src_01", null).cuts[0].cover, null);
+// One colour per source.
+assert.equal(sourceHue(plan, "src_01"), SOURCE_HUES[0]);
+assert.equal(sourceHue(plan, "src_02"), SOURCE_HUES[1]);
+assert.notEqual(sourceHue(plan, "src_01"), sourceHue(plan, "src_02"));
 
 console.log("docu_cuts tests passed");

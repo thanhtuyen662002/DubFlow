@@ -10,7 +10,7 @@ import { formatClock } from "./model.ts";
 import { clampBand, docuDir, sourceCovers, type Logo, type SourceCover } from "./docu_cover.ts";
 import {
   changedCuts, changedFlags, changedScenes, cutEnd, cutKindName, cutLength, cutsFrom, edgeRange, firstOfScene, removeCut, replaceFootage,
-  setCutCover, slicesRequest, swapCuts, trimEdge, type CutCover, type CutPlan,
+  setCutCover, setSourceCover, sourceHue, slicesRequest, swapCuts, trimEdge, type CutCover, type CutPlan,
 } from "./docu_cuts.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
@@ -52,6 +52,8 @@ const HANDLES: DragHandle[] = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
 const FRAME_PX = 480;
 const LANE_PX = 26;
 const UNDO_LIMIT = 100;
+/** Whether a cover edit goes to one cut or to every cut of its source, remembered between films. */
+const SCOPE_KEY = "dubflow.docuCuts.coverScope";
 
 function element<K extends keyof HTMLElementTagNameMap>(tag: K, className = "", text = ""): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
@@ -81,6 +83,8 @@ export function mountDocuCuts(invoke: Invoke, context: DocuCutsContext): DocuCut
   let selected: number | null = null;
   let rendering = false;
   let unrendered = false;
+  let scope: "one" | "source" = "one";
+  try { if (window.localStorage.getItem(SCOPE_KEY) === "source") scope = "source"; } catch { /* A convenience. */ }
   let stateText = "";
   let timer = 0;
   const frames = new Map<string, string | null>();
@@ -106,6 +110,29 @@ export function mountDocuCuts(invoke: Invoke, context: DocuCutsContext): DocuCut
   function sourceCover(source: string): CutCover {
     const found = sources.find((item) => item.id === source);
     return { band: found?.band ? { ...found.band } : null, logos: found ? found.logos.map((logo) => [...logo] as Logo) : [] };
+  }
+
+  /** The cover a cut shows: its own, or its source's. */
+  function shownCover(index: number): CutCover {
+    const cut = plan!.cuts[index];
+    return cut.cover ? structuredClone(cut.cover) : sourceCover(cut.source);
+  }
+
+  function sharedWithSource(index: number): boolean {
+    const cut = plan!.cuts[index];
+    const others = plan!.cuts.filter((other, at) => at !== index && other.source === cut.source && !other.kind);
+    return others.length > 0 && others.every((other) => JSON.stringify(other.cover) === JSON.stringify(cut.cover));
+  }
+
+  /** A cover edit: for the cut only, or for every cut of its source (null: back to the source's cover). */
+  function applyCover(index: number, cover: CutCover | null): void {
+    if (!plan) return;
+    commit(scope === "source" ? setSourceCover(plan, plan.cuts[index].source, cover) : setCutCover(plan, index, cover));
+  }
+
+  function setScope(value: "one" | "source"): void {
+    scope = value;
+    try { window.localStorage.setItem(SCOPE_KEY, value); } catch { /* A convenience. */ }
   }
 
   function sourceVideo(source: string): string {
@@ -146,6 +173,8 @@ export function mountDocuCuts(invoke: Invoke, context: DocuCutsContext): DocuCut
       if (from === null || to === null || to <= from) return;
       const block = element("div", `tl-cut${index === selected ? " selected" : ""}${cut.kind ? " generated" : ""}${cut.cover ? " covered" : ""}${flags[index] ? " changed" : ""}${firstOfScene(plan!, index) ? " scene-start" : ""}`);
       block.dataset.index = String(index);
+      // Cuts of one source share a colour.
+      if (!cut.kind) block.style.setProperty("--cut-h", String(sourceHue(plan!, cut.source)));
       const width = (to - from) * pps;
       Object.assign(block.style, { left: `${pad + from * pps}px`, width: `${Math.max(3, width - 1)}px` });
       const name = cut.kind ? cutKindName(cut.kind) : sourceName(cut.source);
@@ -297,14 +326,11 @@ export function mountDocuCuts(invoke: Invoke, context: DocuCutsContext): DocuCut
     if (url) image.src = url;
     stage.append(image);
     if (cut.kind) stage.append(element("span", "docu-cut-generated", `${cutKindName(cut.kind)} (vẽ lúc dựng phim)`));
-    const cover = cut.cover;
-    if (cover && !cut.kind) {
+    // What this cut shows: its own cover, or its source's; either way editable here.
+    const cover = cut.kind ? null : shownCover(index);
+    if (cover) {
       if (cover.band) stage.append(box(index, "band", { x: 0, y: cover.band.top, w: 1, h: cover.band.bottom - cover.band.top }, "Dải che phụ đề"));
       cover.logos.forEach((logo, at) => stage.append(box(index, at, { x: logo[0], y: logo[1], w: logo[2], h: logo[3] }, `Vùng mờ ${at + 1}`)));
-    } else if (!cut.kind) {
-      const own = sourceCover(cut.source);
-      if (own.band) stage.append(ghost({ x: 0, y: own.band.top, w: 1, h: own.band.bottom - own.band.top }, "Che theo nguồn"));
-      own.logos.forEach((logo) => stage.append(ghost({ x: logo[0], y: logo[1], w: logo[2], h: logo[3] }, own.band ? "" : "Che theo nguồn")));
     }
     parts.push(stage);
 
@@ -373,50 +399,63 @@ export function mountDocuCuts(invoke: Invoke, context: DocuCutsContext): DocuCut
       ? "Kéo mép trái của lát trên dòng Lát cắt để cắt bớt hoặc kéo dài (lát trước bù lại). Kéo cả lát sang lát khác để đổi chỗ."
       : "Lát này mở đầu một câu đọc nên mép trái giữ nguyên theo lời đọc. Kéo cả lát sang lát khác để đổi chỗ."));
 
-    // Its own Che.
-    if (!cut.kind) {
-      const coverRow = element("label", "cover-docu-row docu-cut-own");
-      const toggle = element("input", "switch");
-      toggle.type = "checkbox";
-      toggle.setAttribute("role", "switch");
-      toggle.checked = !!cover;
-      toggle.disabled = rendering;
-      toggle.addEventListener("change", () => commit(setCutCover(plan!, index, toggle.checked ? sourceCover(cut.source) : null)));
-      coverRow.append(toggle, element("span", "", cover ? "Che riêng cho lát này" : `Che theo ${sourceName(cut.source)} (bật để chỉnh riêng lát này)`));
-      parts.push(coverRow);
-      if (cover) {
-        const rows = element("div", "cover-docu-rows");
-        const bandRow = element("label", "cover-docu-row");
-        const band = element("input", "switch");
-        band.type = "checkbox";
-        band.setAttribute("role", "switch");
-        band.checked = !!cover.band;
-        band.addEventListener("change", () => commit(setCutCover(plan!, index, { ...cover, band: band.checked ? (sourceCover(cut.source).band ?? { top: 0.82, bottom: 0.95 }) : null })));
-        bandRow.append(band, element("span", "", cover.band ? `Dải che phụ đề: ${percent(cover.band.top)} – ${percent(cover.band.bottom)} chiều cao` : "Không che dải phụ đề"));
-        rows.append(bandRow);
-        cover.logos.forEach((logo, at) => {
-          const row = element("div", "cover-docu-row");
-          row.append(element("span", "", `Vùng mờ ${at + 1} · rộng ${percent(logo[2])} × cao ${percent(logo[3])}`));
-          const drop = button("Bỏ", "btn ghost small", "Không làm mờ vùng này ở lát cắt này");
-          drop.addEventListener("click", () => commit(setCutCover(plan!, index, { ...cover, logos: cover.logos.filter((_, other) => other !== at) })));
-          row.append(drop);
-          rows.append(row);
-        });
-        const add = button("+ Thêm vùng làm mờ", "btn ghost small", "Thêm một ô làm mờ (logo, chữ) cho riêng lát này");
-        add.disabled = cover.logos.length >= 16;
-        add.addEventListener("click", () => commit(setCutCover(plan!, index, { ...cover, logos: [...cover.logos, [0.7, 0.05, 0.25, 0.12]] })));
-        rows.append(add);
-        parts.push(rows);
+    // Che: for this cut only, or for every cut of the same source.
+    if (!cut.kind && cover) {
+      const siblings = current.cuts.filter((other) => other.source === cut.source && !other.kind).length;
+      const field = element("div", "edit-field");
+      field.append(element("span", "edit-label", "Chỉnh vùng che cho"));
+      const choice = element("div", "seg docu-cut-scope");
+      choice.setAttribute("role", "radiogroup");
+      choice.setAttribute("aria-label", "Chỉnh vùng che cho");
+      for (const [value, label, title] of [
+        ["one", "Chỉ lát này", "Sửa che chỉ đổi lát cắt này, các lát khác giữ nguyên"],
+        ["source", `Mọi lát ${sourceName(cut.source)} (${siblings})`, `Sửa che đổi cùng lúc mọi lát cắt lấy từ ${sourceName(cut.source)}`],
+      ] as const) {
+        const option = button(label, "", title);
+        option.setAttribute("role", "radio");
+        option.setAttribute("aria-checked", String(scope === value));
+        option.disabled = rendering;
+        option.addEventListener("click", () => { setScope(value); context.changed(); });
+        choice.append(option);
       }
+      field.append(choice);
+      field.append(element("small", "edit-note", cut.cover
+        ? (sharedWithSource(index) ? `Lát này che giống các lát ${sourceName(cut.source)} khác.` : "Lát này đang che riêng, khác các lát cùng nguồn.")
+        : `Lát này đang che theo ${sourceName(cut.source)}.`));
+      parts.push(field);
+      const rows = element("div", "cover-docu-rows");
+      const bandRow = element("label", "cover-docu-row");
+      const band = element("input", "switch");
+      band.type = "checkbox";
+      band.setAttribute("role", "switch");
+      band.checked = !!cover.band;
+      band.disabled = rendering;
+      band.addEventListener("change", () => applyCover(index, { ...cover, band: band.checked ? (sourceCover(cut.source).band ?? { top: 0.82, bottom: 0.95 }) : null }));
+      bandRow.append(band, element("span", "", cover.band ? `Dải che phụ đề: ${percent(cover.band.top)} – ${percent(cover.band.bottom)} chiều cao` : "Không che dải phụ đề"));
+      rows.append(bandRow);
+      cover.logos.forEach((logo, at) => {
+        const row = element("div", "cover-docu-row");
+        row.append(element("span", "", `Vùng mờ ${at + 1} · rộng ${percent(logo[2])} × cao ${percent(logo[3])}`));
+        const drop = button("Bỏ", "btn ghost small", "Không làm mờ vùng này");
+        drop.disabled = rendering;
+        drop.addEventListener("click", () => applyCover(index, { ...cover, logos: cover.logos.filter((_, other) => other !== at) }));
+        row.append(drop);
+        rows.append(row);
+      });
+      const add = button("+ Thêm vùng làm mờ", "btn ghost small", "Thêm một ô làm mờ (logo, chữ)");
+      add.disabled = cover.logos.length >= 16 || rendering;
+      add.addEventListener("click", () => applyCover(index, { ...cover, logos: [...cover.logos, [0.7, 0.05, 0.25, 0.12]] }));
+      rows.append(add);
+      if (current.cuts.some((other, at) => other.cover && (scope === "source" ? other.source === cut.source : at === index))) {
+        const reset = button(scope === "source" ? `Mọi lát ${sourceName(cut.source)} về che theo nguồn` : "Lát này về che theo nguồn", "btn ghost small cover-docu-reset",
+          "Bỏ vùng che đã sửa ở lát cắt, dùng lại vùng che của nguồn");
+        reset.disabled = rendering;
+        reset.addEventListener("click", () => applyCover(index, null));
+        rows.append(reset);
+      }
+      parts.push(rows);
     }
     return parts;
-  }
-
-  function ghost(rect: { x: number; y: number; w: number; h: number }, label: string): HTMLElement {
-    const node = element("div", "cover-box ghost");
-    Object.assign(node.style, { left: `${rect.x * 100}%`, top: `${rect.y * 100}%`, width: `${rect.w * 100}%`, height: `${rect.h * 100}%` });
-    if (label) node.append(element("span", `cover-box-label${rect.y < 0.08 ? " below" : ""}`, label));
-    return node;
   }
 
   function box(index: number, which: "band" | number, rect: { x: number; y: number; w: number; h: number }, label: string): HTMLElement {
@@ -437,7 +476,7 @@ export function mountDocuCuts(invoke: Invoke, context: DocuCutsContext): DocuCut
       event.preventDefault();
       try { node.setPointerCapture(event.pointerId); } catch { /* A pointer that already ended. */ }
       drag = { pointer: event.pointerId, x: event.clientX, y: event.clientY, handle: ((event.target as HTMLElement).dataset.handle ?? "move") as DragHandle, start: rect };
-      draft = structuredClone(plan.cuts[index].cover);
+      draft = structuredClone(shownCover(index));
     });
     node.addEventListener("pointermove", (event) => {
       if (!drag || !draft || event.pointerId !== drag.pointer) return;
@@ -454,7 +493,7 @@ export function mountDocuCuts(invoke: Invoke, context: DocuCutsContext): DocuCut
     const end = (event: PointerEvent): void => {
       if (!drag || event.pointerId !== drag.pointer) return;
       drag = null;
-      if (draft && plan) commit(setCutCover(plan, index, draft));
+      if (draft && plan) applyCover(index, draft);
       draft = null;
     };
     node.addEventListener("pointerup", end);
