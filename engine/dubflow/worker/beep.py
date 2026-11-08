@@ -21,6 +21,8 @@ import wave
 
 from array import array
 
+from engine.dubflow.worker import beep_sounds
+
 PAD_SECONDS = 0.12
 MIN_BEEP_SECONDS = 0.30
 TONE_HZ = 1000.0
@@ -111,8 +113,12 @@ def _estimate(reader: wave.Wave_read, windows: Sequence[Mapping[str, Any]], text
     return result
 
 
-def write_beeped(source: Path, target: Path, spans: Sequence[tuple[float, float]], *, block_frames: int = 1 << 16) -> Path:
-    """A copy of ``source`` with a tone replacing every span (short fades, so no clicks), streamed in blocks."""
+def write_beeped(source: Path, target: Path, spans: Sequence[tuple[float, float]], *, block_frames: int = 1 << 16,
+                 sound: str = "beep", sound_file: str | None = None, ffmpeg: Path | None = None) -> Path:
+    """A copy of ``source`` with a sound replacing every span (short fades, so no clicks), streamed in blocks.
+
+    ``sound`` is one of beep_sounds.SOUNDS: the 1 kHz tone, a bird, a dog, or the user's own file.
+    """
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_suffix(".tmp.wav")
     with wave.open(str(source), "rb") as reader, wave.open(str(temporary), "wb") as writer:
@@ -121,6 +127,7 @@ def write_beeped(source: Path, target: Path, spans: Sequence[tuple[float, float]
             raise ValueError("only 16-bit PCM can be beeped")
         writer.setparams(params)
         channels, rate = params.nchannels, params.framerate
+        clip = beep_sounds.clip_for(sound, rate, sound_file=sound_file, ffmpeg=ffmpeg)
         fade = max(1, int(FADE_SECONDS * rate))
         frames = [(max(0, int(begin * rate)), min(params.nframes, int(finish * rate))) for begin, finish in spans]
         position = 0
@@ -134,7 +141,10 @@ def write_beeped(source: Path, target: Path, spans: Sequence[tuple[float, float]
                 for frame in range(max(first, position), min(last, position + count)):
                     offset, length = frame - first, last - first
                     ramp = min(1.0, offset / fade, (length - offset) / fade)
-                    tone = 32767 * TONE_LEVEL * ramp * math.sin(2 * math.pi * TONE_HZ * offset / rate)
+                    if clip is None:
+                        tone = 32767 * TONE_LEVEL * ramp * math.sin(2 * math.pi * TONE_HZ * offset / rate)
+                    else:
+                        tone = 32767 * ramp * clip[offset % len(clip)]
                     for channel in range(channels):
                         index = (frame - position) * channels + channel
                         samples[index] = max(-32768, min(32767, int(samples[index] * (1.0 - ramp) + tone)))

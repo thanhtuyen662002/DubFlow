@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import {
-  createEdit, defaultStems, exportPlan, isUnchanged, matchesExport, parseProject, serializeProject, setStems, stemWeights,
+  createEdit, defaultStems, exportPlan, isUnchanged, matchesExport, parseProject, serializeProject, setStems, stemLevel, stemWeights,
 } from "../src/features/edit/model.ts";
 
 // ---------- Lớp âm thanh: levels ----------
@@ -18,9 +18,14 @@ assert.equal(setStems(loud, { voice: Number.NaN, original: 0, background: 1 }), 
 assert.equal(setStems(loud, null).mainStems, undefined);
 
 // The weights cancel the source's accompaniment: only the original voice keeps `original`.
-assert.deepEqual(stemWeights({ voice: 1.5, original: 0.2, background: 1 }, true), { voice: 1.5, source: 0.2, background: 0.8 });
-assert.deepEqual(stemWeights({ voice: 0, original: 1, background: 0 }, true), { voice: 0, source: 1, background: -1 });
-assert.deepEqual(stemWeights({ voice: 1, original: 0.35, background: 1 }, false), { voice: 1, source: 0.35, background: 0 });
+assert.deepEqual(stemWeights({ voice: 1.5, original: 0.2, background: 1 }, true), { voice: 1.5, source: 0.2, background: 0.8, music: 0, sfx: 0 });
+assert.deepEqual(stemWeights({ voice: 0, original: 1, background: 0 }, true), { voice: 0, source: 1, background: -1, music: 0, sfx: 0 });
+assert.deepEqual(stemWeights({ voice: 1, original: 0.35, background: 1 }, false), { voice: 1, source: 0.35, background: 0, music: 0, sfx: 0 });
+// Split into music and SFX: each cancels its share of the source; SFX follows the music until set.
+assert.deepEqual(stemWeights({ voice: 0, original: 0, background: 1, sfx: 0.5 }, true, true), { voice: 0, source: 0, background: 0, music: 1, sfx: 0.5 });
+assert.deepEqual(stemWeights({ voice: 0, original: 1, background: 0 }, true, true), { voice: 0, source: 1, background: 0, music: -1, sfx: -1 });
+assert.equal(stemLevel({ voice: 0, original: 1, background: 0.4 }, "sfx"), 0.4);
+assert.equal(stemLevel({ voice: 0, original: 1, background: 0.4, sfx: 0 }, "sfx"), 0);
 
 // ---------- Export and drafts ----------
 const plan = exportPlan(loud);
@@ -39,4 +44,27 @@ assert.deepEqual(back?.edit.mainStems, loud.mainStems);
 assert.equal("main_stems" in serializeProject(edit, 0, null), false);
 const broken = parseProject({ ...JSON.parse(JSON.stringify(saved)), main_stems: { voice: "x" } }, 30, { path: "C:/out/final_vi.mp4" });
 assert.equal(broken?.edit.mainStems, undefined, "a bad entry is dropped");
+// SFX is saved and read back only when set on its own.
+const withSfx = setStems(loud, { ...loud.mainStems, sfx: 0.5 });
+assert.equal(withSfx.mainStems.sfx, 0.5);
+const savedSfx = serializeProject(withSfx, 3, null);
+assert.deepEqual(parseProject(JSON.parse(JSON.stringify(savedSfx)), 30, { path: "C:/out/final_vi.mp4" })?.edit.mainStems, withSfx.mainStems);
+assert.equal(setStems(loud, { ...loud.mainStems, sfx: Number.NaN }), loud);
+assert.equal(matchesExport(withSfx, exported), false, "another SFX level is another export");
 console.log("edit_stems tests passed");
+
+// ---------- Browser preview: music/SFX paths sit under .dubflow-work\edit\stems ----------
+{
+  const { previewInvoke } = await import("../src/shell/preview_invoke.ts");
+  const outputPath = "D:\\Videos\\DubFlow Output\\run\\final_vi.mp4";
+  await previewInvoke("edit_split", { outputPath });
+  const now = Date.now;
+  Date.now = () => now() + 60_000;
+  try {
+    const stems = await previewInvoke("edit_stems", { outputPath, kind: "job" });
+    assert.equal(stems.music, "D:\\Videos\\DubFlow Output\\run\\.dubflow-work\\edit\\stems\\music.wav");
+    assert.equal(stems.sfx, "D:\\Videos\\DubFlow Output\\run\\.dubflow-work\\edit\\stems\\sfx.wav");
+  } finally {
+    Date.now = now;
+  }
+}

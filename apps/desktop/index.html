@@ -1475,6 +1475,7 @@
                   <div id="tl-overlays" class="tl-ovtrack tl-lane" data-label="Hình ảnh" aria-label="Video chồng" hidden></div>
                   <div id="tl-track" class="tl-track tl-lane" data-label="Video" aria-label="Các đoạn video"></div>
                   <div id="tl-vaudio" class="tl-vatrack tl-lane" data-label="Tiếng gốc" aria-label="Âm thanh của video"></div>
+                  <div id="tl-stems" class="tl-stemgroup" aria-label="Lớp âm thanh của video" hidden></div>
                   <div id="tl-subs" class="tl-subtrack tl-lane" data-label="Phụ đề" aria-label="Phụ đề" hidden></div>
                   <div id="tl-text" class="tl-txtrack tl-lane" data-label="Chữ" aria-label="Chữ trên video" hidden></div>
                   <div id="tl-audio" class="tl-autrack tl-lane" data-label="Âm thanh" aria-label="Âm thanh thêm" hidden></div>
@@ -1592,6 +1593,21 @@
                       <option value="beep">Che chữ (ch*t) và bíp trong giọng đọc</option>
                     </select>
                   </label>
+                  <div id="sensitive-sound-box" class="ai-fields" hidden>
+                    <label class="ai-field">Âm thay cho từ cấm trong giọng đọc
+                      <select id="sensitive-sound">
+                        <option value="beep">Tiếng bíp</option>
+                        <option value="bird">Tiếng chim hót</option>
+                        <option value="dog">Tiếng chó sủa</option>
+                        <option value="custom">Âm thanh tự chọn…</option>
+                      </select>
+                    </label>
+                    <div class="sensitive-sound-row">
+                      <button id="sensitive-sound-play" class="secondary" type="button">▶ Nghe thử</button>
+                      <button id="sensitive-sound-pick" class="secondary" type="button">Chọn file âm thanh…</button>
+                      <span id="sensitive-sound-file" class="hint"></span>
+                    </div>
+                  </div>
                   <div id="sensitive-words-box" class="ai-fields" hidden>
                     <label class="ai-field">Danh sách từ, mỗi dòng “từ = cách viết thay”
                       <textarea id="sensitive-words" rows="7" spellcheck="false"></textarea>

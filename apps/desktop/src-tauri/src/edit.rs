@@ -505,13 +505,16 @@ pub struct ExportRequest {
 
 /// Lớp âm thanh: how loud each part of the main video's sound plays, 0–2.
 /// `original` is the original voice when the accompaniment is separated, the
-/// whole original sound otherwise; `background` is the accompaniment.
+/// whole original sound otherwise; `background` is the accompaniment, or its
+/// music once it is split into music and SFX (`sfx`; absent = as `background`).
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct StemLevels {
     voice: f64,
     original: f64,
     background: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sfx: Option<f64>,
 }
 
 /// What follows the edit's picture and sound in the export graph.
@@ -628,7 +631,7 @@ impl Target {
         if self.store.is_some() {
             return self.confined();
         }
-        fs::create_dir_all(&self.work).map_err(|_| fail("Không tạo được thư mục chỉnh sửa"))
+        prepare_plain(&self.work)
     }
 
     fn kind_name(&self) -> &'static str {
@@ -822,6 +825,31 @@ fn is_compilation_run(dir: &Path) -> bool {
     named(Some(dir), &|name| name.starts_with("run-")) && named(dir.parent(), &|name| name.starts_with("Tong hop - "))
         && named(dir.parent().and_then(Path::parent), &|name| name == "DubFlow Output")
         && dir.join(".dubflow-work").join("spec.json").is_file()
+}
+
+/// Make `work` and its parent (`.dubflow-work`) one level at a time, never
+/// through a link: each must end up a plain folder, checked before anything
+/// is made inside it. The run folder above them must already exist.
+fn prepare_plain(work: &Path) -> Result<(), String> {
+    let unsafe_folder = || fail("Thư mục bản nháp của DubFlow không an toàn (là liên kết); hãy xóa nó rồi thử lại");
+    let parent = work.parent().ok_or_else(|| fail("Không tạo được thư mục chỉnh sửa"))?;
+    for dir in [parent, work] {
+        match fs::symlink_metadata(dir) {
+            Ok(metadata) if metadata.is_dir() && !is_link(&metadata) => continue,
+            Ok(_) => return Err(unsafe_folder()),
+            Err(_) => {}
+        }
+        // Not there: made on its own (create_dir does not create or follow anything above it), then checked.
+        if let Err(error) = fs::create_dir(dir) {
+            if error.kind() != std::io::ErrorKind::AlreadyExists {
+                return Err(fail("Không tạo được thư mục chỉnh sửa"));
+            }
+        }
+        if !fs::symlink_metadata(dir).is_ok_and(|metadata| metadata.is_dir() && !is_link(&metadata)) {
+            return Err(unsafe_folder());
+        }
+    }
+    Ok(())
 }
 
 fn work_dir(dir: &Path) -> PathBuf {
@@ -3211,26 +3239,150 @@ struct StemFiles {
     voice: Option<PathBuf>,
     source: Option<PathBuf>,
     background: Option<PathBuf>,
+    /// The accompaniment split in two (`engine.dubflow.separation.split`): both or neither.
+    music: Option<PathBuf>,
+    sfx: Option<PathBuf>,
+    /// The original voice alone (source − accompaniment), drawn as the Lời lane; never mixed.
+    spoken: Option<PathBuf>,
+}
+
+/// Below the stems folder: Nhạc and SFX, and the accompaniment they came from.
+const SPLIT_FILE: &str = "split.json";
+const SPLIT_STATUS: &str = "split-status.json";
+
+/// Tách nhạc và tiếng động runs, by draft folder.
+static SPLITTING: LazyLock<Mutex<std::collections::HashSet<PathBuf>>> = LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
+
+/// Tách giọng and Tách nhạc và tiếng động of one video never run together:
+/// the split reads the accompaniment that a separation rewrites. Both sets are
+/// always taken in the same order (SEPARATING, then SPLITTING).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum StemRun {
+    Separate,
+    Split,
+}
+
+/// Claim `work` for a run; dropped unclaimed again unless `keep` is called (the run started).
+struct StemClaim {
+    work: PathBuf,
+    run: StemRun,
+    kept: bool,
+}
+
+impl StemClaim {
+    fn keep(mut self) -> PathBuf {
+        self.kept = true;
+        self.work.clone()
+    }
+}
+
+impl Drop for StemClaim {
+    fn drop(&mut self) {
+        if !self.kept {
+            end_stem_run(&self.work, self.run);
+        }
+    }
+}
+
+fn begin_stem_run(work: &Path, run: StemRun) -> Result<StemClaim, String> {
+    let mut separating = SEPARATING.lock().map_err(|_| fail("Hãy mở lại ứng dụng"))?;
+    let mut splitting = SPLITTING.lock().map_err(|_| fail("Hãy mở lại ứng dụng"))?;
+    if separating.contains(work) {
+        return Err(fail("Video này đang được tách giọng"));
+    }
+    if splitting.contains(work) {
+        return Err(fail("Video này đang được tách nhạc và tiếng động"));
+    }
+    match run {
+        StemRun::Separate => separating.insert(work.to_path_buf()),
+        StemRun::Split => splitting.insert(work.to_path_buf()),
+    };
+    Ok(StemClaim { work: work.to_path_buf(), run, kept: false })
+}
+
+fn end_stem_run(work: &Path, run: StemRun) {
+    let set = match run {
+        StemRun::Separate => &SEPARATING,
+        StemRun::Split => &SPLITTING,
+    };
+    if let Ok(mut running) = set.lock() {
+        running.remove(work);
+    }
+}
+
+/// Music and SFX when they were split from exactly this accompaniment (same file, size and time).
+/// The split's recipe and marker version (`engine.dubflow.separation.split`).
+const SPLIT_RECIPE: &str = "hpss-median-v1";
+
+/// `dir` itself is a real folder: not a link, junction or other reparse point.
+fn plain_dir(dir: &Path) -> bool {
+    fs::symlink_metadata(dir).is_ok_and(|metadata| metadata.is_dir() && !is_link(&metadata))
+}
+
+/// `dir/name` when `dir` is a plain folder and `name` a plain file right inside it: not a link or
+/// reparse point, and not resolving anywhere else.
+fn own_file(dir: &Path, name: &str) -> Option<PathBuf> {
+    if !plain_dir(dir) {
+        return None;
+    }
+    let path = dir.join(name);
+    let metadata = fs::symlink_metadata(&path).ok()?;
+    if !metadata.is_file() || is_link(&metadata) {
+        return None;
+    }
+    let inside = path.canonicalize().ok()?.parent()? == dir.canonicalize().ok()?.as_path();
+    inside.then_some(path)
+}
+
+fn split_parts(stems: &Path, background: &Path) -> Option<(PathBuf, PathBuf)> {
+    let music = own_file(stems, "music.wav")?;
+    let sfx = own_file(stems, "sfx.wav")?;
+    let value: Value = fs::read(own_file(stems, SPLIT_FILE)?).ok().filter(|bytes| bytes.len() < 64 * 1024)
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())?;
+    if value["schema_version"].as_u64() != Some(1) || value["recipe"].as_str() != Some(SPLIT_RECIPE) {
+        return None;
+    }
+    let metadata = fs::metadata(background).ok()?;
+    let modified = metadata.modified().ok()?.duration_since(UNIX_EPOCH).ok()?.as_nanos();
+    let named = value["background"].as_str().map(PathBuf::from)?;
+    let same_file = match (named.canonicalize(), background.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    };
+    let same = same_file && value["size"].as_u64() == Some(metadata.len())
+        && value["mtime_ns"].as_u64().map(u128::from) == Some(modified);
+    same.then_some((music, sfx))
 }
 
 fn stem_files(target: &Target) -> StemFiles {
-    let file = |path: PathBuf| path.is_file().then_some(path);
-    let own = target.work.join(STEMS_DIR);
+    // The job's own files only as plain files right inside a plain `editable` folder: never through a link.
     let editable = target.dir.join("editable");
+    let file = |name: &str| own_file(&editable, name);
+    // The editor's own stems folder counts only below a draft folder (and its parent) that are not links.
+    let own = target.work.join(STEMS_DIR);
+    let own_ok = unlinked(&target.work);
+    let own_file = |dir: &Path, name: &str| if own_ok { own_file(dir, name) } else { None };
     let job = matches!(target.kind, Kind::Job);
-    let voice = job.then(|| file(editable.join("dialogue_stem.wav"))).flatten();
-    let separated = file(own.join("background.wav"));
-    match job.then(|| file(editable.join("source_audio.wav"))).flatten() {
+    let voice = job.then(|| file("dialogue_stem.wav")).flatten();
+    // Files under the editor's own stems folder only through own_file: never through a linked folder or file.
+    let separated = own_file(&own, "background.wav");
+    let mut files = match job.then(|| file("source_audio.wav")).flatten() {
         Some(source) => {
-            let job_stem = file(editable.join("background_stem.wav"));
+            let job_stem = file("background_stem.wav");
             let background = if separated.is_some() && separated_by_current(&target.work) { separated.or(job_stem) } else { job_stem.or(separated) };
-            StemFiles { voice, source: Some(source), background }
+            StemFiles { voice, source: Some(source), background, ..StemFiles::default() }
         }
         None => {
-            let source = separated.as_ref().and_then(|_| file(own.join("source.wav")));
-            StemFiles { voice, background: source.as_ref().and(separated), source }
+            let source = separated.as_ref().and_then(|_| own_file(&own, "source.wav"));
+            StemFiles { voice, background: source.as_ref().and(separated), source, ..StemFiles::default() }
         }
+    };
+    if let Some((music, sfx)) = files.background.as_ref().filter(|_| own_ok).and_then(|background| split_parts(&own, background)) {
+        files.music = Some(music);
+        files.sfx = Some(sfx);
+        files.spoken = own_file(&own, "voice.wav");
     }
+    files
 }
 
 /// The parts to mix and their weights: the voice at its level; with an
@@ -3239,8 +3391,9 @@ fn stem_files(target: &Target) -> StemFiles {
 /// cancels and only the original voice keeps `original`; without one, the
 /// whole source at `original`.
 fn stem_weights(levels: &StemLevels, files: &StemFiles) -> Result<Vec<(PathBuf, f64)>, String> {
-    let StemLevels { voice, original, background } = *levels;
-    if ![voice, original, background].iter().all(|level| level.is_finite() && (0.0..=MAX_STEM_LEVEL).contains(level)) {
+    let StemLevels { voice, original, background, sfx } = *levels;
+    let sfx = sfx.unwrap_or(background);
+    if ![voice, original, background, sfx].iter().all(|level| level.is_finite() && (0.0..=MAX_STEM_LEVEL).contains(level)) {
         return Err(fail("Âm lượng lớp âm thanh không hợp lệ"));
     }
     let Some(source) = files.source.clone() else {
@@ -3251,8 +3404,14 @@ fn stem_weights(levels: &StemLevels, files: &StemFiles) -> Result<Vec<(PathBuf, 
         parts.push((file.clone(), voice));
     }
     parts.push((source, original));
-    if let Some(file) = &files.background {
-        parts.push((file.clone(), background - original));
+    match (&files.background, &files.music, &files.sfx) {
+        // Music + SFX add up to the accompaniment: each cancels its share of the source.
+        (Some(_), Some(music), Some(effects)) => {
+            parts.push((music.clone(), background - original));
+            parts.push((effects.clone(), sfx - original));
+        }
+        (Some(file), _, _) => parts.push((file.clone(), background - original)),
+        _ => {}
     }
     let audible: Vec<(PathBuf, f64)> = parts.iter().filter(|(_, weight)| weight.abs() > 1e-6).cloned().collect();
     // All silent: one part at 0 keeps the sound track.
@@ -3264,7 +3423,7 @@ const MAX_STEM_LEVEL: f64 = 2.0;
 
 /// Whether Tách giọng's own output came from the current model.
 fn separated_by_current(work: &Path) -> bool {
-    let path = work.join(STEMS_DIR).join("status.json");
+    let Some(path) = own_file(&work.join(STEMS_DIR), "status.json") else { return false };
     fs::read(&path).ok().filter(|bytes| bytes.len() < 64 * 1024)
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
         .is_some_and(|value| value["state"] == "COMPLETED" && value["backend"] == SEPARATION_BACKEND)
@@ -3282,14 +3441,19 @@ fn separation_outdated(target: &Target, files: &StemFiles) -> bool {
 }
 
 fn read_separation(work: &Path) -> Option<Value> {
-    let path = work.join(STEMS_DIR).join("status.json");
+    let path = own_file(&work.join(STEMS_DIR), "status.json")?;
     let value: Value = fs::read(&path).ok().filter(|bytes| bytes.len() < 64 * 1024).and_then(|bytes| serde_json::from_slice(&bytes).ok())?;
     let running = SEPARATING.lock().is_ok_and(|set| set.contains(work));
     // A run the app no longer watches (closed mid-way) is over.
     if value["state"] == "RUNNING" && !running {
         return Some(json!({"state": "FAILED", "progress": 0, "message": "Tách giọng đã dừng giữa chừng; hãy bấm Tách giọng lại."}));
     }
-    Some(json!({"state": value["state"], "progress": value["progress"], "message": value["message"]}))
+    let mut status = json!({"state": value["state"], "progress": value["progress"], "message": value["message"]});
+    // Voice and accompaniment made, the music/SFX split not: a partial success the editor says plainly.
+    if let Some(error) = value["split_error"].as_str().filter(|error| !error.is_empty()) {
+        status["split_error"] = json!(error.chars().take(200).collect::<String>());
+    }
+    Some(status)
 }
 
 /// Lớp âm thanh of the video the editor has open: its parts (allowed in the
@@ -3297,13 +3461,75 @@ fn read_separation(work: &Path) -> Option<Value> {
 #[tauri::command]
 pub fn edit_stems(output_path: String, kind: String) -> Result<Value, String> {
     let target = edit_target(&output_path, &kind)?;
-    let files = stem_files(&target);
-    let listed: Vec<PathBuf> = [&files.voice, &files.source, &files.background].into_iter().flatten()
+    Ok(stem_listing(&target))
+}
+
+/// What edit_stems answers (and allows the preview to play): nothing from a draft folder reached through a link.
+fn stem_listing(target: &Target) -> Value {
+    let files = stem_files(target);
+    let own_ok = unlinked(&target.work);
+    let listed: Vec<PathBuf> = [&files.voice, &files.source, &files.background, &files.music, &files.sfx, &files.spoken].into_iter().flatten()
         .filter_map(|file| file.canonicalize().ok()).collect();
     crate::sfx::allow_files(&listed);
     let shown = |file: &Option<PathBuf>| file.as_ref().map(|file| display_path(file));
-    Ok(json!({"voice": shown(&files.voice), "source": shown(&files.source), "background": shown(&files.background),
-        "separation": read_separation(&target.work), "outdated": separation_outdated(&target, &files)}))
+    json!({"voice": shown(&files.voice), "source": shown(&files.source), "background": shown(&files.background),
+        "music": shown(&files.music), "sfx": shown(&files.sfx), "spoken": shown(&files.spoken),
+        "separation": if own_ok { read_separation(&target.work) } else { None }, "outdated": separation_outdated(target, &files),
+        "split": if own_ok { read_split(&target.work) } else { None }})
+}
+
+fn read_split(work: &Path) -> Option<Value> {
+    let path = own_file(&work.join(STEMS_DIR), SPLIT_STATUS)?;
+    let value: Value = fs::read(&path).ok().filter(|bytes| bytes.len() < 64 * 1024).and_then(|bytes| serde_json::from_slice(&bytes).ok())?;
+    let running = SPLITTING.lock().is_ok_and(|set| set.contains(work));
+    if value["state"] == "RUNNING" && !running {
+        return Some(json!({"state": "FAILED", "progress": 0, "message": "Tách nhạc và tiếng động đã dừng giữa chừng; hãy bấm lại."}));
+    }
+    Some(json!({"state": value["state"], "progress": value["progress"], "message": value["message"]}))
+}
+
+/// Tách nhạc và SFX: split the accompaniment already in use (a dubbing job's
+/// or an earlier Tách giọng's) into music and sound effects, in the background.
+#[tauri::command]
+pub fn edit_split(output_path: String, kind: String) -> Result<(), String> {
+    let target = edit_target(&output_path, &kind)?;
+    let files = stem_files(&target);
+    let Some(background) = files.background.clone() else {
+        return Err(fail("Hãy bấm Tách giọng trước"));
+    };
+    if files.music.is_some() {
+        return Err(fail("Video này đã tách nhạc và tiếng động rồi"));
+    }
+    let root = version_root()?;
+    let claim = begin_stem_run(&target.work, StemRun::Split)?;
+    target.prepare()?;
+    guarded(&target.work)?;
+    let out = target.work.join(STEMS_DIR);
+    if fs::symlink_metadata(&out).is_ok_and(|metadata| is_link(&metadata) || !metadata.is_dir()) {
+        return Err(fail("Thư mục tách giọng không an toàn (là liên kết); hãy xóa nó rồi thử lại"));
+    }
+    fs::create_dir_all(&out).map_err(|_| fail("Không tạo được thư mục tách giọng"))?;
+    for name in ["split-cancel", SPLIT_STATUS] {
+        let _ = fs::remove_file(out.join(name));
+    }
+    let mut command = Command::new(root.join("runtime").join("python.exe"));
+    command.current_dir(root.join("app"))
+        .args(["-B", "-m", "engine.dubflow.separation.split", "--background"]).arg(&background)
+        .arg("--out-dir").arg(&out);
+    if let Some(source) = &files.source {
+        command.arg("--source").arg(source);
+    }
+    command
+        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    let mut child = command.spawn().map_err(|_| fail("Không chạy được bộ tách nhạc"))?;
+    let work = claim.keep();
+    std::thread::spawn(move || {
+        let _ = child.wait();
+        end_stem_run(&work, StemRun::Split);
+    });
+    Ok(())
 }
 
 /// Tách giọng: separate the main video's sound (a dubbing job's original
@@ -3315,17 +3541,13 @@ pub fn edit_separate(output_path: String, kind: String) -> Result<(), String> {
     if files.source.is_some() && files.background.is_some() && !separation_outdated(&target, &files) {
         return Err(fail("Video này đã tách giọng rồi"));
     }
-    let input = match (matches!(target.kind, Kind::Job), target.dir.join("editable").join("source_audio.wav")) {
-        (true, wav) if wav.is_file() => wav,
-        _ => target.main.clone(),
-    };
+    // A job's original track only as a plain file in a plain `editable` folder (never through a link).
+    let input = matches!(target.kind, Kind::Job).then(|| own_file(&target.dir.join("editable"), "source_audio.wav"))
+        .flatten().unwrap_or_else(|| target.main.clone());
     let root = version_root()?;
     let models = crate::control_root()?.join("models");
     let media = root.join("runtime").join("media");
-    let mut running = SEPARATING.lock().map_err(|_| fail("Hãy mở lại ứng dụng"))?;
-    if running.contains(&target.work) {
-        return Err(fail("Video này đang được tách giọng"));
-    }
+    let claim = begin_stem_run(&target.work, StemRun::Separate)?;
     target.prepare()?;
     guarded(&target.work)?;
     let out = target.work.join(STEMS_DIR);
@@ -3348,14 +3570,10 @@ pub fn edit_separate(output_path: String, kind: String) -> Result<(), String> {
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
     let mut child = command.spawn().map_err(|_| fail("Không chạy được bộ tách giọng"))?;
-    let work = target.work.clone();
-    running.insert(work.clone());
-    drop(running);
+    let work = claim.keep();
     std::thread::spawn(move || {
         let _ = child.wait();
-        if let Ok(mut running) = SEPARATING.lock() {
-            running.remove(&work);
-        }
+        end_stem_run(&work, StemRun::Separate);
     });
     Ok(())
 }
@@ -3364,9 +3582,33 @@ pub fn edit_separate(output_path: String, kind: String) -> Result<(), String> {
 #[tauri::command]
 pub fn edit_separate_cancel(output_path: String, kind: String) -> Result<(), String> {
     let target = edit_target(&output_path, &kind)?;
-    let out = target.work.join(STEMS_DIR);
-    if out.is_dir() && unlinked(&target.work) {
-        fs::write(out.join("cancel"), b"").map_err(|_| fail("Không hủy được tách giọng"))?;
+    if !unlinked(&target.work) {
+        return Ok(());
+    }
+    let split = SPLITTING.lock().is_ok_and(|set| set.contains(&target.work));
+    cancel_stem_runs(&target.work.join(STEMS_DIR), split)
+}
+
+/// Drop the cancel marks in a plain stems folder (never through a link or junction, there or at the mark).
+fn cancel_stem_runs(out: &Path, split: bool) -> Result<(), String> {
+    match fs::symlink_metadata(out) {
+        Err(_) => return Ok(()),
+        Ok(metadata) if !metadata.is_dir() || is_link(&metadata) => {
+            return Err(fail("Thư mục tách giọng không an toàn (là liên kết); hãy xóa nó rồi thử lại"));
+        }
+        Ok(_) => {}
+    }
+    let mark = |name: &str| -> std::io::Result<()> {
+        let path = out.join(name);
+        // A link left at the mark's name is removed, not written through.
+        if fs::symlink_metadata(&path).is_ok_and(|metadata| is_link(&metadata) || !metadata.is_file()) {
+            fs::remove_file(&path)?;
+        }
+        fs::write(path, b"")
+    };
+    mark("cancel").map_err(|_| fail("Không hủy được tách giọng"))?;
+    if split {
+        let _ = mark("split-cancel");
     }
     Ok(())
 }
@@ -3670,6 +3912,263 @@ pub async fn edit_proxy(app: tauri::AppHandle, path: String, start: bool) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn music_and_sfx_count_only_as_plain_files_with_a_current_marker() {
+        let stems = std::env::temp_dir().join(format!("dubflow-split-parts-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&stems);
+        fs::create_dir_all(&stems).unwrap();
+        let background = stems.join("background.wav");
+        fs::write(&background, b"bg").unwrap();
+        fs::write(stems.join("music.wav"), b"m").unwrap();
+        fs::write(stems.join("sfx.wav"), b"s").unwrap();
+        let metadata = fs::metadata(&background).unwrap();
+        let mtime = metadata.modified().unwrap().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64;
+        let marker = |schema: u64, recipe: &str| {
+            fs::write(stems.join(SPLIT_FILE), json!({"schema_version": schema, "recipe": recipe, "background": background.display().to_string(),
+                "size": metadata.len(), "mtime_ns": mtime}).to_string()).unwrap();
+        };
+        marker(1, SPLIT_RECIPE);
+        assert!(split_parts(&stems, &background).is_some());
+        marker(2, SPLIT_RECIPE);
+        assert!(split_parts(&stems, &background).is_none(), "another marker version");
+        marker(1, "other-recipe");
+        assert!(split_parts(&stems, &background).is_none(), "another recipe");
+        marker(1, SPLIT_RECIPE);
+        fs::remove_file(stems.join(SPLIT_FILE)).unwrap();
+        assert!(split_parts(&stems, &background).is_none(), "no marker, no pair");
+        marker(1, SPLIT_RECIPE);
+        // A linked part (pointing outside the stems folder) is never admitted.
+        let outside = std::env::temp_dir().join(format!("dubflow-split-outside-{}.wav", std::process::id()));
+        fs::write(&outside, b"x").unwrap();
+        fs::remove_file(stems.join("sfx.wav")).unwrap();
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(&outside, stems.join("sfx.wav")).is_ok();
+        #[cfg(windows)]
+        let linked = std::os::windows::fs::symlink_file(&outside, stems.join("sfx.wav")).is_ok();
+        if linked {
+            assert!(split_parts(&stems, &background).is_none(), "a linked sfx.wav");
+            assert!(own_file(&stems, "sfx.wav").is_none());
+        }
+        let _ = fs::remove_dir_all(&stems);
+        let _ = fs::remove_file(&outside);
+    }
+
+    #[test]
+    fn preparing_a_run_draft_never_writes_through_a_linked_parent() {
+        let root = std::env::temp_dir().join(format!("dubflow-prepare-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let outside = root.join("outside");
+        let run = root.join("run");
+        fs::create_dir_all(&outside).unwrap();
+        fs::create_dir_all(&run).unwrap();
+        // .dubflow-work is a link (symlink / junction) to an outside folder; edit is absent.
+        link_dir(&outside, &run.join(".dubflow-work"));
+        assert!(is_link(&fs::symlink_metadata(run.join(".dubflow-work")).unwrap()));
+        let job = Target { kind: Kind::Job, main: run.join("final_vi.mp4"), dir: run.clone(), work: work_dir(&run), captions: None, store: None };
+        // The same step edit_separate and edit_split take first.
+        assert!(job.prepare().is_err());
+        assert_eq!(fs::read_dir(&outside).unwrap().count(), 0, "no edit folder or file made outside");
+        unlink_dir(&run.join(".dubflow-work"));
+        // A plain run: both levels made, and made again harmlessly.
+        job.prepare().unwrap();
+        job.prepare().unwrap();
+        assert!(plain_dir(&run.join(".dubflow-work")) && plain_dir(&job.work));
+        // The edit folder itself linked is refused too.
+        fs::remove_dir(&job.work).unwrap();
+        link_dir(&outside, &job.work);
+        assert!(job.prepare().is_err());
+        unlink_dir(&job.work);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_linked_draft_folder_or_its_parent_gives_no_stems() {
+        let root = std::env::temp_dir().join(format!("dubflow-linked-work-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        // Outside: a whole draft folder with separated, split parts and statuses.
+        let outside = root.join("outside");
+        let stems = outside.join("work").join(STEMS_DIR);
+        fs::create_dir_all(&stems).unwrap();
+        for name in ["background.wav", "source.wav", "music.wav", "sfx.wav", "voice.wav"] {
+            fs::write(stems.join(name), b"x").unwrap();
+        }
+        let done = json!({"state": "COMPLETED", "progress": 100, "message": "x", "backend": SEPARATION_BACKEND}).to_string();
+        fs::write(stems.join("status.json"), &done).unwrap();
+        fs::write(stems.join(SPLIT_STATUS), &done).unwrap();
+        // A job whose own editable files are real.
+        let dir = root.join("job");
+        fs::create_dir_all(dir.join("editable")).unwrap();
+        for name in ["dialogue_stem.wav", "source_audio.wav"] {
+            fs::write(dir.join("editable").join(name), b"wav").unwrap();
+        }
+        // 1) The draft folder itself is a link; 2) its parent (.dubflow-work) is.
+        let linked_work = root.join("drafts").join("work");
+        fs::create_dir_all(linked_work.parent().unwrap()).unwrap();
+        link_dir(&outside.join("work"), &linked_work);
+        let parent_link = root.join("dubflow-work-link");
+        link_dir(&outside, &parent_link);
+        for work in [linked_work.clone(), parent_link.join("work")] {
+            assert!(!unlinked(&work), "the fixture is reached through a link");
+            let job = Target { kind: Kind::Job, main: dir.join("final_vi.mp4"), dir: dir.clone(), work: work.clone(), captions: None, store: None };
+            let parts = stem_files(&job);
+            assert!(parts.voice.is_some() && parts.source.is_some(), "the job's own files stay");
+            assert_eq!((&parts.background, &parts.music, &parts.sfx, &parts.spoken), (&None, &None, &None, &None));
+            let listing = stem_listing(&job);
+            assert!(listing["separation"].is_null() && listing["split"].is_null(), "no status read through the link");
+            for key in ["background", "music", "sfx", "spoken"] {
+                assert!(listing[key].is_null(), "{key}");
+            }
+            let file = Target { kind: Kind::File, main: root.join("a.mp4"), dir: root.clone(), work: work.clone(), captions: None, store: None };
+            assert_eq!(stem_files(&file), StemFiles::default());
+        }
+        unlink_dir(&linked_work);
+        unlink_dir(&parent_link);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A job's `editable` files count only as plain files in a plain folder: a linked `editable`
+    /// folder (symlink or junction) or a linked file inside it gives nothing, and Tách giọng
+    /// falls back to the video itself.
+    #[test]
+    fn a_jobs_linked_editable_folder_or_file_gives_no_stems() {
+        let root = std::env::temp_dir().join(format!("dubflow-linked-editable-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let outside = root.join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        let names = ["dialogue_stem.wav", "source_audio.wav", "background_stem.wav"];
+        for name in names {
+            fs::write(outside.join(name), b"wav").unwrap();
+        }
+        let job_of = |dir: &Path| Target { kind: Kind::Job, main: dir.join("final_vi.mp4"), dir: dir.to_path_buf(),
+            work: dir.join(".dubflow-work").join("work"), captions: None, store: None };
+        // Plain: all three count.
+        let plain = root.join("plain");
+        fs::create_dir_all(plain.join("editable")).unwrap();
+        for name in names {
+            fs::write(plain.join("editable").join(name), b"wav").unwrap();
+        }
+        let parts = stem_files(&job_of(&plain));
+        assert!(parts.voice.is_some() && parts.source.is_some() && parts.background.is_some());
+        // 1) `editable` itself is a link (junction on Windows) to a folder with all three.
+        let linked = root.join("linked-dir");
+        fs::create_dir_all(&linked).unwrap();
+        link_dir(&outside, &linked.join("editable"));
+        assert_eq!(stem_files(&job_of(&linked)), StemFiles::default());
+        assert!(own_file(&linked.join("editable"), "source_audio.wav").is_none());
+        unlink_dir(&linked.join("editable"));
+        // 2) A plain `editable` whose files are links to outside files.
+        let files = root.join("linked-files");
+        fs::create_dir_all(files.join("editable")).unwrap();
+        let mut made = 0;
+        for name in names {
+            #[cfg(unix)]
+            let link = std::os::unix::fs::symlink(outside.join(name), files.join("editable").join(name));
+            #[cfg(windows)]
+            let link = std::os::windows::fs::symlink_file(outside.join(name), files.join("editable").join(name));
+            made += usize::from(link.is_ok());
+        }
+        #[cfg(unix)]
+        assert_eq!(made, names.len(), "file symlinks are made on Unix");
+        if made > 0 {
+            let parts = stem_files(&job_of(&files));
+            assert_eq!((&parts.voice, &parts.source, &parts.background), (&None, &None, &None));
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_linked_stems_folder_is_never_read_or_written_through() {
+        let root = std::env::temp_dir().join(format!("dubflow-linked-stems-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let outside = root.join("outside");
+        let work = root.join("work");
+        fs::create_dir_all(&outside).unwrap();
+        fs::create_dir_all(&work).unwrap();
+        // Outside: a complete, current-looking split and statuses.
+        let background = outside.join("background.wav");
+        fs::write(&background, b"bg").unwrap();
+        fs::write(outside.join("music.wav"), b"m").unwrap();
+        fs::write(outside.join("sfx.wav"), b"s").unwrap();
+        let metadata = fs::metadata(&background).unwrap();
+        let mtime = metadata.modified().unwrap().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64;
+        fs::write(outside.join(SPLIT_FILE), json!({"schema_version": 1, "recipe": SPLIT_RECIPE, "background": background.display().to_string(),
+            "size": metadata.len(), "mtime_ns": mtime}).to_string()).unwrap();
+        fs::write(outside.join(SPLIT_STATUS), json!({"state": "COMPLETED", "progress": 100, "message": "x"}).to_string()).unwrap();
+        fs::write(outside.join("status.json"), json!({"state": "COMPLETED", "progress": 100, "message": "x"}).to_string()).unwrap();
+        assert!(split_parts(&outside, &background).is_some(), "the same files in a plain folder are accepted");
+        let stems = work.join(STEMS_DIR);
+        link_dir(&outside, &stems);
+        assert!(is_link(&fs::symlink_metadata(&stems).expect("the link exists")), "the fixture is a link or junction");
+        assert!(!plain_dir(&stems));
+        assert!(split_parts(&stems, &background).is_none(), "nothing admitted through the linked folder");
+        assert!(own_file(&stems, "music.wav").is_none());
+        assert!(read_split(&work).is_none());
+        assert!(read_separation(&work).is_none());
+        assert!(cancel_stem_runs(&stems, true).is_err(), "cancel refuses the linked folder");
+        assert!(!outside.join("cancel").exists() && !outside.join("split-cancel").exists(), "nothing written outside");
+        // The parts a video or a job would mix: nothing from the linked folder, the job falling back to nothing.
+        fs::write(outside.join("source.wav"), b"src").unwrap();
+        let file = Target { kind: Kind::File, main: root.join("a.mp4"), dir: root.clone(), work: work.clone(), captions: None, store: None };
+        assert_eq!(stem_files(&file), StemFiles::default(), "a plain video takes nothing through the linked folder");
+        let job_dir = root.join("job");
+        fs::create_dir_all(job_dir.join("editable")).unwrap();
+        fs::write(job_dir.join("editable").join("source_audio.wav"), b"wav").unwrap();
+        let job = Target { kind: Kind::Job, main: job_dir.join("final_vi.mp4"), dir: job_dir.clone(), work: work.clone(), captions: None, store: None };
+        let parts = stem_files(&job);
+        assert!(parts.source.is_some(), "the job's own source");
+        assert_eq!((&parts.background, &parts.music, &parts.sfx, &parts.spoken), (&None, &None, &None, &None), "no fallback to the linked accompaniment");
+        let listed = [&parts.voice, &parts.source, &parts.background, &parts.music, &parts.sfx, &parts.spoken];
+        assert!(listed.into_iter().flatten().all(|path| !path.starts_with(&stems) && !path.starts_with(&outside)), "nothing beneath the link is allowed");
+        // A plain folder still works, and a link at a status file's name is not read.
+        let plain = root.join("plain");
+        fs::create_dir_all(plain.join(STEMS_DIR)).unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(outside.join(SPLIT_STATUS), plain.join(STEMS_DIR).join(SPLIT_STATUS)).unwrap();
+            assert!(read_split(&plain).is_none(), "a linked status file");
+            std::os::unix::fs::symlink(outside.join("x-cancel"), plain.join(STEMS_DIR).join("cancel")).unwrap();
+        }
+        cancel_stem_runs(&plain.join(STEMS_DIR), true).unwrap();
+        assert!(own_file(&plain.join(STEMS_DIR), "cancel").is_some() && own_file(&plain.join(STEMS_DIR), "split-cancel").is_some());
+        assert!(!outside.join("x-cancel").exists(), "a linked mark is replaced, not written through");
+        // Remove the link itself first, then the rest.
+        unlink_dir(&stems);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_failed_music_split_reaches_the_editor_as_a_partial_success() {
+        let work = std::env::temp_dir().join(format!("dubflow-split-error-{}", std::process::id()));
+        fs::create_dir_all(work.join(STEMS_DIR)).unwrap();
+        let write = |value: Value| fs::write(work.join(STEMS_DIR).join("status.json"), value.to_string()).unwrap();
+        write(json!({"state": "COMPLETED", "progress": 100, "message": "Đã tách giọng, nhưng chưa tách được nhạc và tiếng động (x).", "split_error": "x"}));
+        let status = read_separation(&work).unwrap();
+        assert_eq!(status["state"], "COMPLETED");
+        assert_eq!(status["split_error"], "x");
+        write(json!({"state": "COMPLETED", "progress": 100, "message": "Đã tách giọng, nhạc và tiếng động."}));
+        assert!(read_separation(&work).unwrap().get("split_error").is_none());
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn separation_and_music_split_of_one_video_never_run_together() {
+        for (first, second) in [(StemRun::Separate, StemRun::Split), (StemRun::Split, StemRun::Separate)] {
+            let work = std::env::temp_dir().join(format!("dubflow-stem-run-{first:?}-{}", std::process::id()));
+            let claim = begin_stem_run(&work, first).expect("the first run starts");
+            assert!(begin_stem_run(&work, second).is_err(), "{second:?} waits for {first:?}");
+            assert!(begin_stem_run(&work, first).is_err(), "{first:?} does not start twice");
+            // Another video is not held up.
+            let other = begin_stem_run(&work.join("other"), second).expect("another video runs");
+            drop(other);
+            // A run that did not start (spawn failed) frees the video; a started one frees it when it ends.
+            drop(claim);
+            let started = begin_stem_run(&work, second).expect("free again").keep();
+            assert!(begin_stem_run(&work, first).is_err());
+            end_stem_run(&started, second);
+            drop(begin_stem_run(&work, first).expect("free after the run ended"));
+        }
+    }
 
     fn segment(start: f64, end: f64, speed: f64, volume: f64) -> Segment {
         Segment { media: 0, start, end, speed, volume, ..Default::default() }
@@ -4520,8 +5019,8 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
     #[test]
     fn mixes_the_main_sound_from_its_parts() {
         // Voice at 150 %, the original voice at 20 % and the accompaniment at 100 %: source 0.2, accompaniment 0.8.
-        let parts = stem_weights(&StemLevels { voice: 1.5, original: 0.2, background: 1.0 },
-            &StemFiles { voice: Some("v.wav".into()), source: Some("s.wav".into()), background: Some("b.wav".into()) }).unwrap();
+        let parts = stem_weights(&StemLevels { voice: 1.5, original: 0.2, background: 1.0, sfx: None },
+            &StemFiles { voice: Some("v.wav".into()), source: Some("s.wav".into()), background: Some("b.wav".into()), ..StemFiles::default() }).unwrap();
         assert_eq!(parts, vec![(PathBuf::from("v.wav"), 1.5), (PathBuf::from("s.wav"), 0.2), (PathBuf::from("b.wav"), 0.8)]);
         let edit = Edit { stems: vec![(1, 1.5), (2, 0.2), (3, 0.8)], ..whole(10.0) };
         let mix = Mix { sounds: vec![], main_volume: 1.0, ..Default::default() };
@@ -4534,16 +5033,27 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
         assert!(!script.contains("[0:a]"));
         assert!(script.ends_with("[am]alimiter=limit=0.891:level=0:latency=1[a]"), "turned-up parts pass the limiter");
         // Only the original voice: the accompaniment cancels out of the source.
-        let only = stem_weights(&StemLevels { voice: 0.0, original: 1.0, background: 0.0 },
-            &StemFiles { voice: Some("v.wav".into()), source: Some("s.wav".into()), background: Some("b.wav".into()) }).unwrap();
+        let only = stem_weights(&StemLevels { voice: 0.0, original: 1.0, background: 0.0, sfx: None },
+            &StemFiles { voice: Some("v.wav".into()), source: Some("s.wav".into()), background: Some("b.wav".into()), ..StemFiles::default() }).unwrap();
         assert_eq!(only, vec![(PathBuf::from("s.wav"), 1.0), (PathBuf::from("b.wav"), -1.0)]);
         // Without an accompaniment, `original` is the whole source; silence keeps one part.
-        let plain = StemFiles { voice: Some("v.wav".into()), source: Some("s.wav".into()), background: None };
-        assert_eq!(stem_weights(&StemLevels { voice: 1.0, original: 0.3, background: 1.0 }, &plain).unwrap(),
+        let plain = StemFiles { voice: Some("v.wav".into()), source: Some("s.wav".into()), background: None, ..StemFiles::default() };
+        assert_eq!(stem_weights(&StemLevels { voice: 1.0, original: 0.3, background: 1.0, sfx: None }, &plain).unwrap(),
             vec![(PathBuf::from("v.wav"), 1.0), (PathBuf::from("s.wav"), 0.3)]);
-        assert_eq!(stem_weights(&StemLevels { voice: 0.0, original: 0.0, background: 0.0 }, &plain).unwrap(), vec![(PathBuf::from("v.wav"), 0.0)]);
-        assert!(stem_weights(&StemLevels { voice: 2.5, original: 1.0, background: 1.0 }, &plain).is_err());
-        assert!(stem_weights(&StemLevels { voice: 1.0, original: 1.0, background: 1.0 }, &StemFiles::default()).is_err());
+        assert_eq!(stem_weights(&StemLevels { voice: 0.0, original: 0.0, background: 0.0, sfx: None }, &plain).unwrap(), vec![(PathBuf::from("v.wav"), 0.0)]);
+        assert!(stem_weights(&StemLevels { voice: 2.5, original: 1.0, background: 1.0, sfx: None }, &plain).is_err());
+        assert!(stem_weights(&StemLevels { voice: 1.0, original: 1.0, background: 1.0, sfx: None }, &StemFiles::default()).is_err());
+        // Split into music and SFX: each part cancels its share of the source; no `sfx` level follows the music.
+        let split = StemFiles { voice: None, source: Some("s.wav".into()), background: Some("b.wav".into()), music: Some("m.wav".into()), sfx: Some("x.wav".into()), spoken: None };
+        assert_eq!(stem_weights(&StemLevels { voice: 0.0, original: 0.0, background: 1.0, sfx: Some(0.5) }, &split).unwrap(),
+            vec![(PathBuf::from("m.wav"), 1.0), (PathBuf::from("x.wav"), 0.5)]);
+        assert_eq!(stem_weights(&StemLevels { voice: 0.0, original: 1.0, background: 1.0, sfx: None }, &split).unwrap(),
+            vec![(PathBuf::from("s.wav"), 1.0)]);
+        assert_eq!(stem_weights(&StemLevels { voice: 0.0, original: 1.2, background: 0.0, sfx: Some(2.0) }, &split).unwrap(),
+            vec![(PathBuf::from("s.wav"), 1.2), (PathBuf::from("m.wav"), -1.2), (PathBuf::from("x.wav"), 0.8)]);
+        assert!(stem_weights(&StemLevels { voice: 0.0, original: 1.0, background: 1.0, sfx: Some(2.5) }, &split).is_err());
+        let saved: StemLevels = serde_json::from_value(json!({"voice": 1, "original": 0, "background": 1})).unwrap();
+        assert_eq!(saved.sfx, None, "drafts from before the split still load");
     }
 
     #[test]
@@ -4571,6 +5081,21 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
         assert!(separation_outdated(&file, &stem_files(&file)), "no backend: an older model made it");
         fs::write(work.join(STEMS_DIR).join("status.json"), json!({"state": "COMPLETED", "backend": SEPARATION_BACKEND}).to_string()).unwrap();
         assert!(!separation_outdated(&file, &stem_files(&file)));
+        // Music and SFX count only when split from this very accompaniment.
+        let stems = work.join(STEMS_DIR);
+        for name in ["music.wav", "sfx.wav"] {
+            fs::write(stems.join(name), b"wav").unwrap();
+        }
+        assert_eq!(stem_files(&file).music, None, "no split.json");
+        let background = stems.join("background.wav");
+        let metadata = fs::metadata(&background).unwrap();
+        let mtime = metadata.modified().unwrap().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64;
+        let identity = json!({"schema_version": 1, "recipe": "hpss-median-v1", "background": background.to_string_lossy(), "size": metadata.len(), "mtime_ns": mtime});
+        fs::write(stems.join(SPLIT_FILE), identity.to_string()).unwrap();
+        let files = stem_files(&file);
+        assert_eq!((files.music, files.sfx), (Some(stems.join("music.wav")), Some(stems.join("sfx.wav"))));
+        fs::write(&background, b"wav2").unwrap();
+        assert_eq!(stem_files(&file).music, None, "a new accompaniment makes the split stale");
         let _ = fs::remove_dir_all(&base);
     }
 
