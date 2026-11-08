@@ -395,6 +395,7 @@ def run(run_dir: Path, spec: Spec, *, ffmpeg: Path, probe: Probe, ffmpeg_runner:
             raise DocuError("Không tìm thấy narration.wav; hãy tạo lại lời đọc")
         videos = {source.id: source.video for source in spec.sources}
         framings = {source["id"]: source["framing"] for source in plan["sources"]}
+        preset = plan.get("cinematic_framing_preset") or spec.cinematic_framing_preset
         cuts: dict[str, list[float]] = {}
         for source in spec.sources:
             shots_file = work_dir(run_dir) / "sources" / source.id / "shots.json"
@@ -410,7 +411,7 @@ def run(run_dir: Path, spec: Spec, *, ffmpeg: Path, probe: Probe, ffmpeg_runner:
         card = spec.burn_end_credits
         status.write(total=len(slices) + int(card) + 1)
         sizes: dict[str, tuple[int, int]] = {}
-        from .visual import load_pacing
+        from .visual import cover_framing, load_pacing
         pace = load_pacing(run_dir)["ken_burns"]
         push = KEN_BURNS_ZOOM if pace is None else pace
         labels = load_labels(run_dir)
@@ -480,7 +481,9 @@ def run(run_dir: Path, spec: Spec, *, ffmpeg: Path, probe: Probe, ffmpeg_runner:
             if shown or overlay:
                 ass = f"slice-{index:04d}.ass"
                 (work / ass).write_text(labels_ass(shown, count / FPS, overlay, bar), encoding="utf-8")
-            graph = video_filter(*sizes[source_id], framings.get(source_id, {}), frames=count,
+            # A cut with its own cover (#630) is framed with it; the others with their source's.
+            framing = cover_framing(framings.get(source_id, {}), piece.get("cover"), preset)
+            graph = video_filter(*sizes[source_id], framing, frames=count,
                                  ken_burns=shot_end - shot_start >= KEN_BURNS_SHOT or count / FPS >= KEN_BURNS_SLICE,
                                  zoom_push=push, labels=ass, reused=(1 if index % 2 else -1) if piece.get("reused") else 0)
             stat = video.stat()

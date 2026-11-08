@@ -571,6 +571,32 @@ pub async fn docu_cover(dir: String, source: String, band: Option<[f64; 2]>, log
     Ok(result)
 }
 
+/// The edited cuts handed to the engine as a file: a 180-cut film is too long for a command line.
+const SLICE_REQUEST: &str = ".dubflow-work/slice_edits.json";
+
+/// Cuts edited in Chỉnh sửa (#630): per scene, each cut's footage, start in the film and own cover; the next render uses them.
+#[tauri::command]
+pub async fn docu_slices(dir: String, scenes: Value) -> Result<Value, String> {
+    let dir = docu_dir(&dir)?;
+    let list = scenes.as_array().filter(|list| !list.is_empty() && list.len() <= 2000).ok_or_else(|| fail("Không có lát cắt nào để lưu"))?;
+    for work in [".dubflow-work/visual", ".dubflow-work/render"] {
+        if crate::product::read_small_json(&dir.join(work).join("status.json"), 64 * 1024).is_some_and(|status| status["state"] == "RUNNING") {
+            return Err(fail("Đợi lập kế hoạch hoặc dựng phim xong rồi hãy sửa lát cắt"));
+        }
+    }
+    let body = serde_json::to_vec(&json!({ "scenes": list })).map_err(|error| fail(error.to_string()))?;
+    if body.len() > 4 * 1024 * 1024 { return Err(fail("Quá nhiều lát cắt trong một lần lưu")); }
+    let request = dir.join(SLICE_REQUEST);
+    fs::write(&request, body).map_err(|error| fail(format!("Không lưu được lát cắt: {error}")))?;
+    let args: Vec<OsString> = vec!["-m".into(), "engine.dubflow.docu".into(), "slices".into(), "--run-dir".into(), dir.clone().into(),
+        "--request".into(), request.clone().into()];
+    let result = python_json(args, "bộ xử lý phim tài liệu").await;
+    let _ = fs::remove_file(&request);
+    let result = result?;
+    if result["state"] != "COMPLETED" { return Err(fail(script_error(&result))); }
+    Ok(result)
+}
+
 fn options_args(dir: &Path, graphics: bool, captions: bool, music: &str, music_path: Option<&Path>, sfx: Option<bool>) -> Vec<OsString> {
     let mut args: Vec<OsString> = vec!["-m".into(), "engine.dubflow.docu".into(), "options".into(), "--run-dir".into(), dir.into(),
         "--graphics".into(), graphics.to_string().into(), "--captions".into(), captions.to_string().into(), "--music".into(), music.into()];

@@ -1,4 +1,4 @@
-"""python -m engine.dubflow.docu {context,check,narrate,plan,reframe,options,transcribe,render,capcut}; the last stdout line is ASCII JSON."""
+"""python -m engine.dubflow.docu {context,check,narrate,plan,reframe,cover,slices,options,transcribe,render,capcut}; the last stdout line is ASCII JSON."""
 from __future__ import annotations
 
 import argparse
@@ -80,6 +80,9 @@ def main(argv: list[str] | None = None) -> int:
     cover.add_argument("--source", required=True)
     cover.add_argument("--band", required=True, help='JSON: {"top": 0.8, "bottom": 0.95} or null')
     cover.add_argument("--logos", required=True, help="JSON: [[x, y, w, h], ...]")
+    cuts = commands.add_parser("slices", help="save the cuts edited in Chỉnh sửa: trimmed, swapped, removed, replaced, own cover")
+    cuts.add_argument("--run-dir", type=Path, required=True)
+    cuts.add_argument("--request", type=Path, required=True, help='JSON file: {"scenes": [{"scene_id", "slices": [...]}]}')
     options = commands.add_parser("options", help="what the rough cut draws and plays: number cards, captions, music bed")
     options.add_argument("--run-dir", type=Path, required=True)
     options.add_argument("--graphics", choices=("true", "false"))
@@ -111,6 +114,12 @@ def main(argv: list[str] | None = None) -> int:
             except ValueError as error:
                 raise DocuError("Dữ liệu vùng che không hợp lệ") from error
             result = {"state": "COMPLETED", "message": "", **visual.set_cover(args.run_dir, args.source, band, logos)}
+        elif args.command == "slices":
+            try:
+                request = json.loads(args.request.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as error:
+                raise DocuError("Dữ liệu lát cắt không hợp lệ") from error
+            result = {"state": "COMPLETED", "message": "", **visual.edit_slices(args.run_dir, request)}
         elif args.command == "options":
             flag = {"true": True, "false": False, None: None}
             chosen = overlays.save_options(args.run_dir, graphics=flag[args.graphics], captions=flag[args.captions],

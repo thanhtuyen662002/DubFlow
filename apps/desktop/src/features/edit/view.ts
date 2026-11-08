@@ -31,6 +31,7 @@ import { STYLE_STORAGE_KEY, storedStyle } from "./subtitles.ts";
 import { COVER_STORAGE_KEY, plainCover } from "./cover.ts";
 import { mountCover } from "./cover_view.ts";
 import { mountDocuCover } from "./docu_cover_view.ts";
+import { mountDocuCuts } from "./docu_cuts_view.ts";
 import { mountVersions } from "./versions_view.ts";
 import { mountDocuLayers } from "./docu_layers_view.ts";
 import type { Layers } from "./docu_layers.ts";
@@ -309,6 +310,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   const overlayTrack = $("#tl-overlays");
   const audioTrack = $("#tl-audio");
   const textTrack = $("#tl-text");
+  const cutsTrack = $("#tl-cuts");
   const subsTrack = $("#tl-subs");
   const timeline = $("#edit-timeline");
   const playhead = $("#tl-playhead");
@@ -1045,6 +1047,24 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       if (await open(target)) setMode("cover");
     },
   });
+  // Each cut of a documentary as its own clip (Issue #630).
+  const docuCuts = mountDocuCuts(invoke, {
+    note,
+    confirm: (options) => host.confirm(options),
+    reload: async () => {
+      if (!session) return;
+      const target = session.target;
+      const keep = mode;
+      host.mediaChanged(session.outputPath);
+      if (!(await close(false, true))) return;
+      if (await open(target)) setMode(keep);
+    },
+    pps: () => pps,
+    toTimeline: (time) => session ? sourceToOutput(current(), time) : null,
+    seek: (time) => seekTo(time),
+    changed: () => render(),
+    otherBusy: () => docuCover.busy,
+  });
   const docuLayers = mountDocuLayers(invoke, {
     note,
     confirm: (options) => host.confirm(options),
@@ -1448,6 +1468,11 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     }
     if (mode === "text") {
       textMode.deleteSelected();
+      return;
+    }
+    // A picked documentary cut: Delete removes that cut, never the whole film's clip.
+    if ((mode === "cut" || mode === "cover") && docuCuts.selected !== null && !selectedOverlay()) {
+      docuCuts.removeSelected();
       return;
     }
     const edit = session.history.current;
@@ -1876,6 +1901,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     $("#edit-cut-notes").hidden = mode !== "cut" || !!overlay;
     renderRangePanel(mode === "cut" && !overlay);
     renderMarkerList(edit, mode === "cut" && !overlay);
+    docuCuts.renderPanel(mode === "cut" || mode === "cover" ? mode : null);
     audio.render(mode === "audio");
     stems.render(mode === "audio");
     textMode.render(mode === "text");
@@ -2182,6 +2208,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       blocks.push(joint);
     }
     track.replaceChildren(...blocks);
+    const cutsHeight = docuCuts.renderTrack(cutsTrack, PAD);
     // Tiếng gốc: each segment's sound in a lane of its own, under the pictures. Once the sound is in
     // parts (Lời, Nhạc, SFX) this lane is their common level per segment: named so, since turning it
     // off silences every part.
@@ -2296,7 +2323,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       lane.append(add);
       return lane;
     }));
-    const rows = 22 + (edit.overlays.length ? ovRows * OV_ROW + 2 : 0) + 80 + (sounds.length ? VA_PX + 6 : 0) + stemLanes.length * (VA_PX + 6) + (textHeight ? 6 + textHeight : 0) + (audioHeight ? 6 + audioHeight : 0) + emptyLanes.childElementCount * 32 + 16;
+    const rows = 22 + (edit.overlays.length ? ovRows * OV_ROW + 2 : 0) + 80 + (cutsHeight ? cutsHeight + 6 : 0) + (sounds.length ? VA_PX + 6 : 0) + stemLanes.length * (VA_PX + 6) + (textHeight ? 6 + textHeight : 0) + (audioHeight ? 6 + audioHeight : 0) + emptyLanes.childElementCount * 32 + 16;
     // At most 40% of the window: further rows scroll, the video keeps its room.
     // Never lower than the timeline without rows (lower in short windows, see styles.css), so it does not jump.
     const least = window.innerHeight <= 600 ? SHORT_TIMELINE_PX : TIMELINE_PX;
@@ -3424,6 +3451,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       zoom.value = "0";
       cover.begin();
       docuCover.begin(outputPath, opened.kind);
+      docuCuts.begin(outputPath, opened.kind);
       docuLayers.begin(outputPath, opened.kind);
       if (session.plainCover) cover.loaded(plainCoverDocument(loaded.project), []);
       if (session.reviewable && opened.job) subs.begin(opened.job, outputPath);
@@ -3486,12 +3514,13 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
 
   async function closeNow(ask: boolean, quiet: boolean): Promise<boolean> {
     if (!session) return true;
-    if (ask && (unexported() || subs.dirty() || docuCover.dirty || docuLayers.busy || templateMode.dirty() || templateMode.busy)) {
+    if (ask && (unexported() || subs.dirty() || docuCover.dirty || docuCuts.dirty || docuLayers.busy || templateMode.dirty() || templateMode.busy)) {
       const leave = await host.confirm(templateMode.busy ? {
         title: "Thoát chỉnh sửa?", message: "Video đang được dựng lại theo mẫu mới. Bản mới vẫn được tạo và có trong Bán hàng › Video đã tạo, nhưng bản nháp chỉnh sửa không được chuyển sang.",
         confirmLabel: "Thoát", cancelLabel: "Ở lại", danger: true,
-      } : subs.dirty() || docuCover.dirty || templateMode.dirty() ? {
+      } : subs.dirty() || docuCover.dirty || docuCuts.dirty || templateMode.dirty() ? {
         title: "Thoát chỉnh sửa?", message: templateMode.dirty() ? "Các thay đổi mẫu chưa bấm Áp dụng mẫu sẽ mất. Cắt ghép vẫn được lưu nháp."
+          : docuCuts.dirty ? "Các lát cắt đã sửa chưa bấm Dựng lại phim sẽ mất. Cắt ghép vẫn được lưu nháp."
           : "Các câu đã sửa, kiểu chữ và cách che chưa bấm Áp dụng sẽ mất. Cắt ghép vẫn được lưu nháp.",
         confirmLabel: "Thoát", cancelLabel: "Ở lại", danger: true,
       } : {
@@ -3506,6 +3535,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     await flush();
     cover.end();
     docuCover.end();
+    docuCuts.end();
     docuLayers.end();
     $("#edit-subs-layer").classList.remove("plain-cover");
     $("#edit-subs-layer").hidden = true;
