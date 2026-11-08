@@ -187,13 +187,27 @@ jobs:
 
       - name: Download and verify app-owned FFmpeg runtime
         shell: pwsh
+        env:
+          FFMPEG_GH_TOKEN: ${{ github.token }}
         run: |
           # BtbN retains the last build of each month for two years; daily
           # builds expire after fourteen days. Keep an exact monthly pin.
-          $url = 'https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-30-13-08/ffmpeg-n9.0.2-17-g2a571b6068-win64-lgpl-9.0.zip'
+          $url = 'https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/download/autobuild-2026-09-30-13-08/ffmpeg-n9.0.2-17-g2a571b6068-win64-lgpl-9.0.zip'
           $expected = '6b264b9e6019103f601d98c292bd332fd87acf1c5e941ddff4fb71760fe63432'
           $archive = Join-Path $env:RUNNER_TEMP 'dubflow-ffmpeg.zip'
-          Invoke-WebRequest -Uri $url -OutFile $archive -UseBasicParsing
+          # github.com's release-download route times out (504) for this asset since
+          # 2026-11-08; retry it, then fetch the same asset through the releases API.
+          $downloaded = $false
+          foreach ($attempt in 1..3) {
+            try { Invoke-WebRequest -Uri $url -OutFile $archive -UseBasicParsing; $downloaded = $true; break }
+            catch { Write-Warning "FFmpeg download attempt $attempt failed: $($_.Exception.Message)"; Start-Sleep -Seconds (10 * $attempt) }
+          }
+          if (-not $downloaded) {
+            $parts = $url -split '/'
+            $env:GH_TOKEN = $env:FFMPEG_GH_TOKEN
+            gh release download $parts[7] --repo "$($parts[3])/$($parts[4])" --pattern $parts[8] --output $archive --clobber
+            if ($LASTEXITCODE -ne 0) { throw 'FFmpeg archive download failed' }
+          }
           $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($actual -ne $expected) { throw "FFmpeg archive hash mismatch: $actual" }
           $extract = Join-Path $env:RUNNER_TEMP 'dubflow-ffmpeg'
