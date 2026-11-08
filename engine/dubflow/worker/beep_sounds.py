@@ -3,7 +3,7 @@
 ``beep`` is the classic 1 kHz tone. ``bird`` (chim hót) and ``dog`` (chó sủa)
 are synthesised here, so nothing is downloaded and no recording's licence is
 involved: a bird is a run of short falling whistles, a dog a pair of barks
-built from a gliding voice with three formants and a breathy onset. ``custom``
+built from a rough glottal buzz through a mouth opening from "w" to "a". ``custom``
 is a sound file the user picked in Cài đặt, decoded with the bundled FFmpeg.
 
 Every sound is a mono clip of floats in -1..1 at the stem's sample rate; a
@@ -61,39 +61,79 @@ def bird_clip(rate: int) -> list[float]:
     return out
 
 
-def _bark(rate: int, seconds: float, start_hz: float, seed: int) -> list[float]:
+def _resonator(centre: float, width: float, rate: int) -> tuple[float, float, float]:
+    """A two-pole band-pass at ``centre`` Hz, ``width`` Hz wide: (gain, a1, a2)."""
+    radius = math.exp(-math.pi * width / rate)
+    return 1.0 - radius, 2.0 * radius * math.cos(2.0 * math.pi * centre / rate), -radius * radius
+
+
+def _glide(t: float, points: tuple[tuple[float, float], ...]) -> float:
+    """A value moving in straight lines through (time, value) points."""
+    if t <= points[0][0]:
+        return points[0][1]
+    for (t0, v0), (t1, v1) in zip(points, points[1:]):
+        if t <= t1:
+            return v0 + (v1 - v0) * (t - t0) / (t1 - t0)
+    return points[-1][1]
+
+
+def _bark(rate: int, seconds: float, peak_hz: float, seed: int) -> list[float]:
+    """One "gâu": a rough, breathy glottal buzz whose pitch leaps up, through a mouth that
+    opens from "w" to "a" (F1 and F2 rise in the first 22 ms), then a quick fall. Alternate
+    periods are weaker (period doubling) and the pitch wobbles: what makes a bark harsh
+    rather than sung. Tuned until an audio classifier (BirdNET's "Dog" class) hears a dog."""
     rng = _Lcg(seed)
     count = int(seconds * rate)
-    formants = ((650.0, 220.0, 1.0), (1450.0, 260.0, 0.55), (2700.0, 400.0, 0.3))
+    pitch = ((0.0, 0.5), (min(0.06, seconds * 0.4), 1.0), (max(seconds * 0.6, 0.07), 0.67), (seconds, 0.79))
+    f1 = ((0.0, 326.0), (0.022, 1157.0), (seconds, 1100.0))
+    f2 = ((0.0, 944.0), (0.022, 1625.0), (seconds, 2156.0))
+    fixed = ((3055.0, 320.0, 0.53), (5500.0, 500.0, 0.17))
+    states = [[0.0, 0.0] for _ in range(4)]
     out: list[float] = []
-    phase = 0.0
-    noise = 0.0
+    cycle = 0.0
+    periods = 0
+    wobble = 0.0
+    previous = 0.0
+    hold = seconds * 0.34
     for frame in range(count):
         t = frame / rate
-        f0 = start_hz * (0.72 + 0.28 * math.exp(-t / 0.05)) * (1.0 - 0.18 * t / seconds)
-        phase += 2 * math.pi * f0 / rate
-        voice = 0.0
-        for harmonic in range(1, 14):
-            freq = harmonic * f0
-            if freq >= rate / 2:
-                break
-            weight = sum(gain * math.exp(-((freq - centre) / width) ** 2) for centre, width, gain in formants) + 0.04
-            voice += weight / harmonic ** 0.5 * math.sin(harmonic * phase)
-        noise = 0.6 * noise + 0.4 * (rng.random() * 2 - 1)
-        attack = min(1.0, t / 0.006)
-        envelope = attack * math.exp(-t / (seconds * 0.38))
-        breath = math.exp(-t / 0.03)
-        out.append(envelope * (0.32 * voice + 0.35 * breath * noise))
+        wobble += (0.26 * (rng.random() - 0.5) - wobble) * (25.0 / rate)
+        cycle += peak_hz * _glide(t, pitch) * (1.0 + 7.0 * wobble) / rate
+        if cycle >= 1.0:
+            cycle -= 1.0
+            periods += 1
+        # Rosenberg glottal pulse; its slope excites the tract (rich in harmonics).
+        if cycle < 0.4:
+            pulse = 0.5 * (1.0 - math.cos(math.pi * cycle / 0.4))
+        elif cycle < 0.56:
+            pulse = math.cos(math.pi * (cycle - 0.4) / 0.32)
+        else:
+            pulse = 0.0
+        slope = (pulse - previous) * rate / (peak_hz * 8.0)
+        previous = pulse
+        strength = 1.0 if periods % 2 == 0 else 0.78
+        noise = (rng.random() * 2.0 - 1.0) * (0.36 + 0.64 * pulse)
+        source = strength * slope + 1.28 * noise
+        sample = 0.0
+        bands = ((_glide(t, f1), 233.0, 1.0), (_glide(t, f2), 192.0, 1.17)) + fixed
+        for state, (centre, width, gain) in zip(states, bands):
+            g, a1, a2 = _resonator(centre, width, rate)
+            value = g * source + a1 * state[0] + a2 * state[1]
+            state[1], state[0] = state[0], value
+            sample += gain * value
+        attack = min(1.0, t / 0.015)
+        tail = 1.0 if t < hold else math.exp(-(t - hold) / (seconds * 0.08))
+        out.append(attack * tail * sample)
     peak = max(abs(value) for value in out) or 1.0
-    return [0.5 * value / peak for value in out]
+    return [0.55 * value / peak for value in out]
 
 
 def dog_clip(rate: int) -> list[float]:
-    """Two barks ("gâu gâu"), the second a little lower, then a pause."""
-    out = _bark(rate, 0.2, 560.0, 1)
-    out.extend([0.0] * int(0.09 * rate))
-    out.extend(_bark(rate, 0.22, 500.0, 2))
-    out.extend([0.0] * int(0.14 * rate))
+    """Two barks ("gâu gâu"): a long one, then a short higher one, then a pause."""
+    out = _bark(rate, 0.3, 780.0, 1)
+    out.extend([0.0] * int(0.2 * rate))
+    out.extend(_bark(rate, 0.15, 830.0, 2))
+    out.extend([0.0] * int(0.16 * rate))
     return out
 
 

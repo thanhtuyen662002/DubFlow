@@ -53,35 +53,69 @@ export function birdClip(rate: number): Float32Array {
   return Float32Array.from(out);
 }
 
-function bark(rate: number, seconds: number, startHz: number, seed: number): number[] {
+/** A two-pole band-pass at `centre` Hz, `width` Hz wide: [gain, a1, a2] (beep_sounds._resonator). */
+function resonator(centre: number, width: number, rate: number): [number, number, number] {
+  const radius = Math.exp(-Math.PI * width / rate);
+  return [1 - radius, 2 * radius * Math.cos(2 * Math.PI * centre / rate), -radius * radius];
+}
+
+/** A value moving in straight lines through [time, value] points (beep_sounds._glide). */
+function glide(t: number, points: ReadonlyArray<readonly [number, number]>): number {
+  if (t <= points[0][0]) return points[0][1];
+  for (let index = 1; index < points.length; index++) {
+    const [t0, v0] = points[index - 1], [t1, v1] = points[index];
+    if (t <= t1) return v0 + (v1 - v0) * (t - t0) / (t1 - t0);
+  }
+  return points[points.length - 1][1];
+}
+
+/** One "gâu" (beep_sounds._bark): a rough glottal buzz through a mouth opening from "w" to "a". */
+function bark(rate: number, seconds: number, peakHz: number, seed: number): number[] {
   const random = lcg(seed);
   const count = Math.trunc(seconds * rate);
-  const formants: Array<[number, number, number]> = [[650, 220, 1], [1450, 260, 0.55], [2700, 400, 0.3]];
+  const pitch: Array<[number, number]> = [[0, 0.5], [Math.min(0.06, seconds * 0.4), 1], [Math.max(seconds * 0.6, 0.07), 0.67], [seconds, 0.79]];
+  const f1: Array<[number, number]> = [[0, 326], [0.022, 1157], [seconds, 1100]];
+  const f2: Array<[number, number]> = [[0, 944], [0.022, 1625], [seconds, 2156]];
+  const fixed: Array<[number, number, number]> = [[3055, 320, 0.53], [5500, 500, 0.17]];
+  const states = [[0, 0], [0, 0], [0, 0], [0, 0]];
   const out: number[] = [];
-  let phase = 0, noise = 0;
+  let cycle = 0, periods = 0, wobble = 0, previous = 0;
+  const hold = seconds * 0.34;
   for (let frame = 0; frame < count; frame++) {
     const t = frame / rate;
-    const f0 = startHz * (0.72 + 0.28 * Math.exp(-t / 0.05)) * (1 - 0.18 * t / seconds);
-    phase += 2 * Math.PI * f0 / rate;
-    let voice = 0;
-    for (let harmonic = 1; harmonic < 14; harmonic++) {
-      const freq = harmonic * f0;
-      if (freq >= rate / 2) break;
-      const weight = formants.reduce((sum, [centre, width, gain]) => sum + gain * Math.exp(-(((freq - centre) / width) ** 2)), 0) + 0.04;
-      voice += weight / harmonic ** 0.5 * Math.sin(harmonic * phase);
+    wobble += (0.26 * (random() - 0.5) - wobble) * (25 / rate);
+    cycle += peakHz * glide(t, pitch) * (1 + 7 * wobble) / rate;
+    if (cycle >= 1) {
+      cycle -= 1;
+      periods += 1;
     }
-    noise = 0.6 * noise + 0.4 * (random() * 2 - 1);
-    const attack = Math.min(1, t / 0.006);
-    const envelope = attack * Math.exp(-t / (seconds * 0.38));
-    out.push(envelope * (0.32 * voice + 0.35 * Math.exp(-t / 0.03) * noise));
+    const pulse = cycle < 0.4 ? 0.5 * (1 - Math.cos(Math.PI * cycle / 0.4)) : cycle < 0.56 ? Math.cos(Math.PI * (cycle - 0.4) / 0.32) : 0;
+    const slope = (pulse - previous) * rate / (peakHz * 8);
+    previous = pulse;
+    const strength = periods % 2 === 0 ? 1 : 0.78;
+    const noise = (random() * 2 - 1) * (0.36 + 0.64 * pulse);
+    const source = strength * slope + 1.28 * noise;
+    let sample = 0;
+    const bands: Array<[number, number, number]> = [[glide(t, f1), 233, 1], [glide(t, f2), 192, 1.17], ...fixed];
+    bands.forEach(([centre, width, gain], index) => {
+      const [g, a1, a2] = resonator(centre, width, rate);
+      const state = states[index];
+      const value = g * source + a1 * state[0] + a2 * state[1];
+      state[1] = state[0];
+      state[0] = value;
+      sample += gain * value;
+    });
+    const attack = Math.min(1, t / 0.015);
+    const tail = t < hold ? 1 : Math.exp(-(t - hold) / (seconds * 0.08));
+    out.push(attack * tail * sample);
   }
   const peak = out.reduce((most, value) => Math.max(most, Math.abs(value)), 0) || 1;
-  return out.map((value) => 0.5 * value / peak);
+  return out.map((value) => 0.55 * value / peak);
 }
 
 export function dogClip(rate: number): Float32Array {
   const pause = (seconds: number): number[] => new Array<number>(Math.trunc(seconds * rate)).fill(0);
-  return Float32Array.from([...bark(rate, 0.2, 560, 1), ...pause(0.09), ...bark(rate, 0.22, 500, 2), ...pause(0.14)]);
+  return Float32Array.from([...bark(rate, 0.3, 780, 1), ...pause(0.2), ...bark(rate, 0.15, 830, 2), ...pause(0.16)]);
 }
 
 /** The built-in sound's samples, or null for a file (played from its own URL). */
