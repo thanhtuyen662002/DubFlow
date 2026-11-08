@@ -77,16 +77,27 @@ def load_overrides(run_dir: Path) -> dict[str, Any]:
     try:
         value = json.loads((work_dir(run_dir) / OVERRIDES).read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return {"schema_version": 1, "script_sha256": None, "slices": {}}
+        return {"schema_version": 1, "script_sha256": None, "slices": {}, "scenes": {}}
     slices = value.get("slices") if isinstance(value, dict) and isinstance(value.get("slices"), dict) else {}
-    return {"schema_version": 1, "script_sha256": value.get("script_sha256") if isinstance(value, dict) else None, "slices": slices}
+    scenes = value.get("scenes") if isinstance(value, dict) and isinstance(value.get("scenes"), dict) else {}
+    return {"schema_version": 1, "script_sha256": value.get("script_sha256") if isinstance(value, dict) else None, "slices": slices,
+            "scenes": scenes}
 
 
 def save_override(run_dir: Path, script_sha256: str | None, scene_id: str, index: int, source_id: str, start: float) -> None:
     saved = load_overrides(run_dir)
     if saved["script_sha256"] != script_sha256:
-        saved = {"schema_version": 1, "script_sha256": script_sha256, "slices": {}}
-    saved["slices"].setdefault(scene_id, {})[str(index)] = {"source_id": source_id, "start": round(float(start), 3)}
+        saved = {"schema_version": 1, "script_sha256": script_sha256, "slices": {}, "scenes": {}}
+    cut = saved["scenes"].get(scene_id)
+    if isinstance(cut, dict) and isinstance(cut.get("slices"), list) and 0 <= index < len(cut["slices"]):
+        # The scene was cut by hand (#630): the new footage goes into that cut, at its length.
+        piece = cut["slices"][index]
+        length = float(piece["end"]) - float(piece["start"])
+        piece.update({"source_id": source_id, "start": round(float(start), 3), "end": round(float(start) + length, 3), "tier": -1})
+        for key in ("reused", "variation", "kind", "ref", "crossed"):
+            piece.pop(key, None)
+    else:
+        saved["slices"].setdefault(scene_id, {})[str(index)] = {"source_id": source_id, "start": round(float(start), 3)}
     write_json(work_dir(run_dir) / OVERRIDES, saved)
 
 
@@ -94,6 +105,7 @@ def apply_overrides(run_dir: Path, plan: dict[str, Any]) -> list[str]:
     """Put hand-picked footage back into a new plan; the slice keeps the new plan's length. Returns warnings."""
     saved = load_overrides(run_dir)
     count = sum(len(items) for items in saved["slices"].values() if isinstance(items, dict))
+    count += sum(len(cut.get("slices") or []) for cut in saved["scenes"].values() if isinstance(cut, dict))
     if not count:
         return []
     if saved["script_sha256"] != plan.get("script_sha256"):
@@ -121,6 +133,28 @@ def apply_overrides(run_dir: Path, plan: dict[str, Any]) -> list[str]:
             # picture (map, data slide) too.
             for key in ("reused", "variation", "kind", "ref", "crossed"):
                 piece.pop(key, None)
+    graphics = plan.get("graphics") if isinstance(plan.get("graphics"), dict) else {}
+    for scene_id, cut in saved["scenes"].items():
+        # A scene cut by hand in Chỉnh sửa (#630) comes back whole while its narration timing is unchanged.
+        scene = scenes.get(scene_id)
+        pieces = cut.get("slices") if isinstance(cut, dict) else None
+        if (scene is None or not isinstance(pieces, list) or not pieces
+                or abs(float(cut.get("start", -1)) - float(scene["start"])) > 1e-3 or abs(float(cut.get("end", -1)) - float(scene["end"])) > 1e-3):
+            dropped += len(pieces) if isinstance(pieces, list) else 1
+            continue
+        try:
+            items = [{**piece, "from": None} for piece in pieces]
+            kept = _edited_scene(scene, items, {}, durations)
+        except (DocuError, AttributeError, TypeError, ValueError):
+            dropped += len(pieces)
+            continue
+        for piece, before in zip(kept, pieces):
+            piece["tier"] = before.get("tier", -1)
+            piece.update({key: before[key] for key in PLANNED_KEYS if key in before})
+            if piece.get("kind") and str(piece.get("ref")) not in graphics:
+                for key in PLANNED_KEYS:
+                    piece.pop(key, None)
+        scene["slices"] = kept
     return [f"{dropped} lát cắt đã thay tay không còn chỗ trong kế hoạch mới"] if dropped else []
 
 
@@ -224,6 +258,126 @@ def set_cover(run_dir: Path, source_id: str, band: Any, logos: Any) -> dict[str,
     plan["warnings"] = source_warnings(plan["sources"], preset) + others
     write_json(plan_path, plan)
     return {"plan": True, "warnings": plan["warnings"]}
+
+
+# Cuts edited by hand in Chỉnh sửa (#630): the shortest a trimmed cut may get, and what a piece carries over
+# from the plan only while it still shows the planned footage.
+MIN_CUT = 0.5
+MAX_CUTS = 400
+PLANNED_KEYS = ("kind", "ref", "reused", "variation", "crossed")
+
+
+def cover_framing(saved: dict[str, Any], cover: dict[str, Any] | None, preset: str) -> dict[str, Any]:
+    """A source's framing with one cut's own caption band and logo boxes (#630); the source's when it has none."""
+    if not isinstance(cover, dict):
+        return saved
+    band = cover.get("band")
+    checked = safezone.Band(float(band["top"]), float(band["bottom"]), float(band.get("share", 1.0))) if isinstance(band, dict) else None
+    logos = [list(logo) for logo in cover.get("logos") or []]
+    return {**saved, "band": checked.__dict__ if checked else None, **safezone.frame_logos(checked, logos, preset).to_dict(), "logos": logos}
+
+
+def _checked_cover(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise DocuError("Vùng che của lát cắt không hợp lệ")
+    band = _checked_band(value.get("band"))
+    return {"band": band.__dict__ if band else None, "logos": _checked_logos(value.get("logos") or [])}
+
+
+def _edited_scene(scene: dict[str, Any], items: Any, originals: dict[tuple[str, int], dict[str, Any]],
+                  durations: dict[str, float]) -> list[dict[str, Any]]:
+    """One scene's cuts as edited: they tile the scene (its narration timing stays), each inside its source."""
+    if not isinstance(items, list) or not items or len(items) > MAX_CUTS:
+        raise DocuError(f"Cảnh {scene['scene_id']} cần ít nhất một lát cắt")
+    begin, finish = float(scene["start"]), float(scene["end"])
+    ats: list[float] = []
+    for item in items:
+        at = item.get("at") if isinstance(item, dict) else None
+        if not isinstance(at, (int, float)):
+            raise DocuError("Lát cắt thiếu thời điểm bắt đầu")
+        ats.append(float(at))
+    # The first cut starts with the scene, whatever the editor rounded.
+    if abs(ats[0] - begin) > 0.05:
+        raise DocuError(f"Lát cắt đầu của cảnh {scene['scene_id']} phải bắt đầu cùng cảnh")
+    ats[0] = begin
+    ends = ats[1:] + [finish]
+    pieces: list[dict[str, Any]] = []
+    for item, at, end in zip(items, ats, ends):
+        length = round(end - at, 3)
+        if length < MIN_CUT - 1e-6:
+            raise DocuError(f"Mỗi lát cắt cần dài ít nhất {MIN_CUT} giây")
+        source_id = item.get("source_id")
+        if source_id not in durations:
+            raise DocuError(f"Không có nguồn {source_id}")
+        start = item.get("start")
+        if not isinstance(start, (int, float)) or start < 0:
+            raise DocuError("Điểm bắt đầu trong video nguồn không hợp lệ")
+        if length > durations[source_id] + 1e-3:
+            raise DocuError(f"Video {source_id} ngắn hơn lát cắt ({length:.1f} s)")
+        # A cut that grew past the end of its footage starts earlier instead.
+        start = round(max(0.0, min(float(start), durations[source_id] - length)), 3)
+        piece: dict[str, Any] = {"source_id": source_id, "start": start, "end": round(start + length, 3), "at": round(at, 3),
+                                 "duration": length, "tier": -1}
+        origin = item.get("from")
+        planned = originals.get((str(origin[0]), int(origin[1]))) if (isinstance(origin, list) and len(origin) == 2
+                                                                      and isinstance(origin[1], int)) else None
+        if planned and planned.get("source_id") == source_id and abs(float(planned.get("start", -1)) - start) < 2e-3:
+            # Still the planned footage: it keeps how it was planned (a map, a data slide, a repeat's other crop).
+            piece["tier"] = planned.get("tier", 0)
+            piece.update({key: planned[key] for key in PLANNED_KEYS if key in planned})
+        cover = _checked_cover(item.get("cover"))
+        if cover is not None:
+            piece["cover"] = cover
+        pieces.append(piece)
+    return pieces
+
+
+def edit_slices(run_dir: Path, request: Any) -> dict[str, Any]:
+    """Save the cuts edited in Chỉnh sửa (#630): trimmed, swapped, removed, replaced, each with its own cover.
+
+    ``request`` is ``{"scenes": [{"scene_id", "slices": [{"from": [scene_id, index] | null, "source_id", "start",
+    "at", "cover": {"band", "logos"} | null}]}]}``; only the scenes it names change. The next render uses them and
+    a new plan keeps them while the scene's narration timing is the same.
+    """
+    scenes_in = request.get("scenes") if isinstance(request, dict) else None
+    if not isinstance(scenes_in, list) or not scenes_in:
+        raise DocuError("Không có lát cắt nào để lưu")
+    plan_path = run_dir / PLAN
+    try:
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise DocuError("Dự án chưa có kế hoạch hình ảnh") from error
+    durations = {source["id"]: float(source["duration"]) for source in plan["sources"]}
+    scenes = {scene["scene_id"]: scene for scene in plan["scenes"]}
+    originals = {(scene["scene_id"], index): dict(piece) for scene in plan["scenes"] for index, piece in enumerate(scene["slices"])}
+    edited: dict[str, list[dict[str, Any]]] = {}
+    for raw in scenes_in:
+        scene_id = raw.get("scene_id") if isinstance(raw, dict) else None
+        if scene_id not in scenes or scene_id in edited:
+            raise DocuError(f"Không có cảnh {scene_id} trong kế hoạch hình ảnh")
+        edited[scene_id] = _edited_scene(scenes[scene_id], raw.get("slices"), originals, durations)
+    graphics = plan.get("graphics") if isinstance(plan.get("graphics"), dict) else {}
+    for pieces in edited.values():
+        for piece in pieces:
+            if piece.get("kind") and str(piece.get("ref")) not in graphics:
+                for key in PLANNED_KEYS:
+                    piece.pop(key, None)
+    for scene_id, pieces in edited.items():
+        scenes[scene_id]["slices"] = pieces
+    write_json(plan_path, plan)
+    saved = load_overrides(run_dir)
+    if saved["script_sha256"] != plan.get("script_sha256"):
+        saved = {"schema_version": 1, "script_sha256": plan.get("script_sha256"), "slices": {}, "scenes": {}}
+    cuts = saved.get("scenes") if isinstance(saved.get("scenes"), dict) else {}
+    for scene_id, pieces in edited.items():
+        # The whole scene as cut by hand wins over single replaced slices in it.
+        saved["slices"].pop(scene_id, None)
+        cuts[scene_id] = {"start": scenes[scene_id]["start"], "end": scenes[scene_id]["end"], "slices": pieces}
+    saved["scenes"] = cuts
+    write_json(work_dir(run_dir) / OVERRIDES, saved)
+    return {"scenes": len(edited), "slices": sum(len(scene["slices"]) for scene in plan["scenes"])}
 
 
 def load_pacing(run_dir: Path) -> dict[str, Any]:

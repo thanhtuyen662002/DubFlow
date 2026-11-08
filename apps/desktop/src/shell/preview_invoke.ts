@@ -227,10 +227,32 @@ function previewCoverSources(dir: string): Array<Record<string, unknown>> {
       zoom: band ? 1.14 : 1, shift: 0, letterbox: 0, logos: edit ? edit.logos : index === 0 ? [[0.03, 0.04, 0.2, 0.09]] : [] } };
   });
 }
+/** The sample film's cuts (Issue #630): scenes of about 20 s, cuts of 2–5 s, a map in the second scene; edited by docu_slices. */
+type SampleScene = { scene_id: string; start: number; end: number; warnings: string[]; slices: Array<Record<string, unknown>> };
+let sampleScenes: SampleScene[] | null = null;
+function previewSampleScenes(): SampleScene[] {
+  if (sampleScenes) return sampleScenes;
+  const scenes: SampleScene[] = [];
+  let source = 0;
+  for (let start = 0, number = 1; start < 640.4 - 1; number += 1) {
+    const end = Math.min(640.4, start + 18 + (number % 4) * 2);
+    const slices: Array<Record<string, unknown>> = [];
+    for (let at = start, step = 0; at < end - 0.05; step += 1) {
+      const duration = Math.min(2 + ((number + step) % 4), end - at), id = `src_0${source % 2 + 1}`, from = (source * 7) % 50;
+      slices.push({ source_id: id, start: from, end: from + duration, at: Math.round(at * 1000) / 1000, duration, tier: 0,
+        ...(number === 2 && step === 1 ? { kind: "map", ref: "g1" } : {}) });
+      at += duration; source += 1;
+    }
+    scenes.push({ scene_id: `sc_${String(number).padStart(3, "0")}`, start, end, warnings: [], slices });
+    start = end;
+  }
+  sampleScenes = scenes;
+  return scenes;
+}
 function previewVisual(dir: string): Record<string, unknown> {
   const run = docuPlans.get(dir);
   // The sample film was planned and rendered before the preview started.
-  if (!run && dir === PREVIEW_DOCU_DIR) return { status: null, plan: { script_sha256: "", duration: 0, scenes: [], warnings: [], sources: previewCoverSources(dir) } };
+  if (!run && dir === PREVIEW_DOCU_DIR) return { status: null, plan: { script_sha256: "", duration: 640.4, scenes: previewSampleScenes(), warnings: [], sources: previewCoverSources(dir) } };
   if (!run) return { plan: null, status: null };
   if (run.cancelled) return { plan: null, status: { state: "CANCELLED", done: 0, total: 5, message: "Đã hủy lập kế hoạch hình ảnh" } };
   run.polls += 1;
@@ -433,6 +455,19 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
       edits.set(String(args.source), { band: (args.band as [number, number] | null) ?? null, logos: (args.logos as number[][]) ?? [] });
       docuCovers.set(dir, edits);
       return { state: "COMPLETED", plan: true, warnings: [] } as T;
+    }
+    case "docu_slices": {
+      const scenes = previewSampleScenes();
+      for (const edited of args.scenes as Array<{ scene_id: string; slices: Array<{ source_id: string; start: number; at: number; cover: unknown }> }>) {
+        const scene = scenes.find((item) => item.scene_id === edited.scene_id);
+        if (!scene) throw new Error(`Không có cảnh ${edited.scene_id} trong kế hoạch hình ảnh`);
+        scene.slices = edited.slices.map((piece, index) => {
+          const end = edited.slices[index + 1]?.at ?? scene.end;
+          return { source_id: piece.source_id, start: piece.start, end: piece.start + end - piece.at, at: piece.at, duration: end - piece.at, tier: -1,
+            ...(piece.cover ? { cover: piece.cover } : {}) };
+        });
+      }
+      return { state: "COMPLETED", scenes: (args.scenes as unknown[]).length, slices: scenes.reduce((sum, scene) => sum + scene.slices.length, 0) } as T;
     }
     case "docu_render": docuRenders.set(String(args.dir), { polls: 0, cancelled: false }); return undefined as T;
     case "docu_layers": {
