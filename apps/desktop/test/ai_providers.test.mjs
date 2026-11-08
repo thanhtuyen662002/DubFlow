@@ -134,9 +134,9 @@ console.log("ai providers ok");
 
 // Nghe thử plays the engine's recipes (same samples as engine/dubflow/worker/beep_sounds.py at 16 kHz).
 assert.equal(birdClip(16000).length, 13204);
-assert.equal(dogClip(16000).length, 12960);
+assert.equal(dogClip(16000).length, 13760);
 assert.ok(Math.abs(birdClip(16000)[3000] - -0.15444935115913352) < 1e-6);
-// Same samples as engine/dubflow/worker/beep_sounds.dog_clip (both barks).
-assert.ok(Math.abs(dogClip(16000)[2000] - 0.010015049294533878) < 1e-6);
-assert.ok(Math.abs(dogClip(16000)[9000] - 0.04836787203578464) < 1e-6);
+// Same samples as engine/dubflow/worker/beep_sounds.dog_clip (the embedded CC0 recording).
+assert.ok(Math.abs(dogClip(16000)[2000] - -0.3331146240234375) < 1e-6);
+assert.ok(Math.abs(dogClip(16000)[9000] - 0.09040451049804688) < 1e-6);
 assert.equal(soundClip("custom", 16000), null);
