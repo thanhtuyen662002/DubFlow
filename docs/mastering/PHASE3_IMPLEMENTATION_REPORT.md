@@ -1,6 +1,6 @@
 # DubFlow — Báo cáo triển khai Phase 3: Mastering trong Lồng tiếng (`dubbing_preserve`)
 
-Epic #637 · 2026-11-11 · main khi viết: `a5b4468` (+ #696, #698 đang chờ)
+Epic #637 · 2026-11-11 · main sau khi gộp: `0f53bf6`
 Không phát hành bản stable. Lồng tiếng không cần Gemini ở bất kỳ mức nào. Mức Tắt không có lời gọi AI nào.
 
 ## Trả lời thẳng
@@ -164,8 +164,8 @@ Mastering thêm khoảng 7 s cho video 100 s: một lượt đo `loudnorm`, mộ
 | #686 | #685 | 0acc213 | ADR-0055, `enable_climax_hook`, chính sách `dubbing_preserve` (bỏ cắt khoảng lặng, hook chỉ khi bật) |
 | #688 | #687 | bb08163 | Stage mastering, đo âm lượng và hình, bộ lọc màu và khung, `render(mastering_filters=)` |
 | #692 | #691 | a5b4468 | Phụ đề theo giọng Việt; sửa 4 điểm review (fallback B1, giới hạn thời lượng, không chồng khi trùng đầu, cắt từ quá dài) |
-| #696 | #693 | (chờ) | Gợi ý cao trào ở mức Mạnh, không bao giờ render |
-| #698 | #697 | (chờ) | Âm lượng tuyến tính có chừa chỗ cho AAC; ghi chú QC sau fallback; lý do không cắt khung |
+| #696 | #693 | `cc76839` | Gợi ý cao trào ở mức Mạnh, không bao giờ render |
+| #698 | #697 | `0f53bf6` (chưa nghiệm thu lại trên Windows) | Âm lượng tuyến tính có chừa chỗ cho AAC; ghi chú QC sau fallback; lý do không cắt khung |
 
 ## 15. Giới hạn và rủi ro
 
