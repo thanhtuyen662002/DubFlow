@@ -178,10 +178,11 @@ class Scorer:
         self.candidates = list(candidates)
         self.evidence = evidence
         self.terms = {c.candidate_id: evidence[c.candidate_id].terms() if c.candidate_id in evidence else {} for c in self.candidates}
+        self.loose = {key: ev.loose(found) for key, found in self.terms.items()}
         self.labels = {c.candidate_id: evidence[c.candidate_id].labels() if c.candidate_id in evidence else {} for c in self.candidates}
         frequency: dict[str, int] = {}
-        for found in self.terms.values():
-            for term in found:
+        for key, found in self.terms.items():
+            for term in {*found, *self.loose[key]}:
                 frequency[term] = frequency.get(term, 0) + 1
         count = max(1, len(self.candidates))
         self.idf = {term: math.log(1 + count / (1 + seen)) for term, seen in frequency.items()}
@@ -193,14 +194,15 @@ class Scorer:
         wanted = ev.terms(unit.text)
         if not wanted:
             return 0, []
-        found = self.terms[candidate.candidate_id]
+        found, loose = self.terms[candidate.candidate_id], self.loose[candidate.candidate_id]
         matched, total, words = 0.0, 0.0, []
         for term in wanted:
             weight = self.idf.get(term, self.default_idf) * (2 if " " in term else 1)
             total += weight
-            if term in found:
-                matched += weight * found[term] / 1000
-                words.append(term)
+            value = ev.match(term, found, loose)
+            if value:
+                matched += weight * value / 1000
+                words.append(term.removeprefix(ev.LOOSE))
         if not matched:
             return 0, []
         value = min(1.0, matched / max(1.5, 0.45 * total))

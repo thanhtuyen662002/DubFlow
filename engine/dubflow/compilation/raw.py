@@ -64,9 +64,43 @@ def _digest_file(path: Path, cancelled: Callable[[], bool]) -> str:
     return sha.hexdigest()
 
 
-def resolve(spec: Program, ask_text: AskText | None, warnings: list[str]) -> tuple[Program, dict[str, Any]]:
+class _Answers:
+    """The AI's answers kept beside the job, so running again keeps the same draft and suggestion.
+
+    Keyed by the question (instructions, schema and facts): changing an item's facts asks again;
+    the user's own narration always wins over a kept draft.
+    """
+
+    def __init__(self, path: Path | None) -> None:
+        self.path = path
+        self.values: dict[str, Any] = {}
+        try:
+            if path is not None and path.is_file() and path.stat().st_size <= 4 * 1024 * 1024:
+                value = json.loads(path.read_text(encoding="utf-8"))
+                if type(value) is dict and value.get("schema_version") == 1 and type(value.get("answers")) is dict:
+                    self.values = value["answers"]
+        except (OSError, ValueError):
+            self.values = {}
+
+    def ask(self, ask_text: AskText, system: str, schema: Mapping[str, Any], facts: Any, valid: Callable[[Any], bool]) -> Any:
+        text = json.dumps(facts, ensure_ascii=False, sort_keys=True)
+        key = hashlib.sha256(json.dumps([system, schema, text], ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+        if key in self.values:
+            return self.values[key]
+        answer = ask_text(system, schema, [{"text": text}])
+        if not valid(answer):
+            return answer  # not kept: the next run asks again
+        self.values[key] = answer
+        if self.path is not None:
+            _atomic_text(self.path, json.dumps({"schema_version": 1, "answers": self.values}, ensure_ascii=False))
+        return answer
+
+
+def resolve(spec: Program, ask_text: AskText | None, warnings: list[str], answers: Path | None = None) \
+        -> tuple[Program, dict[str, Any]]:
     """The programme as it will be made: order, drafted narration, and what the AI suggested (with reasons)."""
     record: dict[str, Any] = {"ranking": spec.ranking, "suggestion": None, "drafted": {}}
+    kept = _Answers(answers)
     items = list(spec.items)
     if spec.ranking == "suggested":
         if ask_text is None:
@@ -74,7 +108,9 @@ def resolve(spec: Program, ask_text: AskText | None, warnings: list[str]) -> tup
         else:
             facts = [{"id": i.item_id, "title": i.title, "notes": i.notes[:300], "narration": i.narration[:400]} for i in items]
             try:
-                answer = ask_text(RANK_SYSTEM, RANK_SCHEMA, [{"text": json.dumps(facts, ensure_ascii=False)}])
+                answer = kept.ask(ask_text, RANK_SYSTEM, RANK_SCHEMA, facts, lambda a: isinstance(a, Mapping)
+                                  and sorted(a.get("order") or []) == sorted(i.item_id for i in items)
+                                  and isinstance(a.get("reasons"), Mapping))
                 order = answer.get("order") if isinstance(answer, Mapping) else None
                 reasons = answer.get("reasons") if isinstance(answer, Mapping) else None
                 if sorted(order or []) != sorted(i.item_id for i in items) or not isinstance(reasons, Mapping):
@@ -102,7 +138,8 @@ def resolve(spec: Program, ask_text: AskText | None, warnings: list[str]) -> tup
         facts = {"title": item.title, "notes": item.notes, "source_notes": [s.notes for s in item.sources if s.notes],
                  "transcript": " ".join(said)[:1500]}
         try:
-            answer = ask_text(DRAFT_SYSTEM, DRAFT_SCHEMA, [{"text": json.dumps(facts, ensure_ascii=False)}])
+            answer = kept.ask(ask_text, DRAFT_SYSTEM, DRAFT_SCHEMA, facts, lambda a: isinstance(a, Mapping)
+                              and bool(script.sentences(" ".join(str(a.get("narration", "")).split()))))
             text = " ".join(str(answer.get("narration", "")).split())[:1500] if isinstance(answer, Mapping) else ""
             if not script.sentences(text):
                 raise ValueError("empty narration")
@@ -145,10 +182,11 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
         check()
 
     try:
-        resolved, record = resolve(spec, ask_text, warnings)
+        resolved, record = resolve(spec, ask_text, warnings, work / "ai-answers.json")
         check()
         # 1. Every source once.
         footage: dict[str, planner.Footage] = {}
+        render_path: dict[str, Path] = {}  # a source the renderer reads from another file (same streams)
         candidates: dict[str, list[shots.Candidate]] = {}
         item_notes: dict[str, str] = {}
         sources_of: dict[str, list[str]] = {}
@@ -181,6 +219,17 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
                 candidates[source_id] = shots.extract(source.video, source_id, found, folder, ffmpeg=ffmpeg, run=ffmpeg_runner,
                                                       cancelled=cancelled)
                 item_notes[source_id] = item.notes
+                if source.video.suffix.casefold() == ".webm":
+                    # FFmpeg fails ("Invalid data found") when one WebM (AV1/Opus) is opened twice at different
+                    # seeks and the parts are joined; the same streams in Matroska play fine. Copy, no re-encode.
+                    playable = folder / f"source-{m.file_identity(source.video, 'remux-mkv-v1')[:24]}.mkv"
+                    if not playable.is_file():
+                        status.write(message=f"{context}Đang chuẩn bị nguồn WebM {k}/{len(item.sources)}…")
+                        unfinished_copy = playable.with_suffix(".partial.mkv")
+                        execute([str(ffmpeg), "-hide_banner", "-nostdin", "-v", "error", "-y", "-i", str(source.video),
+                                 "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy", str(unfinished_copy)])
+                        os.replace(unfinished_copy, playable)
+                    render_path[source_id] = playable
                 sources_of[item.item_id].append(source_id)
                 line = source.credit.line()
                 rights = {"owned": "của bạn", "licensed": "có giấy phép", "permitted": "được cho phép", "unknown": "chưa xác nhận"}[source.rights]
@@ -244,7 +293,9 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
             inputs = {s: m.file_identity(footage[s].path, scene.RECIPE) for s in source_ids}
             inputs["part"] = m.digest_json({"spoken": spoken, "kind": kind, "title": title, "keep": keep,
                                             "editorial": resolved.editorial.digest_input(part_id),
-                                            "vision": vision_report, "trim": [footage[s].trim for s in source_ids]})
+                                            # what the AI saw, not how many frames it was asked this run (cached answers)
+                                            "vision": None if vision_report is None else
+                                            {k: vision_report[k] for k in ("provider", "model", "frames")}, "trim": [footage[s].trim for s in source_ids]})
             made = planner.plan_part(part_id, kind, spoken, narration_ms, resolved.mastering, lead_ms=script.LEAD_MS,
                                      gap_ms=script.GAP_MS, footage=part_footage, candidates=candidates, evidence=evidence,
                                      groups=groups, edits=resolved.editorial.edits.get(part_id), keep_audio=keep, title=title,
@@ -264,7 +315,7 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
                 f = footage[segment.source_id]
                 start = m.to_milliseconds(segment.source.start, made.plan.time_base, "floor")
                 length = m.to_milliseconds(segment.timeline.end, made.plan.time_base) - m.to_milliseconds(segment.timeline.start, made.plan.time_base)
-                pieces.append((f.path, scene.StreamInfo(f.analysis.duration_ms, f.width, f.height, 30, f.analysis.has_audio),
+                pieces.append((render_path.get(segment.source_id, f.path), scene.StreamInfo(f.analysis.duration_ms, f.width, f.height, 30, f.analysis.has_audio),
                                start, length, segment.audio_mode, f.analysis.has_audio, segment.role == "still"))
             key = hashlib.sha256(json.dumps({"plan": made.plan.to_dict(), "wav": _digest_file(wav, cancelled), "ass": ass,
                                              "layout": resolved.layout, "encoder": encoder, "blur": blur, "music": music_hash,

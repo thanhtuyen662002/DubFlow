@@ -68,10 +68,54 @@ def words(text: str) -> list[str]:
     return [w for w in fold(text).split() if w not in _STOP and (len(w) > 1 or w.isdigit())]
 
 
+_STOP_MARKED = frozenset("""
+và với của cho là không một những các này thì mà nên sẽ đang được bị rất cũng lại
+khi nếu vì để như hơn nhất mỗi nhiều mình chúng họ nó ấy kia đây
+nào gì sao thôi nhé nha ơi rồi luôn hay hoặc cả
+mp4 mov mkv webm avi m4v jpg jpeg png webp clip video img vid dsc
+the an of and to in on with for is are this that it be at by from
+""".split())  # the same function words, written with their marks (so "hồ" is not "họ")
+_LETTERS = re.compile(r"[^\W_]+")
+LOOSE = "~"  # prefix of a term from text written without diacritics
+
+
+def _written_with_marks(text: str) -> bool:
+    return any(ord(c) > 127 and c.isalpha() for c in text)
+
+
 def terms(text: str) -> frozenset[str]:
-    """Single words and adjacent pairs of ``text`` (folded, function words dropped)."""
-    found = words(text)
-    return frozenset(found) | frozenset(f"{a} {b}" for a, b in zip(found, found[1:]))
+    """Single words and adjacent pairs of ``text``, function words dropped.
+
+    Vietnamese written with its marks keeps them: "cần" and "cận", "đồng" and
+    "dòng" are different words. Text written without marks (a file name, an
+    unaccented note) gives loose terms (``~`` + the folded words), which match a
+    word whatever its marks (see ``match``).
+    """
+    if _written_with_marks(text):
+        found = [w for w in _LETTERS.findall(unicodedata.normalize("NFC", text.casefold()))
+                 if w not in _STOP_MARKED and (len(w) > 1 or w.isdigit())]
+        prefix = ""
+    else:
+        found, prefix = words(text), LOOSE
+    return frozenset(prefix + w for w in found) | frozenset(f"{prefix}{a} {b}" for a, b in zip(found, found[1:]))
+
+
+def loose(found: Mapping[str, int]) -> dict[str, int]:
+    """Every term of ``found`` as its loose form (best confidence), for matching unaccented text."""
+    out: dict[str, int] = {}
+    for term, value in found.items():
+        key = term if term.startswith(LOOSE) else LOOSE + fold(term)
+        out[key] = max(out.get(key, 0), value)
+    return out
+
+
+def match(term: str, found: Mapping[str, int], loose_found: Mapping[str, int]) -> int:
+    """The confidence ``found`` gives ``term`` (0 when absent). Marks are ignored only when one side has none."""
+    if term in found:
+        return found[term]
+    if term.startswith(LOOSE):
+        return loose_found.get(term, 0)
+    return found.get(LOOSE + fold(term), 0)
 
 
 def file_words(name: str) -> str:

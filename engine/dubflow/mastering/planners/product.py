@@ -29,8 +29,8 @@ from ..candidates import Candidate
 
 PLANNER = "dubflow.mastering.product"
 # 1: shot-aware parts in turn (Phase 1). 2: each sentence illustrated by the footage that matches it (ADR-0054).
-VERSION = "2"
-RECIPE = "product-editorial-v2"
+VERSION = "3"
+RECIPE = "product-editorial-v3"  # v3: Vietnamese words keep their marks when matched
 WORKFLOW = "product_showcase"
 SHOT_MARGIN_MS = 120
 # A shot shorter than this is skipped while longer ones exist; it is used when nothing else is left.
