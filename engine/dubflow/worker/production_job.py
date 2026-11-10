@@ -904,7 +904,7 @@ def _dubbing_mastering(options: MasteringOptions, config: WorkerConfig, probe: M
         return audio_path, (), None
 
 
-def _voice_timed(cues: Sequence[TextCue], b2_audio: Any) -> list[TextCue]:
+def _voice_timed(cues: Sequence[TextCue], b2_audio: Any, *, duration_ms: int | None = None) -> list[TextCue]:
     """The captions on screen, timed by when their Vietnamese voice is heard in the final mix (ADR-0055)."""
     members = getattr(b2_audio, "member_cue_ids", None) or {}
     spoken: dict[str, tuple[Sequence[str], int, int]] = {}
@@ -917,7 +917,7 @@ def _voice_timed(cues: Sequence[TextCue], b2_audio: Any) -> list[TextCue]:
             spoken[artifact.segment_id] = (members.get(artifact.segment_id, (artifact.source_utterance_id,)), start, end)
     by_id = {cue.cue_id: cue for cue in cues}
     timed = mastering_captions.from_voice([(cue.cue_id, cue.start_ms, cue.end_ms, cue.translated_text or cue.source_text)
-                                           for cue in cues], spoken)
+                                           for cue in cues], spoken, duration_ms=duration_ms)
     result = []
     for caption in timed:
         original = by_id[caption.cue_id.split("#")[0]]
@@ -2288,12 +2288,21 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
 
     audio_path, mastering_filters, mastering_document = _dubbing_mastering(
         mastering_options, config, probe, source_hash, audio_path, work_dir, checkpoint, checkpoint_path, emitter, warnings)
+    voice_timed = False
     if mastering_document is not None and mastering_document.get("captions") == "phrase" and b2_audio is not None:
         try:
-            srt_path, ass_path = _write_subtitles(export_dir, _voice_timed(shown, b2_audio), box=getattr(config, "subtitle_box", False),
-                                                  style=_subtitle_style(config))
+            srt_path, ass_path = _write_subtitles(export_dir, _voice_timed(shown, b2_audio, duration_ms=probe.duration_ticks),
+                                                  box=getattr(config, "subtitle_box", False), style=_subtitle_style(config))
+            voice_timed = True
         except Exception as error:  # noqa: BLE001 - the source-timed captions written earlier stay
             warnings.append(f"MASTERING_CAPTIONS_SKIPPED: {type(error).__name__}: {str(error)[:200]}")
+
+    def source_timed_captions() -> None:
+        """Back to B1 (the source sound): captions timed by a voice that is no longer heard go back to the source."""
+        nonlocal srt_path, ass_path, voice_timed
+        if voice_timed:
+            srt_path, ass_path = _write_subtitles(export_dir, shown, box=getattr(config, "subtitle_box", False), style=_subtitle_style(config))
+            voice_timed = False
     final_path = export_dir / "final_vi.mp4"
     render_stage = "render-dubbed" if audio_path is not None else "render"
     video_duration = _source_render_duration(probe)
@@ -2353,6 +2362,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
             warnings.append(f"B2_AUDIO_FALLBACK_TO_B1: render audio failed: {error.code}: {error.condition}")
             b2_audio = None
             audio_path = None
+            source_timed_captions()
             audio_metadata = {"mode": "original", "backend": "source-audio"}
             render_stage = "render"
             render_input = render_identity()
@@ -2394,6 +2404,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
         warnings.append(f"B2_AUDIO_FALLBACK_TO_B1: output QC failed: {error.code}: {error.condition}")
         b2_audio = None
         audio_path = None
+        source_timed_captions()
         audio_metadata = {"mode": "original", "backend": "source-audio"}
         media.render(
             config.source_path,

@@ -28,10 +28,19 @@ class Caption:
     text: str
 
 
-def _wrap(text: str, width: int = MAX_CHARS) -> list[str]:
-    """Greedy word wrap; a word longer than ``width`` stands on its own line."""
-    lines, line = [], ""
+def _words(text: str, width: int = MAX_CHARS) -> list[str]:
+    """The words of ``text``; one longer than ``width`` (a URL, a run without spaces) is cut into pieces that fit,
+    so no line is ever longer than ``width`` and no character is dropped."""
+    out = []
     for word in text.split():
+        out.extend(word[i:i + width] for i in range(0, len(word), width))
+    return out
+
+
+def _wrap(text: str, width: int = MAX_CHARS) -> list[str]:
+    """Greedy word wrap, never a line longer than ``width``."""
+    lines, line = [], ""
+    for word in _words(text, width):
         if line and len(line) + 1 + len(word) > width:
             lines.append(line)
             line = word
@@ -46,7 +55,7 @@ def _balanced(lines: list[str]) -> str:
     """Two lines of similar length read better than a full line and a stub."""
     if len(lines) != 2:
         return "\n".join(lines)
-    words = " ".join(lines).split()
+    words = _words(" ".join(lines))
     best = lines
     for cut in range(1, len(words)):
         a, b = " ".join(words[:cut]), " ".join(words[cut:])
@@ -70,9 +79,10 @@ def _split(caption: Caption) -> list[Caption]:
     return out
 
 
-def from_voice(cues: Sequence[tuple[str, int, int, str]], spoken: Mapping[str, tuple[Sequence[str], int, int]]) -> list[Caption]:
+def from_voice(cues: Sequence[tuple[str, int, int, str]], spoken: Mapping[str, tuple[Sequence[str], int, int]], *,
+               duration_ms: int | None = None) -> list[Caption]:
     """Captions of ``cues`` (id, start, end, text on screen) timed by ``spoken`` (phrase id → member cue ids, the ms the
-    phrase's voice starts and ends in the final mix)."""
+    phrase's voice starts and ends in the final mix), never past ``duration_ms`` (the video's length) when given."""
     timed: dict[str, tuple[int, int]] = {}
     text = {cue_id: shown for cue_id, _, _, shown in cues}
     for members, start, end in spoken.values():
@@ -88,13 +98,25 @@ def from_voice(cues: Sequence[tuple[str, int, int, str]], spoken: Mapping[str, t
     captions = [Caption(cue_id, *timed.get(cue_id, (start, end)), shown) for cue_id, start, end, shown in cues]
     captions.sort(key=lambda c: (c.start_ms, c.end_ms, c.cue_id))
     parts = [part for caption in captions for part in _split(caption)]
+    # Starts strictly in order with room for the gap: two captions that start together (or within the gap) are
+    # shown one after the other, never on top of each other.
+    starts: list[int] = []
+    for part in parts:
+        starts.append(max(part.start_ms, starts[-1] + GAP_MS + 1) if starts else max(0, part.start_ms))
+    if duration_ms is not None and starts and starts[-1] >= duration_ms:
+        # pushed past the end by the gaps: pulled back as far as the order allows (each still at least 1 ms)
+        limit = duration_ms - 1
+        for index in range(len(starts) - 1, -1, -1):
+            starts[index] = min(starts[index], limit)
+            limit = starts[index] - GAP_MS - 1
     result = []
-    for index, caption in enumerate(parts):
-        following = parts[index + 1].start_ms if index + 1 < len(parts) else None
-        end = max(caption.end_ms, caption.start_ms + MIN_MS)
-        if following is not None:
-            end = min(end, following - GAP_MS)  # never over the next caption
-        result.append(Caption(caption.cue_id, caption.start_ms, max(caption.start_ms + 1, end), caption.text))
+    for index, (caption, start) in enumerate(zip(parts, starts)):
+        end = max(caption.end_ms, start + MIN_MS)  # at least MIN_MS when the next caption and the video leave room
+        if index + 1 < len(parts):
+            end = min(end, starts[index + 1] - GAP_MS)  # never over the next caption
+        if duration_ms is not None:
+            end = min(end, duration_ms)  # never after the video
+        result.append(Caption(caption.cue_id, start, max(start + 1, end), caption.text))
     return result
 
 

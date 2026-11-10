@@ -43,5 +43,38 @@ class CaptionTests(unittest.TestCase):
         self.assertLessEqual(overlapping[0].end_ms, overlapping[1].start_ms)
 
 
+class BoundaryTests(unittest.TestCase):
+    """Owner review of #692."""
+
+    def test_the_last_caption_never_outlives_the_video(self):
+        found = c.from_voice([("a", 9900, 10000, "Hết")], {}, duration_ms=10000)
+        self.assertEqual((found[-1].start_ms, found[-1].end_ms), (9900, 10000))
+        roomy = c.from_voice([("a", 5000, 5200, "Còn chỗ")], {}, duration_ms=10000)
+        self.assertEqual(roomy[0].end_ms, 6000)  # the 1-second minimum where the video has room
+
+    def test_captions_that_start_together_never_overlap(self):
+        for second in (0, 1, c.GAP_MS):
+            with self.subTest(second=second):
+                found = c.from_voice([("a", 0, 900, "Một"), ("b", second, 900, "Hai")], {})
+                self.assertEqual([x.cue_id for x in found], ["a", "b"])
+                for before, after in zip(found, found[1:]):
+                    self.assertLess(before.start_ms, before.end_ms)
+                    self.assertLessEqual(before.end_ms + c.GAP_MS, after.start_ms)
+
+    def test_crowded_captions_at_the_end_stay_in_order_inside_the_video(self):
+        found = c.from_voice([(f"x{i}", 999, 1000, f"câu {i}") for i in range(5)], {}, duration_ms=1000)
+        self.assertEqual(len(found), 5)
+        for before, after in zip(found, found[1:]):
+            self.assertLessEqual(before.end_ms + c.GAP_MS, after.start_ms)
+        self.assertTrue(all(0 <= x.start_ms < x.end_ms <= 1000 for x in found))
+
+    def test_a_word_longer_than_a_line_is_cut_not_dropped(self):
+        word = "https://example.vn/" + "a" * 60
+        found = c.from_voice([("a", 0, 6000, f"Xem {word} nhé")], {})
+        lines = [line for x in found for line in x.text.split("\n")]
+        self.assertTrue(all(len(line) <= c.MAX_CHARS for line in lines), lines)
+        self.assertEqual("".join("".join(lines).split()), "".join(f"Xem {word} nhé".split()))
+
+
 if __name__ == "__main__":
     unittest.main()
