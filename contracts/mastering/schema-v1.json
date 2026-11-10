@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dubflow.local/contracts/mastering/schema-v1.json",
+  "title": "DubFlow mastering contract v1 (ADR-0052)",
+  "oneOf": [
+    { "$ref": "#/$defs/mastering_options" },
+    { "$ref": "#/$defs/mastering_plan" }
+  ],
+  "$defs": {
+    "ticks": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$" },
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "level": { "enum": ["off", "light", "balanced", "dynamic"] },
+    "style": { "enum": ["natural", "dynamic", "cinematic", "technical", "entertainment", "sports", "educational", "storytelling"] },
+    "basis": { "type": "integer", "minimum": 0, "maximum": 10000 },
+    "span": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "end"],
+      "properties": { "start": { "$ref": "#/$defs/ticks" }, "end": { "$ref": "#/$defs/ticks" } }
+    },
+    "mastering_options": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "level"],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "kind": { "const": "mastering_options" },
+        "level": { "$ref": "#/$defs/level" },
+        "style": { "$ref": "#/$defs/style" }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_id", "duration", "width", "height", "fps", "has_audio", "rights"],
+      "properties": {
+        "source_id": { "$ref": "#/$defs/id" },
+        "duration": { "$ref": "#/$defs/ticks" },
+        "width": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "height": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "fps": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["numerator", "denominator"],
+          "properties": {
+            "numerator": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+            "denominator": { "type": "integer", "minimum": 1, "maximum": 1000000 }
+          }
+        },
+        "has_audio": { "type": "boolean" },
+        "rights": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status"],
+          "properties": {
+            "status": { "enum": ["owned", "licensed", "permitted", "unknown"] },
+            "note": { "type": "string", "maxLength": 500 }
+          }
+        },
+        "origin_url": { "type": ["string", "null"], "maxLength": 2048 },
+        "credit": { "type": ["string", "null"], "maxLength": 2048 },
+        "identity": { "oneOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] }
+      }
+    },
+    "box": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y", "w", "h"],
+      "properties": {
+        "x": { "$ref": "#/$defs/basis" },
+        "y": { "$ref": "#/$defs/basis" },
+        "w": { "type": "integer", "minimum": 1, "maximum": 10000 },
+        "h": { "type": "integer", "minimum": 1, "maximum": 10000 },
+        "label": { "enum": ["subject", "face", "product", "text", "hud", "logo", "caption"] }
+      }
+    },
+    "framing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["zoom_from", "zoom_to", "center_x", "center_y"],
+      "properties": {
+        "zoom_from": { "type": "integer", "minimum": 1000, "maximum": 3000 },
+        "zoom_to": { "type": "integer", "minimum": 1000, "maximum": 3000 },
+        "center_x": { "$ref": "#/$defs/basis" },
+        "center_y": { "$ref": "#/$defs/basis" },
+        "protect": { "type": "array", "maxItems": 32, "items": { "$ref": "#/$defs/box" } }
+      }
+    },
+    "segment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["segment_id", "source_id", "source", "timeline", "role", "audio_mode", "confidence_milli", "needs_review"],
+      "properties": {
+        "segment_id": { "$ref": "#/$defs/id" },
+        "source_id": { "$ref": "#/$defs/id" },
+        "source": { "$ref": "#/$defs/span" },
+        "timeline": { "$ref": "#/$defs/span" },
+        "role": { "enum": ["primary", "demonstration", "reaction", "broll", "hook", "transition", "still"] },
+        "audio_mode": { "enum": ["source", "narration", "mixed", "mute"] },
+        "speech_refs": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/id" } },
+        "framing": { "oneOf": [{ "$ref": "#/$defs/framing" }, { "type": "null" }] },
+        "effects": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": { "enum": ["fade_in", "fade_out", "crossfade", "fade_black", "color_match", "lut", "ken_burns", "text_overlay", "sfx_hit"] }
+        },
+        "confidence_milli": { "type": "integer", "minimum": 0, "maximum": 1000 },
+        "needs_review": { "type": "boolean" },
+        "reasons": { "type": "array", "maxItems": 16, "items": { "type": "string", "maxLength": 200 } }
+      }
+    },
+    "mastering_plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "kind", "plan_id", "workflow", "options", "time_base", "duration", "sources", "segments", "warnings", "provenance"],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "kind": { "const": "mastering_plan" },
+        "plan_id": { "$ref": "#/$defs/id" },
+        "workflow": { "enum": ["dubbing_preserve", "product_showcase", "compilation_entertainment", "documentary_narrative"] },
+        "options": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["level", "style"],
+          "properties": { "level": { "$ref": "#/$defs/level" }, "style": { "$ref": "#/$defs/style" } }
+        },
+        "time_base": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["numerator", "denominator"],
+          "properties": { "numerator": { "$ref": "#/$defs/ticks" }, "denominator": { "$ref": "#/$defs/ticks" } }
+        },
+        "duration": { "$ref": "#/$defs/ticks" },
+        "sources": { "type": "array", "minItems": 1, "maxItems": 200, "items": { "$ref": "#/$defs/source" } },
+        "segments": { "type": "array", "minItems": 1, "maxItems": 5000, "items": { "$ref": "#/$defs/segment" } },
+        "warnings": { "type": "array", "maxItems": 500, "items": { "type": "string", "maxLength": 500 } },
+        "provenance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["planner", "planner_version", "recipe", "inputs"],
+          "properties": {
+            "planner": { "type": "string", "maxLength": 200 },
+            "planner_version": { "type": "string", "maxLength": 200 },
+            "recipe": { "type": "string", "maxLength": 200 },
+            "inputs": { "type": "object", "maxProperties": 500, "additionalProperties": { "$ref": "#/$defs/sha256" } }
+          }
+        }
+      }
+    }
+  }
+}

@@ -533,6 +533,18 @@
       ]
     },
     {
+      "id": "mastering",
+      "roots": [
+        "contracts/mastering",
+        "engine/dubflow/mastering",
+        "tests/mastering",
+        "fixtures/mastering"
+      ],
+      "commands": [
+        ["python", "-B", "-m", "unittest", "discover", "-s", "tests/mastering", "-t", ".", "-p", "test_*.py"]
+      ]
+    },
+    {
       "id": "product-video",
       "roots": [
         "engine/dubflow/product",
