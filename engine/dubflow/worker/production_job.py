@@ -883,8 +883,11 @@ def _dubbing_mastering(options: MasteringOptions, config: WorkerConfig, probe: M
             rate = _wav_rate(audio_path) if audio_path is not None else None
             frames = mastering_measure.picture(mastering_measure.grey_frames(
                 config.ffmpeg_path, config.source_path, mastering_measure.frame_times(probe.duration_ticks or 0, 16)))
+            climax = None
+            if options.enable_climax_hook and options.level == "dynamic" and (work_dir / "analysis.wav").is_file():
+                climax = mastering_measure.loudest_window(work_dir / "analysis.wav")
             master = dubbing_master.plan(options, mix=mix, mix_rate=rate, frames=frames, width=probe.video.width,
-                                         height=probe.video.height)
+                                         height=probe.video.height, climax=climax)
             result: dict[str, Any] = {"input_hash": identity, "path": str(plan_path)}
             if master.audio_filter and audio_path is not None:
                 emitter.progress(0.82, "Đang chuẩn hóa âm lượng bản lồng tiếng")
