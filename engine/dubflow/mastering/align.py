@@ -40,6 +40,9 @@ REUSE_PENALTY = 350
 STRANDED_PENALTY = 300  # under a full content match (450): a clear match still wins, a weak one yields
 DUPLICATE_PENALTY = 250
 SAME_SOURCE_PENALTY = 100
+CLAIM_PENALTY = 250  # a shot a later sentence matches far better is left for that sentence
+STRONG_SHARE = 850  # a shot within this share (‰) of the best match counts as the match, short or not
+SHORT_FLOOR = 500  # ms: the shortest piece of a strong match worth showing (anything less is a flash)
 
 # Folded cue words for a sentence's function (Vietnamese sales language).
 CUES = {
@@ -327,6 +330,20 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
             confidence = min(SIGNALS_ONLY_CAP, 250 + quality // 5)
         return total, max(0, min(1000, confidence)), reasons
 
+    relevance_of = {(unit.unit_id, c.candidate_id): scorer.relevance(unit, c)[0] for unit in found_units for c in usable}
+    best_of = {unit.unit_id: max((relevance_of[(unit.unit_id, c.candidate_id)] for c in usable), default=0)
+               for unit in found_units}
+
+    def claimed(position: int, candidate: Candidate, relevance: int) -> int:
+        """How much more a later sentence wants this shot (its closest match, matched far better than here)."""
+        most = 0
+        for later_unit in found_units[position + 1:]:
+            top = best_of[later_unit.unit_id]
+            value = relevance_of[(later_unit.unit_id, candidate.candidate_id)]
+            if top >= MIN_RELEVANCE and value * 1000 >= STRONG_SHARE * top and value > relevance * 3 // 2 + MIN_RELEVANCE:
+                most = max(most, (value - relevance) * 1000 // value)
+        return most
+
     for position, unit in enumerate(found_units):
         decision = Decision(unit)
         after = sum(u.length_ms for u in found_units[position + 1:])
@@ -335,7 +352,7 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
         if len(pinned) != len(edits.pin.get(unit.unit_id, [])):
             decision.notes.append("một số cảnh đã ghim không còn trong danh sách nên được bỏ qua")
         first = True
-        best = max((scorer.relevance(unit, c)[0] for c in usable), default=0)
+        best = best_of[unit.unit_id]
         while need > 0:
             wanted = need if need < pacing.target + pacing.minimum else pacing.target
             ranked = []
@@ -344,11 +361,21 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
                 total, confidence, reasons = 1000, 1000, ["chọn bởi người dùng"]
                 ranked = [(total, confidence, reasons, candidate)]
             else:
-                open_pool = [c for c in usable if allowed(c) and remaining(c)[1] >= min(pacing.minimum, need)]
+                floor = min(pacing.minimum, need)
+                # The closest match stays in even when shorter than the pace: a 1.2 s shot of the very thing said
+                # beats a long unrelated one; the rest of the sentence then plays on the next shot.
+                open_pool = [c for c in usable if allowed(c) and (remaining(c)[1] >= floor or (
+                    remaining(c)[1] >= min(SHORT_FLOOR, floor) and best >= MIN_RELEVANCE
+                    and need - remaining(c)[1] >= pacing.minimum // 2  # what it leaves is a real shot too
+                    and relevance_of[(unit.unit_id, c.candidate_id)] * 1000 >= STRONG_SHARE * best))]
                 if not open_pool:  # nothing long enough ahead: anything left, then repeats
-                    open_pool = [c for c in usable if allowed(c) and remaining(c)[1] > 0] or usable
+                    open_pool = ([c for c in usable if allowed(c) and remaining(c)[1] >= min(SHORT_FLOOR, need)]
+                                 or [c for c in usable if allowed(c) and remaining(c)[1] > 0] or usable)
                 for candidate in open_pool:
                     total, confidence, reasons = score(unit, candidate, wanted, best, after + max(0, need - wanted))
+                    wanted_later = claimed(position, candidate, relevance_of[(unit.unit_id, candidate.candidate_id)])
+                    if wanted_later:
+                        total -= CLAIM_PENALTY * wanted_later // 1000
                     ranked.append((total, confidence, reasons, candidate))
                 ranked.sort(key=lambda item: (-item[0], item[3].source_id, item[3].start_ms))
             total, confidence, reasons, candidate = ranked[0]
