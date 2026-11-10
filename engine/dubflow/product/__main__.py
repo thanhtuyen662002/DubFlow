@@ -39,8 +39,14 @@ def main(argv: list[str] | None = None) -> int:
         return VieNeuSpeaker(args.app_root, args.model_root, args.ffmpeg, spec.voice_id, cpu_only=args.cpu_only, status=status,
                              speed=spec.speed)
 
+    inspect = None
+    if spec.mastering is not None:
+        from engine.dubflow.mastering import analysis
+
+        def inspect(path: Path) -> analysis.StreamInfo:
+            return analysis.probe(args.ffprobe, path)
     result = run(spec, output, speaker=speaker, probe=lambda path: probe_duration_ms(args.ffprobe, path),
-                 measure=lambda path: probe_size(args.ffprobe, path), ffmpeg=args.ffmpeg)
+                 measure=lambda path: probe_size(args.ffprobe, path), ffmpeg=args.ffmpeg, inspect=inspect)
     print(json.dumps(result))
     return 0 if result["state"] == "COMPLETED" else 1
 

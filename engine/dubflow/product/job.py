@@ -54,6 +54,8 @@ class Spec:
     focus: tuple[float, float] = (0.5, 0.5)
     # An earlier run whose narration is reused for a script spoken the same way (Mẫu, #426).
     reuse_from: Path | None = None
+    # Tối ưu hậu kỳ tự động (ADR-0052): None or level "off" renders exactly as before.
+    mastering: Any = None
 
 
 class Speaker(Protocol):
@@ -127,6 +129,15 @@ def load_spec(path: Path) -> Spec:
         raise ProductError("Bản cũ để dùng lại giọng đọc không hợp lệ")
     # Reusing is only a shortcut: a run that is gone is simply spoken again.
     reuse_dir = Path(reuse_from) if reuse_from and Path(reuse_from).is_absolute() and Path(reuse_from).is_dir() else None
+    mastering = None
+    if value.get("mastering") is not None:
+        from engine.dubflow.mastering import plan as mastering_plan
+        try:
+            mastering = mastering_plan.Options.from_dict(value["mastering"])
+        except mastering_plan.PlanError as error:
+            raise ProductError("Tùy chọn tối ưu hậu kỳ không hợp lệ") from error
+        if not mastering.enabled:
+            mastering = None
     return Spec(
         name=_string(value.get("name"), "Tên sản phẩm", 120),
         price=_string(value.get("price"), "Giá", 60),
@@ -141,6 +152,7 @@ def load_spec(path: Path) -> Spec:
         features=tuple(text for text in (" ".join(_string(item, "Điểm nổi bật", MAX_FEATURE_CHARS).split()) for item in features) if text),
         focus=(float(focus["x"]), float(focus["y"])),
         reuse_from=reuse_dir,
+        mastering=mastering,
     )
 
 
@@ -220,10 +232,62 @@ def _wav_rate(path: Path) -> int:
         return reader.getframerate()
 
 
+def _mastered(spec: Spec, visuals: Sequence[render.Visual], total_ms: int, work: Path, number: int, *,
+              inspect: Callable[[Path], Any] | None, measure: Callable[[Path], tuple[int, int]] | None, ffmpeg: Path,
+              ffmpeg_runner: Callable[[list[str], Path, Callable[[], bool]], None],
+              cancelled: Callable[[], bool]) -> dict[str, Any]:
+    """Shot-aware segments from the shared mastering planner (ADR-0052), or None segments and a warning.
+
+    The plan is saved as ``mastering_plan-<n>.json``; made again from the same files, length and options, it is
+    loaded instead of analysing the clips again. Anything that fails falls back to the usual segments.
+    """
+    from dataclasses import replace
+    from engine.dubflow.mastering import analysis as scene, plan as mastering_plan
+    from engine.dubflow.mastering.planners import product as planner
+
+    options = spec.mastering
+    name = f"mastering_plan-{number}.json"
+    path = work / name
+    report: dict[str, Any] = {"level": options.level, "style": options.style, "plan": name, "segments": None}
+    try:
+        wanted = planner.inputs([v.path for v in visuals], total_ms, options)
+        saved = mastering_plan.load_matching(path, workflow=planner.WORKFLOW, options=options, planner_version=planner.VERSION,
+                                             inputs=wanted)
+        report["reused"] = saved is not None
+        if saved is None:
+            if inspect is None:
+                raise scene.AnalysisError("no analyser")
+            inputs = []
+            for index, visual in enumerate(visuals, start=1):
+                if cancelled():
+                    raise Cancelled()
+                if visual.duration_ms is None:
+                    width, height = measure(visual.path) if measure is not None else (1, 1)
+                    inputs.append(planner.Visual(visual.path, None, width, height))
+                    continue
+                info = replace(inspect(visual.path), duration_ms=visual.duration_ms)
+                result = scene.analyse(visual.path, info, work / "mastering" / f"clip-{index}.json", ffmpeg=ffmpeg,
+                                       run=ffmpeg_runner, cancelled=cancelled)
+                inputs.append(planner.Visual(visual.path, visual.duration_ms, info.width, info.height, result))
+            saved = planner.plan(inputs, total_ms, options, inputs=wanted, plan_id=f"product-{number}")
+            mastering_plan.save(path, saved)
+        report["segments"] = [render.Segment(visuals[p.visual], p.offset_ms, p.duration_ms) for p in planner.pieces(saved)]
+        report["count"] = len(saved.segments)
+        report["review"] = sum(segment.needs_review for segment in saved.segments)
+        if saved.warnings:
+            report["warnings"] = list(saved.warnings)
+    except Cancelled:
+        raise
+    except Exception as error:  # noqa: BLE001 - mastering never stops a video the usual plan can make
+        report["segments"] = None
+        report["fallback"] = f"Không lập được kế hoạch hậu kỳ ({getattr(error, 'message', type(error).__name__)}); dùng cách ghép thường."
+    return report
+
+
 def run(spec: Spec, output_dir: Path, *, speaker: Callable[[Status], Speaker], probe: Callable[[Path], int],
         measure: Callable[[Path], tuple[int, int]] | None = None,
         ffmpeg: Path, ffmpeg_runner: Callable[[list[str], Path, Callable[[], bool]], None] = run_ffmpeg,
-        encoder: str = render.ENCODER) -> dict[str, Any]:
+        encoder: str = render.ENCODER, inspect: Callable[[Path], Any] | None = None) -> dict[str, Any]:
     """Render every variant; one variant's failure does not stop the next.
 
     A cancel request stops at the next sentence or video and ends a running
@@ -295,7 +359,18 @@ def run(spec: Spec, output_dir: Path, *, speaker: Callable[[Status], Speaker], p
                 status.write(message=f"Đang render video {number}/{len(spec.variants)}…")
                 final = output_dir / f"video-{number}.mp4"
                 partial = work / f"video-{number}.partial.mp4"
-                segments = [] if spec.template == layout.TEXT_ONLY else render.plan(visuals, total_ms)
+                mastered = None
+                if spec.mastering is not None and spec.template != layout.TEXT_ONLY:
+                    status.write(message=f"Đang phân tích cảnh cho video {number}/{len(spec.variants)}…")
+                    mastered = _mastered(spec, visuals, total_ms, work, number, inspect=inspect, measure=measure,
+                                         ffmpeg=ffmpeg, ffmpeg_runner=ffmpeg_runner, cancelled=cancelled)
+                    status.write(message=f"Đang render video {number}/{len(spec.variants)}…")
+                if mastered is not None and mastered["segments"] is not None:
+                    segments = mastered.pop("segments")
+                else:
+                    segments = [] if spec.template == layout.TEXT_ONLY else render.plan(visuals, total_ms)
+                    if mastered is not None:
+                        mastered.pop("segments")
                 ffmpeg_runner(render.ffmpeg_argv(ffmpeg, segments, narration, spec.music,
                                                  spec.music_volume, total_ms, partial, encoder=encoder, backdrop=backdrop,
                                                  media_height=layout.media_height(spec.template)), work, cancelled)
@@ -304,7 +379,8 @@ def run(spec: Spec, output_dir: Path, *, speaker: Callable[[Status], Speaker], p
                 partial = None
                 _atomic_text(output_dir / f"script-{number}.txt", text.strip() + "\n")
                 _atomic_text(output_dir / f"captions-{number}.srt", layout.srt_document(captions))
-                videos.append({"index": number, "ok": True, "path": str(final), "duration_ms": total_ms, "reused_voice": reused is not None})
+                videos.append({"index": number, "ok": True, "path": str(final), "duration_ms": total_ms, "reused_voice": reused is not None,
+                               **({"mastering": mastered} if mastered is not None else {})})
             except ProductError as error:
                 videos.append({"index": number, "ok": False, "message": error.message})
             status.write(done=number, videos=videos)
