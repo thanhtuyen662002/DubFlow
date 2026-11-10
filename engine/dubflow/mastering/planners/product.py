@@ -30,7 +30,7 @@ from ..candidates import Candidate
 PLANNER = "dubflow.mastering.product"
 # 1: shot-aware parts in turn (Phase 1). 2: each sentence illustrated by the footage that matches it (ADR-0054).
 VERSION = "8"
-RECIPE = "product-editorial-v8"  # v8: the hook leaves later sentences their shots
+RECIPE = "product-editorial-v9"  # v9: shots are shared out across all sentences before any is filled (coverage per sentence)
 WORKFLOW = "product_showcase"
 SHOT_MARGIN_MS = 120
 # A shot shorter than this is skipped while longer ones exist; it is used when nothing else is left.

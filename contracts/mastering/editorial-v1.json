@@ -43,7 +43,15 @@
           "type": "object", "additionalProperties": false, "required": ["candidate_id", "score", "reasons"],
           "properties": {"candidate_id": {"type": "string"}, "score": {"type": "integer"},
                          "reasons": {"type": "array", "items": {"type": "string", "maxLength": 300}}}}},
-        "notes": {"type": "array", "items": {"type": "string", "maxLength": 300}}
+        "notes": {"type": "array", "items": {"type": "string", "maxLength": 300}},
+        "coverage": {
+          "description": "How much of the sentence plays on footage that illustrates it (Phase 2 hardening); absent in older logs.",
+          "type": "object", "additionalProperties": false,
+          "required": ["need_ms", "illustrated_ms", "milli", "status", "needs_review", "matched_footage"],
+          "properties": {"need_ms": {"type": "integer", "minimum": 0}, "illustrated_ms": {"type": "integer", "minimum": 0},
+                         "milli": {"type": "integer", "minimum": 0, "maximum": 1000},
+                         "status": {"enum": ["full", "partial", "none", "generic"]},
+                         "needs_review": {"type": "boolean"}, "matched_footage": {"type": "integer", "minimum": 0}}}
       }
     },
     "candidate": {
