@@ -1,0 +1,993 @@
+[
+ {
+  "schema_version": 1,
+  "name": "holdout-airfryer",
+  "split": "holdout",
+  "forward_only": false,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "v1c1",
+    "source": "v1",
+    "start_ms": 0,
+    "end_ms": 3500,
+    "text": "Nồi chiên không dầu màu đen đặt trên kệ bếp",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v1c2",
+    "source": "v1",
+    "start_ms": 3500,
+    "end_ms": 4800,
+    "text": "Cận cảnh màn hình cảm ứng hiển thị 180 độ và 15 phút",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v1c3",
+    "source": "v1",
+    "start_ms": 4800,
+    "end_ms": 8000,
+    "text": "Tay kéo giỏ chiên ra khỏi nồi",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v2c1",
+    "source": "v2",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Cho khoai tây cắt sợi vào giỏ chiên",
+    "motion": 110,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v2c2",
+    "source": "v2",
+    "start_ms": 3000,
+    "end_ms": 6500,
+    "text": "Khoai tây chiên vàng giòn đổ ra đĩa",
+    "motion": 150,
+    "hook": 900,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v2c3",
+    "source": "v2",
+    "start_ms": 6500,
+    "end_ms": 9000,
+    "text": "Đùi gà nướng vàng đều trong giỏ chiên",
+    "motion": 80,
+    "hook": 700,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v3c1",
+    "source": "v3",
+    "start_ms": 0,
+    "end_ms": 2500,
+    "text": "Rửa giỏ chiên dưới vòi nước, lớp chống dính trơn bóng",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v3c2",
+    "source": "v3",
+    "start_ms": 2500,
+    "end_ms": 6000,
+    "text": "Hộp sản phẩm nồi chiên không dầu dung tích 6 lít",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Món chiên giòn rụm mà không cần dầu.",
+    "ms": 3000
+   },
+   {
+    "id": "u2",
+    "text": "Màn hình cảm ứng chỉnh nhiệt độ và thời gian.",
+    "ms": 3000
+   },
+   {
+    "id": "u3",
+    "text": "Chỉ cần cho khoai tây vào giỏ chiên.",
+    "ms": 3000
+   },
+   {
+    "id": "u4",
+    "text": "Khoai tây chiên vàng giòn chỉ sau mười lăm phút.",
+    "ms": 3500
+   },
+   {
+    "id": "u5",
+    "text": "Giỏ chiên chống dính, rửa sạch dễ dàng.",
+    "ms": 2500
+   },
+   {
+    "id": "u6",
+    "text": "Bảo hành mười hai tháng chính hãng.",
+    "ms": 2500
+   },
+   {
+    "id": "u7",
+    "text": "Đặt mua ngay hôm nay.",
+    "ms": 2500
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "holdout-airfryer",
+   "split": "holdout",
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "v2",
+       "start_ms": 3000,
+       "end_ms": 9000
+      },
+      {
+       "source": "v1",
+       "start_ms": 0,
+       "end_ms": 3500
+      }
+     ]
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "v1",
+       "start_ms": 3500,
+       "end_ms": 4800
+      }
+     ],
+     "key": [
+      {
+       "source": "v1",
+       "start_ms": 3500,
+       "end_ms": 4800
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "v2",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ],
+     "key": [
+      {
+       "source": "v2",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "v2",
+       "start_ms": 3000,
+       "end_ms": 6500
+      }
+     ],
+     "key": [
+      {
+       "source": "v2",
+       "start_ms": 3000,
+       "end_ms": 6500
+      }
+     ]
+    },
+    "u5": {
+     "accept": [
+      {
+       "source": "v3",
+       "start_ms": 0,
+       "end_ms": 2500
+      }
+     ],
+     "key": [
+      {
+       "source": "v3",
+       "start_ms": 0,
+       "end_ms": 2500
+      }
+     ]
+    },
+    "u6": {
+     "accept": [],
+     "footage_exists": false
+    },
+    "u7": {
+     "accept": [
+      {
+       "source": "v3",
+       "start_ms": 2500,
+       "end_ms": 6000
+      },
+      {
+       "source": "v1",
+       "start_ms": 0,
+       "end_ms": 3500
+      }
+     ]
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "holdout-hairdryer",
+  "split": "holdout",
+  "forward_only": false,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "v1c1",
+    "source": "v1",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Máy sấy tóc màu hồng cầm trên tay",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v1c2",
+    "source": "v1",
+    "start_ms": 3000,
+    "end_ms": 5000,
+    "text": "Thân máy in thông số 1800W",
+    "motion": 5,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v1c3",
+    "source": "v1",
+    "start_ms": 5000,
+    "end_ms": 8000,
+    "text": "Gạt nút chỉnh ba mức nhiệt và hai tốc độ gió",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v2c1",
+    "source": "v2",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Cô gái sấy tóc dài, tóc bay mượt",
+    "motion": 170,
+    "hook": 900,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v2c2",
+    "source": "v2",
+    "start_ms": 4000,
+    "end_ms": 7000,
+    "text": "Mái tóc khô bóng mượt sau khi sấy",
+    "motion": 60,
+    "hook": 600,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v3c1",
+    "source": "v3",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Gắn đầu thổi tập trung vào máy sấy",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v3c2",
+    "source": "v3",
+    "start_ms": 3000,
+    "end_ms": 6000,
+    "text": "Máy sấy tóc màu hồng cầm trên tay",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v3c3",
+    "source": "v3",
+    "start_ms": 6000,
+    "end_ms": 8500,
+    "text": "Gấp gọn tay cầm máy sấy cho vào túi",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Tóc khô nhanh, mượt mà mỗi sáng.",
+    "ms": 3000
+   },
+   {
+    "id": "u2",
+    "text": "Công suất 1800W mạnh mẽ.",
+    "ms": 2500
+   },
+   {
+    "id": "u3",
+    "text": "Ba mức nhiệt và hai tốc độ gió.",
+    "ms": 3000
+   },
+   {
+    "id": "u4",
+    "text": "Đầu thổi tập trung giúp tạo kiểu dễ dàng.",
+    "ms": 3000
+   },
+   {
+    "id": "u5",
+    "text": "Tay cầm gấp gọn, mang theo khi du lịch.",
+    "ms": 3000
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "holdout-hairdryer",
+   "split": "holdout",
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "v2",
+       "start_ms": 0,
+       "end_ms": 7000
+      },
+      {
+       "source": "v1",
+       "start_ms": 0,
+       "end_ms": 3000
+      },
+      {
+       "source": "v3",
+       "start_ms": 3000,
+       "end_ms": 6000
+      }
+     ]
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "v1",
+       "start_ms": 3000,
+       "end_ms": 5000
+      }
+     ],
+     "key": [
+      {
+       "source": "v1",
+       "start_ms": 3000,
+       "end_ms": 5000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "v1",
+       "start_ms": 5000,
+       "end_ms": 8000
+      }
+     ],
+     "key": [
+      {
+       "source": "v1",
+       "start_ms": 5000,
+       "end_ms": 8000
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "v3",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ],
+     "key": [
+      {
+       "source": "v3",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ]
+    },
+    "u5": {
+     "accept": [
+      {
+       "source": "v3",
+       "start_ms": 6000,
+       "end_ms": 8500
+      }
+     ],
+     "key": [
+      {
+       "source": "v3",
+       "start_ms": 6000,
+       "end_ms": 8500
+      }
+     ]
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "holdout-earbuds",
+  "split": "holdout",
+  "forward_only": false,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "v1c1",
+    "source": "v1",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Hộp sạc tai nghe bluetooth màu trắng mở nắp",
+    "motion": 60,
+    "hook": 500,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v1c2",
+    "source": "v1",
+    "start_ms": 3000,
+    "end_ms": 4100,
+    "text": "Đèn LED trên hộp sạc báo pin đầy",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v1c3",
+    "source": "v1",
+    "start_ms": 4100,
+    "end_ms": 7000,
+    "text": "Lấy tai nghe ra khỏi hộp sạc",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v2c1",
+    "source": "v2",
+    "start_ms": 0,
+    "end_ms": 3500,
+    "text": "chang trai deo tai nghe chay bo ngoai cong vien",
+    "motion": 180,
+    "hook": 900,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v2c2",
+    "source": "v2",
+    "start_ms": 3500,
+    "end_ms": 6000,
+    "text": "cham nhe vao tai nghe de dung nhac",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v3c1",
+    "source": "v3",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Tai nghe ngâm trong chậu nước, chống nước IPX5",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v4c1",
+    "source": "v4",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Điện thoại hiển thị kết nối bluetooth 5.3 với tai nghe",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v4c2",
+    "source": "v4",
+    "start_ms": 3000,
+    "end_ms": 6000,
+    "text": "Hộp sạc tai nghe bluetooth màu trắng trên bàn",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Âm nhạc theo bạn trên mọi cung đường.",
+    "ms": 3000
+   },
+   {
+    "id": "u2",
+    "text": "Kết nối bluetooth 5.3 ổn định.",
+    "ms": 3000
+   },
+   {
+    "id": "u3",
+    "text": "Chạm nhẹ để dừng nhạc hoặc nghe máy.",
+    "ms": 2500
+   },
+   {
+    "id": "u4",
+    "text": "Chống nước IPX5, thoải mái khi tập luyện.",
+    "ms": 3500
+   },
+   {
+    "id": "u5",
+    "text": "Đèn LED trên hộp sạc báo pin đầy.",
+    "ms": 2500
+   },
+   {
+    "id": "u6",
+    "text": "Mua ngay hôm nay với giá ưu đãi.",
+    "ms": 2500
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "holdout-earbuds",
+   "split": "holdout",
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "v2",
+       "start_ms": 0,
+       "end_ms": 3500
+      },
+      {
+       "source": "v1",
+       "start_ms": 0,
+       "end_ms": 3000
+      },
+      {
+       "source": "v1",
+       "start_ms": 4100,
+       "end_ms": 7000
+      }
+     ]
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "v4",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ],
+     "key": [
+      {
+       "source": "v4",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "v2",
+       "start_ms": 3500,
+       "end_ms": 6000
+      }
+     ],
+     "key": [
+      {
+       "source": "v2",
+       "start_ms": 3500,
+       "end_ms": 6000
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "v3",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ],
+     "key": [
+      {
+       "source": "v3",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    },
+    "u5": {
+     "accept": [
+      {
+       "source": "v1",
+       "start_ms": 3000,
+       "end_ms": 4100
+      }
+     ],
+     "key": [
+      {
+       "source": "v1",
+       "start_ms": 3000,
+       "end_ms": 4100
+      }
+     ]
+    },
+    "u6": {
+     "accept": [
+      {
+       "source": "v4",
+       "start_ms": 3000,
+       "end_ms": 6000
+      },
+      {
+       "source": "v1",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ]
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "holdout-five-sources",
+  "split": "holdout",
+  "forward_only": true,
+  "pacing": "entertainment",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "ac1",
+    "source": "a",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Chú chó nhảy qua vòng lửa",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "ac2",
+    "source": "a",
+    "start_ms": 4000,
+    "end_ms": 8000,
+    "text": "Khán giả vỗ tay",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "ac3",
+    "source": "a",
+    "start_ms": 8000,
+    "end_ms": 12000,
+    "text": "Chú chó chạy về phía huấn luyện viên",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "bc1",
+    "source": "b",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Con mèo đẩy cốc nước rơi khỏi bàn",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "bc2",
+    "source": "b",
+    "start_ms": 4000,
+    "end_ms": 8000,
+    "text": "Cốc nước vỡ trên sàn",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "bc3",
+    "source": "b",
+    "start_ms": 8000,
+    "end_ms": 12000,
+    "text": "Con mèo nhìn ngơ ngác",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "cc1",
+    "source": "c",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Em bé cười khi thấy bong bóng xà phòng",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "cc2",
+    "source": "c",
+    "start_ms": 4000,
+    "end_ms": 8000,
+    "text": "Bong bóng bay khắp phòng",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "cc3",
+    "source": "c",
+    "start_ms": 8000,
+    "end_ms": 12000,
+    "text": "Mẹ ôm em bé",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "dc1",
+    "source": "d",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Người trượt ván ngã vào bụi cây",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "dc2",
+    "source": "d",
+    "start_ms": 4000,
+    "end_ms": 8000,
+    "text": "Bạn bè chạy tới cười lớn",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "dc3",
+    "source": "d",
+    "start_ms": 8000,
+    "end_ms": 12000,
+    "text": "Người trượt ván đứng dậy giơ tay",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "ec1",
+    "source": "e",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Chú vẹt hát theo bài nhạc",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "ec2",
+    "source": "e",
+    "start_ms": 4000,
+    "end_ms": 8000,
+    "text": "Chú vẹt nhún nhảy theo điệu nhạc",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "ec3",
+    "source": "e",
+    "start_ms": 8000,
+    "end_ms": 12000,
+    "text": "Chủ nhà quay video chú vẹt",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Chú chó dũng cảm nhảy qua vòng lửa.",
+    "ms": 4000
+   },
+   {
+    "id": "u2",
+    "text": "Con mèo nghịch ngợm đẩy cốc nước rơi vỡ.",
+    "ms": 6000
+   },
+   {
+    "id": "u3",
+    "text": "Em bé cười khúc khích với bong bóng xà phòng.",
+    "ms": 5000
+   },
+   {
+    "id": "u4",
+    "text": "Người trượt ván ngã nhưng vẫn đứng dậy giơ tay.",
+    "ms": 6000
+   },
+   {
+    "id": "u5",
+    "text": "Chú vẹt hát và nhún nhảy theo điệu nhạc.",
+    "ms": 6000
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "holdout-five-sources",
+   "split": "holdout",
+   "forward_only": true,
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "a",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ],
+     "key": [
+      {
+       "source": "a",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "b",
+       "start_ms": 0,
+       "end_ms": 8000
+      }
+     ],
+     "key": [
+      {
+       "source": "b",
+       "start_ms": 0,
+       "end_ms": 8000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "c",
+       "start_ms": 0,
+       "end_ms": 8000
+      }
+     ],
+     "key": [
+      {
+       "source": "c",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "d",
+       "start_ms": 0,
+       "end_ms": 4000
+      },
+      {
+       "source": "d",
+       "start_ms": 8000,
+       "end_ms": 12000
+      }
+     ],
+     "key": [
+      {
+       "source": "d",
+       "start_ms": 0,
+       "end_ms": 4000
+      },
+      {
+       "source": "d",
+       "start_ms": 8000,
+       "end_ms": 12000
+      }
+     ]
+    },
+    "u5": {
+     "accept": [
+      {
+       "source": "e",
+       "start_ms": 0,
+       "end_ms": 8000
+      }
+     ],
+     "key": [
+      {
+       "source": "e",
+       "start_ms": 0,
+       "end_ms": 8000
+      }
+     ]
+    }
+   }
+  }
+ }
+]

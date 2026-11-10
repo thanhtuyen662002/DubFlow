@@ -1,0 +1,1039 @@
+[
+ {
+  "schema_version": 1,
+  "name": "dev-espresso",
+  "split": "dev",
+  "forward_only": false,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "v1c1",
+    "source": "v1",
+    "start_ms": 0,
+    "end_ms": 2400,
+    "text": "Tay cầm pha cà phê chứa bột cà phê đã xay",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v1c2",
+    "source": "v1",
+    "start_ms": 2400,
+    "end_ms": 5400,
+    "text": "Máy xay hạt cà phê tích hợp, nút GRIND, bột cà phê chảy ra",
+    "motion": 140,
+    "hook": 600,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v1c3",
+    "source": "v1",
+    "start_ms": 5400,
+    "end_ms": 6400,
+    "text": "Nén bột cà phê trong tay cầm bằng nút TAMP",
+    "motion": 160,
+    "hook": 800,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v1c4",
+    "source": "v1",
+    "start_ms": 6400,
+    "end_ms": 7500,
+    "text": "Nút REDISTRIBUTE dàn đều bột cà phê",
+    "motion": 150,
+    "hook": 700,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v1c5",
+    "source": "v1",
+    "start_ms": 7500,
+    "end_ms": 8680,
+    "text": "Cận cảnh đồng hồ áp suất trên thân máy, kim chỉ vùng xanh",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v1c6",
+    "source": "v1",
+    "start_ms": 8680,
+    "end_ms": 12000,
+    "text": "Cà phê espresso chảy vào ly thủy tinh",
+    "motion": 120,
+    "hook": 700,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v2c1",
+    "source": "v2",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Toàn cảnh máy pha espresso màu bạc trên bàn bếp",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v2c2",
+    "source": "v2",
+    "start_ms": 4000,
+    "end_ms": 6000,
+    "text": "Đồng hồ áp suất, kim dao động khi máy làm nóng",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v3c1",
+    "source": "v3",
+    "start_ms": 0,
+    "end_ms": 5000,
+    "text": "Dòng espresso chảy xuống hai tách cà phê",
+    "motion": 90,
+    "hook": 500,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v3c2",
+    "source": "v3",
+    "start_ms": 5000,
+    "end_ms": 8000,
+    "text": "Chiết xuất cà phê từ tay cầm xuống tách",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v4c1",
+    "source": "v4",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Lớp crema vàng óng trên tách espresso",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v4c2",
+    "source": "v4",
+    "start_ms": 4000,
+    "end_ms": 7000,
+    "text": "Ly cà phê có lớp crema đặt cạnh máy pha",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Một ly espresso chuẩn quán ngay tại nhà.",
+    "ms": 3000
+   },
+   {
+    "id": "u2",
+    "text": "Lớp crema vàng óng, mịn màng.",
+    "ms": 3000
+   },
+   {
+    "id": "u3",
+    "text": "Máy xay hạt tích hợp, nhấn GRIND rồi nén bột bằng nút TAMP.",
+    "ms": 4500
+   },
+   {
+    "id": "u4",
+    "text": "Đồng hồ áp suất cho bạn biết máy đã sẵn sàng.",
+    "ms": 3500
+   },
+   {
+    "id": "u5",
+    "text": "Dòng espresso chảy đều xuống hai tách.",
+    "ms": 3500
+   },
+   {
+    "id": "u6",
+    "text": "Đặt mua ngay hôm nay để nhận ưu đãi.",
+    "ms": 3000
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "dev-espresso",
+   "split": "dev",
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "v1",
+       "start_ms": 8680,
+       "end_ms": 12000
+      },
+      {
+       "source": "v3",
+       "start_ms": 0,
+       "end_ms": 8000
+      },
+      {
+       "source": "v4",
+       "start_ms": 0,
+       "end_ms": 7000
+      },
+      {
+       "source": "v2",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "v4",
+       "start_ms": 0,
+       "end_ms": 7000
+      }
+     ],
+     "key": [
+      {
+       "source": "v4",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "v1",
+       "start_ms": 2400,
+       "end_ms": 7500
+      }
+     ],
+     "key": [
+      {
+       "source": "v1",
+       "start_ms": 2400,
+       "end_ms": 7500
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "v1",
+       "start_ms": 7500,
+       "end_ms": 8680
+      },
+      {
+       "source": "v2",
+       "start_ms": 4000,
+       "end_ms": 6000
+      }
+     ],
+     "key": [
+      {
+       "source": "v1",
+       "start_ms": 7500,
+       "end_ms": 8680
+      },
+      {
+       "source": "v2",
+       "start_ms": 4000,
+       "end_ms": 6000
+      }
+     ]
+    },
+    "u5": {
+     "accept": [
+      {
+       "source": "v3",
+       "start_ms": 0,
+       "end_ms": 8000
+      },
+      {
+       "source": "v1",
+       "start_ms": 8680,
+       "end_ms": 12000
+      }
+     ],
+     "key": [
+      {
+       "source": "v3",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ]
+    },
+    "u6": {
+     "accept": [
+      {
+       "source": "v2",
+       "start_ms": 0,
+       "end_ms": 4000
+      },
+      {
+       "source": "v4",
+       "start_ms": 4000,
+       "end_ms": 7000
+      },
+      {
+       "source": "v4",
+       "start_ms": 0,
+       "end_ms": 4000
+      },
+      {
+       "source": "v1",
+       "start_ms": 8680,
+       "end_ms": 12000
+      }
+     ]
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "dev-ricecooker-unaccented",
+  "split": "dev",
+  "forward_only": false,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "v1c1",
+    "source": "v1",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "noi com dien mau trang tren ban bep",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v1c2",
+    "source": "v1",
+    "start_ms": 4000,
+    "end_ms": 7000,
+    "text": "long noi chong dinh, phu men den",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v1c3",
+    "source": "v1",
+    "start_ms": 7000,
+    "end_ms": 10000,
+    "text": "bang dieu khien cam ung voi cac che do nau",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v2c1",
+    "source": "v2",
+    "start_ms": 0,
+    "end_ms": 5000,
+    "text": "com chin deu, hat com tron mem",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v2c2",
+    "source": "v2",
+    "start_ms": 5000,
+    "end_ms": 9000,
+    "text": "nguoi dung bam nut nau tren bang dieu khien",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Nồi cơm điện thông minh cho cả nhà.",
+    "ms": 3000
+   },
+   {
+    "id": "u2",
+    "text": "Lòng nồi chống dính phủ men đen.",
+    "ms": 3000
+   },
+   {
+    "id": "u3",
+    "text": "Bảng điều khiển cảm ứng với nhiều chế độ nấu.",
+    "ms": 4000
+   },
+   {
+    "id": "u4",
+    "text": "Cơm chín đều, hạt cơm tròn mềm.",
+    "ms": 3500
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "dev-ricecooker-unaccented",
+   "split": "dev",
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "v1",
+       "start_ms": 0,
+       "end_ms": 4000
+      },
+      {
+       "source": "v2",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ]
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "v1",
+       "start_ms": 4000,
+       "end_ms": 7000
+      }
+     ],
+     "key": [
+      {
+       "source": "v1",
+       "start_ms": 4000,
+       "end_ms": 7000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "v1",
+       "start_ms": 7000,
+       "end_ms": 10000
+      },
+      {
+       "source": "v2",
+       "start_ms": 5000,
+       "end_ms": 9000
+      }
+     ],
+     "key": [
+      {
+       "source": "v1",
+       "start_ms": 7000,
+       "end_ms": 10000
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "v2",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ],
+     "key": [
+      {
+       "source": "v2",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ]
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "dev-long-forward",
+  "split": "dev",
+  "forward_only": true,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "s1c1",
+    "source": "s1",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Thẻ chữ trắng trên nền đen",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s1c2",
+    "source": "s1",
+    "start_ms": 4000,
+    "end_ms": 8000,
+    "text": "Đoàn quân hành quân trên đường",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s1c3",
+    "source": "s1",
+    "start_ms": 8000,
+    "end_ms": 12000,
+    "text": "Kỵ binh phi ngựa qua cánh đồng",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s1c4",
+    "source": "s1",
+    "start_ms": 12000,
+    "end_ms": 16000,
+    "text": "Xe tăng tiến qua làng",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s1c5",
+    "source": "s1",
+    "start_ms": 16000,
+    "end_ms": 20000,
+    "text": "Nhà máy với ống khói",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s1c6",
+    "source": "s1",
+    "start_ms": 20000,
+    "end_ms": 24000,
+    "text": "Công nhân trong xưởng",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s1c7",
+    "source": "s1",
+    "start_ms": 24000,
+    "end_ms": 28000,
+    "text": "Đám đông trên quảng trường",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s1c8",
+    "source": "s1",
+    "start_ms": 28000,
+    "end_ms": 32000,
+    "text": "Đoàn quân hành quân trên đường",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s1c9",
+    "source": "s1",
+    "start_ms": 32000,
+    "end_ms": 36000,
+    "text": "Kỵ binh phi ngựa qua cánh đồng",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s1c10",
+    "source": "s1",
+    "start_ms": 36000,
+    "end_ms": 40000,
+    "text": "Pháo binh khai hỏa",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s1c11",
+    "source": "s1",
+    "start_ms": 40000,
+    "end_ms": 44000,
+    "text": "Máy bay bay theo đội hình",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s1c12",
+    "source": "s1",
+    "start_ms": 44000,
+    "end_ms": 48000,
+    "text": "Tàu chiến trên biển",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s1c13",
+    "source": "s1",
+    "start_ms": 48000,
+    "end_ms": 52000,
+    "text": "Xe tăng tiến qua làng",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s1c14",
+    "source": "s1",
+    "start_ms": 52000,
+    "end_ms": 56000,
+    "text": "Nhà máy với ống khói",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s1c15",
+    "source": "s1",
+    "start_ms": 56000,
+    "end_ms": 60000,
+    "text": "Công nhân trong xưởng",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s1c16",
+    "source": "s1",
+    "start_ms": 60000,
+    "end_ms": 64000,
+    "text": "Đám đông trên quảng trường",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s1c17",
+    "source": "s1",
+    "start_ms": 64000,
+    "end_ms": 67000,
+    "text": "Bản đồ châu Âu với các mũi tên",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s1c18",
+    "source": "s1",
+    "start_ms": 67000,
+    "end_ms": 71000,
+    "text": "Pháo binh khai hỏa",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s1c19",
+    "source": "s1",
+    "start_ms": 71000,
+    "end_ms": 75000,
+    "text": "Duyệt binh trên Quảng trường Đỏ",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s1c20",
+    "source": "s1",
+    "start_ms": 75000,
+    "end_ms": 79000,
+    "text": "Đập thủy điện lớn",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s1c21",
+    "source": "s1",
+    "start_ms": 79000,
+    "end_ms": 83000,
+    "text": "Người lính trong chiến hào",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s1c22",
+    "source": "s1",
+    "start_ms": 83000,
+    "end_ms": 87000,
+    "text": "Đoàn quân hành quân trên đường",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s1c23",
+    "source": "s1",
+    "start_ms": 87000,
+    "end_ms": 91000,
+    "text": "Kỵ binh phi ngựa qua cánh đồng",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s1c24",
+    "source": "s1",
+    "start_ms": 91000,
+    "end_ms": 95000,
+    "text": "Xe tăng tiến qua làng",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s1c25",
+    "source": "s1",
+    "start_ms": 95000,
+    "end_ms": 99000,
+    "text": "Thẻ chữ trắng trên nền đen",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s1c26",
+    "source": "s1",
+    "start_ms": 99000,
+    "end_ms": 103000,
+    "text": "Máy bay bay theo đội hình",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s1c27",
+    "source": "s1",
+    "start_ms": 103000,
+    "end_ms": 107000,
+    "text": "Tàu chiến trên biển",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s1c28",
+    "source": "s1",
+    "start_ms": 107000,
+    "end_ms": 111000,
+    "text": "Người lính trong chiến hào",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s1c29",
+    "source": "s1",
+    "start_ms": 111000,
+    "end_ms": 115000,
+    "text": "Công nhân trong xưởng",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s1c30",
+    "source": "s1",
+    "start_ms": 115000,
+    "end_ms": 119000,
+    "text": "Đám đông trên quảng trường",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Quân đội hành quân qua những cánh đồng rộng lớn.",
+    "ms": 8000
+   },
+   {
+    "id": "u2",
+    "text": "Bản đồ cho thấy các mũi tên tiến về phía đông.",
+    "ms": 6000
+   },
+   {
+    "id": "u3",
+    "text": "Pháo binh khai hỏa, máy bay bay theo đội hình.",
+    "ms": 8000
+   },
+   {
+    "id": "u4",
+    "text": "Duyệt binh trên Quảng trường Đỏ và đập thủy điện lớn.",
+    "ms": 8000
+   },
+   {
+    "id": "u5",
+    "text": "Người lính trong chiến hào chờ đợi.",
+    "ms": 4000
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "dev-long-forward",
+   "split": "dev",
+   "forward_only": true,
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "s1",
+       "start_ms": 4000,
+       "end_ms": 12000
+      },
+      {
+       "source": "s1",
+       "start_ms": 28000,
+       "end_ms": 36000
+      },
+      {
+       "source": "s1",
+       "start_ms": 83000,
+       "end_ms": 91000
+      }
+     ]
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "s1",
+       "start_ms": 64000,
+       "end_ms": 67000
+      }
+     ],
+     "key": [
+      {
+       "source": "s1",
+       "start_ms": 64000,
+       "end_ms": 67000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "s1",
+       "start_ms": 36000,
+       "end_ms": 44000
+      },
+      {
+       "source": "s1",
+       "start_ms": 67000,
+       "end_ms": 71000
+      },
+      {
+       "source": "s1",
+       "start_ms": 99000,
+       "end_ms": 103000
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "s1",
+       "start_ms": 71000,
+       "end_ms": 79000
+      }
+     ],
+     "key": [
+      {
+       "source": "s1",
+       "start_ms": 71000,
+       "end_ms": 79000
+      }
+     ]
+    },
+    "u5": {
+     "accept": [
+      {
+       "source": "s1",
+       "start_ms": 79000,
+       "end_ms": 83000
+      },
+      {
+       "source": "s1",
+       "start_ms": 107000,
+       "end_ms": 111000
+      }
+     ]
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "dev-late-map",
+  "split": "dev",
+  "forward_only": true,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "s1c1",
+    "source": "s1",
+    "start_ms": 0,
+    "end_ms": 6000,
+    "text": "Đoàn quân hành quân",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s1c2",
+    "source": "s1",
+    "start_ms": 6000,
+    "end_ms": 12000,
+    "text": "Kỵ binh trên cánh đồng",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s1c3",
+    "source": "s1",
+    "start_ms": 12000,
+    "end_ms": 18000,
+    "text": "Xe tăng tiến qua làng",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s1c4",
+    "source": "s1",
+    "start_ms": 18000,
+    "end_ms": 24000,
+    "text": "Nhà máy với ống khói",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s1c5",
+    "source": "s1",
+    "start_ms": 24000,
+    "end_ms": 27000,
+    "text": "Bản đồ vùng Kavkaz với các mũi tên",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Bản đồ cho thấy vùng Kavkaz.",
+    "ms": 4000
+   },
+   {
+    "id": "u2",
+    "text": "Quân đội tiến lên qua làng.",
+    "ms": 16000
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "dev-late-map",
+   "split": "dev",
+   "forward_only": true,
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "s1",
+       "start_ms": 24000,
+       "end_ms": 27000
+      }
+     ],
+     "footage_exists": false,
+     "note": "the map plays after the footage the next sentence needs"
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "s1",
+       "start_ms": 0,
+       "end_ms": 24000
+      }
+     ]
+    }
+   }
+  }
+ }
+]
