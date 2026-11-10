@@ -63,6 +63,13 @@ class DecisionTests(unittest.TestCase):
         for bars in ((10, 10, 0, 0), (0, 0, 12, 12), (6, 0, 8, 8)):
             self.assertEqual(self.plan("balanced", frames=Picture(16, 16, 235, 120, bars)).video_filters, (), bars)
 
+    def test_captions_follow_the_voice_from_balanced_when_there_is_a_dub(self):
+        self.assertEqual(self.plan("light").captions, "plain")
+        self.assertEqual(self.plan("balanced").captions, "phrase")
+        self.assertEqual(self.plan("dynamic").captions, "phrase")
+        no_dub = dubbing.plan(Options("balanced"), mix=None, mix_rate=None, frames=GOOD, width=1920, height=1080)
+        self.assertEqual(no_dub.captions, "plain")
+
     def test_the_climax_is_a_suggestion_only_when_asked(self):
         found = {"start_ms": 61000, "end_ms": 65000, "reasons": ["âm thanh lớn nhất"]}
         self.assertIsNone(dubbing.plan(Options("dynamic"), mix=QUIET, mix_rate=48000, frames=GOOD, width=1920, height=1080,
