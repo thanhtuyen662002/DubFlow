@@ -7,6 +7,9 @@ here, except a floor on the dev espresso set the hardening work was built agains
 """
 from __future__ import annotations
 
+import hashlib
+import json
+from pathlib import Path
 import random
 import unittest
 
@@ -20,6 +23,17 @@ SCARCE = {"dev-long-forward"}  # one source, more narration about the map than t
 
 def candidate(cid, source, start, end, motion=50):
     return shots.Candidate(cid, source, start, end, 0, motion, shots.Quality(120, 50, 300, ()), random.getrandbits(64))
+
+
+class FrozenFixtures(unittest.TestCase):
+    def test_ground_truth_matches_the_frozen_hashes(self):
+        folder = Path(runner.__file__).parent
+        frozen = json.loads((folder / "FROZEN.json").read_text(encoding="utf-8"))["fixtures"]
+        on_disk = sorted(p.name for p in folder.glob("*.json") if p.name != "FROZEN.json")
+        self.assertEqual(sorted(frozen), on_disk, "every fixture must be frozen")
+        for name, entry in frozen.items():
+            digest = hashlib.sha256((folder / name).read_bytes()).hexdigest()
+            self.assertEqual(digest, entry["sha256"], f"{name} changed after it was frozen")
 
 
 class ScenarioGates(unittest.TestCase):

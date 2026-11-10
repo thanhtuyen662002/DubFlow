@@ -106,6 +106,17 @@ class PlanTests(unittest.TestCase):
         self.assertTrue(result["alignment"]["units"][1]["flagged"])
 
 
+    def test_a_plan_in_another_time_base_is_measured_in_milliseconds(self):
+        tb = m.TimeBase(1, 90000)  # 90 ticks per ms
+        plan = m.Plan("p", "product_showcase", m.Options("balanced"), 4000 * 90,
+                      (m.Source("v1", 9000 * 90, 1080, 1920),),
+                      (m.Segment("s1", "v1", m.Span(0, 2000 * 90), m.Span(0, 2000 * 90), speech_refs=("u1",)),
+                       m.Segment("s2", "v1", m.Span(2000 * 90, 4000 * 90), m.Span(2000 * 90, 4000 * 90), speech_refs=("u2",))),
+                      m.Provenance("t", "1", "r", (("x", "0" * 64),)), time_base=tb)
+        result = quality.report([plan])
+        self.assertEqual(result["problems"], [], result["problems"])
+        self.assertEqual(sum(p.tl_end - p.tl_start for p in quality.pieces_from_plan(plan)), 4000)
+
 class ScenarioTests(unittest.TestCase):
     def test_every_scenario_is_valid_and_runs(self):
         names = set()
