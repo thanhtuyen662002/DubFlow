@@ -42,6 +42,7 @@ DUPLICATE_PENALTY = 250
 SAME_SOURCE_PENALTY = 100
 CLAIM_PENALTY = 250  # a shot a later sentence matches far better is left for that sentence
 STRONG_SHARE = 850  # a shot within this share (‰) of the best match counts as the match, short or not
+CLAIM_SHARE = 500  # a later sentence claims the shots it matches at least this share (‰) of its best match
 SHORT_FLOOR = 500  # ms: the shortest piece of a strong match worth showing (anything less is a flash)
 
 # Folded cue words for a sentence's function (Vietnamese sales language).
@@ -340,7 +341,7 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
         for later_unit in found_units[position + 1:]:
             top = best_of[later_unit.unit_id]
             value = relevance_of[(later_unit.unit_id, candidate.candidate_id)]
-            if top >= MIN_RELEVANCE and value * 1000 >= STRONG_SHARE * top and value > relevance * 3 // 2 + MIN_RELEVANCE:
+            if top >= MIN_RELEVANCE and value * 1000 >= CLAIM_SHARE * top and value > relevance * 3 // 2 + MIN_RELEVANCE:
                 most = max(most, (value - relevance) * 1000 // value)
         return most
 
@@ -367,6 +368,8 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
                 open_pool = [c for c in usable if allowed(c) and (remaining(c)[1] >= floor or (
                     remaining(c)[1] >= min(SHORT_FLOOR, floor) and best >= MIN_RELEVANCE
                     and need - remaining(c)[1] >= pacing.minimum // 2  # what it leaves is a real shot too
+                    # forward only, skipping ahead to it must leave the sentences still to come their footage
+                    and (not forward_only or ahead_after(c) >= after + need - remaining(c)[1])
                     and relevance_of[(unit.unit_id, c.candidate_id)] * 1000 >= STRONG_SHARE * best))]
                 if not open_pool:  # nothing long enough ahead: anything left, then repeats
                     open_pool = ([c for c in usable if allowed(c) and remaining(c)[1] >= min(SHORT_FLOOR, need)]

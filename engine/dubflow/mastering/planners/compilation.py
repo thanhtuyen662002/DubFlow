@@ -23,8 +23,8 @@ from .. import policy as rules
 from ..candidates import Candidate
 
 PLANNER = "dubflow.mastering.compilation"
-VERSION = "5"
-RECIPE = "compilation-program-v5"  # v5: short closest matches shown; no 0.2 s leftovers
+VERSION = "6"
+RECIPE = "compilation-program-v6"  # v6: a short match never strands the narration after it (no held frames)
 WORKFLOW = "compilation_entertainment"
 MOMENT_MIN_MS, MOMENT_TARGET_MS, MOMENT_MAX_MS = 2000, 3500, 6000
 PART_FUNCTION = {"hook": "hook", "intro": "intro", "item": "narration", "outro": "outro"}
