@@ -155,6 +155,8 @@ def plan(options: Options, *, mix: Loudness | None, mix_rate: int | None, frames
     if policy.hook == "suggest" and climax:
         suggestion = {**climax, "needs_review": True, "applied": False}
         notes.append("Gợi ý đoạn cao trào làm teaser: chỉ đề xuất để duyệt, không chèn vào video.")
+    elif policy.hook == "suggest":
+        notes.append("Gợi ý teaser đã bật nhưng không đo được đoạn cao trào (thiếu âm thanh gốc); không đề xuất.")
     measured = {"mix": mix.to_dict() if mix else None, "picture": frames.to_dict() if frames else None}
     return DubbingMaster(options, audio, tuple(video), captions, suggestion, tuple(notes), measured)
 
