@@ -130,7 +130,7 @@ def detect(video: Path, duration: float, cache: Path, *, ffmpeg: Path, run: Runn
     thumbs.unlink(missing_ok=True)
     run([str(ffmpeg), "-hide_banner", "-nostats", "-nostdin", "-i", str(video), "-an", "-sn", "-dn", "-filter_complex",
          f"[0:v]scale={ANALYSIS_WIDTH}:-2,split=2[cut][slow];"
-         f"[cut]scdet=threshold={threshold}:sc_pass=1,metadata=mode=print:file={log.name}[cuts];"
+         f"[cut]scdet=threshold={threshold},metadata=mode=print:key=lavfi.scd.time:file={log.name}[cuts];"
          f"[slow]fps={SLOW_FPS},scale={SLOW_W}:{SLOW_H}:flags=area,format=gray[thumbs]",
          "-map", "[cuts]", "-f", "null", "-", "-map", "[thumbs]", "-f", "rawvideo", thumbs.name], work, cancelled)
     try:

@@ -223,10 +223,43 @@ def route_ask(route: Any, *, transport: Any = None) -> Ask:
     return ask
 
 
+def factory(ai: Mapping[str, str] | None, key: str, budget: int) -> Callable[..., Describer] | None:
+    """A maker of describers on the user's AI route, or None (no AI chosen, no key, no budget or a text-only model)."""
+    if not ai or not key or budget <= 0:
+        return None
+    from engine.dubflow.ai.client import AiError, make_route
+    try:
+        route = make_route(ai["provider"], key, model=ai.get("model"), base_url=ai.get("base_url"))
+    except AiError:
+        return None
+    if not route.preset.vision:
+        return None
+
+    def make(cache: Path, *, context: str = "", labels: Sequence[str] = ev.LABELS) -> Describer:
+        return Describer(route_ask(route), provider=route.provider, model=route.model, cache=cache, labels=labels,
+                         budget=budget, context=context)
+    return make
+
+
+def text_asker(ai: Mapping[str, str] | None, key: str) -> Callable[[str, Mapping[str, Any], list[dict[str, Any]]], Any] | None:
+    """A JSON question to the user's AI (any chat model), or None without an AI or a key."""
+    if not ai or not key:
+        return None
+    from engine.dubflow.ai import client
+    try:
+        route = client.make_route(ai["provider"], key, model=ai.get("model"), base_url=ai.get("base_url"))
+    except client.AiError:
+        return None
+
+    def ask(system: str, schema_value: Mapping[str, Any], parts: list[dict[str, Any]]) -> Any:
+        return client.ask(route, system, schema_value, parts, max_tokens=4000, timeout=120.0)[0]
+    return ask
+
+
 def frames_for(candidates: Sequence[Candidate], folder: Path) -> list[tuple[str, Path]]:
     """The keyframes to show, usable candidates first (the budget then goes to footage that can be used)."""
     ordered = sorted(candidates, key=lambda c: (not c.quality.usable, c.source_id, c.start_ms))
     return [(c.candidate_id, folder / c.keyframe) for c in ordered if c.keyframe]
 
 
-__all__ = ["Describer", "PROMPT_VERSION", "Seen", "apply", "frames_for", "route_ask", "schema", "validate"]
+__all__ = ["Describer", "PROMPT_VERSION", "Seen", "apply", "factory", "frames_for", "route_ask", "schema", "text_asker", "validate"]
