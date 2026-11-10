@@ -254,7 +254,8 @@ def alignment(pieces: Sequence[Piece], truth: Truth, *, flagged: Mapping[str, bo
 def report(plans: Sequence[m.Plan], truth: Truth | None = None, *, flagged: Mapping[str, bool] | None = None) -> dict[str, Any]:
     """The full check of one result (one plan, or the parts of a programme)."""
     pieces = [p for plan in plans for p in pieces_from_plan(plan)]
-    duration = plans[0].duration if len(plans) == 1 else None
+    # Plan.duration is in plan ticks; the pieces are already in ms.
+    duration = m.to_milliseconds(plans[0].duration, plans[0].time_base) if len(plans) == 1 else None
     forward = truth.forward_only if truth else plans[0].workflow == "compilation_entertainment"
     problems = timeline_problems(pieces, duration_ms=duration, forward_only=forward)
     if flagged is None:
