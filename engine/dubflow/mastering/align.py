@@ -574,6 +574,9 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
             excess -= cut
         if excess < 0 and picks:  # dropping a piece left a little: the last piece plays on if it can
             picks[-1]["length"] -= excess
+        _settle(picks, need, usable, still_ids, accept, used={c for c, n in saved[2].items() if n},
+                forward_only=forward_only, source_end=saved[1],
+                claimed={cid for v in found_units if v.unit_id not in decisions for cid in accepts[v.unit_id]})
         covered = sum(p["length"] for p in picks)
         # the state as the final pieces leave it
         resume.clear(); resume.update(saved[0])
@@ -623,6 +626,113 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
         mine[:] = [Choice(c.unit_id, c.candidate, c.offset_ms, c.length_ms, c.score, c.confidence, flag(c), c.reasons) for c in mine]
     choices = [c for u in found_units for c in by_unit.get(u.unit_id, [])]
     return choices, [decisions[u.unit_id] for u in found_units], mode
+
+
+def _room(pick: dict[str, Any], picks: Sequence[dict[str, Any]], still_ids: set[str]) -> int:
+    """How much longer ``pick`` can play on in its own source without running past the shot or into another
+    piece of the same shot."""
+    candidate = pick["candidate"]
+    if candidate.candidate_id in still_ids:
+        return 10**9
+    end = pick["offset"] + pick["length"]
+    limit = candidate.end_ms
+    for other in picks:
+        if other is not pick and other["candidate"].candidate_id == candidate.candidate_id and other["offset"] >= end:
+            limit = min(limit, other["offset"])
+    return max(0, limit - end)
+
+
+def _settle(picks: list[dict[str, Any]], need: int, usable: Sequence[Candidate], still_ids: set[str], accept: set[str], *,
+            used: set[str] = frozenset(), forward_only: bool = False, source_end: Mapping[str, int] | None = None,
+            claimed: set[str] = frozenset()) -> None:
+    """The invariants of a sentence's pieces, whatever the steps before left: every piece inside its shot, none
+    shorter than ``SHORT_FLOOR`` when there is more than one, and together exactly ``need``. Time a piece cannot
+    hold goes to the pieces that can play on; when none can, a shot is shown again as a declared repeat."""
+    for pick in picks:  # inside the shot
+        if pick["candidate"].candidate_id not in still_ids:
+            pick["length"] = min(pick["length"], max(0, pick["candidate"].end_ms - pick["offset"]))
+    picks[:] = [p for p in picks if p["length"] > 0]
+    while len(picks) > 1:  # no flash: the shortest sliver gives its time to the others
+        sliver = min(picks, key=lambda p: p["length"])
+        if sliver["length"] >= SHORT_FLOOR:
+            break
+        picks.remove(sliver)
+
+    def fill() -> int:
+        short = need - sum(p["length"] for p in picks)
+        for pick in sorted(picks, key=lambda p: -_room(p, picks, still_ids)):  # play on where the shot goes on
+            if short <= 0:
+                break
+            extra = min(short, _room(pick, picks, still_ids))
+            pick["length"] += extra
+            short -= extra
+        return short
+
+    short = fill()
+    guard = 0
+    source_end = source_end or {}
+    while short > 0 and guard < 64:
+        guard += 1
+        shown = {p["candidate"].candidate_id for p in picks}
+        # footage nobody has shown yet first (in a forward-only source, only ahead of what has played) ...
+        fresh = [c for c in usable if c.candidate_id not in shown and c.candidate_id not in used
+                 and c.candidate_id not in still_ids and c.length_ms >= min(short, SHORT_FLOOR)
+                 and (not forward_only or c.start_ms >= source_end.get(c.source_id, 0))]
+        if fresh:
+            new = sorted(fresh, key=lambda c: (c.candidate_id not in accept, c.candidate_id in claimed,
+                                             -min(c.length_ms, short), c.source_id, c.start_ms))[0]
+            length = min(new.length_ms, max(short, SHORT_FLOOR))
+            piece = {"candidate": new, "offset": new.start_ms, "length": length, "tier": "neutral", "repeat": False,
+                     "score": 0, "confidence": SIGNALS_ONLY_CAP if new.candidate_id not in accept else REVIEW_BELOW,
+                     "reasons": ["thêm cảnh để đủ thời lượng câu"]}
+            # forward only: where the source order puts it among this sentence's pieces
+            at = len(picks)
+            if forward_only:
+                at = next((i for i, p in enumerate(picks) if p["candidate"].source_id == new.source_id
+                           and p["offset"] > new.start_ms), len(picks))
+            picks.insert(at, piece)
+            short -= length
+            if short < 0:
+                over = -short
+                for pick in sorted((p for p in picks if p is not piece), key=lambda p: -p["length"]):
+                    cut = min(over, max(0, pick["length"] - SHORT_FLOOR))
+                    pick["length"] -= cut
+                    over -= cut
+                piece["length"] -= over
+                short = 0
+            short = max(short, fill()) if short > 0 else 0
+            continue
+        # ... and only when there is none, a shot shown again, said so
+        ranked = sorted((c for c in usable if c.candidate_id in still_ids or c.length_ms >= min(short, SHORT_FLOOR)),
+                        key=lambda c: (c.candidate_id not in accept, c.candidate_id not in shown, -c.length_ms, c.candidate_id))
+        if not ranked:
+            ranked = sorted(usable, key=lambda c: -c.length_ms)
+        again = ranked[0]
+        length = short if again.candidate_id in still_ids else min(again.length_ms, max(short, SHORT_FLOOR))
+        picks.append({"candidate": again, "offset": again.start_ms, "length": length, "tier": "repeat", "repeat": True,
+                      "score": 0, "confidence": SIGNALS_ONLY_CAP,
+                      "reasons": ["chiếu lại cảnh để đủ thời lượng câu (nguồn không đủ cảnh)"]})
+        short -= length
+        if short < 0:  # the repeat took a full piece: the others give way, never under the floor
+            over = -short
+            for pick in sorted(picks[:-1], key=lambda p: -p["length"]):
+                cut = min(over, max(0, pick["length"] - SHORT_FLOOR))
+                pick["length"] -= cut
+                over -= cut
+            picks[-1]["length"] -= over  # what no piece could give: the repeat itself is shorter
+            short = 0
+        short = max(short, fill()) if short > 0 else 0
+    while len(picks) > 1:  # a sliver left by the repeat: merged when the other pieces can take its time
+        sliver = min(picks, key=lambda p: p["length"])
+        if sliver["length"] >= SHORT_FLOOR:
+            break
+        before = [(p, p["length"]) for p in picks]
+        picks.remove(sliver)
+        if fill() > 0:
+            picks[:] = [p for p, _ in before]
+            for p, length in before:
+                p["length"] = length
+            break
 
 
 __all__ = ["Choice", "Decision", "Edits", "FUNCTIONS", "Scorer", "Unit", "assign", "product_function", "units"]

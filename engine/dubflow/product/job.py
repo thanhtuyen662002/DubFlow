@@ -387,6 +387,9 @@ def _mastered(spec: Spec, visuals: Sequence[render.Visual], total_ms: int, work:
     except Exception as error:  # noqa: BLE001 - mastering never stops a video the usual plan can make
         report["segments"] = None
         report["fallback"] = f"Không lập được kế hoạch hậu kỳ ({getattr(error, 'message', type(error).__name__)}: {str(error)[:160]}); dùng cách ghép thường."
+        # the plain join is not chosen by content: never presented as reviewed footage
+        report["needs_review"] = True
+        report["warnings"] = list(dict.fromkeys([*report.get("warnings", []), report["fallback"]]))
     return report
 
 
