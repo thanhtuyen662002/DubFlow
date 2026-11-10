@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "note": "SHA-256 of each ground-truth fixture as first merged. A change to a fixture fails tests/mastering/test_regression.py until this file is changed too, so any edit to ground truth shows in the diff. Git cannot prove that the holdout labels were written before the planner change in the same PR; see docs/mastering/PHASE2_QUALITY_HARDENING_REPORT.md section 4.",
+  "fixtures": {
+    "dev.json": {"sha256": "0cde4a4005845cdca19ab687ae05fa81dcd014716482c2317bcad37dcb2d050a", "first_commit": "fd911a2", "tuned_on": true},
+    "holdout.json": {"sha256": "33e799d22254793c3a55714bdb493445ba14269935837e48360c9dd4420c6eb7", "first_commit": "fd911a2", "tuned_on": false, "inspected": "once, to diagnose the earbuds misallocation fixed in #678; no label was changed"},
+    "holdout2.json": {"sha256": "2f3639aba86f67dbc9b396ef420c02decd6d6ac3c0e003e59c360c447a4d2535", "first_commit": "c5b9b69", "tuned_on": false, "inspected": "never"}
+  }
+}

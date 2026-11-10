@@ -1,3 +1,6 @@
 # The verified voice pack has a byte-level SHA-256 in the production manifest.
 # Keep its portable JSON bytes identical on Windows and Unix checkouts.
 models/voices/vi-builtin-v1.json text eol=lf
+
+# Frozen regression ground truth: hashed in tests/mastering/test_regression.py.
+tests/mastering/regression/*.json text eol=lf
