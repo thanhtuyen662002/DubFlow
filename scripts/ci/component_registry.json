@@ -537,6 +537,7 @@
       "roots": [
         "contracts/mastering",
         "engine/dubflow/mastering",
+        "engine/dubflow/docu/shots.py",
         "tests/mastering",
         "fixtures/mastering"
       ],
