@@ -95,3 +95,40 @@ def ass_document(title: str, duration_ms: int, *, number: int = 0, panel_width: 
         "Style: Text,Arial,40,&H00FFFFFF,&H000000FF,&H00101820,&H80000000,-1,0,0,0,100,100,0,0,1,3,1,7,0,0,0,1",
         "", "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text", *events,
     )) + "\n"
+
+
+def program_ass(duration_ms: int, *, programme: str, title: str = "", rank: int | None = None,
+                captions: Sequence[Caption] = (), heading_ms: int = 3500) -> str:
+    """The overlay of one part of a raw programme (ADR-0053 §6).
+
+    An item shows its rank badge and title at the top for its first seconds; the hook and intro show the
+    programme's title; the narration's captions sit at the bottom, where raw footage rarely carries its own.
+    """
+    events: list[str] = []
+    shown = min(duration_ms, heading_ms)
+
+    def dialogue(start: int, stop: int, layer: int, text: str) -> None:
+        events.append(f"Dialogue: {layer},{_time(start, ass=True)},{_time(stop, ass=True)},Text,,0,0,0,,{text}")
+
+    def wrap(value: str, width: int) -> str:
+        return r"\N".join(_text(part) for part in textwrap.wrap(value, width=width))
+
+    heading = title or programme
+    if heading:
+        x = 60
+        if rank is not None:
+            dialogue(0, shown, 1, "{\\an7\\pos(40,40)\\bord0\\shad0\\1c&H80DCC4&\\p1}m 0 0 l 150 0 150 130 0 130{\\p0}")
+            dialogue(0, shown, 2, f"{{\\an5\\pos(115,105)\\fs84\\b1\\c&H17202A&\\bord0}}#{rank}")
+            x = 215
+        dialogue(0, shown, 1, f"{{\\an7\\pos({x - 20},40)\\bord0\\shad0\\1c&H000000&\\1a&H50&\\p1}}m 0 0 l {1860 - x} 0 {1860 - x} 130 0 130{{\\p0}}")
+        dialogue(0, shown, 2, f"{{\\an4\\pos({x},105)\\fs{52 if len(heading) < 40 else 40}}}{wrap(heading, 60)}")
+    for caption in captions:
+        dialogue(caption.start_ms, caption.end_ms, 3,
+                 f"{{\\an2\\pos({WIDTH // 2},{HEIGHT - 70})\\fs52\\bord4\\shad1}}{wrap(caption.text, 52)}")
+    return "\n".join((
+        "[Script Info]", "ScriptType: v4.00+", f"PlayResX: {WIDTH}", f"PlayResY: {HEIGHT}", "WrapStyle: 2",
+        "ScaledBorderAndShadow: yes", "", "[V4+ Styles]",
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+        "Style: Text,Arial,40,&H00FFFFFF,&H000000FF,&H00101820,&H80000000,-1,0,0,0,100,100,0,0,1,3,1,7,0,0,0,1",
+        "", "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text", *events,
+    )) + "\n"

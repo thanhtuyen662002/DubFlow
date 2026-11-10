@@ -54,13 +54,16 @@ def text(value: Any, label: str, limit: int, *, required: bool = False, spoken: 
     return value
 
 
-def load_spec(path: Path) -> Spec:
+def load_spec(path: Path) -> Spec | Any:
     try:
         if path.stat().st_size > 256 * 1024:
             raise ValueError("too large")
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
         raise CompilationError("Không đọc được yêu cầu tổng hợp") from error
+    if type(value) is dict and value.get("schema_version") == 2 and type(value.get("schema_version")) is int:
+        from . import program  # Tổng hợp from un-dubbed footage (ADR-0053); v1 below is unchanged
+        return program.load(value)
     fields = {"schema_version", "title", "layout", "voice_id", "speed", "music", "music_volume", "intro", "outro", "items"}
     if (type(value) is not dict or set(value) != fields or type(value.get("schema_version")) is not int
             or value["schema_version"] != 1):
