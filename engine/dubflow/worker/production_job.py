@@ -87,6 +87,9 @@ from engine.dubflow.translation.sensitive import SensitivePolicy, SensitiveWords
 from engine.dubflow.worker.b2_audio import B2AudioError, B2AudioResult, MEASURED_GAP_EVIDENCE, run_b2_audio
 from engine.dubflow.worker import export_publication
 from engine.dubflow.worker.protocol import Envelope, MessageType, ProtocolError
+from engine.dubflow.mastering import measure as mastering_measure
+from engine.dubflow.mastering.plan import OFF as MASTERING_OFF, Options as MasteringOptions, PlanError as MasteringPlanError
+from engine.dubflow.mastering.planners import dubbing as dubbing_master
 
 
 SCHEMA_VERSION = 1
@@ -828,6 +831,77 @@ def _subtitle_style(config: WorkerConfig) -> SubtitleStyle | None:
         return SubtitleStyle.from_mapping(document["style"])
     except (OSError, ValueError) as error:
         raise ProductionJobError("SUBTITLE_STYLE_INVALID", f"{path.name}: {error}") from error
+
+
+MASTERING_FILE = "mastering.json"
+
+
+def _mastering_options(config: WorkerConfig) -> MasteringOptions:
+    """mastering.json beside the outputs (ADR-0055); absent is off. A broken file fails the job, never reads as off."""
+    path = config.output_dir / MASTERING_FILE
+    if not path.is_file():
+        return MASTERING_OFF
+    try:
+        if path.stat().st_size > 16 * 1024:
+            raise ValueError("file is too large")
+        return MasteringOptions.from_dict(json.loads(path.read_text(encoding="utf-8")))
+    except (OSError, ValueError, MasteringPlanError) as error:
+        raise ProductionJobError("MASTERING_OPTIONS_INVALID", f"{path.name}: {error}") from error
+
+
+def _wav_rate(path: Path, default: int = 48_000) -> int:
+    try:
+        with wave.open(str(path), "rb") as reader:
+            return reader.getframerate()
+    except (OSError, EOFError, wave.Error):
+        return default
+
+
+def _dubbing_mastering(options: MasteringOptions, config: WorkerConfig, probe: MediaProbeResult, source_hash: str,
+                       audio_path: Path | None, work_dir: Path, checkpoint: dict[str, Any], checkpoint_path: Path,
+                       emitter: Any, warnings: list[str]) -> tuple[Path | None, tuple[str, ...], dict[str, Any] | None]:
+    """The dubbing mastering stage (ADR-0055): (audio to render, video filters, plan document) — or the inputs
+    unchanged when mastering is off or anything in it fails (the job then renders as off and says why)."""
+    if not options.enabled:
+        return audio_path, (), None
+    try:
+        folder = work_dir / "mastering"
+        folder.mkdir(parents=True, exist_ok=True)
+        plan_path, mastered = folder / "dubbing-plan.json", folder / "final_mix_mastered.wav"
+        identity = sha256(json.dumps({"options": options.to_dict(), "recipe": dubbing_master.RECIPE, "source": source_hash,
+                                      "mix": _sha256(audio_path) if audio_path is not None else None},
+                                     sort_keys=True).encode()).hexdigest()
+        stage = checkpoint["stages"].get("mastering", {})
+        document: dict[str, Any] | None = None
+        if stage.get("input_hash") == identity and plan_path.is_file():
+            document = json.loads(plan_path.read_text(encoding="utf-8"))
+            if document.get("audio_filter") and not (mastered.is_file() and _sha256(mastered) == stage.get("mastered_sha256")):
+                document = None
+        if document is None:
+            emitter.progress(0.80, "Đang đo âm lượng và hình ảnh để hậu kỳ")
+            mix = mastering_measure.loudness(config.ffmpeg_path, audio_path) if audio_path is not None else None
+            rate = _wav_rate(audio_path) if audio_path is not None else None
+            frames = mastering_measure.picture(mastering_measure.grey_frames(
+                config.ffmpeg_path, config.source_path, mastering_measure.frame_times(probe.duration_ticks or 0, 16)))
+            master = dubbing_master.plan(options, mix=mix, mix_rate=rate, frames=frames, width=probe.video.width,
+                                         height=probe.video.height)
+            result: dict[str, Any] = {"input_hash": identity, "path": str(plan_path)}
+            if master.audio_filter and audio_path is not None:
+                emitter.progress(0.82, "Đang chuẩn hóa âm lượng bản lồng tiếng")
+                partial = mastered.with_name(mastered.stem + ".partial.wav")
+                mastering_measure._capture([str(config.ffmpeg_path), "-hide_banner", "-nostdin", "-v", "error", "-y",
+                                            "-i", str(audio_path), "-map", "0:a:0", "-af", master.audio_filter,
+                                            "-c:a", "pcm_s16le", str(partial)])
+                os.replace(partial, mastered)
+                result["mastered_sha256"] = _sha256(mastered)
+            document = master.to_dict()
+            _atomic_json(plan_path, document)
+            _write_stage(checkpoint, checkpoint_path, "mastering", result)
+        render_audio = mastered if document.get("audio_filter") and audio_path is not None else audio_path
+        return render_audio, tuple(document.get("video_filters") or ()), document
+    except Exception as error:  # noqa: BLE001 - mastering never fails a dub; the job renders as off
+        warnings.append(f"MASTERING_SKIPPED: {type(error).__name__}: {str(error)[:200]}")
+        return audio_path, (), None
 
 
 TRANSLATION_SETTINGS_FILE = "translation_settings.json"
@@ -1836,6 +1910,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
     checkpoint_path = config.checkpoint_path or (work_dir / "checkpoint.json")
     source_hash = _sha256(config.source_path)
     checkpoint = _read_checkpoint(checkpoint_path, source_hash)
+    mastering_options = _mastering_options(config)
 
     profile_path = config.app_root / "models" / "manifests" / "production-cpu-v1.json"
     if not profile_path.is_file():
@@ -2190,6 +2265,8 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
             emitter.progress(0.70, "B2 audio không khả dụng; giữ Vietsub và audio gốc" if probe.has_audio
                              else "Video nguồn không có audio; tiếp tục xuất Vietsub")
 
+    audio_path, mastering_filters, mastering_document = _dubbing_mastering(
+        mastering_options, config, probe, source_hash, audio_path, work_dir, checkpoint, checkpoint_path, emitter, warnings)
     final_path = export_dir / "final_vi.mp4"
     render_stage = "render-dubbed" if audio_path is not None else "render"
     video_duration = _source_render_duration(probe)
@@ -2205,11 +2282,13 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
         blur_regions = (blur_regions + cover.keep_auto(detected))[:MAX_BLUR_REGIONS]
     # Passed only when chosen, so a job without a cover style renders exactly as before.
     cover_args: dict[str, Any] = {"cover_style": cover_style} if blur_regions and cover_style is not None else {}
+    if mastering_filters:  # passed only when mastering chose one, so off renders exactly as before
+        cover_args["mastering_filters"] = mastering_filters
     # A successful B2 run always re-renders against the newly verified mix.
     # This prevents a changed voice-pack hash or regenerated mix from being
     # hidden by a stale final-video checkpoint after a resumable restart.
     def render_identity() -> str:
-        return sha256(json.dumps({"source": source_hash, "translation": translation_input, "subtitles": _sha256(ass_path), "burn_in": config.burn_in_subtitles, "audio": _sha256(audio_path) if audio_path is not None else "original", "recipe": "h264-aac-source-duration-v2", "duration": video_duration.to_dict() if video_duration else None, "adapter": _sha256(Path(__file__).parents[1] / "media" / "adapter.py"), **({"blur": [region.to_dict() for region in blur_regions]} if blur_regions else {}), **({"cover": cover_args["cover_style"].to_dict()} if cover_args else {})}, sort_keys=True).encode()).hexdigest()
+        return sha256(json.dumps({"source": source_hash, "translation": translation_input, "subtitles": _sha256(ass_path), "burn_in": config.burn_in_subtitles, "audio": _sha256(audio_path) if audio_path is not None else "original", "recipe": "h264-aac-source-duration-v2", "duration": video_duration.to_dict() if video_duration else None, "adapter": _sha256(Path(__file__).parents[1] / "media" / "adapter.py"), **({"blur": [region.to_dict() for region in blur_regions]} if blur_regions else {}), **({"cover": cover_args["cover_style"].to_dict()} if "cover_style" in cover_args else {}), **({"mastering": mastering_document} if mastering_document is not None else {})}, sort_keys=True).encode()).hexdigest()
 
     render_input = render_identity()
     render_ready = False
@@ -2310,7 +2389,12 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
         background_summary = {"mode": "original"}
     qc_path = export_dir / "qc_report.json"
     qc = {"schema_version": 1, "status": "passed", "source_probe": probe.to_dict(), "output_probe": output_probe.to_dict(), "audio": audio_metadata,
-          **({"caption_blur": {"auto": caption_scan_summary, "regions": len(blur_regions), **({"style": cover_args["cover_style"].mode} if cover_args else {})}} if blur_regions or caption_scan_summary else {}), "warnings": warnings, "downgrade": any(not warning.startswith(INFORMATIONAL_WARNINGS) for warning in warnings), "validated_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+          **({"caption_blur": {"auto": caption_scan_summary, "regions": len(blur_regions), **({"style": cover_args["cover_style"].mode} if "cover_style" in cover_args else {})}} if blur_regions or caption_scan_summary else {}), "warnings": warnings, "downgrade": any(not warning.startswith(INFORMATIONAL_WARNINGS) for warning in warnings), "validated_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    if mastering_document is not None:
+        qc["mastering"] = {"level": mastering_options.level, "recipe": dubbing_master.RECIPE, "notes": mastering_document["notes"],
+                           "loudness": bool(mastering_document["audio_filter"]) and b2_audio is not None,
+                           "video_filters": mastering_document["video_filters"], "climax": mastering_document["climax"],
+                           "measured": mastering_document["measured"]}
     if speaker_summary is not None:
         qc["speakers"] = speaker_summary
     qc["background"] = background_summary

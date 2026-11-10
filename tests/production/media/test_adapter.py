@@ -264,6 +264,23 @@ class MediaCommandTests(unittest.TestCase):
         self.assertNotIn("|", " ".join(render_call))
         self.assertEqual(list(self.root.glob(".*.partial")), [])
 
+    def test_mastering_filters_run_before_the_subtitles_and_nothing_else_is_accepted(self) -> None:
+        trusted_root = Path(sys.executable).resolve().parent
+        runner = RecordingRunner()
+        adapter = FfmpegMediaAdapter(sys.executable, trusted_root=trusted_root, runner=runner)
+        adapter.render(self.source, self.root / "plain.mp4", subtitle_path=self.subtitle, burn_in_subtitles=True)
+        plain = runner.calls[-1][runner.calls[-1].index("-vf") + 1]
+        graded = "crop=1800:1012:60:34,scale=1920:1080:flags=lanczos,setsar=1"
+        adapter.render(self.source, self.root / "graded.mp4", subtitle_path=self.subtitle, burn_in_subtitles=True,
+                       mastering_filters=(graded, "colorlevels=rimin=0.05:gimin=0.05:bimin=0.05"))
+        graph = runner.calls[-1][runner.calls[-1].index("-vf") + 1]
+        self.assertLess(graph.index("colorlevels"), graph.index("subtitles="))  # captions are not graded
+        strip = lambda text: re.sub(r"\.dubflow-subtitle-\w+", "S", text)
+        self.assertEqual(strip(graph.replace(graded + ",colorlevels=rimin=0.05:gimin=0.05:bimin=0.05,", "")), strip(plain))
+        for bad in ("hflip", "rotate=0.01", "colorlevels=rimin=0.1[x];[x]drawtext=text=a", "subtitles=../a.ass", "eq=gamma=2"):
+            with self.subTest(bad=bad), self.assertRaises(MediaAdapterError):
+                adapter.render(self.source, self.root / "bad.mp4", mastering_filters=(bad,))
+
     def test_video_bitrate_follows_pixels_per_second_within_bounds(self):
         stream = lambda width, height, rate: MediaStream(0, "video", "h264", None, None, None, None, width=width, height=height,
                                                          frame_rate=Rational.parse(rate, "rate") if rate else None)
