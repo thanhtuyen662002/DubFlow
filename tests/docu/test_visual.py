@@ -28,7 +28,7 @@ class ShotTests(unittest.TestCase):
 
             def runner(argv, cwd, cancelled):
                 calls.append(argv)
-                self.assertRegex(" ".join(argv), r"scale=320:-2,split=2\[cut\]\[slow\];\[cut\]scdet=threshold=[0-9.]+:sc_pass=1,metadata=mode=print:file=scdet\.txt")
+                self.assertRegex(" ".join(argv), r"scale=320:-2,split=2\[cut\]\[slow\];\[cut\]scdet=threshold=[0-9.]+,metadata=mode=print:key=lavfi\.scd\.time:file=scdet\.txt")
                 (cwd / "scdet.txt").write_text("lavfi.scd.time=3.5\nlavfi.scd.time=7.25\n", encoding="utf-8")
             first = shots.detect(video, 12.0, cache, ffmpeg=Path("ffmpeg"), run=runner, cancelled=lambda: False)
             again = shots.detect(video, 12.0, cache, ffmpeg=Path("ffmpeg"), run=runner, cancelled=lambda: False)

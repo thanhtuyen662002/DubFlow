@@ -126,6 +126,19 @@ class MediaTests(unittest.TestCase):
             self.assertEqual(result.shots[0].start_ms, 0)
             self.assertEqual(result.shots[-1].end_ms, info.duration_ms)
 
+    def test_a_clip_with_no_cut_at_all_is_one_shot(self):
+        # scdet with sc_pass=1 passed no frame on and FFmpeg 9 failed the pass ("Could not open encoder before EOF"),
+        # so every single-take clip fell back (found in Phase 2). Every frame now passes; only cuts are printed.
+        with TemporaryDirectory() as folder:
+            root = Path(folder)
+            video = root / "one.mp4"
+            subprocess.run([FFMPEG, "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=320x180:r=25:d=3", "-c:v", "mpeg4",
+                            "-q:v", "3", str(video)], check=True, timeout=120)
+            info = a.probe(Path(FFPROBE), video)
+            result = a.analyse(video, info, root / "a" / "one.json", ffmpeg=Path(FFMPEG), run=runner([]))
+            self.assertEqual(result.cuts_ms, ())
+            self.assertEqual(len(result.shots), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

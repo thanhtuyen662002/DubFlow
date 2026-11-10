@@ -56,6 +56,8 @@ class Spec:
     reuse_from: Path | None = None
     # Tối ưu hậu kỳ tự động (ADR-0052): None or level "off" renders exactly as before.
     mastering: Any = None
+    # What the user says about the footage and how they changed the choice (ADR-0054); used only with mastering.
+    editorial: Any = None
 
 
 class Speaker(Protocol):
@@ -138,6 +140,7 @@ def load_spec(path: Path) -> Spec:
             raise ProductError("Tùy chọn tối ưu hậu kỳ không hợp lệ") from error
         if not mastering.enabled:
             mastering = None
+    editorial = _editorial(value.get("editorial"), len(visuals)) if mastering is not None else None
     return Spec(
         name=_string(value.get("name"), "Tên sản phẩm", 120),
         price=_string(value.get("price"), "Giá", 60),
@@ -153,7 +156,48 @@ def load_spec(path: Path) -> Spec:
         focus=(float(focus["x"]), float(focus["y"])),
         reuse_from=reuse_dir,
         mastering=mastering,
+        editorial=editorial,
     )
+
+
+@dataclass(frozen=True)
+class Editorial:
+    """``editorial`` of a product spec: a note per visual, the user's edits and the AI used to look at the footage."""
+
+    notes: tuple[str, ...] = ()
+    edits: Any = None
+    ai: dict[str, str] | None = None
+    vision_budget: int = 60
+
+    def digest_input(self) -> dict[str, Any]:
+        return {"notes": list(self.notes), "edits": None if self.edits is None else self.edits.to_dict(),
+                "ai": self.ai, "vision_budget": self.vision_budget}
+
+
+def _editorial(value: Any, visuals: int) -> Editorial:
+    if value is None:
+        return Editorial()
+    from engine.dubflow.mastering import align
+    if type(value) is not dict or set(value) - {"notes", "edits", "ai", "vision_budget"}:
+        raise ProductError("Thông tin biên tập không hợp lệ")
+    notes = value.get("notes", [])
+    if type(notes) is not list or len(notes) > visuals or any(item is not None and type(item) is not str for item in notes):
+        raise ProductError("Ghi chú clip không hợp lệ")
+    clean = tuple(_string(item, "Ghi chú clip", 300) if item is not None else "" for item in notes)
+    try:
+        edits = align.Edits.from_dict(value.get("edits"))
+    except ValueError as error:
+        raise ProductError("Chỉnh sửa lựa chọn cảnh không hợp lệ") from error
+    ai = value.get("ai")
+    if ai is not None:
+        if type(ai) is not dict or set(ai) - {"provider", "model", "base_url"} or type(ai.get("provider")) is not str \
+                or any(v is not None and (type(v) is not str or len(v) > 300) for v in ai.values()):
+            raise ProductError("Cài đặt AI xem hình không hợp lệ")
+        ai = {k: v for k, v in ai.items() if v}
+    budget = value.get("vision_budget", 60)
+    if type(budget) is not int or not 0 <= budget <= 400:
+        raise ProductError("Giới hạn khung hình cho AI không hợp lệ")
+    return Editorial(clean, edits, ai, budget)
 
 
 def _atomic_text(path: Path, text: str) -> None:
@@ -236,59 +280,98 @@ def _mastered(spec: Spec, visuals: Sequence[render.Visual], total_ms: int, work:
               spoken: Sequence[tuple[str, int]] = (),
               inspect: Callable[[Path], Any] | None, measure: Callable[[Path], tuple[int, int]] | None, ffmpeg: Path,
               ffmpeg_runner: Callable[[list[str], Path, Callable[[], bool]], None],
-              cancelled: Callable[[], bool]) -> dict[str, Any]:
-    """Shot-aware segments from the shared mastering planner (ADR-0052), or None segments and a warning.
+              cancelled: Callable[[], bool], vision: Callable[..., Any] | None = None) -> dict[str, Any]:
+    """Segments chosen by the shared editorial planner (ADR-0052/0054), or None segments and a warning.
 
-    The plan is saved as ``mastering_plan-<n>.json``; made again from the same files, length and options, it is
-    loaded instead of analysing the clips again. Anything that fails falls back to the usual segments.
+    Each sentence of the narration gets the footage that matches it best: the seller's notes and file names, and
+    what the user's AI saw on each shot when a vision model is available. The plan is saved as
+    ``mastering_plan-<n>.json`` and its decision log (chosen shots, the next best, why) as ``editorial-<n>.json``;
+    made again from the same files, script and settings, both are loaded instead. Anything that fails falls back
+    to the usual segments.
     """
     from dataclasses import replace
-    from engine.dubflow.mastering import analysis as scene, plan as mastering_plan
+    from engine.dubflow.mastering import analysis as scene, candidates as shots, plan as mastering_plan
+    from engine.dubflow.mastering import vision as seeing
+    from engine.dubflow.mastering.candidates import duplicate_groups
     from engine.dubflow.mastering.planners import product as planner
 
     options = spec.mastering
+    editorial = spec.editorial or Editorial()
     name = f"mastering_plan-{number}.json"
+    log_name = f"editorial-{number}.json"
     path = work / name
-    report: dict[str, Any] = {"level": options.level, "style": options.style, "plan": name, "segments": None}
+    report: dict[str, Any] = {"level": options.level, "style": options.style, "plan": name, "editorial": log_name, "segments": None}
+    folder = work / "mastering"
     try:
-        wanted = planner.inputs([v.path for v in visuals], total_ms, options, spoken=spoken, template=spec.template)
+        facts = " ".join([spec.name, spec.price, *spec.features, *editorial.notes])
+        wanted = planner.inputs([v.path for v in visuals], total_ms, options, spoken=spoken, template=spec.template,
+                                editorial={**editorial.digest_input(), "facts": facts, "vision": vision is not None})
         saved = mastering_plan.load_matching(path, workflow=planner.WORKFLOW, options=options, planner_version=planner.VERSION,
                                              inputs=wanted)
+        if saved is not None and not (work / log_name).is_file():
+            saved = None
         report["reused"] = saved is not None
         if saved is None:
             if inspect is None:
                 raise scene.AnalysisError("no analyser")
-            inputs = []
-            for index, visual in enumerate(visuals, start=1):
+            inputs, found = [], {}
+            for index, visual in enumerate(visuals):
                 if cancelled():
                     raise Cancelled()
+                source_id = f"v{index + 1}"
                 if visual.duration_ms is None:
                     width, height = measure(visual.path) if measure is not None else (1, 1)
                     inputs.append(planner.Visual(visual.path, None, width, height))
+                    found[index] = [shots.still(source_id, visual.path, folder, ffmpeg=ffmpeg, run=ffmpeg_runner, cancelled=cancelled)]
                     continue
                 info = replace(inspect(visual.path), duration_ms=visual.duration_ms)
-                result = scene.analyse(visual.path, info, scene.cache_path(work / "mastering", visual.path), ffmpeg=ffmpeg,
+                result = scene.analyse(visual.path, info, scene.cache_path(folder, visual.path), ffmpeg=ffmpeg,
                                        run=ffmpeg_runner, cancelled=cancelled)
                 inputs.append(planner.Visual(visual.path, visual.duration_ms, info.width, info.height, result))
-            saved = planner.plan(inputs, total_ms, options, inputs=wanted, plan_id=f"product-{number}")
+                found[index] = shots.extract(visual.path, source_id, result, folder, ffmpeg=ffmpeg, run=ffmpeg_runner, cancelled=cancelled)
+            pool = [c for mine in found.values() for c in mine]
+            evidence = planner.gather_evidence([v.path for v in visuals], found, editorial.notes)
+            vision_report = None
+            if vision is not None:
+                describer = vision(folder / "vision", context=f"Video bán hàng: {spec.name}".strip())
+                seen = describer.describe(seeing.frames_for(pool, folder), cancelled)
+                if cancelled():
+                    raise Cancelled()
+                seeing.apply(seen, evidence, f"AI {describer.provider}/{describer.used_model}")
+                vision_report = {"provider": describer.provider, "model": describer.used_model, "frames": len(seen),
+                                 "asked": describer.asked, "warnings": describer.warnings}
+            saved, log = planner.plan_editorial(inputs, spoken, total_ms, options, lead_ms=script.LEAD_MS, gap_ms=script.GAP_MS,
+                                                candidates=found, evidence=evidence, groups=duplicate_groups(pool),
+                                                edits=editorial.edits, facts=facts, inputs=wanted, notes=editorial.notes,
+                                                plan_id=f"product-{number}")
+            log["vision"] = vision_report
+            if vision_report and vision_report["warnings"]:
+                log["warnings"] = list(log["warnings"]) + vision_report["warnings"]
             mastering_plan.save(path, saved)
-        report["segments"] = [render.Segment(visuals[p.visual], p.offset_ms, p.duration_ms) for p in planner.pieces(saved)]
+            _atomic_text(work / log_name, json.dumps(log, ensure_ascii=False, indent=1))
+        log = json.loads((work / log_name).read_text(encoding="utf-8"))
+        report["segments"] = [render.Segment(visuals[p.visual], p.offset_ms, p.duration_ms, p.focus) for p in planner.pieces(saved)]
         report["count"] = len(saved.segments)
         report["review"] = sum(segment.needs_review for segment in saved.segments)
-        if saved.warnings:
-            report["warnings"] = list(saved.warnings)
+        report["mode"] = log.get("mode")
+        if log.get("vision"):
+            report["vision"] = {k: log["vision"][k] for k in ("provider", "model", "frames")}
+        warnings = list(dict.fromkeys([*saved.warnings, *log.get("warnings", [])]))
+        if warnings:
+            report["warnings"] = warnings
     except Cancelled:
         raise
     except Exception as error:  # noqa: BLE001 - mastering never stops a video the usual plan can make
         report["segments"] = None
-        report["fallback"] = f"Không lập được kế hoạch hậu kỳ ({getattr(error, 'message', type(error).__name__)}); dùng cách ghép thường."
+        report["fallback"] = f"Không lập được kế hoạch hậu kỳ ({getattr(error, 'message', type(error).__name__)}: {str(error)[:160]}); dùng cách ghép thường."
     return report
 
 
 def run(spec: Spec, output_dir: Path, *, speaker: Callable[[Status], Speaker], probe: Callable[[Path], int],
         measure: Callable[[Path], tuple[int, int]] | None = None,
         ffmpeg: Path, ffmpeg_runner: Callable[[list[str], Path, Callable[[], bool]], None] = run_ffmpeg,
-        encoder: str = render.ENCODER, inspect: Callable[[Path], Any] | None = None) -> dict[str, Any]:
+        encoder: str = render.ENCODER, inspect: Callable[[Path], Any] | None = None,
+        vision: Callable[..., Any] | None = None) -> dict[str, Any]:
     """Render every variant; one variant's failure does not stop the next.
 
     A cancel request stops at the next sentence or video and ends a running
@@ -364,7 +447,7 @@ def run(spec: Spec, output_dir: Path, *, speaker: Callable[[Status], Speaker], p
                 if spec.mastering is not None and spec.template != layout.TEXT_ONLY:
                     status.write(message=f"Đang phân tích cảnh cho video {number}/{len(spec.variants)}…")
                     mastered = _mastered(spec, visuals, total_ms, work, number, spoken=spoken, inspect=inspect, measure=measure,
-                                         ffmpeg=ffmpeg, ffmpeg_runner=ffmpeg_runner, cancelled=cancelled)
+                                         ffmpeg=ffmpeg, ffmpeg_runner=ffmpeg_runner, cancelled=cancelled, vision=vision)
                     status.write(message=f"Đang render video {number}/{len(spec.variants)}…")
                 if mastered is not None and mastered["segments"] is not None:
                     segments = mastered.pop("segments")

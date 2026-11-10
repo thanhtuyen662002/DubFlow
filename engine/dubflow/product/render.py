@@ -54,6 +54,9 @@ class Segment:
     visual: Visual
     offset_ms: int
     duration_ms: int
+    # Where a clip's cover crop is centred (0–1 across, 0–1 down), e.g. the product the planner found;
+    # None keeps the usual centre crop (and the command exactly as before).
+    focus: tuple[float, float] | None = None
 
 
 def plan(visuals: Sequence[Visual], total_ms: int) -> list[Segment]:
@@ -120,6 +123,11 @@ def ffmpeg_argv(ffmpeg: Path, segments: Sequence[Segment], narration: Path, musi
         else:
             argv += ["-stream_loop", "-1", "-ss", _seconds(segment.offset_ms), "-t", seconds, "-i", str(segment.visual.path)]
             fit = f"scale={WIDTH}:{media_height}:force_original_aspect_ratio=increase,crop={WIDTH}:{media_height}"
+            if segment.focus is not None:
+                # Centre the crop on the focus point, clamped inside the picture: nothing is scaled, stretched or zoomed.
+                across, down = (min(1.0, max(0.0, value)) for value in segment.focus)
+                fit += (f":x='max(0,min(iw-{WIDTH},iw*{across:.4f}-{WIDTH}/2))'"
+                        f":y='max(0,min(ih-{media_height},ih*{down:.4f}-{media_height}/2))'")
         filters.append(f"[{index}:v]{fit},setsar=1,fps={FPS},format=yuv420p,trim=duration={seconds},setpts=PTS-STARTPTS[v{index}]")
     voice = len(segments)
     argv += ["-i", str(narration)]

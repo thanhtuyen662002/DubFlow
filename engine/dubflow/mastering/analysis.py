@@ -31,7 +31,7 @@ SILENCE_DB = -40
 SILENCE_MIN_MS = 350
 # Thumbnail differences this close to a cut belong to the cut, not to the shot's motion.
 CUT_GUARD_MS = 300
-RECIPE = f"mastering-analysis-v1+{docu_shots.RECIPE}+silence{SILENCE_DB}dB{SILENCE_MIN_MS}ms"
+RECIPE = f"mastering-analysis-v2+{docu_shots.RECIPE}+silence{SILENCE_DB}dB{SILENCE_MIN_MS}ms"
 Runner = Callable[[list[str], Path, Callable[[], bool]], None]
 
 _SILENCE_START = re.compile(r"lavfi\.silence_start=(-?[0-9]+(?:\.[0-9]+)?)")
@@ -176,7 +176,7 @@ def analyse_text(cut_log: str, thumbs: bytes, silence_log: str | None, duration_
 def argv(ffmpeg: Path, video: Path, *, has_audio: bool, cut_log: str, thumbs: str, silence_log: str) -> list[str]:
     command = [str(ffmpeg), "-hide_banner", "-nostats", "-nostdin", "-i", str(video), "-filter_complex",
                f"[0:v]scale={docu_shots.ANALYSIS_WIDTH}:-2,split=2[cut][slow];"
-               f"[cut]scdet=threshold={docu_shots.THRESHOLD}:sc_pass=1,metadata=mode=print:file={cut_log}[cuts];"
+               f"[cut]scdet=threshold={docu_shots.THRESHOLD},metadata=mode=print:key=lavfi.scd.time:file={cut_log}[cuts];"
                f"[slow]fps={docu_shots.SLOW_FPS},scale={docu_shots.SLOW_W}:{docu_shots.SLOW_H}:flags=area,format=gray[thumbs]",
                "-map", "[cuts]", "-f", "null", "-", "-map", "[thumbs]", "-f", "rawvideo", thumbs]
     if has_audio:
