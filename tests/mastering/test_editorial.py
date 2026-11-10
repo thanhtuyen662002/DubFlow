@@ -232,6 +232,22 @@ class AlignTests(unittest.TestCase):
         self.assertEqual(choices[-1].candidate.candidate_id, "v1c2")
         self.assertEqual(choices[-1].offset_ms, 0)
 
+    def test_a_later_sentence_keeps_its_second_best_shot_too(self):
+        # Real run 5: the hook took the TAMP shot, the grinding/tamping sentence's second match (under 85 %).
+        pour = candidate("v1c12", "v1", 0, 6000, motion=20)
+        grind = candidate("v1c2", "v2", 0, 3000)
+        tamp = candidate("v1c5", "v3", 0, 3000, motion=240)
+        found = ev.gather(["v1c12", "v1c2", "v1c5"])
+        found["v1c12"].add(ev.Item("vision", 800, "Cà phê espresso chảy vào ly thủy tinh"))
+        found["v1c2"].add(ev.Item("vision", 800, "Máy xay hạt cà phê, nút GRIND, bột cà phê mịn"))
+        found["v1c5"].add(ev.Item("vision", 800, "Nén bột cà phê, nút TAMP"))
+        found["v1c12"].hook, found["v1c5"].hook = 300, 900
+        hook = unit("u1", "Buổi sáng tuyệt vời bắt đầu từ đây.", 0, 2000, "hook")
+        making = unit("u3", "Máy xay hạt cà phê thành bột mịn, nén bột bằng nút TAMP.", 2000, 7000, "feature")
+        choices, _, _ = align.assign([hook, making], [pour, grind, tamp], found, PACING, forward_only=False)
+        self.assertNotIn("v1c5", [c.candidate.candidate_id for c in choices if c.unit_id == "u1"])
+        self.assertIn("v1c5", [c.candidate.candidate_id for c in choices if c.unit_id == "u3"])
+
     def test_footage_another_part_showed_is_weighed_as_a_duplicate(self):
         pool = [candidate("v1c1", "v1", 0, 6000), candidate("v1c2", "v1", 6000, 12_000)]
         found = ev.gather(c.candidate_id for c in pool)
@@ -251,6 +267,21 @@ class AlignTests(unittest.TestCase):
         starts = [c.offset_ms for c in choices]
         self.assertEqual(choices[0].candidate.candidate_id, "v1c3")
         self.assertTrue(any("dùng lại" in r for r in choices[-1].reasons) or starts == sorted(starts))
+
+    def test_a_short_match_late_in_a_source_does_not_strand_the_sentences_after_it(self):
+        # Real run 5 (36-min set): a short close match near the end of a source was taken, the source had
+        # nothing left ahead for the rest of the narration and frames were held.
+        pool = [candidate("v1c0", "v1", 0, 6000), candidate("v1c1", "v1", 6000, 7100), candidate("v1c2", "v1", 7100, 8000)]
+        found = ev.gather(c.candidate_id for c in pool)
+        found["v1c0"].add(ev.Item("vision", 800, "Đoàn quân hành quân trên đường"))
+        found["v1c1"].add(ev.Item("vision", 800, "Bản đồ vùng Kavkaz với các mũi tên"))
+        found["v1c2"].add(ev.Item("vision", 800, "Khói bốc lên"))
+        units = [unit("u1", "Bản đồ cho thấy vùng Kavkaz.", 0, 3000, "narration"),
+                 unit("u2", "Quân đội tiến lên.", 3000, 7000, "narration")]
+        choices, _, _ = align.assign(units, pool, found, PACING, forward_only=True)
+        starts = [c.offset_ms for c in choices]
+        self.assertEqual(starts, sorted(starts), [(c.candidate.candidate_id, c.offset_ms, c.length_ms) for c in choices])
+        self.assertFalse(any("dùng lại" in r for c in choices for r in c.reasons))
 
     def test_units_cover_the_timeline_and_cut_in_pauses(self):
         spoken = [("Câu một.", 1000), ("Câu hai.", 2000), ("Mua ngay hôm nay.", 1500)]
@@ -305,6 +336,9 @@ class VisionTests(unittest.TestCase):
         other = vision.Describer(ask, provider="gemini", model="other", cache=self.root / "cache", budget=7)
         other.describe(self.frames[:1])
         self.assertEqual(len(ask.calls), 3)                         # another model asks again
+        warm = vision.Describer(ask, provider="gemini", model="m", cache=self.root / "cache", budget=7)
+        self.assertEqual(sorted(warm.describe(self.frames)), sorted(seen))  # cached frames count: the same 7, none new
+        self.assertEqual(len(ask.calls), 3)
 
     def test_a_percent_or_fraction_scale_is_read_on_a_thousand(self):
         # Gemini answered 90/95/42 when asked for 0–1000: read alone, 90 would be a nearly worthless 90/1000.

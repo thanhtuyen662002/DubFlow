@@ -144,6 +144,7 @@ class Describer:
         self.ask, self.provider, self.model, self.cache = ask, provider, model, cache
         self.labels, self.budget, self.context = tuple(labels), budget, context
         self.asked = 0
+        self.taken = 0  # frames counted against the budget, cached or asked: a warm run sees the same frames as a cold one
         self.warnings: list[str] = []
         self.used_model = model
 
@@ -169,21 +170,24 @@ class Describer:
         """candidate id → what the model saw, for the frames it could see (cached ones first, then the budget)."""
         seen: dict[str, Seen] = {}
         todo: list[tuple[str, bytes, str]] = []
+        readable = []
         for candidate_id, path in frames:
             try:
-                data = path.read_bytes()
+                readable.append((candidate_id, path.read_bytes()))
             except OSError:
                 continue
+        room = max(0, self.budget - self.taken)
+        if len(readable) > room:
+            self.warnings.append(f"Giới hạn {self.budget} khung hình cho AI nhìn mỗi lần: {len(readable) - room} cảnh không được AI xem.")
+            readable = readable[:room]
+        self.taken += len(readable)
+        for candidate_id, data in readable:
             key = self._key(data)
             cached = self._cached(key)
             if cached is not None:
                 seen[candidate_id] = cached
             else:
                 todo.append((candidate_id, data, key))
-        if len(todo) > max(0, self.budget - self.asked):
-            skipped = len(todo) - max(0, self.budget - self.asked)
-            self.warnings.append(f"Giới hạn {self.budget} khung hình cho AI nhìn mỗi lần: {skipped} cảnh không được AI xem.")
-            todo = todo[:max(0, self.budget - self.asked)]
         batches = [todo[start:start + BATCH] for start in range(0, len(todo), BATCH)]
         while batches:
             if cancelled():
