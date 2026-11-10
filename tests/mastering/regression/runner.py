@@ -20,7 +20,7 @@ HERE = Path(__file__).resolve().parent
 
 
 def load(split: str) -> list[dict[str, Any]]:
-    names = {"all": ["dev", "holdout", "holdout2"], "holdout": ["holdout", "holdout2"]}.get(split, [split])
+    names = {"all": ["dev", "holdout", "holdout2", "holdout3"], "holdout": ["holdout", "holdout2", "holdout3"]}.get(split, [split])
     return [s for name in names for s in json.loads((HERE / f"{name}.json").read_text(encoding="utf-8"))]
 
 
