@@ -1,0 +1,140 @@
+{
+ "schema_version": 1,
+ "kind": "mastering_plan",
+ "plan_id": "product-1",
+ "workflow": "product_showcase",
+ "options": {
+  "level": "balanced",
+  "style": "natural"
+ },
+ "time_base": {
+  "numerator": "1",
+  "denominator": "1000"
+ },
+ "duration": "9000",
+ "sources": [
+  {
+   "source_id": "v1",
+   "duration": "12000",
+   "width": 1080,
+   "height": 1920,
+   "fps": {
+    "numerator": 30,
+    "denominator": 1
+   },
+   "has_audio": true,
+   "rights": {
+    "status": "owned",
+    "note": ""
+   },
+   "origin_url": null,
+   "credit": null,
+   "identity": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+   "source_id": "p1",
+   "duration": "0",
+   "width": 1200,
+   "height": 1200,
+   "fps": {
+    "numerator": 0,
+    "denominator": 1
+   },
+   "has_audio": false,
+   "rights": {
+    "status": "owned"
+   }
+  }
+ ],
+ "segments": [
+  {
+   "segment_id": "s1",
+   "source_id": "v1",
+   "source": {
+    "start": "500",
+    "end": "4000"
+   },
+   "timeline": {
+    "start": "0",
+    "end": "3500"
+   },
+   "role": "demonstration",
+   "audio_mode": "narration",
+   "speech_refs": [
+    "sentence-1"
+   ],
+   "framing": {
+    "zoom_from": 1000,
+    "zoom_to": 1080,
+    "center_x": 5000,
+    "center_y": 4200,
+    "protect": [
+     {
+      "x": 2000,
+      "y": 3000,
+      "w": 6000,
+      "h": 4000,
+      "label": "product"
+     }
+    ]
+   },
+   "effects": [
+    "color_match"
+   ],
+   "confidence_milli": 820,
+   "needs_review": false,
+   "reasons": [
+    "inside one shot"
+   ]
+  },
+  {
+   "segment_id": "s2",
+   "source_id": "p1",
+   "source": {
+    "start": "0",
+    "end": "0"
+   },
+   "timeline": {
+    "start": "3400",
+    "end": "6000"
+   },
+   "role": "still",
+   "audio_mode": "narration",
+   "confidence_milli": 1000,
+   "needs_review": false
+  },
+  {
+   "segment_id": "s3",
+   "source_id": "v1",
+   "source": {
+    "start": "7000",
+    "end": "10000"
+   },
+   "timeline": {
+    "start": "6000",
+    "end": "9000"
+   },
+   "role": "primary",
+   "audio_mode": "narration",
+   "framing": null,
+   "effects": [],
+   "confidence_milli": 400,
+   "needs_review": true,
+   "reasons": [
+    "low motion"
+   ]
+  }
+ ],
+ "warnings": [
+  "p1 is a photo"
+ ],
+ "provenance": {
+  "planner": "dubflow.mastering.product",
+  "planner_version": "1",
+  "recipe": "shot-aware-v1",
+  "inputs": {
+   "script": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+   "v1": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+ }
+}
