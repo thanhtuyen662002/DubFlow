@@ -18,6 +18,19 @@ FFMPEG = os.environ.get("DUBFLOW_TEST_FFMPEG") or shutil.which("ffmpeg")
 FFPROBE = os.environ.get("DUBFLOW_TEST_FFPROBE") or shutil.which("ffprobe")
 
 
+def _can_make_webm() -> bool:
+    if not FFMPEG:
+        return False
+    try:
+        listed = subprocess.run([FFMPEG, "-hide_banner", "-encoders"], capture_output=True, text=True, timeout=30).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return "libsvtav1" in listed and "libopus" in listed
+
+
+WEBM = _can_make_webm()
+
+
 class FakeSpeaker:
     sample_rate = 48000
 
@@ -115,10 +128,12 @@ class RealMediaProgrammeTest(unittest.TestCase):
     """Five raw sources with subtitles: a Top 5 with hook, intro, items, outro, captions and source moments."""
 
     def make(self, path: Path, pattern: str, seconds: int, *, audio: str | None, size: str = "640x360") -> None:
+        webm = path.suffix == ".webm"  # AV1 + Opus, as a downloaded WebM
         command = [FFMPEG, "-v", "error", "-y", "-f", "lavfi", "-i", f"{pattern}=s={size}:r=25:d={seconds}"]
         if audio:
-            command += ["-f", "lavfi", "-i", f"{audio}:d={seconds}", "-c:a", "aac", "-shortest"]
-        command += ["-c:v", "mpeg4", "-q:v", "5", str(path)]
+            command += ["-f", "lavfi", "-i", f"{audio}:d={seconds}", "-c:a", "libopus" if webm else "aac", "-shortest"]
+        command += ["-c:v", "libsvtav1", "-preset", "12"] if webm else ["-c:v", "mpeg4", "-q:v", "5"]
+        command.append(str(path))
         subprocess.run(command, check=True, timeout=120)
 
     def test_top5_from_raw_footage(self):
@@ -129,7 +144,7 @@ class RealMediaProgrammeTest(unittest.TestCase):
                       ("ga", "con gà gáy buổi sáng", "yuvtestsrc", "sine=f=300")]
             items = []
             for number, (name, said, pattern, audio) in enumerate(topics, 1):
-                clip = root / f"{name}.mp4"
+                clip = root / (f"{name}.webm" if name == "banh" and WEBM else f"{name}.mp4")
                 self.make(clip, pattern, 9, audio=audio, size="360x640" if number == 2 else "640x360")
                 srt = root / f"{name}.srt"
                 srt.write_text(f"1\n00:00:04,000 --> 00:00:07,000\n{said}\n", encoding="utf-8")
@@ -139,8 +154,27 @@ class RealMediaProgrammeTest(unittest.TestCase):
             value = {"schema_version": 2, "title": "Top 5 điều kỳ lạ", "layout": "toan-man-hinh", "voice_id": "v",
                      "program": {"kind": "top_n"}, "hook": "Bạn sẽ không tin chiếc xe đạp tự chạy.", "intro": "Cùng xem năm điều kỳ lạ nhất.",
                      "outro": "Cảm ơn bạn đã xem.", "items": items}
+            items[4]["narration"] = ""  # drafted by the AI
+            value["editorial"] = {"ai": {"provider": "gemini"}}
             spec = job.load_spec(write_spec(root, value))
             out = root / "out"
+            drafts = []
+
+            def ask_text(system, schema, parts):
+                drafts.append(parts[0]["text"])
+                return {"narration": f"Một con gà gáy vang lần thứ {len(drafts)}.", "needs_check": []}
+
+            class Seeing:  # a describer whose answers are cached: the second run asks for nothing
+                provider, used_model, warnings = "gemini", "fake", []
+                runs = 0
+
+                def __init__(self, cache, context="", labels=()):
+                    Seeing.runs += 1
+                    self.asked = 0
+
+                def describe(self, frames, cancelled):
+                    self.asked = len(frames) if Seeing.runs == 1 else 0
+                    return {}
 
             def probe(path):
                 from engine.dubflow.product.job import probe_duration_ms
@@ -153,14 +187,18 @@ class RealMediaProgrammeTest(unittest.TestCase):
                 run_ffmpeg(argv, cwd, cancelled)
             result = run_program(spec, out, speaker=lambda status: FakeSpeaker(), probe=probe,
                                  inspect=lambda path: scene.probe(Path(FFPROBE), path), ffmpeg=Path(FFMPEG),
-                                 ffmpeg_runner=runner, encoder="mpeg4")
+                                 ffmpeg_runner=runner, encoder="mpeg4", vision=Seeing, ask_text=ask_text)
             self.assertEqual(result["state"], "COMPLETED", result)
             work = out / ".dubflow-work"
             hook = m.load(work / "mastering" / "plan-hook.json")
             self.assertEqual(hook.segments[0].role, "hook")
             self.assertEqual(hook.segments[0].source_id, "i3-s1")  # the hook line's words are in source 3's subtitles
-            item = m.load(work / "mastering" / "plan-i2.json")
-            self.assertTrue(any(s.audio_mode == "source" for s in item.segments))  # ends on its own sound
+            for part in ("i1", "i2", "i4", "i5"):  # every item with sound ends on its own sound
+                item = m.load(work / "mastering" / f"plan-{part}.json")
+                self.assertEqual(item.segments[-1].audio_mode, "source", part)
+                self.assertFalse(any(s.role == "still" for s in item.segments), part)  # the narration had footage ahead
+            if WEBM:  # the WebM is played from a stream copy in Matroska
+                self.assertTrue([c for c in commands if "copy" in c and str(c[-1]).endswith(".partial.mkv")])
             silent = m.load(work / "mastering" / "plan-i3.json")
             self.assertFalse(any(s.audio_mode == "source" for s in silent.segments))  # no audio: no moment
             for plan_file in (work / "mastering").glob("plan-*.json"):
@@ -179,16 +217,43 @@ class RealMediaProgrammeTest(unittest.TestCase):
             self.assertEqual([p["id"] for p in programme["parts"]], ["hook", "intro", "i1", "i2", "i3", "i4", "i5", "outro"])
             renders = [c for c in commands if "-filter_complex" in c and "concat=n=" in " ".join(c) and str(c[-1]).endswith(".mp4")]
             self.assertEqual(len(renders), 9)  # 8 parts + the join: one encode each, like v1
+            self.assertEqual(len(drafts), 1)
+            first_draft = m.load(work / "mastering" / "plan-i5.json")
             # Edit one item: only that part is rendered again.
             value["items"][1]["narration"] = "Một chú chó bơi rất giỏi."
             commands.clear()
             again = run_program(job.load_spec(write_spec(root, value)), out, speaker=lambda status: FakeSpeaker(), probe=probe,
                                 inspect=lambda path: scene.probe(Path(FFPROBE), path), ffmpeg=Path(FFMPEG), ffmpeg_runner=runner,
-                                encoder="mpeg4")
+                                encoder="mpeg4", vision=Seeing, ask_text=ask_text)
             self.assertEqual(again["state"], "COMPLETED", again)
             parts = [c[-1] for c in commands if str(c[-1]).endswith(".partial.mp4") and "part-" in str(c[-1])]
             self.assertEqual([Path(p).name for p in parts], ["part-i2.partial.mp4"])
             self.assertFalse([c for c in commands if "scdet" in " ".join(c)])  # sources not analysed again
+            self.assertEqual(len(drafts), 1)  # the AI's draft was kept, not written again
+            self.assertEqual(m.load(work / "mastering" / "plan-i5.json"), first_draft)
+
+
+class MomentTest(unittest.TestCase):
+    def test_the_ending_is_kept_for_the_items_own_sound(self):
+        from engine.dubflow.mastering import candidates as shots, evidence as ev
+        from engine.dubflow.mastering.planners import compilation as planner
+        found = scene.Analysis(12_000, (6000,), (scene.Shot(0, 6000, 40), scene.Shot(6000, 12_000, 60)), (), True, "x" * 64)
+        source = planner.Footage("i1-s1", Path("meo.mp4"), found, 640, 360, (25, 1),
+                                 cues=((7000, 9000, "con mèo nhảy lên bàn"),))
+        quality = shots.Quality(120, 50, 300)
+        pool = [shots.Candidate("i1-s1c1", "i1-s1", 0, 6000, 0, 40, quality, 1),
+                shots.Candidate("i1-s1c2", "i1-s1", 6000, 12_000, 1, 60, quality, 2**40)]
+        evidence = planner.evidence_for([source], {"i1-s1": pool}, {})
+        spoken = [("Con mèo nhảy lên bàn rất nhanh.", 2500), ("Ai cũng bất ngờ.", 2500)]
+        made = planner.plan_part("i1", "item", spoken, 5600, m.Options("balanced", "entertainment"), lead_ms=200, gap_ms=300,
+                                 footage=[source], candidates={"i1-s1": pool}, evidence=evidence, title="Con mèo nhảy lên bàn",
+                                 inputs={"part": "0" * 64})
+        last = made.plan.segments[-1]
+        self.assertEqual((last.role, last.audio_mode), ("reaction", "source"))
+        self.assertGreaterEqual(last.source.start, 6000)
+        self.assertFalse(any(s.role == "still" for s in made.plan.segments))
+        narration = [s for s in made.plan.segments if s.audio_mode != "source"]
+        self.assertTrue(all(s.source.end <= last.source.start for s in narration))  # the source still plays forward
 
 
 class MontageArgvTest(unittest.TestCase):

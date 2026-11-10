@@ -66,7 +66,19 @@ class QualityTests(unittest.TestCase):
 class EvidenceTests(unittest.TestCase):
     def test_folding_terms_and_cues(self):
         self.assertEqual(ev.fold("Cận cảnh LÒNG NỒI, đẹp!"), "can canh long noi dep")
-        self.assertIn("can canh", ev.terms("Cận cảnh lòng nồi"))
+        self.assertIn("cận cảnh", ev.terms("Cận cảnh lòng nồi"))
+        self.assertIn("~can canh", ev.terms("can canh long noi"))  # written without marks: loose terms
+
+    def test_marks_tell_words_apart_unless_one_side_has_none(self):
+        found = {t: 900 for t in ev.terms("Cận cảnh đồng hồ áp suất của máy pha cà phê")}
+        loose = ev.loose(found)
+        hits = lambda text: {t for t in ev.terms(text) if ev.match(t, found, loose)}
+        self.assertEqual(hits("Chỉ cần bấm nút"), set())        # "cần" is not "cận"
+        self.assertEqual(hits("Dòng sản phẩm mới"), set())      # "dòng" is not "đồng"
+        self.assertIn("đồng hồ", hits("Đồng hồ áp suất cho biết"))  # "hồ" is not the function word "họ"
+        self.assertIn("~may pha", hits("may pha ca phe"))       # unaccented text still finds it
+        named = {t: 900 for t in ev.terms(ev.file_words("may-pha_ca-phe.mp4"))}
+        self.assertIn("máy pha", {t for t in ev.terms("Máy pha cà phê") if ev.match(t, named, ev.loose(named))})
         self.assertEqual(ev.cue_labels("Cận cảnh lòng nồi"), ["product_closeup"])
         self.assertEqual(ev.file_words("IMG_2034_thao-tac_bam-nut.MP4"), "thao tac bam nut")
         self.assertIn("product_demonstration", ev.cue_labels(ev.file_words("IMG_2034_thao-tac_bam-nut.MP4")))

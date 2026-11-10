@@ -23,8 +23,8 @@ from .. import policy as rules
 from ..candidates import Candidate
 
 PLANNER = "dubflow.mastering.compilation"
-VERSION = "1"
-RECIPE = "compilation-program-v1"
+VERSION = "2"
+RECIPE = "compilation-program-v2"  # v2: the source moment is chosen before the narration's footage
 WORKFLOW = "compilation_entertainment"
 MOMENT_MIN_MS, MOMENT_TARGET_MS, MOMENT_MAX_MS = 2000, 3500, 6000
 PART_FUNCTION = {"hook": "hook", "intro": "intro", "item": "narration", "outro": "outro"}
@@ -97,37 +97,71 @@ def inside_trim(candidates: Sequence[Candidate], trim: tuple[int, int] | None) -
 
 
 def _moment(footage: Mapping[str, Footage], candidates: Sequence[Candidate], evidence: Mapping[str, ev.Evidence],
-            title: str, used_end: Mapping[str, int], keep: str) -> tuple[Candidate, int, int, list[str]] | None:
-    """The source moment that best ends an item: its own sound, after what the narration showed."""
+            title: str, used_end: Mapping[str, int], keep: str, *, need_before_ms: int = 0) \
+        -> tuple[Candidate, int, int, list[str]] | None:
+    """The source moment that best ends an item: its own sound, after what the narration shows.
+
+    ``need_before_ms``: footage the narration still needs before the moment (the moment is chosen
+    first and the narration plays the footage ahead of it, since each source plays forward).
+    """
     if keep == "off":
         return None
     wanted = ev.terms(title)
     best = None
     for candidate in candidates:
         source = footage[candidate.source_id]
-        start = max(candidate.start_ms, used_end.get(candidate.source_id, 0))
-        length = min(candidate.end_ms - start, MOMENT_MAX_MS)
-        if length < MOMENT_MIN_MS or not candidate.quality.usable:
+        floor = max(candidate.start_ms, used_end.get(candidate.source_id, 0))
+        if candidate.end_ms - floor < MOMENT_MIN_MS or not candidate.quality.usable or not source.analysis.has_audio:
             continue
-        end = start + min(length, MOMENT_TARGET_MS if length < MOMENT_TARGET_MS + MOMENT_MIN_MS else length)
-        audible = source.audible(start, end)
-        speech = ev.transcript_text(source.cues, start, end)
-        if not source.analysis.has_audio or (audible < (300 if keep == "on" else 500) and not speech):
-            continue
-        info = evidence.get(candidate.candidate_id)
-        relevance = len(wanted & set(info.terms())) if info else 0
-        score = audible + (400 if speech else 0) + 150 * relevance + candidate.quality.score // 4 + candidate.motion // 10
-        reasons = ["giữ âm thanh thật của nguồn"]
-        if speech:
-            reasons.append(f"có lời nói trong nguồn: “{speech[:60]}”")
-        if audible >= 500:
-            reasons.append(f"âm thanh rõ {audible // 10} % thời lượng")
-        if best is None or score > best[0]:
-            best = (score, candidate, start, end, reasons)
+        starts = {floor, max(floor, candidate.end_ms - MOMENT_TARGET_MS)}  # where the window opens, or late in it
+        for start in sorted(starts):
+            length = min(candidate.end_ms - start, MOMENT_MAX_MS)
+            if length < MOMENT_MIN_MS:
+                continue
+            end = start + min(length, MOMENT_TARGET_MS if length < MOMENT_TARGET_MS + MOMENT_MIN_MS else length)
+            if need_before_ms and _ahead(candidates, candidate.source_id, start) < need_before_ms:
+                continue
+            audible = source.audible(start, end)
+            speech = ev.transcript_text(source.cues, start, end)
+            if audible < (300 if keep == "on" else 500) and not speech:
+                continue
+            info = evidence.get(candidate.candidate_id)
+            if info:
+                found = info.terms()
+                loose = ev.loose(found)
+                relevance = sum(1 for term in wanted if ev.match(term, found, loose))
+            else:
+                relevance = 0
+            score = audible + (400 if speech else 0) + 150 * relevance + candidate.quality.score // 4 + candidate.motion // 10
+            reasons = ["giữ âm thanh thật của nguồn"]
+            if speech:
+                reasons.append(f"có lời nói trong nguồn: “{speech[:60]}”")
+            if audible >= 500:
+                reasons.append(f"âm thanh rõ {audible // 10} % thời lượng")
+            if best is None or score > best[0]:
+                best = (score, candidate, start, end, reasons)
     if best is None:
         return None
     _, candidate, start, end, reasons = best
     return candidate, start, end, reasons
+
+
+def _ahead(candidates: Sequence[Candidate], source_id: str, start_ms: int) -> int:
+    """Usable footage left for the narration if ``source_id`` stops at ``start_ms`` (other sources whole)."""
+    return sum(max(0, (min(c.end_ms, start_ms) if c.source_id == source_id else c.end_ms) - c.start_ms)
+               for c in candidates if c.quality.usable)
+
+
+def _before(candidates: Sequence[Candidate], source_id: str, start_ms: int) -> list[Candidate]:
+    """``candidates`` with ``source_id`` cut at ``start_ms`` (the moment plays after them)."""
+    out = []
+    for c in candidates:
+        if c.source_id != source_id or c.end_ms <= start_ms:
+            out.append(c)
+        elif start_ms - c.start_ms >= 400:
+            out.append(Candidate(c.candidate_id, c.source_id, c.start_ms, start_ms, c.shot_index, c.motion, c.quality, c.dhash,
+                                 c.keyframe))
+    return out
 
 
 def plan_part(part_id: str, kind: str, spoken: Sequence[tuple[str, int]], narration_ms: int, options: m.Options, *,
@@ -147,8 +181,18 @@ def plan_part(part_id: str, kind: str, spoken: Sequence[tuple[str, int]], narrat
     pool = [c for f in footage for c in inside_trim(candidates.get(f.source_id, ()), f.trim)]
     if not pool:
         raise ValueError(f"{part_id}: no usable footage in its sources")
-    choices, decisions, mode = align.assign(found_units, pool, evidence, policy.pacing, forward_only=not policy.allows(rules.REORDER),
-                                            edits=edits, groups=groups)
+    reserved = None
+    if moment and kind == "item" and policy.keep_source_audio:
+        # Choose the ending first, with enough footage ahead of it for the narration; the narration then
+        # plays only what comes before it (a source that ran out under the narration had nothing left).
+        reserved = _moment(by_source, pool, evidence, title, {}, keep_audio, need_before_ms=narration_ms)
+        if reserved is None:
+            reserved = _moment(by_source, pool, evidence, title, {}, keep_audio, need_before_ms=narration_ms // 2)
+    narration_pool = _before(pool, reserved[0].source_id, reserved[1]) if reserved else pool
+    if not narration_pool:
+        reserved, narration_pool = None, pool
+    choices, decisions, mode = align.assign(found_units, narration_pool, evidence, policy.pacing,
+                                            forward_only=not policy.allows(rules.REORDER), edits=edits, groups=groups)
     segments: list[m.Segment] = []
     audio: dict[str, str] = {}
     at = 0
@@ -186,7 +230,11 @@ def plan_part(part_id: str, kind: str, spoken: Sequence[tuple[str, int]], narrat
     if mode == "signals_only":
         warnings.append(f"{part_id}: chưa có bằng chứng nội dung (phụ đề nguồn, ghi chú, AI nhìn hình); cảnh chọn theo điểm cắt và chất lượng.")
     if moment and kind == "item" and policy.keep_source_audio:
-        picked = _moment(by_source, pool, evidence, title, used_end, keep_audio)
+        picked = reserved
+        if picked is not None and picked[1] < used_end.get(picked[0].source_id, 0):
+            picked = None  # a pinned shot played past it
+        if picked is None:
+            picked = _moment(by_source, pool, evidence, title, used_end, keep_audio)
         if picked is not None:
             candidate, start, end, reasons = picked
             segment_id = f"{part_id}.s{len(segments) + 1}"
