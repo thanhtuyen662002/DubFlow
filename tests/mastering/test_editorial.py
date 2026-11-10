@@ -248,6 +248,22 @@ class AlignTests(unittest.TestCase):
         self.assertNotIn("v1c5", [c.candidate.candidate_id for c in choices if c.unit_id == "u1"])
         self.assertIn("v1c5", [c.candidate.candidate_id for c in choices if c.unit_id == "u3"])
 
+    def test_the_hook_leaves_a_later_sentences_shots_even_when_it_matches_them(self):
+        # Real run 6: the hook (about the portafilter) matched the TAMP shot about as well as the tamping sentence did.
+        pour = candidate("v1c12", "v1", 0, 6000, motion=20)
+        tamp = candidate("v1c5", "v3", 0, 3000, motion=240)
+        grind = candidate("v1c2", "v2", 0, 3000)
+        found = ev.gather(["v1c12", "v1c5", "v1c2"])
+        found["v1c12"].add(ev.Item("vision", 800, "Cà phê espresso chảy vào ly"))
+        found["v1c5"].add(ev.Item("vision", 800, "Tay cầm pha cà phê, nén bột bằng nút TAMP"))
+        found["v1c2"].add(ev.Item("vision", 800, "Máy xay hạt cà phê, nút GRIND"))
+        found["v1c12"].hook, found["v1c5"].hook = 300, 900
+        hook = unit("u1", "Tay cầm pha cà phê chuyên nghiệp ngay tại nhà.", 0, 2000, "hook")
+        making = unit("u3", "Xay hạt, nén bột bằng nút TAMP rồi lắp tay cầm.", 2000, 7000, "feature")
+        choices, _, _ = align.assign([hook, making], [pour, tamp, grind], found, PACING, forward_only=False)
+        self.assertNotIn("v1c5", [c.candidate.candidate_id for c in choices if c.unit_id == "u1"])
+        self.assertIn("v1c5", [c.candidate.candidate_id for c in choices if c.unit_id == "u3"])
+
     def test_footage_another_part_showed_is_weighed_as_a_duplicate(self):
         pool = [candidate("v1c1", "v1", 0, 6000), candidate("v1c2", "v1", 6000, 12_000)]
         found = ev.gather(c.candidate_id for c in pool)
@@ -264,9 +280,10 @@ class AlignTests(unittest.TestCase):
         # The script talks about the end first: forward-only still plays the source in order.
         units = [unit("u1", "mọi người cười", 0, 3000, "narration"), unit("u2", "mở cửa", 3000, 6000, "narration")]
         choices, _, _ = align.assign(units, pool, found, PACING, forward_only=True)
+        # Jumping to the end for u1 would leave u2 nothing ahead (held frames): the source plays in order instead.
         starts = [c.offset_ms for c in choices]
-        self.assertEqual(choices[0].candidate.candidate_id, "v1c3")
-        self.assertTrue(any("dùng lại" in r for r in choices[-1].reasons) or starts == sorted(starts))
+        self.assertEqual(starts, sorted(starts))
+        self.assertFalse(any("dùng lại" in r for c in choices for r in c.reasons))
 
     def test_a_short_match_late_in_a_source_does_not_strand_the_sentences_after_it(self):
         # Real run 5 (36-min set): a short close match near the end of a source was taken, the source had
@@ -278,6 +295,22 @@ class AlignTests(unittest.TestCase):
         found["v1c2"].add(ev.Item("vision", 800, "Khói bốc lên"))
         units = [unit("u1", "Bản đồ cho thấy vùng Kavkaz.", 0, 3000, "narration"),
                  unit("u2", "Quân đội tiến lên.", 3000, 7000, "narration")]
+        choices, _, _ = align.assign(units, pool, found, PACING, forward_only=True)
+        starts = [c.offset_ms for c in choices]
+        self.assertEqual(starts, sorted(starts), [(c.candidate.candidate_id, c.offset_ms, c.length_ms) for c in choices])
+        self.assertFalse(any("dùng lại" in r for c in choices for r in c.reasons))
+
+    def test_a_long_match_far_ahead_does_not_strand_the_sentences_after_it(self):
+        # Real run 6 (36-min set): sentence 1 skipped ahead from shot to shot, sentence 2 had 5 s of the source
+        # left before the item's moment and held frames filled the rest.
+        pool = [candidate("v1c0", "v1", 0, 3000), candidate("v1c1", "v1", 3000, 6000),
+                candidate("v1c2", "v1", 20000, 24000), candidate("v1c3", "v1", 24000, 25000)]
+        found = ev.gather(c.candidate_id for c in pool)
+        for cid, text in (("v1c0", "Đoàn quân hành quân"), ("v1c1", "Xe tăng trên cánh đồng"),
+                          ("v1c2", "Bản đồ vùng Kavkaz với các mũi tên"), ("v1c3", "Khói bốc lên")):
+            found[cid].add(ev.Item("vision", 800, text))
+        units = [unit("u1", "Bản đồ cho thấy vùng Kavkaz.", 0, 3000, "narration"),
+                 unit("u2", "Quân đội tiến lên.", 3000, 9000, "narration")]
         choices, _, _ = align.assign(units, pool, found, PACING, forward_only=True)
         starts = [c.offset_ms for c in choices]
         self.assertEqual(starts, sorted(starts), [(c.candidate.candidate_id, c.offset_ms, c.length_ms) for c in choices])

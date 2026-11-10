@@ -274,8 +274,16 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
             candidate.candidate_id in resume and resume[candidate.candidate_id] < candidate.end_ms
             and resume[candidate.candidate_id] >= source_end.get(candidate.source_id, 0))
 
+    ahead_memo: dict[str, int] = {}  # cleared whenever a choice changes what is left
+
     def ahead_after(candidate: Candidate) -> int:
         """Footage still playable after taking ``candidate`` (forward only: nothing of its source before it)."""
+        if candidate.candidate_id in ahead_memo:
+            return ahead_memo[candidate.candidate_id]
+        ahead_memo[candidate.candidate_id] = value = _ahead_after(candidate)
+        return value
+
+    def _ahead_after(candidate: Candidate) -> int:
         total = 0
         for other in usable:
             if other.candidate_id in still_ids:
@@ -338,10 +346,15 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
     def claimed(position: int, candidate: Candidate, relevance: int) -> int:
         """How much more a later sentence wants this shot (its closest match, matched far better than here)."""
         most = 0
+        hook = found_units[position].function == "hook"
         for later_unit in found_units[position + 1:]:
             top = best_of[later_unit.unit_id]
             value = relevance_of[(later_unit.unit_id, candidate.candidate_id)]
-            if top >= MIN_RELEVANCE and value * 1000 >= CLAIM_SHARE * top and value > relevance * 3 // 2 + MIN_RELEVANCE:
+            if top < MIN_RELEVANCE or value * 1000 < CLAIM_SHARE * top:
+                continue
+            if hook:  # any attractive shot can open the video: the ones a later sentence is about stay for it
+                most = max(most, value * 1000 // top)
+            elif value > relevance * 3 // 2 + MIN_RELEVANCE:
                 most = max(most, (value - relevance) * 1000 // value)
         return most
 
@@ -374,6 +387,17 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
                 if not open_pool:  # nothing long enough ahead: anything left, then repeats
                     open_pool = ([c for c in usable if allowed(c) and remaining(c)[1] >= min(SHORT_FLOOR, need)]
                                  or [c for c in usable if allowed(c) and remaining(c)[1] > 0] or usable)
+                later_need = after + max(0, need - wanted)
+                if forward_only and later_need > 0:
+                    # Never jump so far ahead that the sentences still to come run out of footage (held frames):
+                    # the stranded penalty below only weighs it, this keeps it out whenever something else fits.
+                    keep = [c for c in open_pool if c.candidate_id in still_ids
+                            or ahead_after(c) + max(0, remaining(c)[1] - wanted) >= later_need]
+                    open_pool = keep or open_pool
+                if unit.function == "hook":
+                    # Any attractive shot can open the video: the shots a later sentence is about stay for it.
+                    free = [c for c in open_pool if not claimed(position, c, relevance_of[(unit.unit_id, c.candidate_id)])]
+                    open_pool = free or open_pool
                 for candidate in open_pool:
                     total, confidence, reasons = score(unit, candidate, wanted, best, after + max(0, need - wanted))
                     wanted_later = claimed(position, candidate, relevance_of[(unit.unit_id, candidate.candidate_id)])
@@ -414,6 +438,7 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
                 resume[candidate.candidate_id] = offset + length
                 source_end[candidate.source_id] = max(source_end.get(candidate.source_id, 0), offset + length)
             previous_source = candidate.source_id
+            ahead_memo.clear()
             need -= length
         decisions.append(decision)
     return choices, decisions, mode
