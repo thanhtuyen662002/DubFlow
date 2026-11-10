@@ -295,4 +295,74 @@ def frames_for(candidates: Sequence[Candidate], folder: Path) -> list[tuple[str,
     return [(c.candidate_id, folder / c.keyframe) for c in ordered if c.keyframe]
 
 
-__all__ = ["Describer", "PROMPT_VERSION", "Seen", "apply", "factory", "frames_for", "route_ask", "schema", "text_asker", "validate"]
+def broad(candidates: Sequence[Candidate], folder: Path, room: int) -> list[tuple[str, Path]]:
+    """The first look (adaptive sampling, step 1): at most ``room`` keyframes spread evenly over every source and
+    its length, usable footage first, instead of the first ``room`` shots in source order (a long set's budget used
+    to end inside its first source)."""
+    if room <= 0:
+        return []
+    usable = [c for c in sorted(candidates, key=lambda c: (c.source_id, c.start_ms)) if c.keyframe and c.quality.usable]
+    rest = [c for c in sorted(candidates, key=lambda c: (c.source_id, c.start_ms)) if c.keyframe and not c.quality.usable]
+    if len(usable) > room:
+        step = len(usable) / room
+        usable = [usable[int(i * step + step / 2)] for i in range(room)]
+    picked = usable + rest[:room - len(usable)]
+    return [(c.candidate_id, folder / c.keyframe) for c in picked]
+
+
+def targets(units: Sequence[Mapping[str, Any]], pool: Sequence[Candidate], evidence: Mapping[str, ev.Evidence],
+            looked: set[str], limit: int, *, forward_only: bool) -> list[str]:
+    """Shots worth a targeted look (adaptive sampling, steps 2–3) for the sentences the first plan could not cover.
+
+    ``units`` is the editorial log's ``units`` of a plan. For each sentence flagged partial or uncovered, the
+    candidates not yet seen are searched by what other evidence (subtitles, notes, file names) says about them; the
+    rest are spread over the stretch of footage the sentence may use (forward only: between what the sentences
+    around it chose). Sentences take turns until ``limit``.
+    """
+    from .align import Scorer, Unit  # align does not import vision
+
+    weak = [u for u in units if (u.get("coverage") or {}).get("needs_review") and (u.get("coverage") or {}).get("status") in ("partial", "none")]
+    if not weak or limit <= 0:
+        return []
+    ordered = sorted((c for c in pool if c.keyframe and c.quality.usable), key=lambda c: (c.source_id, c.start_ms))
+    by_id = {c.candidate_id: c for c in ordered}
+    scorer = Scorer(ordered, evidence)
+    position = {u["unit_id"]: index for index, u in enumerate(units)}
+    queues = []
+    for unit in weak:
+        here = position[unit["unit_id"]]
+        low: dict[str, int] = {}
+        high: dict[str, int] = {}
+        if forward_only:
+            for other in units:
+                for chosen in other.get("chosen", ()):
+                    c = by_id.get(chosen)
+                    if c is None:
+                        continue
+                    if position[other["unit_id"]] < here:
+                        low[c.source_id] = max(low.get(c.source_id, 0), c.end_ms)
+                    elif position[other["unit_id"]] > here:
+                        high[c.source_id] = min(high.get(c.source_id, c.start_ms), c.start_ms)
+        window = [c for c in ordered if c.candidate_id not in looked and c.start_ms >= low.get(c.source_id, 0)
+                  and c.end_ms <= high.get(c.source_id, c.end_ms)]
+        wanted = Unit(unit["unit_id"], unit.get("text", ""), 0, 1, unit.get("function", "narration"))
+        found = sorted(((scorer.relevance(wanted, c)[0], c) for c in window), key=lambda pair: -pair[0])
+        matched = [c for value, c in found if value > 0]
+        others = [c for value, c in found if value <= 0]
+        others.sort(key=lambda c: (c.source_id, c.start_ms))
+        if others:  # evenly over the stretch, not its first shots
+            step = max(1.0, len(others) / max(1, limit))
+            others = [others[int(i * step)] for i in range(min(len(others), limit))]
+        queues.append(matched + others)
+    picked: list[str] = []
+    while len(picked) < limit and any(queues):
+        for queue in queues:
+            while queue and queue[0].candidate_id in picked:
+                queue.pop(0)
+            if queue and len(picked) < limit:
+                picked.append(queue.pop(0).candidate_id)
+    return picked
+
+
+__all__ = ["Describer", "PROMPT_VERSION", "Seen", "apply", "broad", "factory", "frames_for", "route_ask", "schema", "targets",
+           "text_asker", "validate"]

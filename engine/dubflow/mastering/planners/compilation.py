@@ -24,7 +24,7 @@ from ..candidates import Candidate
 
 PLANNER = "dubflow.mastering.compilation"
 VERSION = "7"
-RECIPE = "compilation-program-v8"  # v8: sentence coverage planning; partial coverage is flagged, not filled with unrelated shots
+RECIPE = "compilation-program-v9"  # v9: adaptive vision (broad look, then targeted looks for uncovered sentences)
 WORKFLOW = "compilation_entertainment"
 MOMENT_MIN_MS, MOMENT_TARGET_MS, MOMENT_MAX_MS = 2000, 3500, 6000
 PART_FUNCTION = {"hook": "hook", "intro": "intro", "item": "narration", "outro": "outro"}

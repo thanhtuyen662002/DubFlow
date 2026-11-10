@@ -334,16 +334,39 @@ def _mastered(spec: Spec, visuals: Sequence[render.Visual], total_ms: int, work:
             vision_report = None
             if vision is not None:
                 describer = vision(folder / "vision", context=f"Video bán hàng: {spec.name}".strip())
-                seen = describer.describe(seeing.frames_for(pool, folder), cancelled)
+                everything = seeing.frames_for(pool, folder)
+                # Adaptive sampling: spread over every clip, a third of the budget kept for uncovered sentences.
+                room = describer.budget - describer.budget // 3 if len(everything) > describer.budget else describer.budget
+                first = seeing.broad(pool, folder, room)
+                looked = {candidate_id for candidate_id, _ in first}
+                seen = describer.describe(first, cancelled)
                 if cancelled():
                     raise Cancelled()
                 seeing.apply(seen, evidence, f"AI {describer.provider}/{describer.used_model}")
                 vision_report = {"provider": describer.provider, "model": describer.used_model, "frames": len(seen),
-                                 "asked": describer.asked, "warnings": describer.warnings}
-            saved, log = planner.plan_editorial(inputs, spoken, total_ms, options, lead_ms=script.LEAD_MS, gap_ms=script.GAP_MS,
-                                                candidates=found, evidence=evidence, groups=duplicate_groups(pool),
-                                                edits=editorial.edits, facts=facts, inputs=wanted, notes=editorial.notes,
-                                                plan_id=f"product-{number}")
+                                 "asked": describer.asked, "warnings": describer.warnings, "broad": len(first), "targeted": 0}
+                if len(everything) > describer.budget:
+                    describer.warnings.append(f"Giới hạn {describer.budget} khung hình cho AI nhìn: {len(first)} cảnh trải đều các clip, "
+                                              f"phần còn lại dành cho câu thiếu hình.")
+
+            def make():
+                return planner.plan_editorial(inputs, spoken, total_ms, options, lead_ms=script.LEAD_MS, gap_ms=script.GAP_MS,
+                                              candidates=found, evidence=evidence, groups=duplicate_groups(pool),
+                                              edits=editorial.edits, facts=facts, inputs=wanted, notes=editorial.notes,
+                                              plan_id=f"product-{number}")
+            saved, log = make()
+            if vision_report is not None and describer.budget - describer.taken > 0:
+                # Targeted look: unseen shots that may show what an uncovered sentence says, then plan again.
+                ids = seeing.targets(log["units"], pool, evidence, looked, describer.budget - describer.taken, forward_only=False)
+                if ids:
+                    by_id = {c.candidate_id: c for c in pool}
+                    extra = describer.describe([(i, folder / by_id[i].keyframe) for i in ids], cancelled)
+                    if cancelled():
+                        raise Cancelled()
+                    seeing.apply(extra, evidence, f"AI {describer.provider}/{describer.used_model}")
+                    vision_report.update(frames=vision_report["frames"] + len(extra), targeted=len(extra), asked=describer.asked)
+                    if extra:
+                        saved, log = make()
             log["vision"] = vision_report
             if vision_report and vision_report["warnings"]:
                 log["warnings"] = list(log["warnings"]) + vision_report["warnings"]
