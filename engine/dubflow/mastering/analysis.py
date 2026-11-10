@@ -186,6 +186,11 @@ def argv(ffmpeg: Path, video: Path, *, has_audio: bool, cut_log: str, thumbs: st
     return command
 
 
+def cache_path(folder: Path, video: Path) -> Path:
+    """Where ``video``'s analysis is cached in ``folder``: named by content, so reordering or renaming clips reuses it."""
+    return folder / f"analysis-{file_identity(video, RECIPE)[:24]}.json"
+
+
 def analyse(video: Path, info: StreamInfo, cache: Path, *, ffmpeg: Path, run: Runner,
             cancelled: Callable[[], bool] = lambda: False) -> Analysis:
     """``video``'s shots, motion and silences, from ``cache`` when the file is unchanged.
@@ -223,4 +228,4 @@ def analyse(video: Path, info: StreamInfo, cache: Path, *, ffmpeg: Path, run: Ru
     return result
 
 
-__all__ = ["Analysis", "AnalysisError", "RECIPE", "Shot", "StreamInfo", "analyse", "analyse_text", "probe", "silences"]
+__all__ = ["Analysis", "AnalysisError", "RECIPE", "Shot", "StreamInfo", "analyse", "cache_path", "analyse_text", "probe", "silences"]
