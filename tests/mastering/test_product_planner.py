@@ -175,6 +175,9 @@ class JobTests(unittest.TestCase):
         plain, plain_commands = self.render(self.spec(), "g")
         self.assertEqual(result["state"], "COMPLETED")
         self.assertIn("fallback", result["videos"][0]["mastering"])
+        # a plain join is never shown as reviewed footage: the result says so (real run 8, P2)
+        self.assertTrue(result["videos"][0]["mastering"]["needs_review"])
+        self.assertIn(result["videos"][0]["mastering"]["fallback"], result["videos"][0]["mastering"]["warnings"])
         normalise = lambda argv: [part.replace(str(self.root / "f"), str(self.root / "g")) for part in argv]
         self.assertEqual(normalise(commands[-1]), plain_commands[-1])
 
