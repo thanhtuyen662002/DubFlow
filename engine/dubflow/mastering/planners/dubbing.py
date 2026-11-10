@@ -25,7 +25,7 @@ from ..measure import GREY_H, GREY_W, Loudness, Picture
 from ..plan import Options
 
 WORKFLOW = "dubbing_preserve"
-RECIPE = "dubbing-master-v1"
+RECIPE = "dubbing-master-v2"  # v2: Balanced and Dynamic retime captions from the final TTS
 TARGET_LUFS, PEAK_DBTP, TARGET_LRA = -16.0, -1.5, 11.0
 QUIET_LUFS = -45.0          # quieter than this the mix is (nearly) silent: nothing to level
 CLOSE_LU = 1.0
@@ -143,7 +143,14 @@ def plan(options: Options, *, mix: Loudness | None, mix_rate: int | None, frames
         colour = _colour(frames, options.level, notes)
         if colour:
             video.append(colour)
-    captions = "plain"  # captions timed from the final TTS come with the caption stage (ADR-0055 §4, Balanced)
+    captions = "plain"
+    if policy.allows(rules.DYNAMIC_CAPTIONS):
+        if mix_rate is None:
+            notes.append("Phụ đề: không có giọng lồng tiếng để canh, giữ thời gian phụ đề như cũ.")
+        else:
+            captions = "phrase"
+            notes.append(f"Phụ đề: canh theo lúc giọng Việt thật (TTS) được nghe, tối đa 2 dòng × 42 ký tự, "
+                         f"tối thiểu 1 giây, không chồng nhau.")
     suggestion = None
     if policy.hook == "suggest" and climax:
         suggestion = {**climax, "needs_review": True, "applied": False}

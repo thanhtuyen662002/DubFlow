@@ -96,5 +96,41 @@ class DubbingMasteringTests(unittest.TestCase):
             self.assertTrue(any(w.startswith("MASTERING_SKIPPED") for w in fixture.qc()["warnings"]))
 
 
+class VoiceTimedCaptionTests(unittest.TestCase):
+    def test_captions_follow_the_tts_placement_of_their_phrase(self):
+        from types import SimpleNamespace
+        from engine.dubflow.asr import TimeBase, TimePoint
+
+        ms = TimeBase(1, 1000)
+        artifact = lambda segment, start, end: SimpleNamespace(segment_id=segment, source_utterance_id=segment,
+                                                               slot_start=TimePoint(start, ms), actual_end=TimePoint(end, ms))
+        b2 = SimpleNamespace(member_cue_ids={"phrase-1": ("cue-1", "cue-2")},
+                             tts_documents=(SimpleNamespace(artifacts=(artifact("phrase-1", 1500, 4500),)),))
+        cues = [worker.TextCue("cue-1", 1250, 2500, "你好", "Xin chào"), worker.TextCue("cue-2", 2601, 3103, "世界", "Thế giới"),
+                worker.TextCue("cue-3", 6000, 6400, "再见", "Tạm biệt")]
+        timed = worker._voice_timed(cues, b2)
+        self.assertEqual([c.cue_id for c in timed], ["cue-1", "cue-2", "cue-3"])
+        self.assertEqual((timed[0].start_ms, timed[1].end_ms), (1500, 4500))  # the voice, not the source speaker
+        self.assertEqual((timed[2].start_ms, timed[2].end_ms), (6000, 7000))  # not dubbed: own time, at least 1 s
+        self.assertEqual([c.translated_text for c in timed], ["Xin chào", "Thế giới", "Tạm biệt"])
+        self.assertEqual(timed[0].source_text, "你好")
+
+    def test_a_long_caption_is_split_and_still_written_as_srt_and_ass(self):
+        from types import SimpleNamespace
+        from engine.dubflow.asr import TimeBase, TimePoint
+
+        ms = TimeBase(1, 1000)
+        text = " ".join(["một câu thoại tiếng Việt rất dài"] * 6)
+        b2 = SimpleNamespace(member_cue_ids={"p": ("cue-1",)}, tts_documents=(SimpleNamespace(artifacts=(
+            SimpleNamespace(segment_id="p", source_utterance_id="cue-1", slot_start=TimePoint(0, ms), actual_end=TimePoint(9000, ms)),)),))
+        timed = worker._voice_timed([worker.TextCue("cue-1", 0, 3000, "长句", text)], b2)
+        self.assertGreater(len(timed), 1)
+        self.assertTrue(all(len(line) <= 42 for c in timed for line in c.translated_text.split("\n")))
+        with TemporaryDirectory() as folder:
+            srt, ass = worker._write_subtitles(Path(folder), timed)
+            self.assertIn("rất dài", srt.read_text(encoding="utf-8"))
+            self.assertTrue(ass.is_file())
+
+
 if __name__ == "__main__":
     unittest.main()
