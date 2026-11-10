@@ -184,6 +184,11 @@ class VoiceTimedFallbackTests(unittest.TestCase):
             self.assertNotIn("00:00:01,500", fallback[0])
             qc = json.loads(Path(result["qc"]).read_text(encoding="utf-8"))
             self.assertTrue(any(w.startswith("B2_AUDIO_FALLBACK_TO_B1") for w in qc["warnings"]))
+            # what mastering said about the dubbed mix no longer holds once only the source is heard (run 9)
+            notes = qc["mastering"]["notes"]
+            self.assertFalse(any(note.startswith(("Âm lượng:", "Phụ đề:")) for note in notes), notes)
+            self.assertTrue(any("B1" in note for note in notes))
+            self.assertFalse(qc["mastering"]["loudness"])
 
 
 if __name__ == "__main__":
