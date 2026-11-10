@@ -201,29 +201,34 @@ class Options:
 
     level: str = "off"
     style: str = "natural"
+    # Lồng tiếng only (ADR-0055): a climax/teaser may be *suggested* for review; never on unless the user turns it on.
+    enable_climax_hook: bool = False
 
     def __post_init__(self) -> None:
         _choice(self.level, "options.level", LEVELS)
         _choice(self.style, "options.style", STYLES)
+        if type(self.enable_climax_hook) is not bool:
+            raise _fail("INVALID_DOCUMENT", "options.enable_climax_hook must be a boolean")
 
     @property
     def enabled(self) -> bool:
         return self.level != "off"
 
     def to_dict(self) -> dict[str, Any]:
-        return {"schema_version": SCHEMA_VERSION, "kind": OPTIONS_KIND, "level": self.level, "style": self.style}
+        return {"schema_version": SCHEMA_VERSION, "kind": OPTIONS_KIND, "level": self.level, "style": self.style,
+                **({"enable_climax_hook": True} if self.enable_climax_hook else {})}
 
     @classmethod
     def from_dict(cls, value: Any) -> "Options":
         """A request's ``mastering`` value; absent (``None``) is ``off``."""
         if value is None:
             return cls()
-        item = _object(value, "mastering_options", ("schema_version", "level"), ("kind", "style"))
+        item = _object(value, "mastering_options", ("schema_version", "level"), ("kind", "style", "enable_climax_hook"))
         if type(item["schema_version"]) is not int or item["schema_version"] != SCHEMA_VERSION:
             raise _fail("UNSUPPORTED_VERSION", "mastering options must be schema_version 1")
         if "kind" in item and item["kind"] != OPTIONS_KIND:
             raise _fail("INVALID_DOCUMENT", "kind must be mastering_options")
-        return cls(item["level"], item.get("style", "natural"))
+        return cls(item["level"], item.get("style", "natural"), item.get("enable_climax_hook", False))
 
 
 OFF = Options()
@@ -552,7 +557,8 @@ class Plan:
 
     def to_dict(self) -> dict[str, Any]:
         return {"schema_version": SCHEMA_VERSION, "kind": PLAN_KIND, "plan_id": self.plan_id, "workflow": self.workflow,
-                "options": {"level": self.options.level, "style": self.options.style}, "time_base": self.time_base.to_dict(),
+                "options": {"level": self.options.level, "style": self.options.style,
+                            **({"enable_climax_hook": True} if self.options.enable_climax_hook else {})}, "time_base": self.time_base.to_dict(),
                 "duration": str(self.duration), "sources": [source.to_dict() for source in self.sources],
                 "segments": [segment.to_dict() for segment in self.segments], "warnings": list(self.warnings),
                 "provenance": self.provenance.to_dict()}
@@ -568,11 +574,11 @@ class Plan:
             raise _fail("UNSUPPORTED_VERSION", "only mastering_plan schema_version 1 is understood")
         if item["kind"] != PLAN_KIND:
             raise _fail("INVALID_DOCUMENT", "kind must be mastering_plan")
-        options = _object(item["options"], "options", ("level", "style"))
+        options = _object(item["options"], "options", ("level", "style"), ("enable_climax_hook",))
         for name in ("sources", "segments", "warnings"):
             if type(item[name]) is not list:
                 raise _fail("INVALID_DOCUMENT", f"{name} must be an array")
-        return cls(item["plan_id"], item["workflow"], Options(options["level"], options["style"]),
+        return cls(item["plan_id"], item["workflow"], Options(options["level"], options["style"], options.get("enable_climax_hook", False)),
                    _ticks(item["duration"], "duration"),
                    tuple(Source.from_dict(raw, f"sources[{i}]") for i, raw in enumerate(item["sources"])),
                    tuple(Segment.from_dict(raw, f"segments[{i}]") for i, raw in enumerate(item["segments"])),
