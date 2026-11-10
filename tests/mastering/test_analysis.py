@@ -11,8 +11,11 @@ import unittest
 from engine.dubflow.docu import shots as docu_shots
 from engine.dubflow.mastering import analysis as a
 
-FFMPEG = shutil.which("ffmpeg")
-FFPROBE = shutil.which("ffprobe")
+import os
+
+# The bundled LGPL build can be tested with DUBFLOW_TEST_FFMPEG / DUBFLOW_TEST_FFPROBE.
+FFMPEG = os.environ.get("DUBFLOW_TEST_FFMPEG") or shutil.which("ffmpeg")
+FFPROBE = os.environ.get("DUBFLOW_TEST_FFPROBE") or shutil.which("ffprobe")
 
 
 def runner(calls: list):
@@ -83,7 +86,7 @@ class MediaTests(unittest.TestCase):
             command += ["-filter_complex", graph, "-map", "[v]", "-map", "[au]", "-c:a", "aac"]
         else:
             command += ["-filter_complex", graph, "-map", "[v]"]
-        command += ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-t", "4", str(video)]
+        command += ["-c:v", "mpeg4", "-q:v", "3", "-pix_fmt", "yuv420p", "-t", "4", str(video)]  # native: also in LGPL builds
         subprocess.run(command, check=True, timeout=120)
         return video
 
