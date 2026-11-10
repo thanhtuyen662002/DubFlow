@@ -145,6 +145,54 @@ class RealMediaJobTest(unittest.TestCase):
             saved = m.load(root / "out" / ".dubflow-work" / report["plan"])
             self.assertEqual(next(s for s in saved.segments if s.speech_refs == ("u2",)).source_id, "v1")
 
+    def test_a_small_vision_budget_looks_again_for_the_sentence_it_missed(self):
+        from engine.dubflow.mastering import analysis as scene, vision as seeing
+        with TemporaryDirectory() as folder:
+            root = Path(folder)
+            paths = []
+            for name, source in (("a.mp4", "testsrc2"), ("b.mp4", "smptebars"), ("c.mp4", "rgbtestsrc"), ("d.mp4", "testsrc")):
+                path = root / name
+                subprocess.run([FFMPEG, "-v", "error", "-f", "lavfi", "-i", f"{source}=s=640x360:r=30:d=8", "-c:v", "mpeg4",
+                                "-q:v", "5", str(path)], check=True)
+                paths.append(path)
+            value = {"schema_version": 1, "name": "Nồi chiên", "price": "299.000đ", "voice_id": "vi-test",
+                     "variants": ["Nồi chiên dùng cho cả nhà. Lòng nồi chống dính rất dễ rửa. Chỉ cần bấm nút chọn chế độ là xong."],
+                     "visuals": [str(p) for p in paths], "mastering": {"schema_version": 1, "level": "balanced"}}
+            spec_path = root / "spec.json"
+            spec_path.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
+            what = {"v1": "Toàn cảnh nồi chiên dùng cho cả nhà", "v2": "Cận cảnh lòng nồi chống dính dễ rửa",
+                    "v3": "Tay bấm nút chọn chế độ", "v4": "Hộp giấy đựng phụ kiện"}
+            calls = []
+
+            class Seeing:  # sees what each clip shows; three frames for four clips
+                provider, used_model, budget = "gemini", "fake", 3
+
+                def __init__(self, cache, context="", labels=()):
+                    self.asked = self.taken = 0
+                    self.warnings = []
+
+                def describe(self, frames, cancelled):
+                    calls.append([cid for cid, _ in frames])
+                    self.taken += len(frames)
+                    self.asked += len(frames)
+                    return {cid: seeing.Seen(what[cid.split("c")[0]], (), (), "", (), 900, "clear", None, None, 0) for cid, _ in frames}
+
+            result = job.run(job.load_spec(spec_path), root / "out", speaker=lambda status: FakeSpeaker(),
+                             probe=lambda path: job.probe_duration_ms(Path(FFPROBE), path),
+                             measure=lambda path: job.probe_size(Path(FFPROBE), path), ffmpeg=Path(FFMPEG), encoder="mpeg4",
+                             inspect=lambda path: scene.probe(Path(FFPROBE), path), vision=Seeing)
+            self.assertEqual(result["state"], "COMPLETED", result)
+            report = result["videos"][0]["mastering"]
+            log = json.loads((root / "out" / ".dubflow-work" / report["editorial"]).read_text(encoding="utf-8"))
+            # A broad look spread over the clips (two frames, one kept back), then one look for an uncovered sentence.
+            self.assertEqual(calls[0], ["v2c1", "v4c1"])
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(len(calls[1]), 1)
+            self.assertEqual(log["vision"]["targeted"], 1)
+            looked_for = calls[1][0]
+            unit = next(u for u in log["units"] if looked_for in u["chosen"])
+            self.assertEqual(unit["coverage"]["status"], "full")
+
 
 if __name__ == "__main__":
     unittest.main()
