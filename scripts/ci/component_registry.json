@@ -538,6 +538,7 @@
         "contracts/mastering",
         "engine/dubflow/mastering",
         "engine/dubflow/docu/shots.py",
+        "engine/dubflow/product/job.py",
         "tests/mastering",
         "fixtures/mastering"
       ],
