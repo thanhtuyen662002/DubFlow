@@ -75,14 +75,14 @@ def _restore(value):
 class StreamLimits:
     block_frames: int = 262144
     max_source_bytes: int = (1 << 32) - 1
-    max_segments: int = 10000
+    max_segments: int = 40000
     max_blocks: int = 16384
     disk_reserve_bytes: int = 256 * 1024 * 1024
 
     def __post_init__(self):
         _integer(self.block_frames, "block_frames", minimum=1, maximum=1048576)
         _integer(self.max_source_bytes, "max_source_bytes", minimum=1024, maximum=(1 << 32) - 1)
-        _integer(self.max_segments, "max_segments", minimum=1, maximum=10000)
+        _integer(self.max_segments, "max_segments", minimum=1, maximum=40000)
         _integer(self.max_blocks, "max_blocks", minimum=1, maximum=16384)
         _integer(self.disk_reserve_bytes, "disk_reserve_bytes", minimum=0)
 
@@ -195,8 +195,10 @@ class _Stats:
 
 class StreamingAudioMixer:
     def __init__(self, *, output_dir: Path, config: MixConfig | None = None, limits: StreamLimits | None = None,
-                 checkpoint: Callable[[str, int, int, str], None] | None = None):
+                 checkpoint: Callable[[str, int, int, str], None] | None = None, average_decimation: bool = False):
         self.output_dir = _plain(Path(output_dir))
+        # Off keeps the byte-compatible nearest-sample mapping of LocalAudioMixer.
+        self.average_decimation = bool(average_decimation)
         self.config = config or MixConfig(resource=ResourceProfile(max_memory_mb=512))
         self.limits = limits or StreamLimits()
         self.checkpoint = checkpoint or (lambda *args: None)
@@ -245,6 +247,11 @@ class StreamingAudioMixer:
         return factor, warnings
 
     def _tts_block(self, audio, output_start, count, rate, channels, np):
+        if self.average_decimation and audio.rate > rate:
+            values = self._tts_block_averaged(audio, output_start, count, rate, np)
+            if audio.channels == channels: return values
+            if channels == 2: return np.repeat(values, 2, axis=1)
+            return (np.sum(values, axis=1, dtype=np.int64) // 2).reshape(-1, 1)
         indices = np.arange(output_start, output_start + count, dtype=np.int64) * audio.rate // rate
         indices = np.minimum(indices, audio.frames - 1)
         first, last = int(indices[0]), int(indices[-1])
@@ -256,6 +263,24 @@ class StreamingAudioMixer:
         if audio.channels == channels: return values
         if channels == 2: return np.repeat(values, 2, axis=1)
         return (np.sum(values, axis=1, dtype=np.int64) // 2).reshape(-1, 1)
+
+    def _tts_block_averaged(self, audio, output_start, count, rate, np):
+        """Speech above the source rate (a long source decoded at a lower rate) is
+        averaged over each output sample's span instead of picking every n-th sample,
+        so the decimation does not fold sibilants back as aliasing."""
+        bounds = np.minimum(np.arange(output_start, output_start + count + 1, dtype=np.int64) * audio.rate // rate, audio.frames)
+        first, last = int(bounds[0]), int(bounds[-1])
+        first = min(first, audio.frames - 1)
+        last = max(last, first + 1)
+        with wave.open(str(audio.path), "rb") as reader:
+            reader.setpos(first); payload = reader.readframes(last - first)
+        if len(payload) != (last - first) * audio.channels * 2:
+            raise MixError("AUDIO_INPUT_CHANGED", "TTS became truncated during bounded read")
+        values = np.frombuffer(payload, dtype="<i2").reshape(-1, audio.channels).astype(np.int64)
+        totals = np.vstack((np.zeros((1, audio.channels), dtype=np.int64), np.cumsum(values, axis=0)))
+        lo = np.clip(bounds[:-1] - first, 0, last - first - 1)
+        hi = np.maximum(np.clip(bounds[1:] - first, 0, last - first), lo + 1)
+        return (totals[hi] - totals[lo]) // (hi - lo)[:, None]
 
     def _block(self, source_pcm, offset, valid, np, *, with_dialogue=True):
         count, channels = source_pcm.shape
@@ -329,7 +354,8 @@ class StreamingAudioMixer:
             metadata.append({"segment_id": item.segment_id, "source_utterance_id": item.source_utterance_id, "status": status, "confidence": float(item.confidence), "fallback_used": item.fallback_used})
             identities.append({**metadata[-1], "start": item.start.to_dict(), "end": item.end.to_dict(),
                                "hash": digest, "declared_hash": item.content_hash})
-        config_hash = _hash_json({"dsp": self.config.to_dict(), "limits": self.limits.__dict__, "producer": PRODUCER_VERSION, "runtime": NUMPY_VERSION})
+        config_hash = _hash_json({"dsp": self.config.to_dict(), "limits": self.limits.__dict__, "producer": PRODUCER_VERSION, "runtime": NUMPY_VERSION,
+                                  **({"decimation": "average"} if self.average_decimation else {})})
         identity = _hash_json({"source": audio.digest, "source_id": source.source_id, "layout": source.layout,
             "start": source.start.to_dict(), "end": source.end.to_dict(), "segments": identities,
             "failures": [item.to_dict() for item in failures], "input": input_hash, "config": config_hash})
