@@ -58,6 +58,8 @@ class Spec:
     mastering: Any = None
     # What the user says about the footage and how they changed the choice (ADR-0054); used only with mastering.
     editorial: Any = None
+    # Render again only these videos (1-based) of the run, in place; the others keep their finished files.
+    only: tuple[int, ...] = ()
 
 
 class Speaker(Protocol):
@@ -141,6 +143,9 @@ def load_spec(path: Path) -> Spec:
         if not mastering.enabled:
             mastering = None
     editorial = _editorial(value.get("editorial"), len(visuals)) if mastering is not None else None
+    only = value.get("only", [])
+    if type(only) is not list or len(only) > len(texts) or any(type(n) is not int or not 1 <= n <= len(texts) for n in only):
+        raise ProductError("Danh sách video cần render lại không hợp lệ")
     return Spec(
         name=_string(value.get("name"), "Tên sản phẩm", 120),
         price=_string(value.get("price"), "Giá", 60),
@@ -157,6 +162,7 @@ def load_spec(path: Path) -> Spec:
         reuse_from=reuse_dir,
         mastering=mastering,
         editorial=editorial,
+        only=tuple(sorted(set(only))),
     )
 
 
@@ -302,10 +308,19 @@ def _mastered(spec: Spec, visuals: Sequence[render.Visual], total_ms: int, work:
     path = work / name
     report: dict[str, Any] = {"level": options.level, "style": options.style, "plan": name, "editorial": log_name, "segments": None}
     folder = work / "mastering"
+    from engine.dubflow.mastering import review as reviewing
+    review_path = reviewing.path_for(work, number)
+    try:
+        decisions = reviewing.load(review_path)
+    except (reviewing.ReviewError, ValueError, OSError):
+        decisions = reviewing.Review()  # unreadable decisions: plan without them, never stop the video
     try:
         facts = " ".join([spec.name, spec.price, *spec.features, *editorial.notes])
+        # the user's review (pins and exclusions in review-<n>.json) on top of the edits the spec carries
+        edits = decisions.edits(editorial.edits)
         wanted = planner.inputs([v.path for v in visuals], total_ms, options, spoken=spoken, template=spec.template,
-                                editorial={**editorial.digest_input(), "facts": facts, "vision": vision is not None})
+                                editorial={**editorial.digest_input(), "edits": edits.to_dict(), "facts": facts,
+                                           "vision": vision is not None})
         saved = mastering_plan.load_matching(path, workflow=planner.WORKFLOW, options=options, planner_version=planner.VERSION,
                                              inputs=wanted)
         if saved is not None and not (work / log_name).is_file():
@@ -352,7 +367,7 @@ def _mastered(spec: Spec, visuals: Sequence[render.Visual], total_ms: int, work:
             def make():
                 return planner.plan_editorial(inputs, spoken, total_ms, options, lead_ms=script.LEAD_MS, gap_ms=script.GAP_MS,
                                               candidates=found, evidence=evidence, groups=duplicate_groups(pool),
-                                              edits=editorial.edits, facts=facts, inputs=wanted, notes=editorial.notes,
+                                              edits=edits, facts=facts, inputs=wanted, notes=editorial.notes,
                                               plan_id=f"product-{number}")
             saved, log = make()
             if vision_report is not None and describer.budget - describer.taken > 0:
@@ -370,16 +385,25 @@ def _mastered(spec: Spec, visuals: Sequence[render.Visual], total_ms: int, work:
             log["vision"] = vision_report
             if vision_report and vision_report["warnings"]:
                 log["warnings"] = list(log["warnings"]) + vision_report["warnings"]
+            reviewing.annotate(log, saved.to_dict())
             mastering_plan.save(path, saved)
             _atomic_text(work / log_name, json.dumps(log, ensure_ascii=False, indent=1))
         log = json.loads((work / log_name).read_text(encoding="utf-8"))
+        if "review_summary" not in log:  # a log from before the review states
+            reviewing.annotate(log, saved.to_dict())
+        invalidated = decisions.reconcile(log)
+        if invalidated or decisions.plan_id != log.get("plan_id"):
+            decisions.plan_id = str(log.get("plan_id") or "")
+            reviewing.save(review_path, decisions)
+        report["review_states"] = log.get("review_summary") or {}
+        report["unreviewed"] = len(reviewing.unreviewed(log, decisions))
         report["segments"] = [render.Segment(visuals[p.visual], p.offset_ms, p.duration_ms, p.focus) for p in planner.pieces(saved)]
         report["count"] = len(saved.segments)
         report["review"] = sum(segment.needs_review for segment in saved.segments)
         report["mode"] = log.get("mode")
         if log.get("vision"):
             report["vision"] = {k: log["vision"][k] for k in ("provider", "model", "frames")}
-        warnings = list(dict.fromkeys([*saved.warnings, *log.get("warnings", [])]))
+        warnings = list(dict.fromkeys([*saved.warnings, *log.get("warnings", []), *invalidated]))
         if warnings:
             report["warnings"] = warnings
     except Cancelled:
@@ -405,6 +429,14 @@ def run(spec: Spec, output_dir: Path, *, speaker: Callable[[Status], Speaker], p
     """
     work = output_dir / ".dubflow-work"
     work.mkdir(parents=True, exist_ok=True)
+    earlier: dict[int, dict[str, Any]] = {}
+    if spec.only:  # a re-render in place: the videos not asked for stay as they were
+        try:
+            for video in json.loads((work / "status.json").read_text(encoding="utf-8")).get("videos") or ():
+                if isinstance(video, dict) and type(video.get("index")) is int:
+                    earlier[video["index"]] = video
+        except (OSError, ValueError):
+            earlier = {}
     status = Status(work / "status.json", len(spec.variants))
     visuals, cache, videos = [], {}, []
     voice = None
@@ -430,6 +462,11 @@ def run(spec: Spec, output_dir: Path, *, speaker: Callable[[Status], Speaker], p
         check()
         for number, text in enumerate(spec.variants, start=1):
             check()
+            if spec.only and number not in spec.only:
+                if number in earlier and (output_dir / f"video-{number}.mp4").is_file():
+                    videos.append(earlier[number])
+                status.write(done=number, videos=videos)
+                continue
             narration = work / f"narration-{number}.wav"
             # The same script, voice and speed as in the earlier run: its narration, not the voice model.
             reused = reuse.find(spec.reuse_from, text, spec.voice_id, spec.speed) if spec.reuse_from is not None else None
