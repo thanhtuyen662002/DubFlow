@@ -140,4 +140,48 @@ def picture(frames: Sequence[bytes]) -> Picture | None:
     return Picture(len(frames), percentile(0.005), percentile(0.995), mean, (top, bottom, left, right))
 
 
-__all__ = ["Capture", "Loudness", "MeasureError", "Picture", "frame_times", "grey_frames", "loudness", "picture"]
+def loudest_window(wav: Path, *, window_ms: int = 5000, step_ms: int = 500, inside: tuple[float, float] = (0.2, 0.9)) -> dict | None:
+    """The ``window_ms`` of ``wav`` (mono or stereo 16-bit PCM) with the most sound energy, between ``inside`` shares of
+    its length: a candidate climax for a teaser *suggestion* (ADR-0055). None when the file is silent or too short."""
+    import wave
+    from array import array
+    import sys
+
+    try:
+        reader = wave.open(str(wav), "rb")
+    except (OSError, EOFError, wave.Error):
+        return None
+    with reader:
+        if reader.getsampwidth() != 2:
+            return None
+        rate, channels = reader.getframerate(), reader.getnchannels()
+        per_step = max(1, rate * step_ms // 1000)
+        energy: list[float] = []
+        while True:
+            data = reader.readframes(per_step)
+            if not data:
+                break
+            values = array("h")
+            values.frombytes(data[:len(data) // 2 * 2])
+            if sys.byteorder != "little":
+                values.byteswap()
+            energy.append(sum(v * v for v in values[::channels * 4]) / max(1, len(values[::channels * 4])))
+    steps = window_ms // step_ms
+    first, last = int(len(energy) * inside[0]), int(len(energy) * inside[1]) - steps
+    if steps <= 0 or last <= first:
+        return None
+    total = sum(energy[first:first + steps])
+    best, at = total, first
+    for index in range(first + 1, last + 1):
+        total += energy[index + steps - 1] - energy[index - 1]
+        if total > best:
+            best, at = total, index
+    overall = sum(energy) / len(energy)
+    if best <= 0 or overall <= 0:
+        return None
+    ratio = best / steps / overall
+    return {"start_ms": at * step_ms, "end_ms": (at + steps) * step_ms, "energy_ratio_milli": round(ratio * 1000),
+            "reasons": [f"đoạn {window_ms // 1000} giây có năng lượng âm thanh gốc cao nhất ({ratio:.1f}× trung bình)"]}
+
+
+__all__ = ["Capture", "Loudness", "MeasureError", "Picture", "frame_times", "grey_frames", "loudest_window", "loudness", "picture"]
