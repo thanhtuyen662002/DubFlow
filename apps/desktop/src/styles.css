@@ -2525,3 +2525,52 @@ body.settings-open .rail-item.active:not(#nav-settings)::before { display: none;
 .vibi-studio .hint, .vibi-row .hint, .vibi-settings .vibi-uses .hint { margin-top: 0; }
 .vibi-row-fallback { flex: 1 1 100%; color: var(--text-3); font-size: 12px; }
 .voice-picker.vibi-on > .filters, .voice-picker.vibi-on > .voice-list { opacity: .55; }
+
+/* Tối ưu hậu kỳ: Duyệt cảnh (Phase 5 MVP) */
+.product-mastering-note { flex-basis: 100%; color: var(--text-3); font-size: 12px; }
+.product-mastering-note.warn { color: var(--warn); }
+.product-mastering-note.bad { color: var(--err); }
+.mreview-backdrop { position: fixed; inset: 0; z-index: 35; display: flex; padding: 24px; background: var(--scrim); }
+.mreview-dialog { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; border-radius: 12px; background: var(--raised); box-shadow: var(--shadow-pop); }
+.mreview-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; padding: 14px 20px; border-bottom: 1px solid var(--line); }
+.mreview-head h2 { font-size: 16px; font-weight: 600; }
+.mreview-head .mreview-summary { flex: 1; min-width: 200px; }
+.mreview-body { display: grid; flex: 1; grid-template-columns: minmax(280px, 380px) minmax(0, 1fr); min-height: 0; }
+.mreview-side { display: flex; flex-direction: column; gap: 10px; min-height: 0; padding: 16px; overflow: auto; border-right: 1px solid var(--line); }
+.mreview-player { width: 100%; max-height: 52vh; border-radius: 8px; background: #000; }
+.mreview-warnings { display: grid; gap: 6px; margin: 0; padding: 0; font-size: 13px; list-style: none; }
+.mreview-warnings li { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; border-left: 3px solid var(--warn); border-radius: 6px; background: var(--warn-bg); line-height: 1.45; }
+.mreview-warnings li.read { border-left-color: var(--line); background: var(--surface); color: var(--text-3); }
+.mreview-warnings li span { flex: 1; }
+.mreview-units { display: grid; gap: 12px; margin: 0; padding: 16px 20px; overflow: auto; list-style: none; }
+.mreview-unit { padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+.mreview-unit.open { border-color: var(--warn); }
+.mreview-unit-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.mreview-text { margin-top: 6px; line-height: 1.5; }
+.mreview-unit > .hint { margin-top: 4px; }
+.mreview-badge { padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+.mreview-badge.ok { background: var(--ok-bg); color: var(--ok); }
+.mreview-badge.warn { background: var(--warn-bg); color: var(--warn); }
+.mreview-badge.bad { background: color-mix(in oklch, var(--err) 18%, transparent); color: var(--err); }
+.mreview-badge.info { background: color-mix(in oklch, var(--accent) 20%, transparent); color: var(--text); }
+.mreview-unit-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
+.mreview-label { margin-top: 10px; color: var(--text-3); font-size: 12px; }
+.mreview-shots { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px; margin-top: 8px; }
+.mreview-shot { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--raised); }
+.mreview-shot.unusable { opacity: .7; }
+.mreview-shot img, .mreview-noimage { width: 100%; aspect-ratio: 16 / 9; border-radius: 6px; background: #000; object-fit: contain; }
+.mreview-noimage { display: flex; align-items: center; justify-content: center; color: var(--text-3); font-size: 12px; }
+.mreview-shot figcaption { display: grid; gap: 2px; font-size: 12px; line-height: 1.4; }
+.mreview-summary-text { color: var(--text-2); }
+.mreview-bad { color: var(--err); }
+.mreview-shot-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: auto; padding-top: 2px; }
+.mreview-shot-actions .btn { padding: 0 10px; }
+.mreview-shot-actions .btn { height: 28px; font-size: 12px; }
+.mreview-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 10px; padding: 12px 20px; border-top: 1px solid var(--line); }
+.mreview-foot .mreview-state { flex: 1; min-width: 200px; margin: 0; }
+.mreview-accept { display: flex; align-items: center; gap: 6px; color: var(--text-2); font-size: 13px; }
+@media (max-width: 900px) {
+  .mreview-backdrop { padding: 8px; }
+  .mreview-body { grid-template-columns: 1fr; overflow: auto; }
+  .mreview-side { border-right: 0; border-bottom: 1px solid var(--line); }
+}
