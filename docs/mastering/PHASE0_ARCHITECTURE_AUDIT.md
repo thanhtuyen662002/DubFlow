@@ -95,8 +95,9 @@ Quy tắc phụ thuộc: `mastering` chỉ import các module thuần (`docu.sho
 |---|---|---|
 | **ADR-0052** Shared mastering plan & policy | Hợp đồng `contracts/mastering` v1 (kế hoạch + tùy chọn), tick nguyên, policy engine, cache phân tích, nguyên tắc "không renderer mới", `off` = hành vi cũ | Phase 1 (PR này) |
 | ADR-0053 Compilation từ footage chưa lồng tiếng | Nới `final_vi.mp4`-only, giữ an toàn đường dẫn, provenance/quyền | Trước Phase 2 phần Tổng hợp |
-| ADR-0054 Mastering trong Lồng tiếng | Cách planner ảnh hưởng `media/adapter` render plan mà không phá checkpoint/resume; pin recipe vào job | Trước Phase 3 |
-| ADR-0055 Docu narrative presets | Mở rộng cấu trúc ngoài 4 hồi, giữ 4 hồi là preset tương thích | Trước Phase 4 |
+| ADR-0054 Lớp biên tập dùng chung (bằng chứng nội dung, chấm điểm, ghép kịch bản) | Ứng viên cảnh, bằng chứng có nguồn gốc, adapter vision tùy chọn, quyết định và chỉnh sửa | Phase 2 (đã viết) |
+| ADR-0055 Mastering trong Lồng tiếng | Cách planner ảnh hưởng `media/adapter` render plan mà không phá checkpoint/resume; pin recipe vào job | Trước Phase 3 |
+| ADR-0056 Docu narrative presets | Mở rộng cấu trúc ngoài 4 hồi, giữ 4 hồi là preset tương thích | Trước Phase 4 |
 
 ## 6. Thứ tự Issue/PR
 
