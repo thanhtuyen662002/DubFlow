@@ -233,6 +233,7 @@ def _wav_rate(path: Path) -> int:
 
 
 def _mastered(spec: Spec, visuals: Sequence[render.Visual], total_ms: int, work: Path, number: int, *,
+              spoken: Sequence[tuple[str, int]] = (),
               inspect: Callable[[Path], Any] | None, measure: Callable[[Path], tuple[int, int]] | None, ffmpeg: Path,
               ffmpeg_runner: Callable[[list[str], Path, Callable[[], bool]], None],
               cancelled: Callable[[], bool]) -> dict[str, Any]:
@@ -250,7 +251,7 @@ def _mastered(spec: Spec, visuals: Sequence[render.Visual], total_ms: int, work:
     path = work / name
     report: dict[str, Any] = {"level": options.level, "style": options.style, "plan": name, "segments": None}
     try:
-        wanted = planner.inputs([v.path for v in visuals], total_ms, options)
+        wanted = planner.inputs([v.path for v in visuals], total_ms, options, spoken=spoken, template=spec.template)
         saved = mastering_plan.load_matching(path, workflow=planner.WORKFLOW, options=options, planner_version=planner.VERSION,
                                              inputs=wanted)
         report["reused"] = saved is not None
@@ -266,7 +267,7 @@ def _mastered(spec: Spec, visuals: Sequence[render.Visual], total_ms: int, work:
                     inputs.append(planner.Visual(visual.path, None, width, height))
                     continue
                 info = replace(inspect(visual.path), duration_ms=visual.duration_ms)
-                result = scene.analyse(visual.path, info, work / "mastering" / f"clip-{index}.json", ffmpeg=ffmpeg,
+                result = scene.analyse(visual.path, info, scene.cache_path(work / "mastering", visual.path), ffmpeg=ffmpeg,
                                        run=ffmpeg_runner, cancelled=cancelled)
                 inputs.append(planner.Visual(visual.path, visual.duration_ms, info.width, info.height, result))
             saved = planner.plan(inputs, total_ms, options, inputs=wanted, plan_id=f"product-{number}")
@@ -362,7 +363,7 @@ def run(spec: Spec, output_dir: Path, *, speaker: Callable[[Status], Speaker], p
                 mastered = None
                 if spec.mastering is not None and spec.template != layout.TEXT_ONLY:
                     status.write(message=f"Đang phân tích cảnh cho video {number}/{len(spec.variants)}…")
-                    mastered = _mastered(spec, visuals, total_ms, work, number, inspect=inspect, measure=measure,
+                    mastered = _mastered(spec, visuals, total_ms, work, number, spoken=spoken, inspect=inspect, measure=measure,
                                          ffmpeg=ffmpeg, ffmpeg_runner=ffmpeg_runner, cancelled=cancelled)
                     status.write(message=f"Đang render video {number}/{len(spec.variants)}…")
                 if mastered is not None and mastered["segments"] is not None:

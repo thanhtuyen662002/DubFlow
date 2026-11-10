@@ -648,7 +648,77 @@ def digest_json(value: Any) -> str:
     return digest_text(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
 
 
-def file_identity(path: Path, recipe: str = "") -> str:
-    """A cheap identity of a media file (size + mtime + recipe), like ``docu/shots.identity``; not its content hash."""
+# Files up to this size are hashed whole; larger ones by FINGERPRINT_BLOCKS evenly spaced blocks.
+FULL_HASH_LIMIT = 32 * 1024 * 1024
+FINGERPRINT_BLOCKS = 16
+FINGERPRINT_BLOCK = 64 * 1024
+FINGERPRINT_RECIPE = "content-v1"
+_FINGERPRINTS: dict[tuple[str, int, int], str] = {}
+
+
+def content_fingerprint(path: Path) -> str:
+    """A digest of what ``path`` holds, independent of its name and mtime.
+
+    Small files are hashed whole. A larger file is hashed by its size and
+    FINGERPRINT_BLOCKS blocks of 64 KiB spread from its first to its last byte
+    (about 1 MiB read), which covers the container header, the index (moov or
+    cues) and samples across the whole stream: a re-encode, trim, edit or
+    replacement changes them even when the size and mtime were kept. The
+    result is remembered per (path, size, mtime) for this process only.
+    """
     stat = path.stat()
-    return digest_json({"size": stat.st_size, "mtime_ns": stat.st_mtime_ns, "recipe": recipe})
+    key = (str(path), stat.st_size, stat.st_mtime_ns)
+    if key in _FINGERPRINTS:
+        return _FINGERPRINTS[key]
+    sha = hashlib.sha256(f"{FINGERPRINT_RECIPE}:{stat.st_size}:".encode())
+    with path.open("rb") as source:
+        if stat.st_size <= FULL_HASH_LIMIT:
+            while chunk := source.read(1024 * 1024):
+                sha.update(chunk)
+        else:
+            last = stat.st_size - FINGERPRINT_BLOCK
+            for index in range(FINGERPRINT_BLOCKS):
+                source.seek(last * index // (FINGERPRINT_BLOCKS - 1))
+                sha.update(source.read(FINGERPRINT_BLOCK))
+    _FINGERPRINTS[key] = digest = sha.hexdigest()
+    return digest
+
+
+def file_identity(path: Path, recipe: str = "") -> str:
+    """The identity of a media file for caches and saved plans: its content fingerprint and the analysis recipe.
+
+    Phase 1 used size + mtime, which keeps a stale cache when a file is replaced by one of the same size with
+    its mtime restored (copy tools, sync clients, archives). The content fingerprint does not.
+    """
+    return digest_json({"content": content_fingerprint(path), "recipe": recipe})
+
+
+def _frame_tick(frame: int, time_base: TimeBase, fps: Fraction) -> int:
+    """The first plan tick inside frame ``frame`` (its exact start, rounded up to a whole tick)."""
+    return math.ceil(Fraction(frame) / fps / time_base.seconds)
+
+
+def frame_floor(ticks: int, time_base: TimeBase, fps: Fraction) -> int:
+    """The first tick of the frame (at ``fps``) that ``ticks`` falls in: at or before ``ticks``, idempotent.
+
+    A cut placed there shows that frame and none of the one before, also at 30000/1001 where frames do not
+    start on whole milliseconds.
+    """
+    if fps <= 0:
+        raise _fail("INVALID_FPS", "frame rate must be positive")
+    return _frame_tick(math.floor(Fraction(ticks) * time_base.seconds * fps), time_base, fps)
+
+
+def frame_ceil(ticks: int, time_base: TimeBase, fps: Fraction) -> int:
+    """The first tick of the first frame starting at or after ``ticks`` (at or after ``ticks``, idempotent)."""
+    if fps <= 0:
+        raise _fail("INVALID_FPS", "frame rate must be positive")
+    return _frame_tick(math.ceil(Fraction(ticks) * time_base.seconds * fps), time_base, fps)
+
+
+def seconds_text(ticks: int, time_base: TimeBase) -> str:
+    """``ticks`` as FFmpeg seconds with microsecond precision, computed exactly (no float in between)."""
+    micro = rescale(ticks, time_base, TimeBase(1, 1_000_000), "nearest")
+    sign = "-" if micro < 0 else ""
+    whole, part = divmod(abs(micro), 1_000_000)
+    return f"{sign}{whole}.{part:06d}"

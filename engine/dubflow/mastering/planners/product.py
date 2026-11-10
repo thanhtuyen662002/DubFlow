@@ -147,8 +147,15 @@ def pieces(saved: m.Plan) -> list[Piece]:
     return out
 
 
-def inputs(visuals: Sequence[Path], total_ms: int, options: m.Options) -> dict[str, str]:
-    """What a saved plan must have been made from to be reused: each file (size, mtime), the length and the options."""
+def inputs(visuals: Sequence[Path], total_ms: int, options: m.Options, *, spoken: Sequence[tuple[str, int]] = (),
+           template: str = "") -> dict[str, str]:
+    """What a saved plan must have been made from to be reused.
+
+    Each file by content (``m.file_identity``) and analysis recipe; the narration (each sentence and how long it
+    is spoken, so an edited script or another voice or speed plans again); the length, template and options.
+    """
     found = {f"v{i + 1}": m.file_identity(path, scene.RECIPE) for i, path in enumerate(visuals)}
-    found["timeline"] = m.digest_json({"total_ms": total_ms, "visuals": len(visuals), "level": options.level, "style": options.style})
+    found["timeline"] = m.digest_json({"total_ms": total_ms, "visuals": len(visuals), "level": options.level, "style": options.style,
+                                       "template": template, "recipe": RECIPE})
+    found["script"] = m.digest_json([[text, duration] for text, duration in spoken])
     return found
