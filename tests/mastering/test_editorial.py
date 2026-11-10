@@ -202,6 +202,36 @@ class AlignTests(unittest.TestCase):
         self.assertTrue(all(c.length_ms >= PACING.minimum // 2 for c in choices), [c.length_ms for c in choices])
         self.assertEqual(sum(c.length_ms for c in choices), 3962)
 
+    def test_the_closest_match_is_shown_even_when_shorter_than_the_pace(self):
+        # Real run 4: the gauge shot (1.18 s) scored highest but every shot under the 2 s pace was left out.
+        gauge = candidate("v1c10", "v1", 20000, 21180)
+        pour = candidate("v3c2", "v3", 0, 8000)
+        found = ev.gather(["v1c10", "v3c2"])
+        found["v1c10"].add(ev.Item("vision", 800, "Cận cảnh đồng hồ áp suất trên thân máy, kim chỉ vùng xanh"))
+        found["v3c2"].add(ev.Item("vision", 800, "Cà phê chảy xuống tách"))
+        sentence = unit("u4", "Đồng hồ áp suất cho bạn biết máy đã sẵn sàng.", 0, 3500, "feature")
+        choices, _, _ = align.assign([sentence], [gauge, pour], found, PACING, forward_only=False)
+        self.assertEqual(choices[0].candidate.candidate_id, "v1c10")
+        self.assertEqual(choices[0].length_ms, 1180)
+        self.assertEqual(sum(c.length_ms for c in choices), 3500)
+        self.assertTrue(all(c.length_ms >= PACING.minimum // 2 for c in choices[1:]))
+
+    def test_a_shot_the_next_sentence_matches_far_better_is_left_for_it(self):
+        # Real run 4: the hook took the GRIND shot, leaving 0.9 s of it for the sentence about grinding.
+        pour = candidate("v1c12", "v1", 0, 6000, motion=20)
+        grind = candidate("v1c2", "v2", 0, 3000, motion=240)  # the livelier shot: a hook would take it
+        found = ev.gather(["v1c12", "v1c2"])
+        found["v1c12"].add(ev.Item("vision", 800, "Cà phê espresso chảy vào ly thủy tinh"))
+        found["v1c12"].hook = 300
+        found["v1c2"].add(ev.Item("vision", 800, "Máy xay hạt cà phê, nút GRIND, bột cà phê"))
+        found["v1c2"].hook = 900
+        hook = unit("u1", "Một ly cà phê ngon mỗi sáng.", 0, 3000, "hook")
+        grinding = unit("u3", "Máy xay hạt cà phê ngay trong thân máy, nút GRIND.", 3000, 6000, "feature")
+        choices, _, _ = align.assign([hook, grinding], [pour, grind], found, PACING, forward_only=False)
+        self.assertEqual([c.candidate.candidate_id for c in choices if c.unit_id == "u1"], ["v1c12"])
+        self.assertEqual(choices[-1].candidate.candidate_id, "v1c2")
+        self.assertEqual(choices[-1].offset_ms, 0)
+
     def test_footage_another_part_showed_is_weighed_as_a_duplicate(self):
         pool = [candidate("v1c1", "v1", 0, 6000), candidate("v1c2", "v1", 6000, 12_000)]
         found = ev.gather(c.candidate_id for c in pool)

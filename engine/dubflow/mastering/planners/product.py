@@ -29,8 +29,8 @@ from ..candidates import Candidate
 
 PLANNER = "dubflow.mastering.product"
 # 1: shot-aware parts in turn (Phase 1). 2: each sentence illustrated by the footage that matches it (ADR-0054).
-VERSION = "5"
-RECIPE = "product-editorial-v5"  # v5: no slivers; different products only by unrelated names
+VERSION = "6"
+RECIPE = "product-editorial-v6"  # v6: the closest match shown even when short; shots kept for the sentence they fit
 WORKFLOW = "product_showcase"
 SHOT_MARGIN_MS = 120
 # A shot shorter than this is skipped while longer ones exist; it is used when nothing else is left.
