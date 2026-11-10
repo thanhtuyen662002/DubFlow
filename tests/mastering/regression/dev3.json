@@ -1,8 +1,8 @@
 [
  {
   "schema_version": 1,
-  "name": "holdout3-vacuum",
-  "split": "holdout",
+  "name": "dev3-vacuum",
+  "split": "dev",
   "forward_only": false,
   "pacing": "natural",
   "lead_ms": 0,
@@ -136,8 +136,8 @@
   ],
   "truth": {
    "schema_version": 1,
-   "dataset": "holdout3-vacuum",
-   "split": "holdout",
+   "dataset": "dev3-vacuum",
+   "split": "dev",
    "units": {
     "u1": {
      "accept": [
@@ -254,8 +254,8 @@
  },
  {
   "schema_version": 1,
-  "name": "holdout3-kettle",
-  "split": "holdout",
+  "name": "dev3-kettle",
+  "split": "dev",
   "forward_only": false,
   "pacing": "natural",
   "lead_ms": 0,
@@ -373,8 +373,8 @@
   ],
   "truth": {
    "schema_version": 1,
-   "dataset": "holdout3-kettle",
-   "split": "holdout",
+   "dataset": "dev3-kettle",
+   "split": "dev",
    "units": {
     "u1": {
      "accept": [
@@ -473,8 +473,8 @@
  },
  {
   "schema_version": 1,
-  "name": "holdout3-serum",
-  "split": "holdout",
+  "name": "dev3-serum",
+  "split": "dev",
   "forward_only": false,
   "pacing": "natural",
   "lead_ms": 0,
@@ -576,8 +576,8 @@
   ],
   "truth": {
    "schema_version": 1,
-   "dataset": "holdout3-serum",
-   "split": "holdout",
+   "dataset": "dev3-serum",
+   "split": "dev",
    "units": {
     "u1": {
      "accept": [
@@ -667,8 +667,8 @@
  },
  {
   "schema_version": 1,
-  "name": "holdout3-street-food",
-  "split": "holdout",
+  "name": "dev3-street-food",
+  "split": "dev",
   "forward_only": true,
   "pacing": "entertainment",
   "lead_ms": 0,
@@ -803,8 +803,8 @@
   ],
   "truth": {
    "schema_version": 1,
-   "dataset": "holdout3-street-food",
-   "split": "holdout",
+   "dataset": "dev3-street-food",
+   "split": "dev",
    "forward_only": true,
    "units": {
     "u1": {

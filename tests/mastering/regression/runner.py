@@ -20,7 +20,7 @@ HERE = Path(__file__).resolve().parent
 
 
 def load(split: str) -> list[dict[str, Any]]:
-    names = {"all": ["dev", "holdout", "holdout2", "holdout3"], "holdout": ["holdout", "holdout2", "holdout3"]}.get(split, [split])
+    names = {"all": ["dev", "dev2", "dev3", "holdout", "holdout2", "holdout4"], "dev": ["dev", "dev2", "dev3"], "holdout": ["holdout", "holdout2", "holdout4"]}.get(split, [split])
     return [s for name in names for s in json.loads((HERE / f"{name}.json").read_text(encoding="utf-8"))]
 
 
@@ -78,7 +78,7 @@ def main(argv: list[str]) -> int:
     results = [run(s) for s in load(split)]
     for result in results:
         print(line(result))
-    for name in ("dev", "holdout-", "holdout2-"):
+    for name in ("dev-", "dev2-", "dev3-", "holdout-", "holdout2-", "holdout4-"):
         mine = [r["alignment"] for r in results if r["name"].startswith(name)]
         if mine:
             need = sum(u["need_ms"] for a in mine for u in a["units"] if u["footage_exists"])

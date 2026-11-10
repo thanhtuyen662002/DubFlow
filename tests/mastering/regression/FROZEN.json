@@ -2,8 +2,40 @@
   "schema_version": 1,
   "note": "SHA-256 of each ground-truth fixture as first merged. A change to a fixture fails tests/mastering/test_regression.py until this file is changed too, so any edit to ground truth shows in the diff. Git cannot prove that the holdout labels were written before the planner change in the same PR; see docs/mastering/PHASE2_QUALITY_HARDENING_REPORT.md section 4.",
   "fixtures": {
-    "dev.json": {"sha256": "0cde4a4005845cdca19ab687ae05fa81dcd014716482c2317bcad37dcb2d050a", "first_commit": "fd911a2", "tuned_on": true},
-    "holdout.json": {"sha256": "33e799d22254793c3a55714bdb493445ba14269935837e48360c9dd4420c6eb7", "first_commit": "fd911a2", "tuned_on": false, "inspected": "once, to diagnose the earbuds misallocation fixed in #678; no label was changed"},
-    "holdout2.json": {"sha256": "2f3639aba86f67dbc9b396ef420c02decd6d6ac3c0e003e59c360c447a4d2535", "first_commit": "c5b9b69", "tuned_on": false, "inspected": "never"}
+    "dev.json": {
+      "sha256": "0cde4a4005845cdca19ab687ae05fa81dcd014716482c2317bcad37dcb2d050a",
+      "first_commit": "fd911a2",
+      "tuned_on": true
+    },
+    "holdout.json": {
+      "sha256": "33e799d22254793c3a55714bdb493445ba14269935837e48360c9dd4420c6eb7",
+      "first_commit": "fd911a2",
+      "tuned_on": false,
+      "inspected": "once, to diagnose the earbuds misallocation fixed in #678; no label was changed"
+    },
+    "holdout2.json": {
+      "sha256": "2f3639aba86f67dbc9b396ef420c02decd6d6ac3c0e003e59c360c447a4d2535",
+      "first_commit": "c5b9b69",
+      "tuned_on": false,
+      "inspected": "never"
+    },
+    "dev2.json": {
+      "sha256": "b4f58f8cf24c7f5fd66a17de6f478a11a20738e881da98e5fd42daed70dd3a75",
+      "first_commit": "this PR (#705)",
+      "tuned_on": true,
+      "inspected": "written for #705 from the five real-run defects; tuned on"
+    },
+    "dev3.json": {
+      "sha256": "e7658538ee68e2a67b9e4c14874c974fe864a365616a287c2e971697f03f8f73",
+      "first_commit": "fa6de3a (as holdout3.json)",
+      "tuned_on": true,
+      "inspected": "written 2026-11-11 as holdout3 before the #705 fixes (baseline on b7fee92: vacuum 95.3 %, kettle 94.2 %, serum 93.7 %, street-food 82.6 % with 3000 ms contra); its per-scenario results were inspected while diagnosing the stolen-key gate, so it was renamed dev3 and replaced by holdout4"
+    },
+    "holdout4.json": {
+      "sha256": "f38bbc3fa9d57dba2700416ecb51851956240438a9f238a6a9b164068822ace3",
+      "first_commit": "this PR (#705)",
+      "tuned_on": false,
+      "inspected": "never per scenario; written when the #705 rules were nearly final, only the aggregate line was read: b7fee92 95.4 % coverage 19/20 ok 1 silent miss; #705 100.0 % 20/20 ok 0 silent misses (read again unchanged after the last rule, the short-tail rule)"
+    }
   }
 }

@@ -1,0 +1,946 @@
+[
+ {
+  "schema_version": 1,
+  "name": "dev2-blower-name-claim",
+  "split": "dev",
+  "forward_only": false,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "v1c1",
+    "source": "v1",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Máy thổi bụi cầm tay mini màu đen thổi lá khô trên sân",
+    "motion": 150,
+    "hook": 700,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v1c2",
+    "source": "v1",
+    "start_ms": 3000,
+    "end_ms": 6000,
+    "text": "Cận cảnh tay cầm và thân máy thổi bụi mini màu đen",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v2c1",
+    "source": "v2",
+    "start_ms": 0,
+    "end_ms": 2900,
+    "text": "Hai người đàn ông dùng máy thổi bụi mini thổi khô xe máy sau khi rửa",
+    "motion": 120,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v2c2",
+    "source": "v2",
+    "start_ms": 2900,
+    "end_ms": 5500,
+    "text": "Màn hình chữ trên video: giá 600K giảm còn 89K",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v3c1",
+    "source": "v3",
+    "start_ms": 0,
+    "end_ms": 5400,
+    "text": "Cô gái váy xanh thổi bụi bàn phím máy tính bằng máy thổi bụi mini",
+    "motion": 90,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v4c1",
+    "source": "v4",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Pin sạc và cổng sạc USB của máy thổi bụi mini",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Máy thổi bụi cầm tay mini, nhỏ mà có võ.",
+    "ms": 3000
+   },
+   {
+    "id": "u2",
+    "text": "Thân máy màu đen, tay cầm chắc chắn.",
+    "ms": 3000
+   },
+   {
+    "id": "u3",
+    "text": "Thổi bay lá khô ngoài sân chỉ trong chốc lát.",
+    "ms": 3000
+   },
+   {
+    "id": "u4",
+    "text": "Rửa xe xong, hai anh em thổi khô xe máy trong một phút.",
+    "ms": 3000
+   },
+   {
+    "id": "u5",
+    "text": "Làm sạch bàn phím máy tính, khe hẹp cũng sạch bụi.",
+    "ms": 3500
+   },
+   {
+    "id": "u6",
+    "text": "Giá gốc 600K nay chỉ còn 89K, đặt ngay.",
+    "ms": 3000
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "dev2-blower-name-claim",
+   "split": "dev",
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "v1",
+       "start_ms": 0,
+       "end_ms": 6000
+      },
+      {
+       "source": "v2",
+       "start_ms": 0,
+       "end_ms": 2900
+      },
+      {
+       "source": "v3",
+       "start_ms": 0,
+       "end_ms": 5400
+      }
+     ]
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "v1",
+       "start_ms": 3000,
+       "end_ms": 6000
+      }
+     ],
+     "key": [
+      {
+       "source": "v1",
+       "start_ms": 3000,
+       "end_ms": 6000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "v1",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ],
+     "key": [
+      {
+       "source": "v1",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "v2",
+       "start_ms": 0,
+       "end_ms": 2900
+      }
+     ],
+     "key": [
+      {
+       "source": "v2",
+       "start_ms": 0,
+       "end_ms": 2900
+      }
+     ]
+    },
+    "u5": {
+     "accept": [
+      {
+       "source": "v3",
+       "start_ms": 0,
+       "end_ms": 5400
+      }
+     ],
+     "key": [
+      {
+       "source": "v3",
+       "start_ms": 0,
+       "end_ms": 5400
+      }
+     ]
+    },
+    "u6": {
+     "accept": [
+      {
+       "source": "v2",
+       "start_ms": 2900,
+       "end_ms": 5500
+      }
+     ],
+     "key": [
+      {
+       "source": "v2",
+       "start_ms": 2900,
+       "end_ms": 5500
+      }
+     ]
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "dev2-toothpick-function-words",
+  "split": "dev",
+  "forward_only": false,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "v1c1",
+    "source": "v1",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Hộp đựng tăm tự động hình tròn màu trắng trên bàn ăn",
+    "motion": 50,
+    "hook": 600,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v2c1",
+    "source": "v2",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Ngón tay nhấn nút trên nắp, một chiếc tăm bật lên",
+    "motion": 110,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v3c1",
+    "source": "v3",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Đổ tăm mới vào bên trong ngăn chứa",
+    "motion": 80,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v4c1",
+    "source": "v4",
+    "start_ms": 0,
+    "end_ms": 2700,
+    "text": "Tháo đế hộp ra, lấy tăm ra từ bên trong hộp tăm",
+    "motion": 100,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v4c2",
+    "source": "v4",
+    "start_ms": 2700,
+    "end_ms": 5500,
+    "text": "Mặt gương trên nắp hộp phản chiếu ánh đèn",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Hộp tăm tự động sang trọng cho bàn ăn.",
+    "ms": 3000
+   },
+   {
+    "id": "u2",
+    "text": "Nhấn nhẹ, tăm tự bật lên từng chiếc.",
+    "ms": 3000
+   },
+   {
+    "id": "u3",
+    "text": "Tháo đế dễ dàng để vệ sinh.",
+    "ms": 2500
+   },
+   {
+    "id": "u4",
+    "text": "Ngăn chứa bên trong đựng được nhiều tăm, đổ vào là xong.",
+    "ms": 3500
+   },
+   {
+    "id": "u5",
+    "text": "Nắp tráng gương sáng bóng.",
+    "ms": 2500
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "dev2-toothpick-function-words",
+   "split": "dev",
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "v1",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ]
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "v2",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ],
+     "key": [
+      {
+       "source": "v2",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "v4",
+       "start_ms": 0,
+       "end_ms": 2700
+      }
+     ],
+     "key": [
+      {
+       "source": "v4",
+       "start_ms": 0,
+       "end_ms": 2700
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "v3",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ],
+     "key": [
+      {
+       "source": "v3",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ]
+    },
+    "u5": {
+     "accept": [
+      {
+       "source": "v4",
+       "start_ms": 2700,
+       "end_ms": 5500
+      }
+     ],
+     "key": [
+      {
+       "source": "v4",
+       "start_ms": 2700,
+       "end_ms": 5500
+      }
+     ]
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "dev2-espresso-hook-steal",
+  "split": "dev",
+  "forward_only": false,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "v1c1",
+    "source": "v1",
+    "start_ms": 0,
+    "end_ms": 1500,
+    "text": "Tay cầm pha cà phê đặt dưới máy xay",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v1c2",
+    "source": "v1",
+    "start_ms": 1500,
+    "end_ms": 3000,
+    "text": "Xay hạt cà phê vào tay cầm pha",
+    "motion": 120,
+    "hook": 500,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v1c3",
+    "source": "v1",
+    "start_ms": 3000,
+    "end_ms": 4600,
+    "text": "Nén bột cà phê trong tay cầm bằng dụng cụ nén",
+    "motion": 130,
+    "hook": 600,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v1c4",
+    "source": "v1",
+    "start_ms": 4600,
+    "end_ms": 6000,
+    "text": "Gắn tay cầm pha vào máy pha cà phê",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v2c1",
+    "source": "v2",
+    "start_ms": 0,
+    "end_ms": 3500,
+    "text": "Toàn cảnh máy pha espresso màu bạc trên quầy bếp",
+    "motion": 50,
+    "hook": 850,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v3c1",
+    "source": "v3",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Dòng espresso chảy xuống tách, lớp crema vàng",
+    "motion": 100,
+    "hook": 900,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v4c1",
+    "source": "v4",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Đồng hồ áp suất trên thân máy pha",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Máy pha cà phê có tay cầm, pha espresso ngay tại nhà.",
+    "ms": 3000
+   },
+   {
+    "id": "u2",
+    "text": "Xay hạt, nén bột trong tay cầm chỉ vài giây.",
+    "ms": 4500
+   },
+   {
+    "id": "u3",
+    "text": "Đồng hồ áp suất báo máy đã sẵn sàng.",
+    "ms": 3000
+   },
+   {
+    "id": "u4",
+    "text": "Dòng espresso chảy đều với lớp crema vàng óng.",
+    "ms": 3500
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "dev2-espresso-hook-steal",
+   "split": "dev",
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "v2",
+       "start_ms": 0,
+       "end_ms": 3500
+      },
+      {
+       "source": "v3",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "v1",
+       "start_ms": 0,
+       "end_ms": 6000
+      }
+     ],
+     "key": [
+      {
+       "source": "v1",
+       "start_ms": 1500,
+       "end_ms": 4600
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "v4",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ],
+     "key": [
+      {
+       "source": "v4",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "v3",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ],
+     "key": [
+      {
+       "source": "v3",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "dev2-hook-text-card",
+  "split": "dev",
+  "forward_only": true,
+  "pacing": "entertainment",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "s1c1",
+    "source": "s1",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Phong thi nghiem, nha khoa hoc bat may phat dien",
+    "motion": 110,
+    "hook": 600,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s1c2",
+    "source": "s1",
+    "start_ms": 4000,
+    "end_ms": 8000,
+    "text": "Man hinh chu ket: IN TIMES OF CHANGE, phan ung day chuyen voi dong chu chay",
+    "motion": 150,
+    "hook": 750,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s2c1",
+    "source": "s2",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Robot cong nghiep lap rap o to trong nha may",
+    "motion": 140,
+    "hook": 800,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s2c2",
+    "source": "s2",
+    "start_ms": 4000,
+    "end_ms": 8000,
+    "text": "Ky su kiem tra day chuyen san xuat",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s3c1",
+    "source": "s3",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Ten lua phong len bau troi",
+    "motion": 160,
+    "hook": 900,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s4c1",
+    "source": "s4",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Dam dong reo ho vay tay chao don",
+    "motion": 120,
+    "hook": 700,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Những phát minh khiến cả thế giới chuyển động.",
+    "ms": 4000
+   },
+   {
+    "id": "u2",
+    "text": "Máy phát điện thắp sáng các thành phố.",
+    "ms": 4000
+   },
+   {
+    "id": "u3",
+    "text": "Dây chuyền robot lắp ráp ô tô.",
+    "ms": 6000
+   },
+   {
+    "id": "u4",
+    "text": "Và tên lửa đưa con người ra không gian.",
+    "ms": 4000
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "dev2-hook-text-card",
+   "split": "dev",
+   "forward_only": true,
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "s1",
+       "start_ms": 0,
+       "end_ms": 4000
+      },
+      {
+       "source": "s2",
+       "start_ms": 0,
+       "end_ms": 4000
+      },
+      {
+       "source": "s3",
+       "start_ms": 0,
+       "end_ms": 4000
+      },
+      {
+       "source": "s4",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ],
+     "contra": [
+      {
+       "source": "s1",
+       "start_ms": 4000,
+       "end_ms": 8000
+      }
+     ]
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "s1",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ],
+     "key": [
+      {
+       "source": "s1",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "s2",
+       "start_ms": 0,
+       "end_ms": 8000
+      }
+     ],
+     "key": [
+      {
+       "source": "s2",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "s3",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ],
+     "key": [
+      {
+       "source": "s3",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "dev2-title-card-opening",
+  "split": "dev",
+  "forward_only": true,
+  "pacing": "entertainment",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "s1c1",
+    "source": "s1",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Thẻ tiêu đề: NHỮNG CHUYẾN TÀU ĐẸP NHẤT THẾ GIỚI, chữ bay vào",
+    "motion": 150,
+    "hook": 700,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s1c2",
+    "source": "s1",
+    "start_ms": 3000,
+    "end_ms": 8000,
+    "text": "Đoàn tàu hơi nước băng qua cầu đá giữa núi tuyết",
+    "motion": 120,
+    "hook": 850,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s2c1",
+    "source": "s2",
+    "start_ms": 0,
+    "end_ms": 5000,
+    "text": "Tàu cao tốc Shinkansen lướt qua núi Phú Sĩ",
+    "motion": 140,
+    "hook": 800,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s3c1",
+    "source": "s3",
+    "start_ms": 0,
+    "end_ms": 5000,
+    "text": "Toa tàu ngắm cảnh có mái kính đi qua hẻm núi",
+    "motion": 90,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s3c2",
+    "source": "s3",
+    "start_ms": 5000,
+    "end_ms": 8000,
+    "text": "Dòng chữ: CẢM ƠN ĐÃ XEM",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s4c1",
+    "source": "s4",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Đoàn tàu đỏ chạy giữa đồng cỏ lúc hoàng hôn",
+    "motion": 110,
+    "hook": 600,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Những chuyến tàu đẹp nhất thế giới.",
+    "ms": 3000
+   },
+   {
+    "id": "u2",
+    "text": "Tàu hơi nước băng qua cây cầu đá cổ.",
+    "ms": 4500
+   },
+   {
+    "id": "u3",
+    "text": "Shinkansen lướt nhanh dưới chân núi Phú Sĩ.",
+    "ms": 4500
+   },
+   {
+    "id": "u4",
+    "text": "Và toa kính ngắm trọn hẻm núi.",
+    "ms": 4500
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "dev2-title-card-opening",
+   "split": "dev",
+   "forward_only": true,
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "s1",
+       "start_ms": 3000,
+       "end_ms": 8000
+      },
+      {
+       "source": "s2",
+       "start_ms": 0,
+       "end_ms": 5000
+      },
+      {
+       "source": "s3",
+       "start_ms": 0,
+       "end_ms": 5000
+      },
+      {
+       "source": "s4",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ],
+     "contra": [
+      {
+       "source": "s1",
+       "start_ms": 0,
+       "end_ms": 3000
+      },
+      {
+       "source": "s3",
+       "start_ms": 5000,
+       "end_ms": 8000
+      }
+     ]
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "s1",
+       "start_ms": 3000,
+       "end_ms": 8000
+      }
+     ],
+     "key": [
+      {
+       "source": "s1",
+       "start_ms": 3000,
+       "end_ms": 8000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "s2",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ],
+     "key": [
+      {
+       "source": "s2",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "s3",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ],
+     "key": [
+      {
+       "source": "s3",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ]
+    }
+   }
+  }
+ }
+]
