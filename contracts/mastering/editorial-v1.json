@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dubflow.local/contracts/mastering/editorial-v1.json",
+  "title": "DubFlow editorial decisions v1 (ADR-0054)",
+  "description": "The decision log beside a mastering plan: per script unit the chosen candidates, the next best alternatives with scores and reasons, every candidate with its quality, duplicate group and evidence (with origin and confidence), the mode (content or signals_only), the user's edits and warnings. Written by the planner, read by the desktop to explain and to let the user pick another shot; never an input to rendering (the plan is).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "workflow", "plan_id", "mode", "units", "candidates", "edits", "warnings"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "editorial_decisions"},
+    "workflow": {"enum": ["product_showcase", "compilation_entertainment"]},
+    "plan_id": {"type": "string", "maxLength": 128},
+    "mode": {"enum": ["content", "signals_only"]},
+    "units": {"type": "array", "maxItems": 2000, "items": {"$ref": "#/$defs/unit"}},
+    "candidates": {"type": "array", "maxItems": 5000, "items": {"$ref": "#/$defs/candidate"}},
+    "edits": {"$ref": "#/$defs/edits"},
+    "warnings": {"type": "array", "maxItems": 500, "items": {"type": "string", "maxLength": 500}},
+    "vision": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "properties": {
+        "provider": {"type": "string"}, "model": {"type": "string"},
+        "frames": {"type": "integer", "minimum": 0}, "asked": {"type": "integer", "minimum": 0},
+        "warnings": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "part": {"type": "string", "maxLength": 128}
+  },
+  "$defs": {
+    "unit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["unit_id", "text", "function", "start_ms", "end_ms", "chosen", "alternatives", "notes"],
+      "properties": {
+        "unit_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"},
+        "text": {"type": "string", "maxLength": 3000},
+        "function": {"enum": ["hook", "benefit", "demonstration", "feature", "result", "cta", "narration", "intro", "outro"]},
+        "start_ms": {"type": "integer", "minimum": 0},
+        "end_ms": {"type": "integer", "minimum": 1},
+        "chosen": {"type": "array", "items": {"type": "string"}},
+        "alternatives": {"type": "array", "maxItems": 8, "items": {
+          "type": "object", "additionalProperties": false, "required": ["candidate_id", "score", "reasons"],
+          "properties": {"candidate_id": {"type": "string"}, "score": {"type": "integer"},
+                         "reasons": {"type": "array", "items": {"type": "string", "maxLength": 300}}}}},
+        "notes": {"type": "array", "items": {"type": "string", "maxLength": 300}}
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "source_id", "start_ms", "end_ms", "shot", "motion", "dhash", "keyframe", "quality", "group", "evidence", "summary"],
+      "properties": {
+        "id": {"type": "string"}, "source_id": {"type": "string"},
+        "start_ms": {"type": "integer", "minimum": 0}, "end_ms": {"type": "integer", "minimum": 1},
+        "shot": {"type": "integer", "minimum": 0}, "motion": {"type": "integer", "minimum": 0, "maximum": 1000},
+        "dhash": {"type": "string", "pattern": "^[0-9a-f]{16}$"},
+        "keyframe": {"type": ["string", "null"]},
+        "quality": {"type": "object", "additionalProperties": false, "required": ["brightness", "contrast", "sharpness", "problems"],
+                    "properties": {"brightness": {"type": "integer"}, "contrast": {"type": "integer"}, "sharpness": {"type": "integer"},
+                                   "problems": {"type": "array", "items": {"type": "string"}}}},
+        "group": {"type": "string"},
+        "summary": {"type": "string", "maxLength": 300},
+        "evidence": {"type": ["object", "null"], "additionalProperties": false,
+                     "required": ["candidate_id", "items", "product_box", "hook", "product_visible", "same_product"],
+                     "properties": {
+                       "candidate_id": {"type": "string"},
+                       "items": {"type": "array", "items": {"type": "object", "additionalProperties": false,
+                                 "required": ["origin", "confidence", "text", "labels", "detail"],
+                                 "properties": {"origin": {"enum": ["user", "metadata", "transcript", "vision", "signal"]},
+                                                "confidence": {"type": "integer", "minimum": 0, "maximum": 1000},
+                                                "text": {"type": "string"}, "labels": {"type": "array", "items": {"type": "string"}},
+                                                "detail": {"type": "string"}}}},
+                       "product_box": {"type": ["object", "null"]},
+                       "hook": {"type": "integer", "minimum": 0, "maximum": 1000},
+                       "product_visible": {"type": ["boolean", "null"]},
+                       "same_product": {"type": ["string", "null"]}}}
+      }
+    },
+    "edits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pin", "exclude", "exclude_sources"],
+      "properties": {
+        "pin": {"type": "object", "additionalProperties": {"type": "array", "maxItems": 20, "items": {"type": "string"}}},
+        "exclude": {"type": "array", "items": {"type": "string"}},
+        "exclude_sources": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  }
+}
