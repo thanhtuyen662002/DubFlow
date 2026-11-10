@@ -96,6 +96,27 @@ class DecisionTests(unittest.TestCase):
 
 
 class MeasureTests(unittest.TestCase):
+    def test_the_loudest_window_is_found_inside_the_video(self):
+        import wave
+        from array import array
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / "a.wav"
+            rate = 8000
+            samples = array("h", [0] * (rate * 60))
+            for i in range(rate * 40, rate * 45):  # a burst at 40–45 s
+                samples[i] = 12000 if i % 2 else -12000
+            for i in range(rate * 1, rate * 4):    # louder, but in the first 20 %: not a climax
+                samples[i] = 30000 if i % 2 else -30000
+            with wave.open(str(path), "wb") as out:
+                out.setnchannels(1)
+                out.setsampwidth(2)
+                out.setframerate(rate)
+                out.writeframes(samples.tobytes())
+            found = measure.loudest_window(path)
+            self.assertEqual((found["start_ms"], found["end_ms"]), (40000, 45000))
+            self.assertIsNone(measure.loudest_window(Path(folder) / "missing.wav"))
+
+
     def test_frame_times_and_bars(self):
         self.assertEqual(measure.frame_times(10000, 2), [2650, 7350])
         self.assertEqual(measure.frame_times(0, 4), [])
