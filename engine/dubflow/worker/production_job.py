@@ -2432,7 +2432,12 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
     qc = {"schema_version": 1, "status": "passed", "source_probe": probe.to_dict(), "output_probe": output_probe.to_dict(), "audio": audio_metadata,
           **({"caption_blur": {"auto": caption_scan_summary, "regions": len(blur_regions), **({"style": cover_args["cover_style"].mode} if "cover_style" in cover_args else {})}} if blur_regions or caption_scan_summary else {}), "warnings": warnings, "downgrade": any(not warning.startswith(INFORMATIONAL_WARNINGS) for warning in warnings), "validated_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     if mastering_document is not None:
-        qc["mastering"] = {"level": mastering_options.level, "recipe": dubbing_master.RECIPE, "notes": mastering_document["notes"],
+        notes = list(mastering_document["notes"])
+        if any(warning.startswith("B2_AUDIO_FALLBACK_TO_B1") for warning in warnings):
+            # the dubbed mix is not in the output: what mastering said about it no longer holds
+            notes = [note for note in notes if not note.startswith(("Âm lượng:", "Phụ đề:"))]
+            notes.append("Đã quay về âm thanh gốc (B1): không chuẩn hóa âm lượng bản lồng tiếng, phụ đề giữ thời gian nguồn.")
+        qc["mastering"] = {"level": mastering_options.level, "recipe": dubbing_master.RECIPE, "notes": notes,
                            "loudness": bool(mastering_document["audio_filter"]) and b2_audio is not None,
                            "video_filters": mastering_document["video_filters"], "climax": mastering_document["climax"],
                            "measured": mastering_document["measured"]}
