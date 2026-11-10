@@ -192,6 +192,24 @@ class AlignTests(unittest.TestCase):
         self.assertTrue(any("đồng hồ" in r for r in choices[0].reasons))
         self.assertGreaterEqual(choices[0].confidence, 500)
 
+    def test_a_sentence_is_not_finished_with_a_few_frames(self):
+        pool = [candidate("v1c1", "v1", 0, 3900), candidate("v2c1", "v2", 0, 8000)]
+        found = ev.gather(c.candidate_id for c in pool)
+        found["v1c1"].add(ev.Item("vision", 900, "tay cầm pha cà phê"))
+        found["v2c1"].add(ev.Item("vision", 900, "máy pha cà phê"))
+        sentence = unit("u1", "Tay cầm pha cà phê bằng thép.", 0, 3962, "feature")
+        choices, _, _ = align.assign([sentence], pool, found, PACING, forward_only=True)
+        self.assertTrue(all(c.length_ms >= PACING.minimum // 2 for c in choices), [c.length_ms for c in choices])
+        self.assertEqual(sum(c.length_ms for c in choices), 3962)
+
+    def test_footage_another_part_showed_is_weighed_as_a_duplicate(self):
+        pool = [candidate("v1c1", "v1", 0, 6000), candidate("v1c2", "v1", 6000, 12_000)]
+        found = ev.gather(c.candidate_id for c in pool)
+        sentence = unit("u1", "Cảm ơn bạn đã xem.", 0, 3000, "outro")
+        first, _, _ = align.assign([sentence], pool, found, PACING, forward_only=True)
+        again, _, _ = align.assign([sentence], pool, found, PACING, forward_only=True, shown=[first[0].candidate.candidate_id])
+        self.assertNotEqual(first[0].candidate.candidate_id, again[0].candidate.candidate_id)
+
     def test_forward_only_keeps_each_source_in_order(self):
         pool = [candidate(f"v1c{i}", "v1", i * 3000, i * 3000 + 3000) for i in range(4)]
         found = ev.gather(c.candidate_id for c in pool)
@@ -250,13 +268,45 @@ class VisionTests(unittest.TestCase):
         self.assertEqual(seen["c0"].labels, ("product_closeup",))  # the made-up label is dropped
         self.assertEqual(seen["c0"].hook, 1000)                    # clamped
         self.assertTrue(describer.warnings)                         # one frame over the budget
-        self.assertEqual(len(ask.calls), 2)                         # 6 + 1
+        self.assertEqual(len(ask.calls), 2)                         # 4 + 3
         again = vision.Describer(ask, provider="gemini", model="m", cache=self.root / "cache", budget=7)
         self.assertEqual(len(again.describe(self.frames[:7])), 7)
         self.assertEqual(len(ask.calls), 2)                         # all from the cache
         other = vision.Describer(ask, provider="gemini", model="other", cache=self.root / "cache", budget=7)
         other.describe(self.frames[:1])
         self.assertEqual(len(ask.calls), 3)                         # another model asks again
+
+    def test_a_percent_or_fraction_scale_is_read_on_a_thousand(self):
+        # Gemini answered 90/95/42 when asked for 0–1000: read alone, 90 would be a nearly worthless 90/1000.
+        values = iter([90, 95, 42, 37])
+        percent = vision.Describer(FakeAsk(lambda n: {"frame": n, "description": "đồng hồ áp suất", "labels": [],
+                                                      "confidence": next(values), "clarity": "clear", "hook": 60}),
+                                   provider="gemini", model="m", cache=self.root / "p")
+        seen = percent.describe(self.frames[:4])
+        self.assertEqual([seen[f"c{i}"].confidence for i in range(4)], [900, 950, 420, 370])
+        self.assertEqual(seen["c0"].hook, 600)
+        fraction = vision.Describer(FakeAsk(lambda n: {"frame": n, "description": "x y", "confidence": 0.8}),
+                                    provider="gemini", model="m", cache=self.root / "f")
+        self.assertEqual(fraction.describe(self.frames[:1])["c0"].confidence, 800)
+        thousand = vision.Describer(FakeAsk(lambda n: {"frame": n, "description": "x y", "confidence": 850 if n == 1 else 60}),
+                                    provider="gemini", model="m", cache=self.root / "t")
+        self.assertEqual([v.confidence for v in thousand.describe(self.frames[:2]).values()], [850, 60])
+
+    def test_a_cut_off_answer_is_asked_again_in_halves(self):
+        class CutOff(Exception):
+            code, message = "FORMAT", "Câu trả lời bị cắt ngắn; hãy thử lại."
+
+        class Short(FakeAsk):
+            def __call__(self, system, schema, parts):
+                if sum(1 for p in parts if "image" in p) > 2:
+                    self.calls.append(parts)
+                    raise CutOff()
+                return super().__call__(system, schema, parts)
+        ask = Short(lambda n: {"frame": n, "description": "tách cà phê", "confidence": 800})
+        describer = vision.Describer(ask, provider="gemini", model="m", cache=self.root / "h")
+        self.assertEqual(len(describer.describe(self.frames[:4])), 4)  # 4 cut off → 2 + 2
+        self.assertEqual((len(ask.calls), describer.asked), (3, 4))
+        self.assertFalse(describer.warnings)
 
     def test_failures_leave_no_evidence_and_stop_on_a_bad_key(self):
         class KeyError_(Exception):

@@ -292,12 +292,12 @@ class RenderTests(unittest.TestCase):
             self.assertEqual(result["state"], "COMPLETED", result)
             self.assertTrue((run / ".dubflow-work/render/ambience.wav").is_file())
             text = subprocess.run([FFMPEG, "-hide_banner", "-nostats", "-i", str(run / "documentary.mp4"), "-af", "ebur128", "-f", "null", "-"],
-                                  capture_output=True, text=True).stderr
+                                  capture_output=True, text=True, encoding="utf-8", errors="replace").stderr
             # The narration is silent here: what plays is the room tone and the hit.
             self.assertGreater(float(re.findall(r"I:\s+(-?[\d.]+) LUFS", text)[-1]), -40)
             frames = json.loads(subprocess.run([FFPROBE, "-v", "error", "-count_frames", "-select_streams", "v:0", "-show_entries",
                                                 "stream=nb_read_frames", "-of", "json", str(run / "documentary.mp4")],
-                                               capture_output=True, text=True).stdout)["streams"][0]["nb_read_frames"]
+                                               capture_output=True, text=True, encoding="utf-8", errors="replace").stdout)["streams"][0]["nb_read_frames"]
             self.assertEqual(int(frames), 180)
 
 

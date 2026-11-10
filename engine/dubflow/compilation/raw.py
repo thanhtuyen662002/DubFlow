@@ -265,6 +265,7 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
         blur = render.available_blur(ffmpeg) if ffmpeg.is_file() else "boxblur=20:2"
         music_hash = _digest_file(resolved.music, cancelled) if resolved.music else None
         names: list[str] = []
+        shown: set[str] = set()  # candidates the parts so far showed
         timeline: list[tuple[str, int]] = []
         all_captions: list[script.Caption] = []
         review = 0
@@ -290,17 +291,20 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
                                              lead_ms=script.LEAD_MS, gap_ms=script.GAP_MS, tail_ms=script.TAIL_MS)
             status.write(message=f"{context}Đang chọn cảnh ({index}/{len(parts)})…")
             part_footage = [footage[s] for s in source_ids]
+            avoid = sorted(shown) if kind in ("intro", "outro") else []  # the opening and closing show something new
             inputs = {s: m.file_identity(footage[s].path, scene.RECIPE) for s in source_ids}
             inputs["part"] = m.digest_json({"spoken": spoken, "kind": kind, "title": title, "keep": keep,
                                             "editorial": resolved.editorial.digest_input(part_id),
                                             # what the AI saw, not how many frames it was asked this run (cached answers)
                                             "vision": None if vision_report is None else
-                                            {k: vision_report[k] for k in ("provider", "model", "frames")}, "trim": [footage[s].trim for s in source_ids]})
+                                            {k: vision_report[k] for k in ("provider", "model")},
+                                            "shown": avoid, "trim": [footage[s].trim for s in source_ids]})
             made = planner.plan_part(part_id, kind, spoken, narration_ms, resolved.mastering, lead_ms=script.LEAD_MS,
                                      gap_ms=script.GAP_MS, footage=part_footage, candidates=candidates, evidence=evidence,
                                      groups=groups, edits=resolved.editorial.edits.get(part_id), keep_audio=keep, title=title,
-                                     inputs=inputs)
+                                     inputs=inputs, shown=avoid)
             m.save(folder / f"plan-{part_id}.json", made.plan)
+            shown.update(choice for unit in made.log["units"] for choice in unit["chosen"])
             made.log["vision"] = vision_report
             _atomic_text(folder / f"editorial-{part_id}.json", json.dumps(made.log, ensure_ascii=False, indent=1))
             review += sum(s.needs_review for s in made.plan.segments)
@@ -317,7 +321,12 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
                 length = m.to_milliseconds(segment.timeline.end, made.plan.time_base) - m.to_milliseconds(segment.timeline.start, made.plan.time_base)
                 pieces.append((render_path.get(segment.source_id, f.path), scene.StreamInfo(f.analysis.duration_ms, f.width, f.height, 30, f.analysis.has_audio),
                                start, length, segment.audio_mode, f.analysis.has_audio, segment.role == "still"))
-            key = hashlib.sha256(json.dumps({"plan": made.plan.to_dict(), "wav": _digest_file(wav, cancelled), "ass": ass,
+            # what is drawn, not how the plan came about: a plan made again from more evidence that picks the same
+            # footage does not render again
+            drawn = {k: v for k, v in made.plan.to_dict().items() if k not in ("provenance", "warnings")}
+            drawn["segments"] = [{k: v for k, v in segment.items() if k not in ("reasons", "confidence_milli", "needs_review")}
+                                 for segment in drawn["segments"]]
+            key = hashlib.sha256(json.dumps({"plan": drawn, "wav": _digest_file(wav, cancelled), "ass": ass,
                                              "layout": resolved.layout, "encoder": encoder, "blur": blur, "music": music_hash,
                                              "volume": resolved.music_volume, "code": code.hexdigest(), "producer": producer_key},
                                             sort_keys=True, default=str).encode()).hexdigest()
