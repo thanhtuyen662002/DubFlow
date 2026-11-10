@@ -15,7 +15,7 @@ from engine.dubflow.mastering.plan import Options
 from engine.dubflow.mastering.planners import dubbing
 
 FFMPEG = os.environ.get("DUBFLOW_TEST_FFMPEG") or shutil.which("ffmpeg")
-QUIET = Loudness(-24.0, -6.0, 7.0, -34.0, 0.4)
+QUIET = Loudness(-24.0, -12.0, 7.0, -34.0, 0.4)  # room to rise 8 LU linearly
 GOOD = Picture(16, 16, 235, 120, (0, 0, 0, 0))
 WASHED = Picture(16, 40, 200, 110, (0, 0, 0, 0))
 
@@ -33,12 +33,26 @@ class DecisionTests(unittest.TestCase):
         master = self.plan("light")
         self.assertIn("loudnorm=I=-16:TP=-1.5", master.audio_filter)
         self.assertIn("measured_I=-24.00", master.audio_filter)
+        self.assertIsNotNone(self.plan("light", mix=Loudness(-24.0, -6.0, 7.0, -34.0, 0.4)).audio_filter)
         self.assertIn("linear=true", master.audio_filter)
         self.assertTrue(master.audio_filter.endswith("aresample=48000"))
-        self.assertIsNone(self.plan("light", mix=Loudness(-16.4, -2.0, 6, -26, 0.1)).audio_filter)
+        self.assertIsNone(self.plan("light", mix=Loudness(-16.4, -3.0, 6, -26, 0.1)).audio_filter)
         self.assertIsNotNone(self.plan("light", mix=Loudness(-15.8, -0.5, 6, -26, 0.1)).audio_filter)  # peak too high
         self.assertIsNone(self.plan("light", mix=None).audio_filter)
         self.assertIsNone(self.plan("light", mix=Loudness(-60, -40, 1, -70, 0)).audio_filter)
+
+    def test_a_loud_peak_lowers_the_target_so_the_gain_stays_linear(self):
+        # real run 9: -15.2 LUFS with a peak near 0 dBTP went dynamic in loudnorm and the AAC peaked at -0.7 dBTP
+        master = self.plan("light", mix=Loudness(-15.2, -0.3, 7.6, -25, 0.1))
+        target = float(master.audio_filter.split("loudnorm=I=")[1].split(":")[0])
+        self.assertLessEqual(-0.3 + (target - -15.2), dubbing.PEAK_DBTP - dubbing.AAC_HEADROOM_DB + 1e-9)
+        self.assertIn("linear=true", master.audio_filter)
+        self.assertTrue(any("thấp hơn mục tiêu" in note for note in master.notes))
+        # a mix at the target whose peak leaves no AAC headroom is turned down, not left as it is
+        self.assertIsNotNone(self.plan("light", mix=Loudness(-16.2, -1.8, 6, -26, 0.1)).audio_filter)
+        # never asks for less loudness range than the mix has (that would compress)
+        wide = self.plan("light", mix=Loudness(-24, -10, 14.2, -34, 0.1)).audio_filter
+        self.assertIn(":LRA=15:", wide)
 
     def test_colour_is_a_bounded_level_stretch(self):
         master = self.plan("light", frames=WASHED)
@@ -47,6 +61,7 @@ class DecisionTests(unittest.TestCase):
         self.assertLessEqual(float(values["rimin"]), dubbing.COLOR_LIMIT["light"])
         self.assertGreaterEqual(float(values["rimax"]), 1 - dubbing.COLOR_LIMIT["light"])
         self.assertEqual(self.plan("light").video_filters, ())
+        self.assertTrue(any("không có viền đen" in n for n in self.plan("balanced").notes))
         flat = Picture(16, 100, 120, 110, (0, 0, 0, 0))  # a fog or night scene on purpose
         self.assertEqual(self.plan("dynamic", frames=flat).video_filters, ())
         wider = dict(p.split("=") for p in self.plan("dynamic", frames=WASHED).video_filters[0][12:].split(":"))
@@ -81,6 +96,27 @@ class DecisionTests(unittest.TestCase):
 
 
 class MeasureTests(unittest.TestCase):
+    def test_the_loudest_window_is_found_inside_the_video(self):
+        import wave
+        from array import array
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / "a.wav"
+            rate = 8000
+            samples = array("h", [0] * (rate * 60))
+            for i in range(rate * 40, rate * 45):  # a burst at 40–45 s
+                samples[i] = 12000 if i % 2 else -12000
+            for i in range(rate * 1, rate * 4):    # louder, but in the first 20 %: not a climax
+                samples[i] = 30000 if i % 2 else -30000
+            with wave.open(str(path), "wb") as out:
+                out.setnchannels(1)
+                out.setsampwidth(2)
+                out.setframerate(rate)
+                out.writeframes(samples.tobytes())
+            found = measure.loudest_window(path)
+            self.assertEqual((found["start_ms"], found["end_ms"]), (40000, 45000))
+            self.assertIsNone(measure.loudest_window(Path(folder) / "missing.wav"))
+
+
     def test_frame_times_and_bars(self):
         self.assertEqual(measure.frame_times(10000, 2), [2650, 7350])
         self.assertEqual(measure.frame_times(0, 4), [])

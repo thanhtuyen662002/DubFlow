@@ -25,10 +25,11 @@ from ..measure import GREY_H, GREY_W, Loudness, Picture
 from ..plan import Options
 
 WORKFLOW = "dubbing_preserve"
-RECIPE = "dubbing-master-v2"  # v2: Balanced and Dynamic retime captions from the final TTS
+RECIPE = "dubbing-master-v3"  # v2: captions from the final TTS; v3: linear loudness kept under the peak with AAC headroom
 TARGET_LUFS, PEAK_DBTP, TARGET_LRA = -16.0, -1.5, 11.0
 QUIET_LUFS = -45.0          # quieter than this the mix is (nearly) silent: nothing to level
 CLOSE_LU = 1.0
+AAC_HEADROOM_DB = 1.0    # peak the AAC encode can add over the mix's true peak
 # How far colorlevels may move black and white (share of the 0–1 range) per level.
 COLOR_LIMIT = {"light": 0.06, "balanced": 0.06, "dynamic": 0.10}
 COLOR_MIN_GAIN = 0.02       # smaller stretches are not worth a filter
@@ -60,17 +61,30 @@ class DubbingMaster:
 
 
 def _loudness(found: Loudness | None, sample_rate: int, notes: list[str]) -> str | None:
+    """A linear gain only. ``loudnorm`` leaves linear mode (and compresses) when the gain would lift the measured
+    peak over its ceiling, and AAC adds up to about 1 dB of peak (real run 9: a mix led to −16 LUFS peaked at
+    −0.7 dBTP after encoding): when the peak leaves no room, the target is lowered so the gain stays linear with
+    ``AAC_HEADROOM_DB`` to spare."""
     if found is None:
         notes.append("Âm lượng: bản trộn im lặng, không chỉnh.")
         return None
     if found.integrated < QUIET_LUFS:
         notes.append(f"Âm lượng: bản trộn quá nhỏ ({found.integrated:.1f} LUFS), không kéo lên để tránh khuếch đại nhiễu.")
         return None
-    if abs(found.integrated - TARGET_LUFS) <= CLOSE_LU and found.true_peak <= PEAK_DBTP:
+    ceiling = PEAK_DBTP - AAC_HEADROOM_DB
+    if abs(found.integrated - TARGET_LUFS) <= CLOSE_LU and found.true_peak <= ceiling:
         notes.append(f"Âm lượng: đã đạt {found.integrated:.1f} LUFS, đỉnh {found.true_peak:.1f} dBTP; giữ nguyên.")
         return None
-    notes.append(f"Âm lượng: {found.integrated:.1f} → {TARGET_LUFS:.0f} LUFS, đỉnh ≤ {PEAK_DBTP} dBTP (tuyến tính, 2 lượt đo).")
-    return (f"loudnorm=I={TARGET_LUFS:g}:TP={PEAK_DBTP:g}:LRA={TARGET_LRA:g}:measured_I={found.integrated:.2f}"
+    target = TARGET_LUFS
+    if found.true_peak + (target - found.integrated) > ceiling:
+        target = math.floor((found.integrated + ceiling - found.true_peak) * 10) / 10
+        notes.append(f"Âm lượng: {found.integrated:.1f} → {target:.1f} LUFS (thấp hơn mục tiêu {TARGET_LUFS:.0f} LUFS vì đỉnh "
+                     f"{found.true_peak:.1f} dBTP: giữ tăng/giảm tuyến tính, đỉnh ≤ {ceiling:.1f} dBTP trước khi mã hóa AAC).")
+    else:
+        notes.append(f"Âm lượng: {found.integrated:.1f} → {TARGET_LUFS:.0f} LUFS, đỉnh ≤ {ceiling:.1f} dBTP trước khi mã hóa AAC "
+                     f"(tuyến tính, 2 lượt đo).")
+    lra = min(50.0, max(TARGET_LRA, math.ceil(found.lra)))  # never asks for less range than the mix has: no compression
+    return (f"loudnorm=I={target:g}:TP={PEAK_DBTP:g}:LRA={lra:g}:measured_I={found.integrated:.2f}"
             f":measured_TP={found.true_peak:.2f}:measured_LRA={found.lra:.2f}:measured_thresh={found.threshold:.2f}"
             f":offset={found.offset:.2f}:linear=true:print_format=summary,aresample={sample_rate}")
 
@@ -107,6 +121,8 @@ def _framing(found: Picture | None, policy: rules.Policy, width: int, height: in
     if not (vertical and horizontal):
         if vertical or horizontal:
             notes.append("Khung hình: có viền đen một chiều; cắt sẽ làm méo hoặc mất hình, giữ nguyên.")
+        else:
+            notes.append("Khung hình: không có viền đen quanh hình, không cắt, không phóng.")
         return None
     # The same share of both axes keeps the shape: crop the smaller relative bar on both, then scale back.
     share = min(min(top, bottom) / GREY_H, min(left, right) / GREY_W)
@@ -155,6 +171,8 @@ def plan(options: Options, *, mix: Loudness | None, mix_rate: int | None, frames
     if policy.hook == "suggest" and climax:
         suggestion = {**climax, "needs_review": True, "applied": False}
         notes.append("Gợi ý đoạn cao trào làm teaser: chỉ đề xuất để duyệt, không chèn vào video.")
+    elif policy.hook == "suggest":
+        notes.append("Gợi ý teaser đã bật nhưng không đo được đoạn cao trào (thiếu âm thanh gốc); không đề xuất.")
     measured = {"mix": mix.to_dict() if mix else None, "picture": frames.to_dict() if frames else None}
     return DubbingMaster(options, audio, tuple(video), captions, suggestion, tuple(notes), measured)
 

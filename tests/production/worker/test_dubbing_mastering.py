@@ -96,6 +96,26 @@ class DubbingMasteringTests(unittest.TestCase):
             self.assertNotIn("mastering_filters", fixture.calls_kwargs[-1])
             self.assertTrue(any(w.startswith("MASTERING_SKIPPED") for w in fixture.qc()["warnings"]))
 
+    def test_a_climax_is_suggested_for_review_only_when_turned_on_and_never_rendered(self):
+        import wave
+        for asked in (False, True):
+            with self.subTest(asked=asked), self.job() as fixture:
+                fixture.work.mkdir(parents=True, exist_ok=True)
+                with wave.open(str(fixture.work / "analysis.wav"), "wb") as out:
+                    out.setnchannels(1)
+                    out.setsampwidth(2)
+                    out.setframerate(8000)
+                    out.writeframes(b"".join((b"\x00\x10" if 8000 * 30 <= i < 8000 * 35 else b"\x00\x00") for i in range(8000 * 50)))
+                self.options(fixture, {"schema_version": 1, "level": "dynamic", **({"enable_climax_hook": True} if asked else {})})
+                fixture.run()
+                climax = fixture.qc()["mastering"]["climax"]
+                if asked:
+                    self.assertEqual((climax["start_ms"], climax["end_ms"], climax["needs_review"], climax["applied"]),
+                                     (30000, 35000, True, False))
+                else:
+                    self.assertIsNone(climax)
+                self.assertNotIn("hook", json.dumps(fixture.calls_kwargs[-1], default=str))
+
 
 class VoiceTimedCaptionTests(unittest.TestCase):
     def test_captions_follow_the_tts_placement_of_their_phrase(self):
@@ -184,6 +204,11 @@ class VoiceTimedFallbackTests(unittest.TestCase):
             self.assertNotIn("00:00:01,500", fallback[0])
             qc = json.loads(Path(result["qc"]).read_text(encoding="utf-8"))
             self.assertTrue(any(w.startswith("B2_AUDIO_FALLBACK_TO_B1") for w in qc["warnings"]))
+            # what mastering said about the dubbed mix no longer holds once only the source is heard (run 9)
+            notes = qc["mastering"]["notes"]
+            self.assertFalse(any(note.startswith(("Âm lượng:", "Phụ đề:")) for note in notes), notes)
+            self.assertTrue(any("B1" in note for note in notes))
+            self.assertFalse(qc["mastering"]["loudness"])
 
 
 if __name__ == "__main__":
