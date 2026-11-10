@@ -59,6 +59,8 @@ _FALLBACK_H264_ENCODER = "libopenh264"
 # H.264 4:2:0 needs even dimensions; odd inputs (853x479) are rounded down by
 # at most one pixel instead of failing the whole export.
 _EVEN_DIMENSIONS = "scale=trunc(iw/2)*2:trunc(ih/2)*2"
+# A mastering filter is one of these with plain numeric options (no labels, no graph syntax, no paths).
+_MASTERING_FILTER = re.compile(r"(?:(?:crop|scale|setsar|colorlevels)(?:=[0-9a-z_.:=]+)?)(?:,(?:crop|scale|setsar|colorlevels)(?:=[0-9a-z_.:=]+)?)*")
 # Windows caps a whole command line at 32,767 characters. A long video can carry
 # hundreds of timed blur regions; a graph longer than this is read from a file.
 _INLINE_FILTER_LIMIT = 8_000
@@ -1127,10 +1129,19 @@ class FfmpegMediaAdapter:
         burn_in_subtitles: bool = False,
         blur_regions: Sequence[BlurRegion] = (),
         cover_style: CoverStyle | None = None,
+        mastering_filters: Sequence[str] = (),
         overwrite: bool = False,
         progress: Callable[[int], None] | None = None,
     ) -> Path:
-        """Render H.264/AAC; ``progress`` receives the encoded position in microseconds."""
+        """Render H.264/AAC; ``progress`` receives the encoded position in microseconds.
+
+        ``mastering_filters`` (ADR-0055) are measured framing/colour filters from the dubbing mastering plan; they
+        run after the source-caption cover and before the burned subtitles, so captions are never graded. Empty
+        (the default) renders exactly as before.
+        """
+        for item in mastering_filters:
+            if not isinstance(item, str) or not _MASTERING_FILTER.fullmatch(item):
+                raise MediaAdapterError("MEDIA_MASTERING_INVALID", "mastering filters must be crop/scale/setsar/colorlevels")
         source = _validate_input_file(source_path, "source_path")
         if not all(isinstance(region, BlurRegion) for region in blur_regions):
             raise MediaAdapterError("MEDIA_BLUR_INVALID", "blur_regions must contain BlurRegion values")
@@ -1200,6 +1211,9 @@ class FfmpegMediaAdapter:
                 # Cover the source captions before drawing the Vietnamese ones on top.
                 position = 1 if source_probe is not None else 0
                 video_filters.insert(position, cover_filtergraph(blur_regions, cover_style))
+            if mastering_filters:
+                position = (1 if source_probe is not None else 0) + (1 if blur_regions else 0)
+                video_filters[position:position] = list(mastering_filters)
 
             video_filters.append(_EVEN_DIMENSIONS)
             graph = ",".join(video_filters)
