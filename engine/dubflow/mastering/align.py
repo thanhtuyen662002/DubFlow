@@ -37,6 +37,7 @@ FUNCTIONS = ("hook", "benefit", "demonstration", "feature", "result", "cta", "na
 SIGNALS_ONLY_CAP = 450
 REVIEW_BELOW = 600
 REUSE_PENALTY = 350
+STRANDED_PENALTY = 300  # under a full content match (450): a clear match still wins, a weak one yields
 DUPLICATE_PENALTY = 250
 SAME_SOURCE_PENALTY = 100
 
@@ -171,6 +172,9 @@ class Decision:
                 "alternatives": self.alternatives, "notes": self.notes}
 
 
+MIN_RELEVANCE = 60  # below this the best match is noise (one common word): no rescaling
+
+
 class Scorer:
     """Scores candidates for units from their evidence (idf over the candidates of this job)."""
 
@@ -263,23 +267,46 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
             candidate.candidate_id in resume and resume[candidate.candidate_id] < candidate.end_ms
             and resume[candidate.candidate_id] >= source_end.get(candidate.source_id, 0))
 
-    def score(unit: Unit, candidate: Candidate, wanted: int) -> tuple[int, int, list[str]]:
+    def ahead_after(candidate: Candidate) -> int:
+        """Footage still playable after taking ``candidate`` (forward only: nothing of its source before it)."""
+        total = 0
+        for other in usable:
+            if other.candidate_id in still_ids:
+                return 10**9
+            if not allowed(other) or other.candidate_id == candidate.candidate_id:
+                continue
+            if other.source_id == candidate.source_id and other.start_ms < candidate.end_ms:
+                continue
+            total += remaining(other)[1]
+        return total
+
+    def score(unit: Unit, candidate: Candidate, wanted: int, best: int = 0, later: int = 0) -> tuple[int, int, list[str]]:
         relevance, matched = scorer.relevance(unit, candidate)
         fit, label = scorer.fit(unit, candidate)
         quality = candidate.quality.score
         _, left = remaining(candidate)
-        total = 450 * relevance + 250 * fit + 150 * quality + 50 * _length_fit(left, min(wanted, pacing.target))
+        # What the sentence says weighs against the footage that says it best: the closest match gets the full
+        # weight, so a sharp but unrelated shot cannot outscore the shot of the thing being talked about.
+        strength = relevance * 1000 // best if best >= MIN_RELEVANCE else relevance
+        total = 450 * strength + 250 * fit + 150 * quality + 50 * _length_fit(left, min(wanted, pacing.target))
         total //= 1000
         info = evidence.get(candidate.candidate_id)
         if unit.function == "hook":
             total += min(60, candidate.motion // 4) + (info.hook // 10 if info else 0)
         elif unit.function == "narration":
             total += min(30, candidate.motion // 8)
-        total -= REUSE_PENALTY * uses.get(candidate.candidate_id, 0)
+        continuing = candidate.candidate_id in resume and resume[candidate.candidate_id] < candidate.end_ms
+        if not continuing:  # playing on from where this shot stopped is not showing it again
+            total -= REUSE_PENALTY * uses.get(candidate.candidate_id, 0)
         total -= DUPLICATE_PENALTY * (group_uses.get(groups.get(candidate.candidate_id, candidate.candidate_id), 0)
                                       - uses.get(candidate.candidate_id, 0))
         if candidate.source_id == previous_source and len({c.source_id for c in usable}) > 1:
             total -= SAME_SOURCE_PENALTY
+        if forward_only and later and candidate.candidate_id not in still_ids:
+            # jumping ahead to this shot would leave the sentences still to come without footage (held frames)
+            short = later - ahead_after(candidate) - max(0, remaining(candidate)[1] - wanted)
+            if short > 0:
+                total -= min(STRANDED_PENALTY, STRANDED_PENALTY * short // max(1, later))
         reasons = []
         if matched:
             origins = info.origins() if info else []
@@ -289,7 +316,7 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
         if not candidate.quality.usable:
             reasons.append("chất lượng thấp: " + "; ".join(candidate.quality.problems))
         if mode == "content":
-            confidence = 250 + (550 * relevance + 300 * fit) // 1000
+            confidence = 250 + (550 * min(1000, 2 * relevance) + 300 * fit) // 1000
             if info:
                 confidence = min(confidence, max([i.confidence * ev.TRUST[i.origin] // 1000 for i in info.items if i.origin != "signal"]
                                                  or [SIGNALS_ONLY_CAP]) + 150)
@@ -297,13 +324,15 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
             confidence = min(SIGNALS_ONLY_CAP, 250 + quality // 5)
         return total, max(0, min(1000, confidence)), reasons
 
-    for unit in found_units:
+    for position, unit in enumerate(found_units):
         decision = Decision(unit)
+        after = sum(u.length_ms for u in found_units[position + 1:])
         need = unit.length_ms
         pinned = [by_id[i] for i in edits.pin.get(unit.unit_id, []) if i in by_id]
         if len(pinned) != len(edits.pin.get(unit.unit_id, [])):
             decision.notes.append("một số cảnh đã ghim không còn trong danh sách nên được bỏ qua")
         first = True
+        best = max((scorer.relevance(unit, c)[0] for c in usable), default=0)
         while need > 0:
             wanted = need if need < pacing.target + pacing.minimum else pacing.target
             ranked = []
@@ -316,7 +345,7 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
                 if not open_pool:  # nothing long enough ahead: anything left, then repeats
                     open_pool = [c for c in usable if allowed(c) and remaining(c)[1] > 0] or usable
                 for candidate in open_pool:
-                    total, confidence, reasons = score(unit, candidate, wanted)
+                    total, confidence, reasons = score(unit, candidate, wanted, best, after + max(0, need - wanted))
                     ranked.append((total, confidence, reasons, candidate))
                 ranked.sort(key=lambda item: (-item[0], item[3].source_id, item[3].start_ms))
             total, confidence, reasons, candidate = ranked[0]
@@ -324,6 +353,7 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
                 decision.alternatives = [{"candidate_id": c.candidate_id, "score": s, "reasons": list(r)}
                                          for s, _, r, c in ranked[1:4]]
                 first = False
+            continuing = candidate.candidate_id in resume and 0 < resume[candidate.candidate_id] < candidate.end_ms
             offset, left = remaining(candidate)
             repeat = left <= 0 or (forward_only and candidate.candidate_id not in still_ids and not allowed(candidate))
             if left <= 0:
@@ -332,7 +362,7 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
             if need - length < pacing.minimum and left >= need:
                 length = need  # take the rest rather than leave a sliver
             reasons = list(reasons)
-            if repeat or uses.get(candidate.candidate_id):
+            if repeat or (uses.get(candidate.candidate_id) and not continuing):
                 reasons.append("dùng lại cảnh đã chiếu (không còn cảnh phù hợp khác)")
                 confidence = min(confidence, 550)
             if mode == "signals_only":

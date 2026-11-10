@@ -69,6 +69,14 @@ class EvidenceTests(unittest.TestCase):
         self.assertIn("cận cảnh", ev.terms("Cận cảnh lòng nồi"))
         self.assertIn("~can canh", ev.terms("can canh long noi"))  # written without marks: loose terms
 
+    def test_a_description_typed_without_marks_is_loose_even_beside_marked_labels(self):
+        item = ev.Evidence("c1")
+        item.add(ev.Item("vision", 800, "crema day min tren mat tach", ("product_result",)))
+        found = item.terms()
+        self.assertIn("~crema day", found)
+        self.assertTrue(ev.match("lớp crema", found, ev.loose(found)) or ev.match("crema", found, ev.loose(found)))
+        self.assertFalse(ev.terms("Máy pha cà phê xay hạt").isdisjoint({"máy pha"}))  # marked text stays marked
+
     def test_marks_tell_words_apart_unless_one_side_has_none(self):
         found = {t: 900 for t in ev.terms("Cận cảnh đồng hồ áp suất của máy pha cà phê")}
         loose = ev.loose(found)
@@ -169,6 +177,20 @@ class AlignTests(unittest.TestCase):
         self.assertNotIn("v3", {c.candidate.source_id for c in choices})
         with self.assertRaises(ValueError):
             align.Edits.from_dict({"pin": {"u1": "v1c1"}})
+
+    def test_the_shot_of_what_is_said_beats_a_sharper_unrelated_one(self):
+        # As in the real run: the gauge shot is a little soft, the start button shot is sharp and shares one word.
+        gauge = shots.Candidate("v2c1", "v2", 0, 4000, 0, 30, shots.Quality(110, 40, 60), 1)
+        button = shots.Candidate("v1c1", "v1", 0, 4000, 0, 70, shots.Quality(128, 70, 900), 2**40)
+        found = ev.gather(["v1c1", "v2c1"])
+        found["v2c1"].add(ev.Item("vision", 700, "dong ho ap suat tren than may, kim chi vung xanh"))  # typed without marks
+        found["v1c1"].add(ev.Item("vision", 800, "Ngón tay bấm nút START trên máy pha cà phê"))
+        sentence = unit("u4", "Đồng hồ áp suất cho bạn biết máy đã sẵn sàng.", 0, 3000, "feature")
+        choices, decisions, mode = align.assign([sentence], [button, gauge], found, PACING, forward_only=False)
+        self.assertEqual(mode, "content")
+        self.assertEqual(choices[0].candidate.candidate_id, "v2c1")
+        self.assertTrue(any("đồng hồ" in r for r in choices[0].reasons))
+        self.assertGreaterEqual(choices[0].confidence, 500)
 
     def test_forward_only_keeps_each_source_in_order(self):
         pool = [candidate(f"v1c{i}", "v1", i * 3000, i * 3000 + 3000) for i in range(4)]

@@ -23,8 +23,8 @@ from .. import policy as rules
 from ..candidates import Candidate
 
 PLANNER = "dubflow.mastering.compilation"
-VERSION = "2"
-RECIPE = "compilation-program-v2"  # v2: the source moment is chosen before the narration's footage
+VERSION = "3"
+RECIPE = "compilation-program-v3"  # v3: the moment late in the source, room for the narration
 WORKFLOW = "compilation_entertainment"
 MOMENT_MIN_MS, MOMENT_TARGET_MS, MOMENT_MAX_MS = 2000, 3500, 6000
 PART_FUNCTION = {"hook": "hook", "intro": "intro", "item": "narration", "outro": "outro"}
@@ -132,7 +132,9 @@ def _moment(footage: Mapping[str, Footage], candidates: Sequence[Candidate], evi
                 relevance = sum(1 for term in wanted if ev.match(term, found, loose))
             else:
                 relevance = 0
-            score = audible + (400 if speech else 0) + 150 * relevance + candidate.quality.score // 4 + candidate.motion // 10
+            # later in the source is better: the narration then has the footage before it to play forward
+            late = 300 * start // max(1, source.analysis.duration_ms)
+            score = audible + (400 if speech else 0) + 150 * relevance + candidate.quality.score // 4 + candidate.motion // 10 + late
             reasons = ["giữ âm thanh thật của nguồn"]
             if speech:
                 reasons.append(f"có lời nói trong nguồn: “{speech[:60]}”")
@@ -185,9 +187,11 @@ def plan_part(part_id: str, kind: str, spoken: Sequence[tuple[str, int]], narrat
     if moment and kind == "item" and policy.keep_source_audio:
         # Choose the ending first, with enough footage ahead of it for the narration; the narration then
         # plays only what comes before it (a source that ran out under the narration had nothing left).
-        reserved = _moment(by_source, pool, evidence, title, {}, keep_audio, need_before_ms=narration_ms)
-        if reserved is None:
-            reserved = _moment(by_source, pool, evidence, title, {}, keep_audio, need_before_ms=narration_ms // 2)
+        # forward-only selection skips ahead to the best match, so leave room: twice the narration if the sources allow
+        for need in (2 * narration_ms, narration_ms, narration_ms // 2):
+            reserved = _moment(by_source, pool, evidence, title, {}, keep_audio, need_before_ms=need)
+            if reserved is not None:
+                break
     narration_pool = _before(pool, reserved[0].source_id, reserved[1]) if reserved else pool
     if not narration_pool:
         reserved, narration_pool = None, pool

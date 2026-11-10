@@ -27,16 +27,16 @@ from typing import Any, Callable, Mapping, Sequence
 from . import evidence as ev
 from .candidates import Candidate
 
-PROMPT_VERSION = "vision-v1"
+PROMPT_VERSION = "vision-v2"  # v2: Vietnamese with its marks, product group = the main product
 BATCH = 6
 DEFAULT_BUDGET = 60
 MAX_TEXT = 300
 
 SYSTEM = (
-    "Bạn là trợ lý dựng phim. Với mỗi khung hình được đánh số, hãy mô tả đúng những gì NHÌN THẤY, bằng tiếng Việt, ngắn gọn. "
+    "Bạn là trợ lý dựng phim. Với mỗi khung hình được đánh số, hãy mô tả đúng những gì NHÌN THẤY, bằng tiếng Việt có dấu đầy đủ (ví dụ “đồng hồ áp suất”, không viết “dong ho ap suat”), ngắn gọn. "
     "Không suy đoán thương hiệu, tính năng hay thông số không thấy rõ trên hình. Nếu không chắc, dùng nhãn 'unknown' và độ tin cậy thấp. "
     "labels chỉ được chọn trong danh sách cho sẵn. product_box là khung chứa sản phẩm chính theo phần nghìn của khung hình "
-    "(x, y, w, h từ 0 đến 1000), hoặc null nếu không có sản phẩm. product_group là một tên ngắn cho sản phẩm/biến thể đang thấy "
+    "(x, y, w, h từ 0 đến 1000), hoặc null nếu không có sản phẩm. product_group là một tên ngắn cho SẢN PHẨM CHÍNH/biến thể đang thấy (không phải phụ kiện hay đồ vật đi kèm như ly, tách, hộp), "
     "(ví dụ 'noi-chien-den', 'noi-chien-trang') để nhận ra các khung quay sản phẩm khác nhau; null nếu không có sản phẩm. "
     "hook là 0–1000: khung này hấp dẫn đến đâu để mở đầu video (kết quả đẹp, khoảnh khắc bất ngờ, hành động rõ). "
     "clarity: clear, blurry, dark, obstructed."

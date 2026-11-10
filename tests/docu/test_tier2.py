@@ -145,7 +145,8 @@ class SoundscapeTests(unittest.TestCase):
 
             def loudness(start: float, seconds: float) -> float:
                 text = subprocess.run([FFMPEG, "-hide_banner", "-nostats", "-ss", str(start), "-t", str(seconds), "-i", str(out),
-                                       "-af", "ebur128", "-f", "null", "-"], capture_output=True, text=True).stderr
+                                       "-af", "ebur128", "-f", "null", "-"], capture_output=True, text=True,
+                                      encoding="utf-8", errors="replace").stderr
                 return float(re.findall(r"I:\s+(-?[\d.]+) LUFS", text)[-1])
             self.assertAlmostEqual(loudness(2.0, 8.0), soundscape.SFX_LUFS, delta=1.5)
             self.assertAlmostEqual(loudness(12.0, soundscape.HIT_SECONDS), soundscape.HIT_LUFS, delta=2.0)
