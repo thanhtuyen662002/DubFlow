@@ -432,7 +432,10 @@ class ContractTests(unittest.TestCase):
                           .read_text(encoding="utf-8"))["$defs"]
         pool, found = product_world()
         _, decisions, _ = align.assign([unit("u1", "Cận cảnh lòng nồi.", 0, 3000)], pool, found, PACING, forward_only=False)
-        self.assertEqual(set(defs["unit"]["required"]), set(decisions[0].to_dict()))
+        written_unit = set(decisions[0].to_dict())
+        self.assertLessEqual(set(defs["unit"]["required"]), written_unit)
+        self.assertEqual(set(defs["unit"]["properties"]), written_unit)
+        self.assertEqual(set(defs["unit"]["properties"]["coverage"]["required"]), set(decisions[0].coverage))
         written = {**pool[0].to_dict(), "group": "g", "evidence": found["v1c1"].to_dict(), "summary": ""}
         self.assertEqual(set(defs["candidate"]["required"]), set(written))
         self.assertEqual(set(defs["candidate"]["properties"]["evidence"]["required"]), set(found["v1c1"].to_dict()))

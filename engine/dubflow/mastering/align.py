@@ -169,11 +169,12 @@ class Decision:
     chosen: list[str] = field(default_factory=list)
     alternatives: list[dict[str, Any]] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    coverage: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {"unit_id": self.unit.unit_id, "text": self.unit.text, "function": self.unit.function,
                 "start_ms": self.unit.start_ms, "end_ms": self.unit.end_ms, "chosen": self.chosen,
-                "alternatives": self.alternatives, "notes": self.notes}
+                "alternatives": self.alternatives, "notes": self.notes, "coverage": self.coverage}
 
 
 MIN_RELEVANCE = 60  # below this the best match is noise (one common word): no rescaling
@@ -231,14 +232,40 @@ def _length_fit(candidate_ms: int, wanted_ms: int) -> int:
     return 1000 if candidate_ms >= wanted_ms else candidate_ms * 1000 // max(1, wanted_ms)
 
 
+ACCEPT_SHARE = 500  # a shot matching a sentence at least this share (‰) of its best match illustrates it
+GOOD_COVERAGE = 900  # ‰ of a sentence's time on footage that illustrates it before it needs no review
+LOSS_PENALTY = 450  # forward only: taking a shot that removes the only footage of a sentence still to come
+MATCH_FULL = 500  # relevance at which a match counts as complete for the confidence
+PIECE_FLOOR = SHORT_FLOOR  # ms a new piece takes at least when the sentence's rest is shorter (others give way)
+SKIP_PENALTY = 200  # forward only: passing over all the footage there is to spare (half for footage that illustrates)
+
+
+def _coverage_note(milli: int, has_match: bool) -> str:
+    if not has_match:
+        return "không có cảnh nào khớp lời câu này: dùng cảnh chung, cần kiểm tra"
+    if milli < GOOD_COVERAGE:
+        return f"chỉ {milli // 10} % thời lượng câu có cảnh khớp lời (nguồn không đủ cảnh), phần còn lại dùng cảnh chung"
+    return ""
+
+
 def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidence: Mapping[str, ev.Evidence], pacing: Pacing,
            *, forward_only: bool, edits: Edits | None = None, groups: Mapping[str, str] | None = None,
            stills: Iterable[str] = (), shown: Iterable[str] = ()) -> tuple[list[Choice], list[Decision], str]:
     """Footage for every unit, the decision log and the mode (``content`` or ``signals_only``).
 
+    *Sentence coverage*: each sentence gets pieces until its whole time is covered, first from the footage that
+    illustrates it (a match of at least half its best match), short shots included, then — only when the sources
+    have no more — from neutral footage, and the decision records how much of the sentence is illustrated
+    (``coverage``) and asks for review below 90 %.
+
+    *Global allocation*: with reordering allowed, sentences whose illustrating footage is scarcest are filled
+    first and generic sentences (a hook or a call to action without a match) last, so an opening never takes the
+    only shot of a later detail. Forward only (the source keeps its order), sentences are filled in order and a
+    shot is weighed by the illustrating footage it would put behind the sentences still to come.
+
     ``stills`` are candidate ids of photos: they can be held as long as needed. ``groups`` maps a candidate to its
-    duplicate group. ``forward_only`` keeps each source playing forward (no reorder); when a source has nothing
-    left ahead, its earliest unused footage is shown again and flagged.
+    duplicate group; ``shown`` lists footage another part of the same video showed. When a forward-only source has
+    nothing left ahead, earlier footage is shown again, declared as a repeat and flagged.
     """
     edits = edits or Edits()
     groups = groups or {}
@@ -257,9 +284,25 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
         group_uses[group] = group_uses.get(group, 0) + 1
     resume: dict[str, int] = {}
     source_end: dict[str, int] = {}
-    choices: list[Choice] = []
-    decisions: list[Decision] = []
-    previous_source: str | None = None
+    relevance_of = {(u.unit_id, c.candidate_id): scorer.relevance(u, c) for u in found_units for c in usable}
+    best_of = {u.unit_id: max((relevance_of[(u.unit_id, c.candidate_id)][0] for c in usable), default=0) for u in found_units}
+    accepts: dict[str, set[str]] = {}
+    for u in found_units:
+        best = best_of[u.unit_id]
+        accepts[u.unit_id] = {c.candidate_id for c in usable if best >= MIN_RELEVANCE
+                              and relevance_of[(u.unit_id, c.candidate_id)][0] >= max(MIN_RELEVANCE, ACCEPT_SHARE * best // 1000)}
+    # a shot belongs to the sentence it is clearly about: one that another sentence matches at twice the score
+    # (and as one of its own) does not illustrate this one ("nhạc" in an opening does not make the shot of the
+    # earbud touch that stops the music an opening shot)
+    for u in found_units:
+        mine = relevance_of
+        accepts[u.unit_id] = {cid for cid in accepts[u.unit_id]
+                              if not any(cid in accepts[v.unit_id] and mine[(v.unit_id, cid)][0] >= 2 * mine[(u.unit_id, cid)][0]
+                                         for v in found_units if v.unit_id != u.unit_id)}
+    accepted_by: dict[str, set[str]] = {}
+    for unit_id, ids in accepts.items():
+        for candidate_id in ids:
+            accepted_by.setdefault(candidate_id, set()).add(unit_id)
 
     def remaining(candidate: Candidate) -> tuple[int, int]:
         if candidate.candidate_id in still_ids:
@@ -274,18 +317,10 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
             candidate.candidate_id in resume and resume[candidate.candidate_id] < candidate.end_ms
             and resume[candidate.candidate_id] >= source_end.get(candidate.source_id, 0))
 
-    ahead_memo: dict[str, int] = {}  # cleared whenever a choice changes what is left
-
-    def ahead_after(candidate: Candidate) -> int:
-        """Footage still playable after taking ``candidate`` (forward only: nothing of its source before it)."""
-        if candidate.candidate_id in ahead_memo:
-            return ahead_memo[candidate.candidate_id]
-        ahead_memo[candidate.candidate_id] = value = _ahead_after(candidate)
-        return value
-
-    def _ahead_after(candidate: Candidate) -> int:
+    def ahead(candidate: Candidate, ids: Iterable[str] | None = None) -> int:
+        """Footage still playable after playing ``candidate`` (forward only), optionally only among ``ids``."""
         total = 0
-        for other in usable:
+        for other in usable if ids is None else (by_id[i] for i in ids if i in by_id):
             if other.candidate_id in still_ids:
                 return 10**9
             if not allowed(other) or other.candidate_id == candidate.candidate_id:
@@ -295,33 +330,73 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
             total += remaining(other)[1]
         return total
 
-    def score(unit: Unit, candidate: Candidate, wanted: int, best: int = 0, later: int = 0) -> tuple[int, int, list[str]]:
-        relevance, matched = scorer.relevance(unit, candidate)
+    def supply(unit_id: str) -> int:
+        """Illustrating footage of ``unit_id`` still playable now."""
+        return sum(remaining(by_id[i])[1] for i in accepts[unit_id] if allowed(by_id[i]) and remaining(by_id[i])[1] > 0)
+
+    def lost(candidate: Candidate, length: int, later: Sequence[Unit]) -> int:
+        """Forward only: ms of their own footage the next sentences lose if ``length`` of ``candidate`` plays now."""
+        if not forward_only or candidate.candidate_id in still_ids:
+            return 0
+        left = remaining(candidate)[1]
+        total = 0
+        for later_unit in later[:6]:
+            ids = accepts[later_unit.unit_id]
+            if not ids:
+                continue
+            before = min(later_unit.length_ms, supply(later_unit.unit_id))
+            if before <= 0:
+                continue
+            kept = ahead(candidate, ids) + (max(0, left - length) if candidate.candidate_id in ids else 0)
+            total += max(0, before - min(later_unit.length_ms, kept))
+        return total
+
+    def confidence_of(unit: Unit, candidate: Candidate, relevance: int, fit: int) -> int:
+        info = evidence.get(candidate.candidate_id)
+        if mode != "content":
+            return min(SIGNALS_ONLY_CAP, 250 + candidate.quality.score // 5)
+        trusted = max([i.confidence * ev.TRUST[i.origin] // 1000 for i in info.items if i.origin != "signal"] or [0]) if info else 0
+        if relevance <= 0:  # no word of the sentence in what is known of the shot: role fit at most
+            return min(SIGNALS_ONLY_CAP, 250 + fit // 4)
+        match = min(1000, relevance * 1000 // MATCH_FULL)
+        return trusted * (600 + 400 * match // 1000) // 1000
+
+    ahead_now = 0
+    narration_left = 0
+
+    def score(unit: Unit, candidate: Candidate, wanted: int, best: int, later: Sequence[Unit], tier: str) -> tuple[int, int, list[str]]:
+        relevance, matched = relevance_of[(unit.unit_id, candidate.candidate_id)]
         fit, label = scorer.fit(unit, candidate)
         quality = candidate.quality.score
         _, left = remaining(candidate)
-        # What the sentence says weighs against the footage that says it best: the closest match gets the full
-        # weight, so a sharp but unrelated shot cannot outscore the shot of the thing being talked about.
+        # the closest match gets the full weight, so a sharp but unrelated shot cannot outscore the shot of the thing
         strength = relevance * 1000 // best if best >= MIN_RELEVANCE else relevance
-        total = 450 * strength + 250 * fit + 150 * quality + 50 * _length_fit(left, min(wanted, pacing.target))
-        total //= 1000
+        total = (450 * strength + 250 * fit + 150 * quality + 50 * _length_fit(left, min(wanted, pacing.target))) // 1000
         info = evidence.get(candidate.candidate_id)
         if unit.function == "hook":
             total += min(60, candidate.motion // 4) + (info.hook // 10 if info else 0)
         elif unit.function == "narration":
             total += min(30, candidate.motion // 8)
         continuing = candidate.candidate_id in resume and resume[candidate.candidate_id] < candidate.end_ms
-        if not continuing:  # playing on from where this shot stopped is not showing it again
+        if continuing:
+            total += 40  # playing on keeps the action whole
+        else:
             total -= REUSE_PENALTY * uses.get(candidate.candidate_id, 0)
         total -= DUPLICATE_PENALTY * (group_uses.get(groups.get(candidate.candidate_id, candidate.candidate_id), 0)
                                       - uses.get(candidate.candidate_id, 0))
-        if candidate.source_id == previous_source and len({c.source_id for c in usable}) > 1:
-            total -= SAME_SOURCE_PENALTY
+        if tier == "neutral" and accepted_by.get(candidate.candidate_id, set()) - set(decisions):
+            total -= 200  # another sentence's footage says something else: neutral footage first
+        if forward_only and candidate.candidate_id not in still_ids:
+            # passing over footage loses it for good: the nearest fitting footage first, more so when it says nothing
+            skipped = max(0, remaining(candidate)[0] - source_end.get(candidate.source_id, 0))
+            if skipped:
+                # weighed against the footage to spare: cheap early in a long source, costly once it runs short
+                spare = max(1, ahead_now - narration_left)
+                weight = SKIP_PENALTY if tier != "match" else SKIP_PENALTY // 2
+                total -= min(weight, weight * skipped // spare)
         if forward_only and later and candidate.candidate_id not in still_ids:
-            # jumping ahead to this shot would leave the sentences still to come without footage (held frames)
-            short = later - ahead_after(candidate) - max(0, remaining(candidate)[1] - wanted)
-            if short > 0:
-                total -= min(STRANDED_PENALTY, STRANDED_PENALTY * short // max(1, later))
+            # taking this shot puts footage behind: what the sentences still to come lose of their own footage
+            total -= LOSS_PENALTY * min(2 * wanted, lost(candidate, min(left, wanted), later)) // max(1, wanted)
         reasons = []
         if matched:
             origins = info.origins() if info else []
@@ -330,118 +405,224 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
             reasons.append(f"cảnh {ev.LABEL_NAMES_VI.get(label, label)} hợp câu {unit.function}")
         if not candidate.quality.usable:
             reasons.append("chất lượng thấp: " + "; ".join(candidate.quality.problems))
-        if mode == "content":
-            confidence = 250 + (550 * min(1000, 2 * relevance) + 300 * fit) // 1000
-            if info:
-                confidence = min(confidence, max([i.confidence * ev.TRUST[i.origin] // 1000 for i in info.items if i.origin != "signal"]
-                                                 or [SIGNALS_ONLY_CAP]) + 150)
-        else:
-            confidence = min(SIGNALS_ONLY_CAP, 250 + quality // 5)
-        return total, max(0, min(1000, confidence)), reasons
+        return total, max(0, min(1000, confidence_of(unit, candidate, relevance, fit))), reasons
 
-    relevance_of = {(unit.unit_id, c.candidate_id): scorer.relevance(unit, c)[0] for unit in found_units for c in usable}
-    best_of = {unit.unit_id: max((relevance_of[(unit.unit_id, c.candidate_id)] for c in usable), default=0)
-               for unit in found_units}
+    # order of filling: pinned first, then (reordering allowed) the scarcest illustrated sentences, generic ones last
+    positions = {u.unit_id: i for i, u in enumerate(found_units)}
+    if forward_only:
+        order = list(found_units)
+    else:
+        def scarcity(u: Unit) -> tuple:
+            pinned_first = 0 if edits.pin.get(u.unit_id) else 1
+            has = bool(accepts[u.unit_id])
+            return (pinned_first, 0 if has else 1, supply(u.unit_id) * 1000 // max(1, u.length_ms) if has else 0, positions[u.unit_id])
+        order = sorted(found_units, key=scarcity)
+    by_unit: dict[str, list[Choice]] = {}
+    decisions: dict[str, Decision] = {}
+    previous_source: dict[int, str] = {}
 
-    def claimed(position: int, candidate: Candidate, relevance: int) -> int:
-        """How much more a later sentence wants this shot (its closest match, matched far better than here)."""
-        most = 0
-        hook = found_units[position].function == "hook"
-        for later_unit in found_units[position + 1:]:
-            top = best_of[later_unit.unit_id]
-            value = relevance_of[(later_unit.unit_id, candidate.candidate_id)]
-            if top < MIN_RELEVANCE or value * 1000 < CLAIM_SHARE * top:
-                continue
-            if hook:  # any attractive shot can open the video: the ones a later sentence is about stay for it
-                most = max(most, value * 1000 // top)
-            elif value > relevance * 3 // 2 + MIN_RELEVANCE:
-                most = max(most, (value - relevance) * 1000 // value)
-        return most
-
-    for position, unit in enumerate(found_units):
+    for unit in order:
+        position = positions[unit.unit_id]
+        later = found_units[position + 1:] if forward_only else [u for u in order[order.index(unit) + 1:]]
         decision = Decision(unit)
-        after = sum(u.length_ms for u in found_units[position + 1:])
+        decisions[unit.unit_id] = decision
+        mine: list[Choice] = []
+        by_unit[unit.unit_id] = mine
+        after = sum(u.length_ms for u in found_units[position + 1:]) if forward_only else 0
         need = unit.length_ms
+        best = best_of[unit.unit_id]
+        accept = accepts[unit.unit_id]
+        illustrated = 0
         pinned = [by_id[i] for i in edits.pin.get(unit.unit_id, []) if i in by_id]
         if len(pinned) != len(edits.pin.get(unit.unit_id, [])):
             decision.notes.append("một số cảnh đã ghim không còn trong danh sách nên được bỏ qua")
-        first = True
-        best = best_of[unit.unit_id]
-        while need > 0:
-            wanted = need if need < pacing.target + pacing.minimum else pacing.target
-            ranked = []
-            if pinned:
-                candidate = pinned.pop(0)
-                total, confidence, reasons = 1000, 1000, ["chọn bởi người dùng"]
-                ranked = [(total, confidence, reasons, candidate)]
-            else:
-                floor = min(pacing.minimum, need)
-                # The closest match stays in even when shorter than the pace: a 1.2 s shot of the very thing said
-                # beats a long unrelated one; the rest of the sentence then plays on the next shot.
-                open_pool = [c for c in usable if allowed(c) and (remaining(c)[1] >= floor or (
-                    remaining(c)[1] >= min(SHORT_FLOOR, floor) and best >= MIN_RELEVANCE
-                    and need - remaining(c)[1] >= pacing.minimum // 2  # what it leaves is a real shot too
-                    # forward only, skipping ahead to it must leave the sentences still to come their footage
-                    and (not forward_only or ahead_after(c) >= after + need - remaining(c)[1])
-                    and relevance_of[(unit.unit_id, c.candidate_id)] * 1000 >= STRONG_SHARE * best))]
-                if not open_pool:  # nothing long enough ahead: anything left, then repeats
-                    open_pool = ([c for c in usable if allowed(c) and remaining(c)[1] >= min(SHORT_FLOOR, need)]
-                                 or [c for c in usable if allowed(c) and remaining(c)[1] > 0] or usable)
-                later_need = after + max(0, need - wanted)
-                if forward_only and later_need > 0:
-                    # Never jump so far ahead that the sentences still to come run out of footage (held frames):
-                    # the stranded penalty below only weighs it, this keeps it out whenever something else fits.
-                    keep = [c for c in open_pool if c.candidate_id in still_ids
-                            or ahead_after(c) + max(0, remaining(c)[1] - wanted) >= later_need]
-                    open_pool = keep or open_pool
-                if unit.function == "hook":
-                    # Any attractive shot can open the video: the shots a later sentence is about stay for it.
-                    free = [c for c in open_pool if not claimed(position, c, relevance_of[(unit.unit_id, c.candidate_id)])]
-                    open_pool = free or open_pool
-                for candidate in open_pool:
-                    total, confidence, reasons = score(unit, candidate, wanted, best, after + max(0, need - wanted))
-                    wanted_later = claimed(position, candidate, relevance_of[(unit.unit_id, candidate.candidate_id)])
-                    if wanted_later:
-                        total -= CLAIM_PENALTY * wanted_later // 1000
-                    ranked.append((total, confidence, reasons, candidate))
-                ranked.sort(key=lambda item: (-item[0], item[3].source_id, item[3].start_ms))
-            total, confidence, reasons, candidate = ranked[0]
-            if first:
-                decision.alternatives = [{"candidate_id": c.candidate_id, "score": s, "reasons": list(r)}
-                                         for s, _, r, c in ranked[1:4]]
-                first = False
-            continuing = candidate.candidate_id in resume and 0 < resume[candidate.candidate_id] < candidate.end_ms
-            offset, left = remaining(candidate)
-            repeat = left <= 0 or (forward_only and candidate.candidate_id not in still_ids and not allowed(candidate))
-            if left <= 0:
-                offset, left = candidate.start_ms, candidate.length_ms
-            length = min(wanted, left) if candidate.candidate_id not in still_ids else wanted
-            rest = need - length
-            if 0 < rest < pacing.minimum:
-                if left >= need:
-                    length = need  # take the rest rather than leave a sliver
-                elif length - (pacing.minimum - rest) >= pacing.minimum // 2:
-                    length -= pacing.minimum - rest  # leave the next shot a real length, not a few frames
-            reasons = list(reasons)
-            if repeat or (uses.get(candidate.candidate_id) and not continuing):
-                reasons.append("dùng lại cảnh đã chiếu (không còn cảnh phù hợp khác)")
-                confidence = min(confidence, 550)
-            if mode == "signals_only":
-                reasons.append("chưa có bằng chứng nội dung: chọn theo điểm cắt, độ nét, đa dạng")
-            needs_review = confidence < REVIEW_BELOW or not candidate.quality.usable
-            choices.append(Choice(unit.unit_id, candidate, offset, length, total, confidence, needs_review, tuple(reasons[:8])))
-            decision.chosen.append(candidate.candidate_id)
+        saved = (dict(resume), dict(source_end), dict(uses), dict(group_uses))
+        picks: list[dict[str, Any]] = []
+        covered = 0
+
+        def last_source() -> str | None:
+            if picks:
+                return picks[-1]["candidate"].source_id
+            earlier = by_unit.get(found_units[position - 1].unit_id) if position else None
+            return earlier[-1].candidate.source_id if earlier else None
+
+        def consume(candidate: Candidate, offset: int, length: int) -> None:
             uses[candidate.candidate_id] = uses.get(candidate.candidate_id, 0) + 1
             group = groups.get(candidate.candidate_id, candidate.candidate_id)
             group_uses[group] = group_uses.get(group, 0) + 1
             if candidate.candidate_id not in still_ids:
                 resume[candidate.candidate_id] = offset + length
                 source_end[candidate.source_id] = max(source_end.get(candidate.source_id, 0), offset + length)
-            previous_source = candidate.source_id
-            ahead_memo.clear()
-            need -= length
-        decisions.append(decision)
-    return choices, decisions, mode
+
+        def record(candidate: Candidate, tier: str, cap: int, ranked: Sequence[tuple]) -> int:
+            """Add (or extend) a piece of ``candidate``; returns the ms it adds."""
+            nonlocal covered
+            offset, left = remaining(candidate)
+            repeat = tier == "repeat" or left <= 0 or (forward_only and candidate.candidate_id not in still_ids
+                                                         and not allowed(candidate))
+            if left <= 0:
+                offset, left = candidate.start_ms, candidate.length_ms
+            length = cap if candidate.candidate_id in still_ids else min(left, cap)
+            if length <= 0:
+                return 0
+            if picks and picks[-1]["candidate"].candidate_id == candidate.candidate_id \
+                    and picks[-1]["offset"] + picks[-1]["length"] == offset and not repeat:
+                picks[-1]["length"] += length  # playing on: one piece
+            else:
+                total, confidence, reasons, _ = next(r for r in ranked if r[3] is candidate) if ranked else (1000, 1000, [], None)
+                picks.append({"candidate": candidate, "offset": offset, "length": length, "tier": tier, "repeat": repeat,
+                              "score": total, "confidence": confidence, "reasons": list(reasons)})
+            consume(candidate, offset, length)
+            covered += length
+            return length
+
+        def rank(pool: Sequence[Candidate], tier: str, wanted: int) -> list[tuple]:
+            nonlocal ahead_now, narration_left
+            if forward_only:
+                ahead_now = sum(remaining(c)[1] for c in usable if allowed(c) and c.candidate_id not in still_ids)
+                narration_left = after + need - covered
+            ranked = []
+            previous = last_source()
+            for candidate in pool:
+                total, confidence, reasons = score(unit, candidate, wanted, best, later, tier)
+                if candidate.source_id == previous and len({c.source_id for c in usable}) > 1 \
+                        and not (picks and picks[-1]["candidate"].candidate_id == candidate.candidate_id):
+                    total -= SAME_SOURCE_PENALTY
+                ranked.append((total, confidence, reasons, candidate))
+            ranked.sort(key=lambda item: (-item[0], item[3].source_id, item[3].start_ms))
+            if not decision.alternatives:
+                # the next best of all the footage (the UI's "other shots"), not only of this round's pool
+                seen = {r[3].candidate_id for r in ranked[:1]}
+                others = [(score(unit, c, wanted, best, later, "match")[0], c) for c in usable
+                          if allowed(c) and c.candidate_id not in seen and remaining(c)[1] > 0]
+                others.sort(key=lambda item: (-item[0], item[1].source_id, item[1].start_ms))
+                decision.alternatives = [{"candidate_id": c.candidate_id, "score": t,
+                                          "reasons": list(score(unit, c, wanted, best, later, "match")[2])} for t, c in others[:3]]
+            return ranked
+
+        def safe(candidate: Candidate, later_need: int, wanted: int) -> bool:
+            """Forward only: what stays ahead after it still covers the sentences to come."""
+            return (not forward_only or not later_need or candidate.candidate_id in still_ids
+                    or ahead(candidate) + max(0, remaining(candidate)[1] - wanted) >= later_need)
+
+        for candidate in pinned:  # the user's choice, in order
+            if covered >= need:
+                break
+            record(candidate, "pinned", need - covered, [(1000, 1000, ["chọn bởi người dùng"], candidate)])
+        # 1. footage that illustrates the sentence, the closest first, short shots included
+        while covered < need:
+            rest = need - covered
+            wanted = rest if rest < pacing.target + pacing.minimum else pacing.target
+            later_need = after + max(0, rest - wanted)
+            pool = [c for c in usable if c.candidate_id in accept and allowed(c) and remaining(c)[1] >= SHORT_FLOOR
+                    and safe(c, later_need, wanted)
+                    # forward only: not when the sentences to come lose more of their own footage than this one gains
+                    and lost(c, min(remaining(c)[1], wanted), later) <= min(remaining(c)[1], wanted)]
+            if not pool:
+                break
+            ranked = rank(pool, "match", wanted)
+            # never a piece under the floor: a short rest takes a real piece and the others give way (step 4)
+            if not record(ranked[0][3], "match", max(wanted, PIECE_FLOOR), ranked):
+                break
+        # 2. not enough: let the illustrating shots already chosen play longer (up to the longest pace)
+        if covered < need:
+            for pick in picks:
+                if covered >= need or pick["tier"] not in ("match", "pinned") or pick["candidate"].candidate_id in still_ids:
+                    continue
+                candidate = pick["candidate"]
+                if resume.get(candidate.candidate_id) != pick["offset"] + pick["length"]:
+                    continue
+                extra = min(need - covered, candidate.end_ms - resume[candidate.candidate_id], max(0, pacing.maximum - pick["length"]))
+                if extra > 0 and (not forward_only or safe(candidate, after, 0)):
+                    pick["length"] += extra
+                    resume[candidate.candidate_id] += extra
+                    source_end[candidate.source_id] = max(source_end.get(candidate.source_id, 0), resume[candidate.candidate_id])
+                    covered += extra
+        # 3. still not enough: neutral footage (said so), then, when every source has played out, a declared repeat
+        while covered < need:
+            rest = need - covered
+            wanted = rest if rest < pacing.target + pacing.minimum else pacing.target
+            later_need = after + max(0, rest - wanted)
+            floor = max(min(pacing.minimum, rest), pacing.minimum // 2)  # filler is never a flash
+            fits = [c for c in usable if allowed(c) and remaining(c)[1] >= floor
+                    # this sentence's own footage left out above for what it costs the next ones stays out
+                    and not (c.candidate_id in accept and lost(c, min(remaining(c)[1], wanted), later) > min(remaining(c)[1], wanted))]
+            pool = [c for c in fits if safe(c, later_need, wanted)] or fits \
+                or [c for c in usable if allowed(c) and remaining(c)[1] >= SHORT_FLOOR]
+            if not pool and rest < SHORT_FLOOR and picks:
+                picks[-1]["length"] += rest  # a last few frames: the shot before plays on rather than a flash
+                covered += rest
+                break
+            tier = "neutral" if pool else "repeat"
+            ranked = rank(pool or usable, tier, wanted)
+            if not record(ranked[0][3], tier, max(wanted, pacing.minimum // 2), ranked):
+                break
+        # 4. exactly the sentence's length, no piece under the floor: trim the pieces with the most slack
+        excess = covered - need
+        while excess > 0 and picks:
+            def slack(pick: dict[str, Any]) -> int:
+                floor = SHORT_FLOOR if pick["tier"] in ("match", "pinned") else pacing.minimum // 2
+                return pick["length"] - floor
+            options = sorted(picks, key=lambda p: (p["tier"] in ("match", "pinned"), -slack(p)))
+            pick = next((p for p in options if slack(p) > 0), None)
+            if pick is None:
+                dropped = picks.pop()
+                excess -= dropped["length"]
+                continue
+            cut = min(excess, slack(pick))
+            pick["length"] -= cut
+            excess -= cut
+        if excess < 0 and picks:  # dropping a piece left a little: the last piece plays on if it can
+            picks[-1]["length"] -= excess
+        covered = sum(p["length"] for p in picks)
+        # the state as the final pieces leave it
+        resume.clear(); resume.update(saved[0])
+        source_end.clear(); source_end.update(saved[1])
+        uses.clear(); uses.update(saved[2])
+        group_uses.clear(); group_uses.update(saved[3])
+        for pick in picks:
+            candidate = pick["candidate"]
+            continuing = candidate.candidate_id in resume and 0 < resume[candidate.candidate_id] < candidate.end_ms
+            reasons = pick["reasons"]
+            confidence = pick["confidence"]
+            if pick["repeat"] or (uses.get(candidate.candidate_id) and not continuing):
+                reasons.append("nhắc lại cảnh đã chiếu (nguồn không còn cảnh phù hợp phía trước)")
+                confidence = min(confidence, 550)
+            if mode == "signals_only":
+                reasons.append("chưa có bằng chứng nội dung: chọn theo điểm cắt, độ nét, đa dạng")
+            if pick["tier"] in ("neutral", "repeat") and (accept or mode == "content"):
+                reasons.append("cảnh chung: không còn cảnh khớp lời câu này")
+                confidence = min(confidence, SIGNALS_ONLY_CAP)
+            if candidate.candidate_id in accept or pick["tier"] == "pinned":
+                illustrated += pick["length"]
+            needs_review = confidence < REVIEW_BELOW or not candidate.quality.usable
+            mine.append(Choice(unit.unit_id, candidate, pick["offset"], pick["length"], pick["score"], confidence, needs_review,
+                               tuple(reasons[:8])))
+            decision.chosen.append(candidate.candidate_id)
+            consume(candidate, pick["offset"], pick["length"])
+        milli = illustrated * 1000 // max(1, unit.length_ms)
+        has_match = bool(accept) or bool(edits.pin.get(unit.unit_id))
+        # a generic sentence (an opening or a call to action without a match) needs no match of its own
+        generic = not has_match and unit.function in ("hook", "cta", "intro", "outro")
+        review = mode != "content" or (not generic and milli < GOOD_COVERAGE)
+        coverage = {"need_ms": unit.length_ms, "illustrated_ms": illustrated, "milli": milli,
+                    "status": "generic" if generic else ("full" if milli >= GOOD_COVERAGE else ("partial" if milli else "none")),
+                    "needs_review": review, "matched_footage": len(accept)}
+        decision.coverage = coverage
+        note = "" if generic else _coverage_note(milli, has_match)
+        if note:
+            decision.notes.append(note)
+        # review: the evidence decides, not the render: a generic sentence on usable footage needs none, an
+        # illustrated one needs it when its coverage or the match is weak
+        def flag(c: Choice) -> bool:
+            if not c.candidate.quality.usable or mode != "content":
+                return True
+            if generic:
+                return False
+            return review or c.confidence < REVIEW_BELOW
+        mine[:] = [Choice(c.unit_id, c.candidate, c.offset_ms, c.length_ms, c.score, c.confidence, flag(c), c.reasons) for c in mine]
+    choices = [c for u in found_units for c in by_unit.get(u.unit_id, [])]
+    return choices, [decisions[u.unit_id] for u in found_units], mode
 
 
 __all__ = ["Choice", "Decision", "Edits", "FUNCTIONS", "Scorer", "Unit", "assign", "product_function", "units"]

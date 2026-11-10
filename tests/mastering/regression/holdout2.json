@@ -1,0 +1,956 @@
+[
+ {
+  "schema_version": 1,
+  "name": "holdout2-blender",
+  "split": "holdout",
+  "forward_only": false,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "v1c1",
+    "source": "v1",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Máy xay sinh tố thủy tinh trên bàn bếp trắng",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v1c2",
+    "source": "v1",
+    "start_ms": 4000,
+    "end_ms": 5300,
+    "text": "Cận cảnh lưỡi dao sáu cánh bằng thép không gỉ",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v1c3",
+    "source": "v1",
+    "start_ms": 5300,
+    "end_ms": 9000,
+    "text": "Cho dâu tây và chuối vào cối xay",
+    "motion": 100,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v2c1",
+    "source": "v2",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Sinh tố dâu chuyển động xoáy trong cối",
+    "motion": 200,
+    "hook": 900,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v2c2",
+    "source": "v2",
+    "start_ms": 3000,
+    "end_ms": 6000,
+    "text": "Rót sinh tố dâu ra ly",
+    "motion": 120,
+    "hook": 700,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v3c1",
+    "source": "v3",
+    "start_ms": 0,
+    "end_ms": 2500,
+    "text": "Xay đá viên vụn nhỏ",
+    "motion": 180,
+    "hook": 600,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v3c2",
+    "source": "v3",
+    "start_ms": 2500,
+    "end_ms": 5500,
+    "text": "Núm vặn chỉnh ba tốc độ xay",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v3c3",
+    "source": "v3",
+    "start_ms": 5500,
+    "end_ms": 8000,
+    "text": "Tháo cối ra rửa dưới vòi nước",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Sinh tố mịn màng chỉ trong ba mươi giây.",
+    "ms": 3000
+   },
+   {
+    "id": "u2",
+    "text": "Lưỡi dao sáu cánh bằng thép không gỉ.",
+    "ms": 3000
+   },
+   {
+    "id": "u3",
+    "text": "Xay nhuyễn cả đá viên.",
+    "ms": 2500
+   },
+   {
+    "id": "u4",
+    "text": "Núm vặn ba tốc độ dễ điều chỉnh.",
+    "ms": 3000
+   },
+   {
+    "id": "u5",
+    "text": "Cối thủy tinh tháo rời, rửa sạch nhanh chóng.",
+    "ms": 3000
+   },
+   {
+    "id": "u6",
+    "text": "Đặt hàng ngay hôm nay.",
+    "ms": 2500
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "holdout2-blender",
+   "split": "holdout",
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "v2",
+       "start_ms": 0,
+       "end_ms": 6000
+      },
+      {
+       "source": "v1",
+       "start_ms": 5300,
+       "end_ms": 9000
+      }
+     ]
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "v1",
+       "start_ms": 4000,
+       "end_ms": 5300
+      }
+     ],
+     "key": [
+      {
+       "source": "v1",
+       "start_ms": 4000,
+       "end_ms": 5300
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "v3",
+       "start_ms": 0,
+       "end_ms": 2500
+      }
+     ],
+     "key": [
+      {
+       "source": "v3",
+       "start_ms": 0,
+       "end_ms": 2500
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "v3",
+       "start_ms": 2500,
+       "end_ms": 5500
+      }
+     ],
+     "key": [
+      {
+       "source": "v3",
+       "start_ms": 2500,
+       "end_ms": 5500
+      }
+     ]
+    },
+    "u5": {
+     "accept": [
+      {
+       "source": "v3",
+       "start_ms": 5500,
+       "end_ms": 8000
+      }
+     ],
+     "key": [
+      {
+       "source": "v3",
+       "start_ms": 5500,
+       "end_ms": 8000
+      }
+     ]
+    },
+    "u6": {
+     "accept": [
+      {
+       "source": "v1",
+       "start_ms": 0,
+       "end_ms": 4000
+      },
+      {
+       "source": "v2",
+       "start_ms": 3000,
+       "end_ms": 6000
+      }
+     ]
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "holdout2-powerbank",
+  "split": "holdout",
+  "forward_only": false,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "v1c1",
+    "source": "v1",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Sạc dự phòng màu đen cạnh điện thoại",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v1c2",
+    "source": "v1",
+    "start_ms": 3000,
+    "end_ms": 4400,
+    "text": "Màn hình LED hiển thị 87 phần trăm pin",
+    "motion": 5,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v1c3",
+    "source": "v1",
+    "start_ms": 4400,
+    "end_ms": 7500,
+    "text": "Cắm cáp USB-C vào sạc dự phòng",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v2c1",
+    "source": "v2",
+    "start_ms": 0,
+    "end_ms": 3500,
+    "text": "Sạc cùng lúc hai điện thoại và tai nghe",
+    "motion": 40,
+    "hook": 500,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v2c2",
+    "source": "v2",
+    "start_ms": 3500,
+    "end_ms": 6000,
+    "text": "Sạc dự phòng nằm gọn trong túi quần",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v3c1",
+    "source": "v3",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "chu thich dung luong 20000mAh in tren than may",
+    "motion": 5,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v3c2",
+    "source": "v3",
+    "start_ms": 3000,
+    "end_ms": 6000,
+    "text": "nguoi dung cam sac du phong khi di du lich",
+    "motion": 150,
+    "hook": 800,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Không lo hết pin khi đi xa.",
+    "ms": 3000
+   },
+   {
+    "id": "u2",
+    "text": "Dung lượng 20000mAh sạc điện thoại nhiều lần.",
+    "ms": 3500
+   },
+   {
+    "id": "u3",
+    "text": "Màn hình LED báo phần trăm pin còn lại.",
+    "ms": 2500
+   },
+   {
+    "id": "u4",
+    "text": "Sạc cùng lúc ba thiết bị.",
+    "ms": 3000
+   },
+   {
+    "id": "u5",
+    "text": "Nhỏ gọn, bỏ vừa túi quần.",
+    "ms": 2500
+   },
+   {
+    "id": "u6",
+    "text": "Hỗ trợ sạc nhanh qua cổng USB-C.",
+    "ms": 3000
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "holdout2-powerbank",
+   "split": "holdout",
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "v3",
+       "start_ms": 3000,
+       "end_ms": 6000
+      },
+      {
+       "source": "v1",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ]
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "v3",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ],
+     "key": [
+      {
+       "source": "v3",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "v1",
+       "start_ms": 3000,
+       "end_ms": 4400
+      }
+     ],
+     "key": [
+      {
+       "source": "v1",
+       "start_ms": 3000,
+       "end_ms": 4400
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "v2",
+       "start_ms": 0,
+       "end_ms": 3500
+      }
+     ],
+     "key": [
+      {
+       "source": "v2",
+       "start_ms": 0,
+       "end_ms": 3500
+      }
+     ]
+    },
+    "u5": {
+     "accept": [
+      {
+       "source": "v2",
+       "start_ms": 3500,
+       "end_ms": 6000
+      }
+     ],
+     "key": [
+      {
+       "source": "v2",
+       "start_ms": 3500,
+       "end_ms": 6000
+      }
+     ]
+    },
+    "u6": {
+     "accept": [
+      {
+       "source": "v1",
+       "start_ms": 4400,
+       "end_ms": 7500
+      }
+     ],
+     "key": [
+      {
+       "source": "v1",
+       "start_ms": 4400,
+       "end_ms": 7500
+      }
+     ]
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "holdout2-toothbrush",
+  "split": "holdout",
+  "forward_only": false,
+  "pacing": "dynamic",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "v1c1",
+    "source": "v1",
+    "start_ms": 0,
+    "end_ms": 2500,
+    "text": "Bàn chải điện màu xanh đặt trên đế sạc",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v1c2",
+    "source": "v1",
+    "start_ms": 2500,
+    "end_ms": 3700,
+    "text": "Đèn báo trên thân bàn chải nhấp nháy",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v1c3",
+    "source": "v1",
+    "start_ms": 3700,
+    "end_ms": 6500,
+    "text": "Đầu lông bàn chải rung nhanh trong ly nước",
+    "motion": 220,
+    "hook": 900,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v2c1",
+    "source": "v2",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Người dùng chải răng trước gương",
+    "motion": 90,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v2c2",
+    "source": "v2",
+    "start_ms": 3000,
+    "end_ms": 5500,
+    "text": "Hàm răng trắng sáng sau khi chải",
+    "motion": 50,
+    "hook": 600,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v3c1",
+    "source": "v3",
+    "start_ms": 0,
+    "end_ms": 2000,
+    "text": "Thay đầu bàn chải bằng cách rút ra và gắn vào",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v3c2",
+    "source": "v3",
+    "start_ms": 2000,
+    "end_ms": 4500,
+    "text": "Hộp đựng du lịch có ba đầu thay thế",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Răng sạch như vừa đi nha sĩ.",
+    "ms": 2500
+   },
+   {
+    "id": "u2",
+    "text": "Đầu lông rung bốn mươi nghìn lần mỗi phút.",
+    "ms": 2500
+   },
+   {
+    "id": "u3",
+    "text": "Đèn báo nhắc bạn chải đủ hai phút.",
+    "ms": 2000
+   },
+   {
+    "id": "u4",
+    "text": "Thay đầu bàn chải chỉ trong một giây.",
+    "ms": 2000
+   },
+   {
+    "id": "u5",
+    "text": "Tặng kèm hộp du lịch và ba đầu thay thế.",
+    "ms": 2500
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "holdout2-toothbrush",
+   "split": "holdout",
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "v2",
+       "start_ms": 0,
+       "end_ms": 5500
+      }
+     ]
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "v1",
+       "start_ms": 3700,
+       "end_ms": 6500
+      }
+     ],
+     "key": [
+      {
+       "source": "v1",
+       "start_ms": 3700,
+       "end_ms": 6500
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "v1",
+       "start_ms": 2500,
+       "end_ms": 3700
+      }
+     ],
+     "key": [
+      {
+       "source": "v1",
+       "start_ms": 2500,
+       "end_ms": 3700
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "v3",
+       "start_ms": 0,
+       "end_ms": 2000
+      }
+     ],
+     "key": [
+      {
+       "source": "v3",
+       "start_ms": 0,
+       "end_ms": 2000
+      }
+     ]
+    },
+    "u5": {
+     "accept": [
+      {
+       "source": "v3",
+       "start_ms": 2000,
+       "end_ms": 4500
+      }
+     ],
+     "key": [
+      {
+       "source": "v3",
+       "start_ms": 2000,
+       "end_ms": 4500
+      }
+     ]
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "holdout2-travel-five-sources",
+  "split": "holdout",
+  "forward_only": true,
+  "pacing": "entertainment",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "s1c1",
+    "source": "s1",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Thẻ tiêu đề chương trình",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s1c2",
+    "source": "s1",
+    "start_ms": 4000,
+    "end_ms": 8000,
+    "text": "Người dẫn chương trình giới thiệu",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s1c3",
+    "source": "s1",
+    "start_ms": 8000,
+    "end_ms": 12000,
+    "text": "Bản đồ thế giới đánh dấu các thành phố",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s1c4",
+    "source": "s1",
+    "start_ms": 12000,
+    "end_ms": 16000,
+    "text": "Tokyo về đêm với biển hiệu neon",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s2c1",
+    "source": "s2",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Chợ cá Tsukiji buổi sáng",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s2c2",
+    "source": "s2",
+    "start_ms": 4000,
+    "end_ms": 8000,
+    "text": "Đầu bếp thái cá hồi",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s2c3",
+    "source": "s2",
+    "start_ms": 8000,
+    "end_ms": 12000,
+    "text": "Đĩa sushi trên băng chuyền",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s3c1",
+    "source": "s3",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Paris và tháp Eiffel",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s3c2",
+    "source": "s3",
+    "start_ms": 4000,
+    "end_ms": 8000,
+    "text": "Quán cà phê vỉa hè",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s3c3",
+    "source": "s3",
+    "start_ms": 8000,
+    "end_ms": 12000,
+    "text": "Bánh sừng bò mới ra lò",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s4c1",
+    "source": "s4",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Hà Nội phố cổ",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s4c2",
+    "source": "s4",
+    "start_ms": 4000,
+    "end_ms": 8000,
+    "text": "Xe máy đông đúc trên phố",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s4c3",
+    "source": "s4",
+    "start_ms": 8000,
+    "end_ms": 12000,
+    "text": "Bát phở bốc khói",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s5c1",
+    "source": "s5",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Cảnh hoàng hôn trên biển",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s5c2",
+    "source": "s5",
+    "start_ms": 4000,
+    "end_ms": 8000,
+    "text": "Người dẫn chương trình tạm biệt",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Hành trình qua những thành phố trên bản đồ thế giới.",
+    "ms": 5000
+   },
+   {
+    "id": "u2",
+    "text": "Tokyo rực rỡ ánh đèn neon về đêm.",
+    "ms": 4000
+   },
+   {
+    "id": "u3",
+    "text": "Đầu bếp thái cá hồi làm sushi tươi.",
+    "ms": 6000
+   },
+   {
+    "id": "u4",
+    "text": "Bánh sừng bò thơm phức bên quán cà phê Paris.",
+    "ms": 6000
+   },
+   {
+    "id": "u5",
+    "text": "Phố cổ Hà Nội và bát phở bốc khói.",
+    "ms": 6000
+   },
+   {
+    "id": "u6",
+    "text": "Hẹn gặp lại trong chuyến đi tiếp theo.",
+    "ms": 4000
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "holdout2-travel-five-sources",
+   "split": "holdout",
+   "forward_only": true,
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "s1",
+       "start_ms": 8000,
+       "end_ms": 12000
+      },
+      {
+       "source": "s1",
+       "start_ms": 0,
+       "end_ms": 8000
+      }
+     ]
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "s1",
+       "start_ms": 12000,
+       "end_ms": 16000
+      }
+     ],
+     "key": [
+      {
+       "source": "s1",
+       "start_ms": 12000,
+       "end_ms": 16000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "s2",
+       "start_ms": 0,
+       "end_ms": 12000
+      }
+     ],
+     "key": [
+      {
+       "source": "s2",
+       "start_ms": 4000,
+       "end_ms": 8000
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "s3",
+       "start_ms": 0,
+       "end_ms": 12000
+      }
+     ],
+     "key": [
+      {
+       "source": "s3",
+       "start_ms": 8000,
+       "end_ms": 12000
+      }
+     ]
+    },
+    "u5": {
+     "accept": [
+      {
+       "source": "s4",
+       "start_ms": 0,
+       "end_ms": 12000
+      }
+     ],
+     "key": [
+      {
+       "source": "s4",
+       "start_ms": 0,
+       "end_ms": 4000
+      },
+      {
+       "source": "s4",
+       "start_ms": 8000,
+       "end_ms": 12000
+      }
+     ]
+    },
+    "u6": {
+     "accept": [
+      {
+       "source": "s5",
+       "start_ms": 0,
+       "end_ms": 8000
+      }
+     ]
+    }
+   }
+  }
+ }
+]
