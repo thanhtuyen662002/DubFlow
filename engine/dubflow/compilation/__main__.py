@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import sys
 
@@ -18,6 +19,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.add_argument(f"--{name}", type=Path, required=True)
     parser.add_argument("--cpu-only", action="store_true")
     args = parser.parse_args(argv)
+    ai_key = os.environ.pop("DUBFLOW_AI_KEY", "") or ""  # the user's AI key for this job only, before FFmpeg starts
     try:
         spec = load_spec(args.spec)
         producer = hashlib.sha256()
@@ -32,6 +34,19 @@ def main(argv: list[str] | None = None) -> int:
         status.write(state="FAILED", message=error.message, path=None)
         print(json.dumps(status.value, ensure_ascii=True))
         return 1
+    def speak(status: Status) -> VieNeuSpeaker:
+        return VieNeuSpeaker(args.app_root, args.model_root, args.ffmpeg, spec.voice_id, cpu_only=args.cpu_only, status=status,
+                             speed=spec.speed)
+    from .program import Program
+    if isinstance(spec, Program):
+        from engine.dubflow.mastering import analysis, vision
+        from .raw import run_program
+        result = run_program(spec, args.output_dir, speaker=speak, probe=lambda path: probe_duration_ms(args.ffprobe, path),
+                             inspect=lambda path: analysis.probe(args.ffprobe, path), ffmpeg=args.ffmpeg,
+                             vision=vision.factory(spec.editorial.ai, ai_key, spec.editorial.vision_budget),
+                             ask_text=vision.text_asker(spec.editorial.ai, ai_key), producer_key=producer.hexdigest())
+        print(json.dumps(result, ensure_ascii=True))
+        return 0 if result["state"] == "COMPLETED" else 1
     result = run(spec, args.output_dir, speaker=lambda status: VieNeuSpeaker(
         args.app_root, args.model_root, args.ffmpeg, spec.voice_id, cpu_only=args.cpu_only, status=status, speed=spec.speed),
         probe=lambda path: probe_duration_ms(args.ffprobe, path), measure=lambda path: probe_video(args.ffprobe, path),
