@@ -357,6 +357,12 @@ def _gemini_schema(schema: Any) -> Any:
             continue
         if key == "type" and isinstance(value, str):
             result["type"] = value.upper()
+        elif key == "type" and isinstance(value, list):
+            # Gemini's schema has one type and a ``nullable`` flag, not a list of types.
+            kinds = [kind for kind in value if isinstance(kind, str) and kind != "null"]
+            result["type"] = (kinds[0] if kinds else "string").upper()
+            if "null" in value:
+                result["nullable"] = True
         elif key == "properties" and isinstance(value, dict):
             result["properties"] = {name: _gemini_schema(field) for name, field in value.items()}
         else:

@@ -199,6 +199,21 @@ class OtherDialectsTest(unittest.TestCase):
         self.assertEqual(schema["type"], "OBJECT")
         self.assertNotIn("additionalProperties", schema)
 
+    def test_gemini_schema_turns_a_nullable_type_list_into_type_and_nullable(self):
+        from engine.dubflow.ai.client import _gemini_schema
+        from engine.dubflow.mastering import vision
+        converted = _gemini_schema(vision.schema(["product"]))
+        frame = converted["properties"]["frames"]["items"]["properties"]
+        self.assertEqual((frame["product_box"]["type"], frame["product_box"]["nullable"]), ("OBJECT", True))
+        self.assertEqual((frame["product_group"]["type"], frame["product_group"]["nullable"]), ("STRING", True))
+        self.assertNotIn("nullable", frame["clarity"])
+
+        def lists(value):
+            if isinstance(value, dict):
+                return any(isinstance(v, list) and k == "type" or lists(v) for k, v in value.items())
+            return isinstance(value, list) and any(lists(v) for v in value)
+        self.assertFalse(lists(converted))
+
     def test_claude_uses_messages_with_its_headers(self):
         fake = Fake((200, {"content": [{"type": "text", "text": '{"zh": "猪"}'}], "stop_reason": "end_turn"}))
         self.assertEqual(ask_json(make_route("claude", KEY), "s", SCHEMA, [{"text": "t"}], transport=fake), {"zh": "猪"})
