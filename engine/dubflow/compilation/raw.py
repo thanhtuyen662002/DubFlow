@@ -153,6 +153,9 @@ def resolve(spec: Program, ask_text: AskText | None, warnings: list[str], answer
     return replace(spec, items=tuple(drafted)), record
 
 
+TARGETED_PER_PART = 8  # targeted looks one part may take from what the broad look left
+
+
 def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], Speaker], probe: Callable[[Path], int],
                 inspect: Callable[[Path], scene.StreamInfo], ffmpeg: Path,
                 ffmpeg_runner: Callable[[list[str], Path, Callable[[], bool]], None] = run_ffmpeg,
@@ -242,11 +245,22 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
         if vision is not None:
             status.write(message="AI đang xem các cảnh…")
             describer = vision(folder / "vision", context=f"Video tổng hợp: {resolved.title}", labels=ev.MOMENT_LABELS)
-            seen = describer.describe(seeing.frames_for(pool, folder), cancelled)
+            everything_seen = seeing.frames_for(pool, folder)
+            # Adaptive sampling: a broad look spread over every source, keeping a third of the budget for the
+            # sentences the first plan cannot cover (targeted looks below), when the budget does not reach every shot.
+            room = describer.budget - describer.budget // 3 if len(everything_seen) > describer.budget else describer.budget
+            first = seeing.broad(pool, folder, room)
+            looked = {candidate_id for candidate_id, _ in first}
+            seen = describer.describe(first, cancelled)
             check()
             seeing.apply(seen, evidence, f"AI {describer.provider}/{describer.used_model}")
-            vision_report = {"provider": describer.provider, "model": describer.used_model, "frames": len(seen), "asked": describer.asked}
+            vision_report = {"provider": describer.provider, "model": describer.used_model, "frames": len(seen), "asked": describer.asked,
+                             "broad": len(first), "targeted": 0}
             warnings += describer.warnings
+            warned = len(describer.warnings)
+            if len(everything_seen) > describer.budget:
+                warnings.append(f"Giới hạn {describer.budget} khung hình cho AI nhìn: {len(first)} cảnh trải đều các nguồn, phần còn lại "
+                                f"dành cho câu thiếu hình; {len(everything_seen) - describer.budget} cảnh trở lên chọn theo thông tin khác.")
         # 2. Parts.
         parts: list[tuple[str, str, str, str, int | None, list[str], str]] = []  # id, kind, text, title, rank, sources, keep
         everything = list(footage)
@@ -303,6 +317,28 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
                                      gap_ms=script.GAP_MS, footage=part_footage, candidates=candidates, evidence=evidence,
                                      groups=groups, edits=resolved.editorial.edits.get(part_id), keep_audio=keep, title=title,
                                      inputs=inputs, shown=avoid)
+            room = describer.budget - describer.taken if vision_report is not None else 0
+            if room > 0:
+                # Targeted look: shots not yet seen that may show what an uncovered sentence says; plan again with them.
+                ids = seeing.targets(made.log["units"], [c for s in source_ids for c in candidates[s]], evidence, looked,
+                                     min(room, TARGETED_PER_PART), forward_only=True)
+                if ids:
+                    status.write(message=f"{context}AI xem thêm cảnh cho câu chưa đủ hình ({index}/{len(parts)})…")
+                    by_id = {c.candidate_id: c for c in pool}
+                    extra = describer.describe([(i, folder / by_id[i].keyframe) for i in ids], cancelled)
+                    check()
+                    looked.update(ids)
+                    seeing.apply(extra, evidence, f"AI {describer.provider}/{describer.used_model}")
+                    vision_report["targeted"] += len(extra)
+                    vision_report["frames"] += len(extra)
+                    vision_report["asked"] = describer.asked
+                    warnings += describer.warnings[warned:]
+                    warned = len(describer.warnings)
+                    if extra:
+                        made = planner.plan_part(part_id, kind, spoken, narration_ms, resolved.mastering, lead_ms=script.LEAD_MS,
+                                                 gap_ms=script.GAP_MS, footage=part_footage, candidates=candidates, evidence=evidence,
+                                                 groups=groups, edits=resolved.editorial.edits.get(part_id), keep_audio=keep, title=title,
+                                                 inputs=inputs, shown=avoid)
             m.save(folder / f"plan-{part_id}.json", made.plan)
             shown.update(choice for unit in made.log["units"] for choice in unit["chosen"])
             made.log["vision"] = vision_report

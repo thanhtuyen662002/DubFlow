@@ -165,15 +165,16 @@ class RealMediaProgrammeTest(unittest.TestCase):
                 return {"narration": f"Một con gà gáy vang lần thứ {len(drafts)}.", "needs_check": []}
 
             class Seeing:  # a describer whose answers are cached: the second run asks for nothing
-                provider, used_model, warnings = "gemini", "fake", []
+                provider, used_model, warnings, budget = "gemini", "fake", [], 60
                 runs = 0
 
                 def __init__(self, cache, context="", labels=()):
                     Seeing.runs += 1
-                    self.asked = 0
+                    self.asked = self.taken = 0
 
                 def describe(self, frames, cancelled):
-                    self.asked = len(frames) if Seeing.runs == 1 else 0
+                    self.taken += len(frames)
+                    self.asked += len(frames) if Seeing.runs == 1 else 0
                     return {}
 
             def probe(path):
