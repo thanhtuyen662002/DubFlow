@@ -61,7 +61,15 @@ class TableTests(unittest.TestCase):
             self.assertEqual(policy.audio, "preserve_ambience")
         self.assertEqual(p.resolve("dubbing_preserve", m.Options("light")).operations, {p.LOUDNESS, p.COLOR_MATCH})
         self.assertEqual(p.resolve("dubbing_preserve", m.Options("balanced")).hook, "off")
-        self.assertEqual(p.resolve("dubbing_preserve", m.Options("dynamic")).hook, "suggest")
+        # Dynamic keeps the length and suggests a climax only when the user turned it on (ADR-0055).
+        dynamic = p.resolve("dubbing_preserve", m.Options("dynamic"))
+        self.assertEqual(dynamic.hook, "off")
+        self.assertFalse(dynamic.allows(p.HOOK))
+        self.assertFalse(dynamic.allows(p.TRIM_PAUSES))
+        self.assertIsNone(dynamic.trim_pause_min_ms)
+        opted = p.resolve("dubbing_preserve", m.Options("dynamic", enable_climax_hook=True))
+        self.assertEqual((opted.hook, opted.allows(p.HOOK), opted.allows(p.TRIM_PAUSES)), ("suggest", True, False))
+        self.assertEqual(p.resolve("dubbing_preserve", m.Options("balanced", enable_climax_hook=True)).hook, "off")
 
     def test_compilation_keeps_its_ranking_and_product_uses_the_voice_over(self):
         for level in ("light", "balanced", "dynamic"):
@@ -133,7 +141,7 @@ class CheckTests(unittest.TestCase):
         self.assertTrue(any("hook is not allowed" in item for item in p.check(plan_of("dubbing_preserve", options, hooked), policy)))
 
     def test_a_dubbing_hook_is_only_ever_a_suggestion_for_review(self):
-        options = m.Options("dynamic")
+        options = m.Options("dynamic", enable_climax_hook=True)
         policy = p.resolve("dubbing_preserve", options)
         silent = [piece(0, 6000, 8000, 0, role="hook"), piece(1, 0, 9000, 2000)]
         self.assertTrue(any("marked for review" in item for item in p.check(plan_of("dubbing_preserve", options, silent), policy)))

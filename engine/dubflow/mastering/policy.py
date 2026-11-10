@@ -98,9 +98,10 @@ _TABLE: Mapping[tuple[str, str], dict] = {
     ("dubbing_preserve", "light"): dict(operations=_ops(LOUDNESS, COLOR_MATCH)),
     ("dubbing_preserve", "balanced"): dict(operations=_ops(LOUDNESS, COLOR_MATCH, DYNAMIC_CAPTIONS, ZOOM),
                                            max_zoom=1080, max_zoom_share=200, captions="phrase"),
-    ("dubbing_preserve", "dynamic"): dict(operations=_ops(LOUDNESS, COLOR_MATCH, DYNAMIC_CAPTIONS, ZOOM, HOOK, TRIM_PAUSES),
-                                          max_zoom=1120, max_zoom_share=300, captions="word_highlight", hook="suggest",
-                                          hook_max_ms=5000, trim_pause_min_ms=1200),
+    # Dynamic never changes the length (ADR-0055): no pause trimming; a climax/teaser is only ever a suggestion for
+    # review, and only when the user turned it on (``Options.enable_climax_hook``, see ``resolve``).
+    ("dubbing_preserve", "dynamic"): dict(operations=_ops(LOUDNESS, COLOR_MATCH, DYNAMIC_CAPTIONS, ZOOM),
+                                          max_zoom=1120, max_zoom_share=300, captions="phrase"),
     # Bán hàng: the seller's footage, chosen per sentence (so order is free), voice-over first.
     ("product_showcase", "light"): dict(operations=_ops(SHOT_AWARE_CUTS, REORDER, LOUDNESS), audio="product_voiceover",
                                         keep_source_audio=False),
@@ -147,7 +148,10 @@ def resolve(workflow: str, options: Options) -> Policy:
         raise TypeError("options must be mastering Options")
     if options.level == "off":
         return Policy(workflow, options, frozenset(), STYLE_PACING[options.style])
-    return Policy(workflow, options, pacing=pacing(options.style, options.level), **_TABLE[(workflow, options.level)])
+    table = dict(_TABLE[(workflow, options.level)])
+    if workflow == "dubbing_preserve" and options.enable_climax_hook and options.level == "dynamic":
+        table.update(operations=table["operations"] | {HOOK}, hook="suggest", hook_max_ms=5000)
+    return Policy(workflow, options, pacing=pacing(options.style, options.level), **table)
 
 
 def check(plan: Plan, policy: Policy) -> list[str]:

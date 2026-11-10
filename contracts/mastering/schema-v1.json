@@ -27,7 +27,8 @@
         "schema_version": { "const": 1 },
         "kind": { "const": "mastering_options" },
         "level": { "$ref": "#/$defs/level" },
-        "style": { "$ref": "#/$defs/style" }
+        "style": { "$ref": "#/$defs/style" },
+        "enable_climax_hook": { "type": "boolean" }
       }
     },
     "source": {
@@ -124,7 +125,8 @@
           "type": "object",
           "additionalProperties": false,
           "required": ["level", "style"],
-          "properties": { "level": { "$ref": "#/$defs/level" }, "style": { "$ref": "#/$defs/style" } }
+          "properties": { "level": { "$ref": "#/$defs/level" }, "style": { "$ref": "#/$defs/style" },
+                          "enable_climax_hook": { "type": "boolean" } }
         },
         "time_base": {
           "type": "object",

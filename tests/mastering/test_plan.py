@@ -160,9 +160,17 @@ class OptionsTests(unittest.TestCase):
     def test_bad_options_are_rejected(self):
         for value in ({"schema_version": 2, "level": "light"}, {"schema_version": 1, "level": "max"},
                       {"schema_version": 1, "level": "light", "style": "glitch"}, {"schema_version": 1, "level": "light", "x": 1},
-                      {"schema_version": True, "level": "light"}, [], "balanced"):
+                      {"schema_version": True, "level": "light"}, [], "balanced",
+                      {"schema_version": 1, "level": "dynamic", "enable_climax_hook": "yes"}):
             with self.subTest(value=value), self.assertRaises(m.PlanError):
                 m.Options.from_dict(value)
+
+    def test_the_climax_hook_is_off_unless_asked_and_round_trips(self):
+        self.assertFalse(m.Options("dynamic").enable_climax_hook)
+        self.assertNotIn("enable_climax_hook", m.Options("dynamic").to_dict())  # earlier documents stay byte-identical
+        asked = m.Options.from_dict({"schema_version": 1, "level": "dynamic", "enable_climax_hook": True})
+        self.assertTrue(asked.enable_climax_hook)
+        self.assertEqual(m.Options.from_dict(asked.to_dict()), asked)
 
 
 if __name__ == "__main__":
