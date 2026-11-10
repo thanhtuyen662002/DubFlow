@@ -47,9 +47,9 @@ TRUST = {"user": 950, "metadata": 550, "transcript": 800, "vision": 800, "signal
 # Only words that stay function words without their diacritics: "can" (cận/cần/cân), "chi" (chi tiết), "tu" (tủ),
 # "da" (da thật), "toi" (tối), "tai" (tai nghe), "ban" (bàn/bán) and "con" carry meaning once folded, so they stay.
 _STOP = frozenset("""
-va voi cua cho la khong mot nhung cac nay thi ma nen se dang duoc bi rat cung lai
-khi neu vi de nhu hon nhat moi nhieu minh chung ho no ay kia day
-nao gi sao thoi nhe nha oi roi luon hay hoac ca
+va voi cua la khong mot nhung cac nay thi ma se dang duoc bi rat cung
+khi neu vi nhu nhat nhieu minh chung no ay kia
+nao gi sao thoi nhe nha oi roi luon hay hoac
 mp4 mov mkv webm avi m4v jpg jpeg png webp clip video img vid dsc
 the an of and to in on with for is are this that it be at by from
 """.split())
@@ -80,7 +80,16 @@ LOOSE = "~"  # prefix of a term from text written without diacritics
 
 
 def _written_with_marks(text: str) -> bool:
-    return any(ord(c) > 127 and c.isalpha() for c in text)
+    """Whether ``text`` is Vietnamese written with its marks.
+
+    Vietnamese written properly has marks on most words; a few marked words in otherwise plain text (an AI
+    answer typed without marks, a file name with one accented word) does not make it marked text.
+    """
+    found = _LETTERS.findall(text)
+    if not found:
+        return False
+    marked = sum(1 for w in found if any(ord(c) > 127 and c.isalpha() for c in w))
+    return marked * 4 >= len(found)  # a quarter of the words or more
 
 
 def terms(text: str) -> frozenset[str]:
@@ -174,9 +183,10 @@ class Evidence:
         out: dict[str, int] = {}
         for item in self.items:
             weight = item.confidence * TRUST[item.origin] // 1000
-            text = " ".join([item.text, *(LABEL_NAMES_VI.get(label, "") for label in item.labels)])
-            for term in terms(text):
-                out[term] = max(out.get(term, 0), weight)
+            # each piece on its own: an AI description typed without marks next to label names with marks
+            for text in (item.text, *(LABEL_NAMES_VI.get(label, "") for label in item.labels)):
+                for term in terms(text):
+                    out[term] = max(out.get(term, 0), weight)
         return out
 
     def labels(self) -> dict[str, int]:

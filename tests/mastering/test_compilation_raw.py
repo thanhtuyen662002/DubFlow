@@ -237,12 +237,13 @@ class MomentTest(unittest.TestCase):
     def test_the_ending_is_kept_for_the_items_own_sound(self):
         from engine.dubflow.mastering import candidates as shots, evidence as ev
         from engine.dubflow.mastering.planners import compilation as planner
-        found = scene.Analysis(12_000, (6000,), (scene.Shot(0, 6000, 40), scene.Shot(6000, 12_000, 60)), (), True, "x" * 64)
+        found = scene.Analysis(30_000, (6000, 12_000, 18_000, 24_000),
+                               tuple(scene.Shot(a, a + 6000, 50) for a in range(0, 30_000, 6000)), (), True, "x" * 64)
         source = planner.Footage("i1-s1", Path("meo.mp4"), found, 640, 360, (25, 1),
-                                 cues=((7000, 9000, "con mèo nhảy lên bàn"),))
+                                 cues=((7000, 9000, "con mèo nhảy lên bàn"), (25_000, 28_000, "trời ơi")))
         quality = shots.Quality(120, 50, 300)
-        pool = [shots.Candidate("i1-s1c1", "i1-s1", 0, 6000, 0, 40, quality, 1),
-                shots.Candidate("i1-s1c2", "i1-s1", 6000, 12_000, 1, 60, quality, 2**40)]
+        pool = [shots.Candidate(f"i1-s1c{n + 1}", "i1-s1", n * 6000, n * 6000 + 6000, n, 50, quality, n * 2**20 + 1)
+                for n in range(5)]
         evidence = planner.evidence_for([source], {"i1-s1": pool}, {})
         spoken = [("Con mèo nhảy lên bàn rất nhanh.", 2500), ("Ai cũng bất ngờ.", 2500)]
         made = planner.plan_part("i1", "item", spoken, 5600, m.Options("balanced", "entertainment"), lead_ms=200, gap_ms=300,
@@ -250,7 +251,7 @@ class MomentTest(unittest.TestCase):
                                  inputs={"part": "0" * 64})
         last = made.plan.segments[-1]
         self.assertEqual((last.role, last.audio_mode), ("reaction", "source"))
-        self.assertGreaterEqual(last.source.start, 6000)
+        self.assertGreaterEqual(last.source.start, 12_000)  # late in the source, after what the narration shows
         self.assertFalse(any(s.role == "still" for s in made.plan.segments))
         narration = [s for s in made.plan.segments if s.audio_mode != "source"]
         self.assertTrue(all(s.source.end <= last.source.start for s in narration))  # the source still plays forward

@@ -29,8 +29,8 @@ from ..candidates import Candidate
 
 PLANNER = "dubflow.mastering.product"
 # 1: shot-aware parts in turn (Phase 1). 2: each sentence illustrated by the footage that matches it (ADR-0054).
-VERSION = "3"
-RECIPE = "product-editorial-v3"  # v3: Vietnamese words keep their marks when matched
+VERSION = "4"
+RECIPE = "product-editorial-v4"  # v4: relevance scaled to the best match; one product per clip
 WORKFLOW = "product_showcase"
 SHOT_MARGIN_MS = 120
 # A shot shorter than this is skipped while longer ones exist; it is used when nothing else is left.
@@ -212,13 +212,20 @@ def plan_editorial(visuals: Sequence[Visual], spoken: Sequence[tuple[str, int]],
         if numbers:
             flagged[unit.unit_id] = numbers
             warnings.append(f"Câu {unit.unit_id[1:]} nêu {', '.join(numbers)} nhưng thông tin sản phẩm không có: hãy kiểm tra trước khi đăng.")
-    products = {}
-    for item in evidence.values():
-        if item.same_product and item.product_visible:
-            products[item.same_product] = products.get(item.same_product, 0) + 1
-    if len([name for name, count in products.items() if count >= 2]) >= 2:
+    # Different products: the clips' main products differ (each clip by the name the AI gave most often, spelled
+    # loosely so "espresso-cup" and "espresso_cup" are one name). Several names inside one clip are one shoot.
+    seen_in: dict[str, dict[str, int]] = {}
+    source_of = {c.candidate_id: c.source_id for c in pool}
+    for candidate_id, item in evidence.items():
+        if item.same_product and item.product_visible and candidate_id in source_of:
+            name = ev.fold(item.same_product)
+            if name:
+                names = seen_in.setdefault(source_of[candidate_id], {})
+                names[name] = names.get(name, 0) + 1
+    main = {source: max(names.items(), key=lambda kv: (kv[1], kv[0]))[0] for source, names in seen_in.items()}
+    if len(set(main.values())) >= 2:
         warnings.append("Các clip có dấu hiệu quay những sản phẩm hoặc biến thể khác nhau: "
-                        + ", ".join(sorted(products)) + ". Hãy kiểm tra trước khi ghép chung.")
+                        + ", ".join(sorted(set(main.values()))) + ". Hãy kiểm tra trước khi ghép chung.")
     unusable = [c.candidate_id for c in pool if not c.quality.usable]
     if unusable:
         warnings.append(f"{len(unusable)} cảnh bị bỏ vì tối, mờ hoặc trống.")
