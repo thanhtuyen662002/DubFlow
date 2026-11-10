@@ -1504,8 +1504,12 @@ def _separate_background_stage(config: WorkerConfig, source_hash: str, probe: Me
         rate = voice_profile["sample_rate"]
         if type(rate) is not int or not 8000 <= rate <= 96000:
             raise ValueError("invalid B2 PCM sample rate")
+        # The bed must share the dubbing source's PCM format, reduced the same
+        # way for a source too long for one 48 kHz stereo WAV.
+        from engine.dubflow.worker.b2_audio import _source_duration_ms, source_pcm_format
+        rate, channels = source_pcm_format(_source_duration_ms(probe), rate)
         identity = "sha256:" + sha256(json.dumps({"source": source_hash,
-            "audio": _audio_decode_identity(source_hash, probe), "sample_rate": rate, "channels": 2,
+            "audio": _audio_decode_identity(source_hash, probe), "sample_rate": rate, "channels": channels,
             "ffmpeg": _sha256(config.ffmpeg_path), "profile": _sha256(profile_path),
             "adapter": _sha256(Path(mdx.__file__)), "limiter": spleeter.LIMITER}, sort_keys=True).encode()).hexdigest()
         directory = work_dir / "separation"
@@ -1526,7 +1530,7 @@ def _separate_background_stage(config: WorkerConfig, source_hash: str, probe: Me
                 progress=lambda *_: emitter.progress(0.68, "Đang tách nhạc nền khỏi giọng gốc (thử nghiệm)"))
             # Same B2 extraction recipe (including leading gaps and video origin).
             # Independent analysis avoids introducing an optional model into TTS.
-            media.extract_audio(config.source_path, source_audio, sample_rate=rate, channels=2,
+            media.extract_audio(config.source_path, source_audio, sample_rate=rate, channels=channels,
                                 video_stream=probe.video, overwrite=True)
             options = dict(model_dir=_child(config.model_root, profile["model_dir"]), ffmpeg_path=config.ffmpeg_path)
             metrics = None

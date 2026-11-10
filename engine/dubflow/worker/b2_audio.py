@@ -62,6 +62,12 @@ MEASURED_GAP_EVIDENCE = "recognized-source-cue-intervals;dialogue-silence-measur
 MEASURED_POSTROLL_MS = 6000
 SILENCE_RMS = 260  # About -42 dBFS.
 SILENCE_FRAME_MS = 20
+# PCM16 WAV stores its sizes in 32-bit RIFF fields, so the mixer refuses a
+# decoded source above StreamLimits.max_source_bytes (4 GiB). 48 kHz stereo
+# reaches that at 6 h 12 min: longer sources are decoded at the first of these
+# formats that fits, with headroom for audio that outlasts the probed duration.
+SOURCE_PCM_FORMATS = ((48_000, 2), (32_000, 2), (24_000, 2), (16_000, 2), (16_000, 1))
+SOURCE_PCM_HEADROOM = (19, 20)
 SPEECH_TAIL_MS = 300  # The cue's own last syllable may outlast its recognized end.
 SPEECH_ONSET_MS = 60
 
@@ -169,6 +175,42 @@ def _mix_input_hash(documents: Sequence[TtsDocument]) -> str:
 def _input_hash(cues: Sequence[Mapping[str, Any]]) -> str:
     payload = json.dumps(list(cues), ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return "sha256:" + sha256(payload).hexdigest()
+
+
+def _source_duration_ms(probe: MediaProbeResult) -> int | None:
+    """Longest duration ffprobe reports for the picture, the container or any audio stream."""
+    durations = []
+    for ticks, base in ((getattr(probe, "duration_ticks", None), CANONICAL_TIME_BASE),
+                        (getattr(probe, "format_duration_ticks", None), getattr(probe, "format_time_base", None)),
+                        *((getattr(stream, "duration_ticks", None), getattr(stream, "time_base", None))
+                          for stream in getattr(probe, "audio", ()))):
+        if type(ticks) is int and ticks > 0 and base is not None:
+            durations.append(-(-ticks * base.numerator * 1000 // base.denominator))
+    return max(durations, default=None)
+
+
+def source_pcm_format(duration_ms: int | None, preferred_rate: int) -> tuple[int, int]:
+    """(sample rate, channels) for a decoded source of ``duration_ms`` that the mixer accepts.
+
+    Short sources keep ``preferred_rate`` stereo, unchanged. A source too long for
+    that is decoded at a lower rate, then mono, instead of failing the mix after
+    hours of speech synthesis (customer report: a 6 h video got subtitles only).
+    """
+    if duration_ms is None or duration_ms <= 0:
+        return preferred_rate, 2
+    budget = streaming.StreamLimits().max_source_bytes * SOURCE_PCM_HEADROOM[0] // SOURCE_PCM_HEADROOM[1]
+    candidates = [(preferred_rate, 2)] + [(rate, channels) for rate, channels in SOURCE_PCM_FORMATS
+                                          if rate < preferred_rate or (rate == preferred_rate and channels < 2)]
+    for rate, channels in candidates:
+        if -(-duration_ms * rate // 1000) * channels * 2 + 44 <= budget:
+            return rate, channels
+    hours = duration_ms / 3_600_000
+    raise B2AudioError("SOURCE_AUDIO_TOO_LONG", f"source audio of {hours:.1f} h exceeds the longest dubbing mix "
+                       f"({budget // (SOURCE_PCM_FORMATS[-1][0] * SOURCE_PCM_FORMATS[-1][1] * 2) / 3600:.1f} h)")
+
+
+def _decoded_wav_fits(path: Path) -> bool:
+    return path.stat().st_size <= streaming.StreamLimits().max_source_bytes
 
 
 def _wav_duration_ticks(path: Path, *, denominator: int = 1000) -> int:
@@ -667,13 +709,33 @@ def run_b2_audio(
     except Exception as error:
         raise B2AudioError(getattr(error, "code", "TTS_BOOTSTRAP_FAILED"), str(error), retryable=bool(getattr(error, "retryable", False))) from error
     source_audio_path = root / "source_audio.wav"
+    format_warnings: list[str] = []
     try:
-        if silence_duration is not None:
-            media.create_silent_audio(source_path, source_audio_path, video_duration=silence_duration, overwrite=True)
-        else:
-            # Keep the source bed stereo; mono TTS is centered by the mixer.
-            media.extract_audio(source_path, source_audio_path, sample_rate=pack.sample_rate, channels=2,
-                                video_stream=source_probe.video, overwrite=True)
+        duration_ms = _source_duration_ms(source_probe)
+        # Generated silence has always been 48 kHz stereo; decoded audio follows the speech rate.
+        preferred_rate = 48_000 if silence_duration is not None else pack.sample_rate
+        rate, channels = source_pcm_format(duration_ms, preferred_rate)
+
+        def decode(rate: int, channels: int) -> None:
+            if silence_duration is not None:
+                media.create_silent_audio(source_path, source_audio_path, video_duration=silence_duration,
+                                          sample_rate=rate, channels=channels, overwrite=True)
+            else:
+                # Keep the source bed stereo; mono TTS is centered by the mixer.
+                media.extract_audio(source_path, source_audio_path, sample_rate=rate, channels=channels,
+                                    video_stream=source_probe.video, overwrite=True)
+        decode(rate, channels)
+        if not _decoded_wav_fits(source_audio_path):
+            # The audio outlasts every probed duration; its decoded size measures it.
+            # One changed-condition retry before any speech is synthesised.
+            measured_ms = (source_audio_path.stat().st_size - 44) * 1000 // (rate * channels * 2)
+            rate, channels = source_pcm_format(max(measured_ms, duration_ms or 0) * 21 // 20, preferred_rate)
+            decode(rate, channels)
+            if not _decoded_wav_fits(source_audio_path):
+                raise B2AudioError("SOURCE_AUDIO_TOO_LONG", "decoded source audio exceeds the 4 GiB WAV limit")
+        if (rate, channels) != (preferred_rate, 2):
+            format_warnings.append(f"SOURCE_AUDIO_FORMAT_REDUCED: a {(duration_ms or 0) / 3_600_000:.1f} h source is "
+                                   f"mixed at {rate} Hz {'stereo' if channels == 2 else 'mono'} to stay under the 4 GiB WAV limit")
         source_end_ticks = _wav_duration_ticks(source_audio_path)
     except BaseException as error:
         close = getattr(engine, "close", None)
@@ -838,7 +900,8 @@ def run_b2_audio(
             start=TimePoint(0, BASE_TIME),
             end=TimePoint(source_end_ticks, BASE_TIME),
             source_id=Path(source_path).name,
-            layout="stereo-accompaniment" if background_stem_path is not None else "generated-silence-stereo" if silence_duration is not None else "stereo-source",
+            layout=("stereo-accompaniment" if background_stem_path is not None else "generated-silence-stereo" if silence_duration is not None else "stereo-source")
+                   .replace("stereo", "stereo" if channels == 2 else "mono"),
         )
         mixer = StreamingAudioMixer(
             config=MixConfig(
@@ -846,6 +909,8 @@ def run_b2_audio(
                 resource=MixResourceProfile(max_threads=1, max_memory_mb=512, max_batch_items=8),
             ),
             output_dir=root / "mix",
+            # A long source decoded below the speech rate averages the speech down.
+            average_decimation=rate < pack.sample_rate,
         )
         mix_document = mixer.mix(
             source,
@@ -890,7 +955,7 @@ def run_b2_audio(
     return B2AudioResult(source_audio_path, tts_document_path, mix_document_path, tts_document, mix_document, primary_voice, placement_document_path, spoken_text_document_path,
                          tuple(groups), tuple(documents), tuple(document_paths), tuple(spoken_paths), background_stem_path,
                          {item["cue_id"]: tuple(item["member_cue_ids"]) for item in mappings},
-                         placement["gap_evidence"] if placement_document_path is not None else None, tuple(device_warnings))
+                         placement["gap_evidence"] if placement_document_path is not None else None, tuple(device_warnings) + tuple(format_warnings))
 
 
-__all__ = ["B2AudioError", "B2AudioResult", "BASE_TIME", "run_b2_audio", "mix_recipe_identity"]
+__all__ = ["B2AudioError", "B2AudioResult", "BASE_TIME", "run_b2_audio", "mix_recipe_identity", "source_pcm_format"]
