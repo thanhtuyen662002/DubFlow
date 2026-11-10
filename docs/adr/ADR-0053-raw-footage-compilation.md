@@ -17,7 +17,7 @@ dubbed, an item may use several clips, the narration is new and the pictures mus
 2. **Raw sources.** A v2 source is any local video file (`.mp4 .mov .mkv .webm .m4v .avi`) the user chose, from
    Hàng đợi (its original download) or from the computer. It is read, never written. Optional per source: a
    trim (`start_ms`/`end_ms`), a transcript (`.srt` next to it, e.g. a queue run's `captions_vi.srt`), the user's
-   notes, a credit (`creator`, `platform`, `url`, `license`) and `rights` (`owned`, `licensed`, `permission`,
+   notes, a credit (`creator`, `platform`, `url`, `license`) and `rights` (`owned`, `licensed`, `permitted`,
    `unknown`). Credits and rights go into the plan's sources, `description.txt` and `program.json`.
 3. **Programme structure.** A v2 spec is a programme: `program.kind` (`top_n`, `list`), `program.ranking`
    (`user`: the listed order and ranks are kept exactly; `suggested`: the AI may propose an order, which is
