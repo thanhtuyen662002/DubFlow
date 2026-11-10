@@ -59,7 +59,7 @@ edited and rendered again without analysing the media again, and no place where
    `confidence_milli` and `needs_review`; workflows fall back to their legacy
    choice when analysis fails.
 8. **Parallel render safety.** Zoom, reverse and freeze make a segment unsplittable
-   in `edit_parts.rs`. The policy caps the share of zoomed segments so long
+   in `edit_parts.rs`. The policy caps the share of the timeline that zooms so long
    exports keep cut points; the planner never moves `edit_parts` boundaries.
 
 ## Compatibility
