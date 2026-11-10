@@ -250,7 +250,7 @@ class RunTests(unittest.TestCase):
                                   encoders=("libopenh264", "h264_mf", "libx264", "mpeg4"))
             self.assertEqual(result["state"], "COMPLETED", result)
             probe = json.loads(subprocess.run([FFPROBE, "-v", "error", "-count_frames", "-show_entries", "stream=codec_type,width,height,nb_read_frames",
-                                               "-of", "json", str(run / "documentary.mp4")], capture_output=True, text=True).stdout)
+                                               "-of", "json", str(run / "documentary.mp4")], capture_output=True, text=True, encoding="utf-8", errors="replace").stdout)
             video = next(stream for stream in probe["streams"] if stream["codec_type"] == "video")
             self.assertEqual((video["width"], video["height"]), (1920, 1080))
             self.assertEqual(int(video["nb_read_frames"]), 180)

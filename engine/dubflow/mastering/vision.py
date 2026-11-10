@@ -27,8 +27,8 @@ from typing import Any, Callable, Mapping, Sequence
 from . import evidence as ev
 from .candidates import Candidate
 
-PROMPT_VERSION = "vision-v2"  # v2: Vietnamese with its marks, product group = the main product
-BATCH = 6
+PROMPT_VERSION = "vision-v3"  # v2: Vietnamese with its marks, main product; v3: confidence and hook on 0–1000
+BATCH = 4  # six frames with full Vietnamese answers ran past the token limit
 DEFAULT_BUDGET = 60
 MAX_TEXT = 300
 
@@ -39,6 +39,7 @@ SYSTEM = (
     "(x, y, w, h từ 0 đến 1000), hoặc null nếu không có sản phẩm. product_group là một tên ngắn cho SẢN PHẨM CHÍNH/biến thể đang thấy (không phải phụ kiện hay đồ vật đi kèm như ly, tách, hộp), "
     "(ví dụ 'noi-chien-den', 'noi-chien-trang') để nhận ra các khung quay sản phẩm khác nhau; null nếu không có sản phẩm. "
     "hook là 0–1000: khung này hấp dẫn đến đâu để mở đầu video (kết quả đẹp, khoảnh khắc bất ngờ, hành động rõ). "
+    "confidence là số nguyên từ 0 đến 1000 (1000 = chắc chắn mô tả đúng, KHÔNG dùng thang 0–100). "
     "clarity: clear, blurry, dark, obstructed."
 )
 
@@ -112,6 +113,26 @@ def validate(answer: Any, labels: Sequence[str]) -> Seen | None:
                 _clip_text(group, 40) or None if isinstance(group, str) else None, _int(answer.get("hook"), 0, 1000, 0))
 
 
+def _on_thousand(items: list[Any]) -> list[Any]:
+    """Answers whose confidence and hook were given on another scale, put on 0–1000.
+
+    Models asked for 0–1000 still answer 0–100 (90, 95, 42) or 0–1 (0.9); read alone, 90 would be a
+    very low 90/1000. The scale is told from the whole batch: all values within 0–1, or within 0–100.
+    """
+    for key in ("confidence", "hook"):
+        values = [item.get(key) for item in items if isinstance(item, Mapping) and type(item.get(key)) in (int, float)]
+        if not values or max(values) > 100:
+            factor = 1
+        elif max(values) <= 1:
+            factor = 1000
+        else:
+            factor = 10
+        for item in items:
+            if isinstance(item, dict) and type(item.get(key)) in (int, float):
+                item[key] = round(item[key] * factor)
+    return items
+
+
 Ask = Callable[[str, Mapping[str, Any], list[dict[str, Any]]], tuple[Any, str]]
 
 
@@ -163,10 +184,11 @@ class Describer:
             skipped = len(todo) - max(0, self.budget - self.asked)
             self.warnings.append(f"Giới hạn {self.budget} khung hình cho AI nhìn mỗi lần: {skipped} cảnh không được AI xem.")
             todo = todo[:max(0, self.budget - self.asked)]
-        for start in range(0, len(todo), BATCH):
+        batches = [todo[start:start + BATCH] for start in range(0, len(todo), BATCH)]
+        while batches:
             if cancelled():
                 break
-            batch = todo[start:start + BATCH]
+            batch = batches.pop(0)
             parts: list[dict[str, Any]] = [{"text": (f"Bối cảnh: {self.context}\n" if self.context else "")
                                             + f"Có {len(batch)} khung hình, đánh số từ 1. Nhãn được dùng: {', '.join(self.labels)}."}]
             for number, (_, data, _) in enumerate(batch, start=1):
@@ -178,12 +200,19 @@ class Describer:
                 self.used_model = used or self.model
             except Exception as error:  # noqa: BLE001 - vision is optional; the plan says it went without
                 message = getattr(error, "message", "") or type(error).__name__
+                if getattr(error, "code", "") == "FORMAT" and len(batch) > 1:
+                    # a cut-off answer: ask again in halves (the frames are not counted twice)
+                    self.asked -= len(batch)
+                    half = len(batch) // 2
+                    batches[:0] = [batch[:half], batch[half:]]
+                    continue
                 self.warnings.append(f"AI không xem được {len(batch)} khung hình ({message[:120]}); các cảnh này chọn theo thông tin khác.")
                 if getattr(error, "code", "") in ("KEY", "BALANCE", "QUOTA", "LIMIT", "MODEL", "REFUSED"):
                     break  # the same answer for every batch: stop asking
                 continue
             frames_out = answer.get("frames") if isinstance(answer, Mapping) else None
-            for item in frames_out if isinstance(frames_out, list) else []:
+            frames_out = _on_thousand(frames_out if isinstance(frames_out, list) else [])
+            for item in frames_out:
                 number = item.get("frame") if isinstance(item, Mapping) else None
                 if type(number) is not int or not 1 <= number <= len(batch):
                     continue
@@ -215,7 +244,7 @@ def route_ask(route: Any, *, transport: Any = None) -> Ask:
     from engine.dubflow.ai import client
 
     def ask(system: str, schema_value: Mapping[str, Any], parts: list[dict[str, Any]]) -> tuple[Any, str]:
-        kwargs = {"max_tokens": 6000, "timeout": 120.0}
+        kwargs = {"max_tokens": 8192, "timeout": 120.0}
         if transport is not None:
             kwargs["transport"] = transport
         value, used = client.ask(route, system, schema_value, parts, **kwargs)

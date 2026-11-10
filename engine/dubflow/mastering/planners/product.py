@@ -29,8 +29,8 @@ from ..candidates import Candidate
 
 PLANNER = "dubflow.mastering.product"
 # 1: shot-aware parts in turn (Phase 1). 2: each sentence illustrated by the footage that matches it (ADR-0054).
-VERSION = "4"
-RECIPE = "product-editorial-v4"  # v4: relevance scaled to the best match; one product per clip
+VERSION = "5"
+RECIPE = "product-editorial-v5"  # v5: no slivers; different products only by unrelated names
 WORKFLOW = "product_showcase"
 SHOT_MARGIN_MS = 120
 # A shot shorter than this is skipped while longer ones exist; it is used when nothing else is left.
@@ -223,9 +223,13 @@ def plan_editorial(visuals: Sequence[Visual], spoken: Sequence[tuple[str, int]],
                 names = seen_in.setdefault(source_of[candidate_id], {})
                 names[name] = names.get(name, 0) + 1
     main = {source: max(names.items(), key=lambda kv: (kv[1], kv[0]))[0] for source, names in seen_in.items()}
-    if len(set(main.values())) >= 2:
+    # names the AI makes up vary ("may pha espresso", "tay cam pha cafe" for one machine): only names with no word
+    # in common count as different products
+    distinct = [name for name in sorted(set(main.values()))
+                if all(not set(name.split()) & set(other.split()) for other in set(main.values()) if other != name)]
+    if len(distinct) >= 2:
         warnings.append("Các clip có dấu hiệu quay những sản phẩm hoặc biến thể khác nhau: "
-                        + ", ".join(sorted(set(main.values()))) + ". Hãy kiểm tra trước khi ghép chung.")
+                        + ", ".join(distinct) + ". Hãy kiểm tra trước khi ghép chung.")
     unusable = [c.candidate_id for c in pool if not c.quality.usable]
     if unusable:
         warnings.append(f"{len(unusable)} cảnh bị bỏ vì tối, mờ hoặc trống.")

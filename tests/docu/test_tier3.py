@@ -316,7 +316,7 @@ class RenderTests(unittest.TestCase):
             self.assertFalse(receipt["drawn"]["map"]["satellite"], "offline: the vector chart")
             frames = json.loads(subprocess.run([FFPROBE, "-v", "error", "-count_frames", "-select_streams", "v:0", "-show_entries",
                                                 "stream=nb_read_frames", "-of", "json", str(run / "documentary.mp4")],
-                                               capture_output=True, text=True).stdout)["streams"][0]["nb_read_frames"]
+                                               capture_output=True, text=True, encoding="utf-8", errors="replace").stdout)["streams"][0]["nb_read_frames"]
             self.assertEqual(int(frames), 180)
             self.assertTrue((run / ".dubflow-work/render/ambience.wav").is_file(), "the UI sounds play even without room tone")
             # A second render reuses every slice.

@@ -151,7 +151,7 @@ class RunTests(unittest.TestCase):
                 self.assertAlmostEqual(handle.getnframes() / narration.OUTPUT_RATE, timeline["duration"], delta=0.01)
             self.assertIn("-->", (run_dir / "captions_en.srt").read_text(encoding="utf-8"))
             loud = subprocess.run([FFMPEG, "-hide_banner", "-nostats", "-i", str(run_dir / "narration.wav"), "-af", "ebur128=peak=true", "-f", "null", "-"],
-                                  capture_output=True, text=True).stderr
+                                  capture_output=True, text=True, encoding="utf-8", errors="replace").stderr
             integrated = float(loud.rsplit(" I:", 1)[1].split("LUFS")[0])
             self.assertAlmostEqual(integrated, narration.TARGET_LUFS, delta=1.0)
             # A second run speaks nothing new: every sentence is cached.

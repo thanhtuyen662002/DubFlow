@@ -23,8 +23,8 @@ from .. import policy as rules
 from ..candidates import Candidate
 
 PLANNER = "dubflow.mastering.compilation"
-VERSION = "3"
-RECIPE = "compilation-program-v3"  # v3: the moment late in the source, room for the narration
+VERSION = "4"
+RECIPE = "compilation-program-v4"  # v4: intro/outro avoid footage other parts showed; no slivers
 WORKFLOW = "compilation_entertainment"
 MOMENT_MIN_MS, MOMENT_TARGET_MS, MOMENT_MAX_MS = 2000, 3500, 6000
 PART_FUNCTION = {"hook": "hook", "intro": "intro", "item": "narration", "outro": "outro"}
@@ -169,7 +169,8 @@ def _before(candidates: Sequence[Candidate], source_id: str, start_ms: int) -> l
 def plan_part(part_id: str, kind: str, spoken: Sequence[tuple[str, int]], narration_ms: int, options: m.Options, *,
               lead_ms: int, gap_ms: int, footage: Sequence[Footage], candidates: Mapping[str, Sequence[Candidate]],
               evidence: Mapping[str, ev.Evidence], groups: Mapping[str, str] | None = None, edits: align.Edits | None = None,
-              keep_audio: str = "auto", title: str = "", inputs: Mapping[str, str], moment: bool = True) -> PartPlan:
+              keep_audio: str = "auto", title: str = "", inputs: Mapping[str, str], moment: bool = True,
+              shown: Sequence[str] = ()) -> PartPlan:
     """The plan of one part: the narration's sentences over matching footage, then (items) a source moment."""
     policy = rules.resolve(WORKFLOW, options)
     if not policy.enabled:
@@ -196,7 +197,8 @@ def plan_part(part_id: str, kind: str, spoken: Sequence[tuple[str, int]], narrat
     if not narration_pool:
         reserved, narration_pool = None, pool
     choices, decisions, mode = align.assign(found_units, narration_pool, evidence, policy.pacing,
-                                            forward_only=not policy.allows(rules.REORDER), edits=edits, groups=groups)
+                                            forward_only=not policy.allows(rules.REORDER), edits=edits, groups=groups,
+                                            shown=shown)
     segments: list[m.Segment] = []
     audio: dict[str, str] = {}
     at = 0

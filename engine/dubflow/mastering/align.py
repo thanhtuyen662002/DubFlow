@@ -229,7 +229,7 @@ def _length_fit(candidate_ms: int, wanted_ms: int) -> int:
 
 def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidence: Mapping[str, ev.Evidence], pacing: Pacing,
            *, forward_only: bool, edits: Edits | None = None, groups: Mapping[str, str] | None = None,
-           stills: Iterable[str] = ()) -> tuple[list[Choice], list[Decision], str]:
+           stills: Iterable[str] = (), shown: Iterable[str] = ()) -> tuple[list[Choice], list[Decision], str]:
     """Footage for every unit, the decision log and the mode (``content`` or ``signals_only``).
 
     ``stills`` are candidate ids of photos: they can be held as long as needed. ``groups`` maps a candidate to its
@@ -248,6 +248,9 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
     usable = [c for c in pool if c.quality.usable] or pool
     uses: dict[str, int] = {}
     group_uses: dict[str, int] = {}
+    for shown_id in shown:  # footage another part of the same video already showed: weighed as a duplicate
+        group = groups.get(shown_id, shown_id)
+        group_uses[group] = group_uses.get(group, 0) + 1
     resume: dict[str, int] = {}
     source_end: dict[str, int] = {}
     choices: list[Choice] = []
@@ -359,8 +362,12 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
             if left <= 0:
                 offset, left = candidate.start_ms, candidate.length_ms
             length = min(wanted, left) if candidate.candidate_id not in still_ids else wanted
-            if need - length < pacing.minimum and left >= need:
-                length = need  # take the rest rather than leave a sliver
+            rest = need - length
+            if 0 < rest < pacing.minimum:
+                if left >= need:
+                    length = need  # take the rest rather than leave a sliver
+                elif length - (pacing.minimum - rest) >= pacing.minimum // 2:
+                    length -= pacing.minimum - rest  # leave the next shot a real length, not a few frames
             reasons = list(reasons)
             if repeat or (uses.get(candidate.candidate_id) and not continuing):
                 reasons.append("dùng lại cảnh đã chiếu (không còn cảnh phù hợp khác)")

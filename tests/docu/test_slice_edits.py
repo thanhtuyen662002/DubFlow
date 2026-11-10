@@ -131,7 +131,7 @@ class SliceEditTests(unittest.TestCase):
         request = self.run / "request.json"
         write_json(request, {"scenes": [{"scene_id": "sc_002", "slices": [{"from": ["sc_002", 0], "source_id": "src_01", "start": 10.0, "at": 8.0}]}]})
         done = subprocess.run([sys.executable, "-m", "engine.dubflow.docu", "slices", "--run-dir", str(self.run), "--request", str(request)],
-                              cwd=ROOT, capture_output=True, text=True)
+                              cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace")
         self.assertEqual(json.loads(done.stdout.splitlines()[-1])["state"], "COMPLETED", done.stdout + done.stderr)
         self.assertEqual(_saved(self.run)["scenes"][1]["slices"][0]["kind"], "map")
 
