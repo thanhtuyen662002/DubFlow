@@ -177,7 +177,8 @@ class JobReviewTests(unittest.TestCase):
 
             def ffmpeg(argv, cwd, cancelled):
                 commands.append(argv)
-                Path(argv[-1]).write_bytes(b"mp4")
+                target = Path(argv[-1])
+                (target if target.is_absolute() else Path(cwd, target)).write_bytes(b"mp4")
             info = scene.StreamInfo(20_000, 1080, 1920, 30, True)
             out = root / "out"
 
