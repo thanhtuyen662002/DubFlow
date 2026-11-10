@@ -42,3 +42,22 @@ class VieNeuSpeaker:
         self.engine.close()
 
 
+
+
+def cached_vieneu(app_root: Path, model_root: Path, ffmpeg: Path, voice_id: str, *, cpu_only: bool, status: Status,
+                  speed: float = 1.0):
+    """``VieNeuSpeaker`` behind the per-sentence cache in ``model_root/tts-sentence-cache``: the model loads only
+    when a sentence has not been spoken before in this voice, model and speed."""
+    import hashlib
+
+    from engine.dubflow.tts import sentence_cache, vieneu_native
+
+    try:
+        profile = hashlib.sha256((app_root / CPU_PROFILE).read_bytes()).hexdigest()
+    except OSError:  # no pinned profile to key on: speak everything
+        return VieNeuSpeaker(app_root, model_root, ffmpeg, voice_id, cpu_only=cpu_only, status=status, speed=speed)
+    identity = {"engine": "vieneu", "profile_sha256": profile, "recipe": vieneu_native.INFERENCE_RECIPE,
+                "voice_id": voice_id, "speed": round(float(speed), 6)}
+    cache = sentence_cache.SentenceCache(model_root / "tts-sentence-cache", identity, 48000)
+    return sentence_cache.CachedSpeaker(
+        lambda: VieNeuSpeaker(app_root, model_root, ffmpeg, voice_id, cpu_only=cpu_only, status=status, speed=speed), cache)

@@ -9,7 +9,7 @@ from pathlib import Path
 import sys
 
 from engine.dubflow.product.job import Status, probe_duration_ms
-from engine.dubflow.product.speaker import VieNeuSpeaker
+from engine.dubflow.product.speaker import cached_vieneu
 from .job import CompilationError, load_spec, probe_video, run
 
 
@@ -34,8 +34,8 @@ def main(argv: list[str] | None = None) -> int:
         status.write(state="FAILED", message=error.message, path=None)
         print(json.dumps(status.value, ensure_ascii=True))
         return 1
-    def speak(status: Status) -> VieNeuSpeaker:
-        return VieNeuSpeaker(args.app_root, args.model_root, args.ffmpeg, spec.voice_id, cpu_only=args.cpu_only, status=status,
+    def speak(status: Status):
+        return cached_vieneu(args.app_root, args.model_root, args.ffmpeg, spec.voice_id, cpu_only=args.cpu_only, status=status,
                              speed=spec.speed)
     from .program import Program
     if isinstance(spec, Program):
@@ -47,8 +47,7 @@ def main(argv: list[str] | None = None) -> int:
                              ask_text=vision.text_asker(spec.editorial.ai, ai_key), producer_key=producer.hexdigest())
         print(json.dumps(result, ensure_ascii=True))
         return 0 if result["state"] == "COMPLETED" else 1
-    result = run(spec, args.output_dir, speaker=lambda status: VieNeuSpeaker(
-        args.app_root, args.model_root, args.ffmpeg, spec.voice_id, cpu_only=args.cpu_only, status=status, speed=spec.speed),
+    result = run(spec, args.output_dir, speaker=speak,
         probe=lambda path: probe_duration_ms(args.ffprobe, path), measure=lambda path: probe_video(args.ffprobe, path),
         ffmpeg=args.ffmpeg, producer_key=producer.hexdigest())
     print(json.dumps(result, ensure_ascii=True))

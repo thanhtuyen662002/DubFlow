@@ -12,7 +12,7 @@ from pathlib import Path
 import sys
 
 from .job import ProductError, Status, load_spec, probe_duration_ms, probe_size, run
-from .speaker import VieNeuSpeaker
+from .speaker import cached_vieneu
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -38,8 +38,8 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(status.value))
         return 1
 
-    def speaker(status: Status) -> VieNeuSpeaker:
-        return VieNeuSpeaker(args.app_root, args.model_root, args.ffmpeg, spec.voice_id, cpu_only=args.cpu_only, status=status,
+    def speaker(status: Status):
+        return cached_vieneu(args.app_root, args.model_root, args.ffmpeg, spec.voice_id, cpu_only=args.cpu_only, status=status,
                              speed=spec.speed)
 
     inspect = None
