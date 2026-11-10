@@ -68,6 +68,17 @@ def concat_argv(ffmpeg: Path, parts: Sequence[str], output: Path, *, encoder: st
     return argv
 
 
+def concat_list(parts: Sequence[str]) -> str:
+    """An ffconcat list of the parts (``<name>.mp4`` beside the list)."""
+    return "ffconcat version 1.0\n" + "".join(f"file '{name}.mp4'\n" for name in parts)
+
+
+def concat_copy_argv(ffmpeg: Path, list_name: str, output: Path) -> list[str]:
+    """Join parts that share one encoding (``encoding()``) without encoding them again."""
+    return start(ffmpeg) + ["-f", "concat", "-safe", "0", "-i", list_name, "-map", "0:v:0", "-map", "0:a:0", "-c", "copy",
+                            "-movflags", "+faststart", "-f", "mp4", str(output)]
+
+
 # How loud a source plays under the narration (about −18 dB) and on its own moment.
 UNDER_NARRATION = 0.12
 FADE_S = 0.3

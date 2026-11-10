@@ -9,7 +9,7 @@
    footage per sentence (``mastering/planners/compilation``), write its overlay
    and render it in one encode (``render.montage_argv``), reusing the part when
    its receipt matches.
-4. Join the parts (``render.concat_argv``), write chapters, a description with
+4. Join the parts (stream copy, ``render.concat_argv`` only as the fallback), write chapters, a description with
    every source's credit and rights, the programme's captions and
    ``program.json``.
 """
@@ -360,10 +360,24 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
         chapter_text = chapters(timeline)
         description_text = chapter_text.rstrip() + "\n\nNguồn:\n" + "\n".join(f"- {line}" for line in credits) + "\n"
         status.write(message="Đang ghép chương trình…")
-        execute(render.concat_argv(ffmpeg, names, partial, encoder=encoder))
         expected = sum(ms for _, ms in timeline)
-        if abs(probe(partial) - expected) > max(300, len(names) * 34):
-            raise CompilationError("Thời lượng video tổng hợp không khớp")
+        tolerance = max(300, len(names) * 34)
+        # Every part has the same encoding: join them as they are; encode again only if the copy fails or drifts.
+        joined = "copy"
+        _atomic_text(work / "parts.ffconcat", render.concat_list(names))
+        try:
+            execute(render.concat_copy_argv(ffmpeg, "parts.ffconcat", partial))
+            if abs(probe(partial) - expected) > tolerance:
+                joined = "encode"
+        except Cancelled:
+            raise
+        except Exception:  # noqa: BLE001 - the encoded join below is the fallback
+            joined = "encode"
+        if joined == "encode":
+            partial.unlink(missing_ok=True)
+            execute(render.concat_argv(ffmpeg, names, partial, encoder=encoder))
+            if abs(probe(partial) - expected) > tolerance:
+                raise CompilationError("Thời lượng video tổng hợp không khớp")
         _atomic_text(output_dir / "chapters.txt", chapter_text)
         _atomic_text(output_dir / "description.txt", description_text)
         _atomic_text(output_dir / "captions.srt", srt_document(all_captions))
@@ -372,7 +386,7 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
             "ranking": record, "parts": [{"id": p[0], "kind": p[1], "title": p[3], "rank": p[4], "sources": p[5],
                                           "narration": p[2], "mode": modes.get(p[0])} for p in parts],
             "verify": {i.item_id: list(i.verify) for i in resolved.items if i.verify}, "credits": credits,
-            "warnings": warnings, "vision": vision_report}, ensure_ascii=False, indent=1))
+            "warnings": warnings, "vision": vision_report, "joined": joined}, ensure_ascii=False, indent=1))
         final = output_dir / "compilation.mp4"
         os.replace(partial, final)
         status.write(state="COMPLETED", message="Đã tạo video tổng hợp.", path=str(final), duration_ms=expected,

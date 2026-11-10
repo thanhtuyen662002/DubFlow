@@ -216,7 +216,13 @@ class RealMediaProgrammeTest(unittest.TestCase):
             programme = json.loads((work / "program.json").read_text(encoding="utf-8"))
             self.assertEqual([p["id"] for p in programme["parts"]], ["hook", "intro", "i1", "i2", "i3", "i4", "i5", "outro"])
             renders = [c for c in commands if "-filter_complex" in c and "concat=n=" in " ".join(c) and str(c[-1]).endswith(".mp4")]
-            self.assertEqual(len(renders), 9)  # 8 parts + the join: one encode each, like v1
+            self.assertEqual(len(renders), 8)  # one encode per part; the join copies them
+            self.assertEqual(programme["joined"], "copy")
+            self.assertTrue([c for c in commands if "parts.ffconcat" in c and "copy" in c])
+            streams = json.loads(subprocess.run([FFPROBE, "-v", "error", "-show_entries", "stream=codec_type,duration", "-of", "json",
+                                                 str(out / "compilation.mp4")], capture_output=True, text=True, timeout=60).stdout)["streams"]
+            lengths = {s["codec_type"]: float(s["duration"]) for s in streams}
+            self.assertLess(abs(lengths["video"] - lengths["audio"]), 0.25, lengths)  # picture and sound end together
             self.assertEqual(len(drafts), 1)
             first_draft = m.load(work / "mastering" / "plan-i5.json")
             # Edit one item: only that part is rendered again.
