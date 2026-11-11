@@ -11,13 +11,13 @@
       "sha256": "33e799d22254793c3a55714bdb493445ba14269935837e48360c9dd4420c6eb7",
       "first_commit": "fd911a2",
       "tuned_on": false,
-      "inspected": "once, to diagnose the earbuds misallocation fixed in #678; no label was changed"
+      "inspected": "once, to diagnose the earbuds misallocation fixed in #678; again in the Gate S root-cause audit (2026-11-11): per-sentence coverage diagnostics read, no label changed, no rule fitted to it"
     },
     "holdout2.json": {
       "sha256": "2f3639aba86f67dbc9b396ef420c02decd6d6ac3c0e003e59c360c447a4d2535",
       "first_commit": "c5b9b69",
       "tuned_on": false,
-      "inspected": "never"
+      "inspected": "in the Gate S root-cause audit (2026-11-11): per-sentence coverage diagnostics read, no label changed, no rule fitted to it"
     },
     "dev2.json": {
       "sha256": "b4f58f8cf24c7f5fd66a17de6f478a11a20738e881da98e5fd42daed70dd3a75",
