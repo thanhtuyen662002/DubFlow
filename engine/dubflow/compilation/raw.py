@@ -425,6 +425,7 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
             name = f"part-{part_id}"
             part, unfinished, receipt_path = work / f"{name}.mp4", work / f"{name}.partial.mp4", work / f"{name}.receipt.json"
             part_ms = None
+            seen_before = receipt_path.is_file()
             try:
                 receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
                 if receipt["key"] == key and _digest_file(part, cancelled) == receipt["sha256"]:
@@ -442,6 +443,12 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
                 os.replace(unfinished, part)
                 _atomic_text(receipt_path, json.dumps({"key": key, "sha256": _digest_file(part, cancelled), "duration_ms": part_ms}))
                 rendered_parts.append(part_id)
+                if seen_before and decisions.accept_unreviewed:
+                    # the part the user accepted to export with unreviewed sentences has changed (new narration,
+                    # other footage): the final export asks again (rc4 Windows check, C2)
+                    decisions.set_accept_unreviewed(False)
+                    reviewing.save(decisions_path, decisions)
+                    review_parts[part_id]["accept_unreviewed"] = False
             else:
                 reused_parts.append(part_id)
             names.append(name)

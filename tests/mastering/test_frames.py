@@ -42,6 +42,13 @@ class Choosing(unittest.TestCase):
         self.assertEqual(more.parent("v1c2f3"), "v1c2")
         self.assertEqual(more.parent("v1c2"), "v1c2")
 
+    def test_a_part_of_a_split_shot_is_never_split_again(self):
+        # rc4 Windows check: a second look split i1-s1c3f2 into i1-s1c3f2f3, an id no decision could name
+        pool = [shot("i1-s1c3f2", "s1", 0, 9000), shot("i1-s1c4", "s1", 9000, 17000)]
+        evidence = {c.candidate_id: described(c.candidate_id, "cảnh", confidence=300) for c in pool}
+        units = [{"unit_id": "u1", "chosen": ["i1-s1c3f2", "i1-s1c4"], "coverage": {"status": "partial", "needs_review": True}}]
+        self.assertEqual(more.wanted(units, pool, evidence, ()), ["i1-s1c4"])
+
     def test_extra_frames_stay_inside_the_shot_clear_of_its_cuts(self):
         times = more.extra_times(shot("a", "v1", 2000, 12000))
         self.assertEqual(times, [3500, 10500])

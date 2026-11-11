@@ -8,8 +8,12 @@ import { parseVoiceCatalog, voiceOptionGroups } from "../voices/model.ts";
 import { closeDrawerOutside } from "../../shell/drawer.ts";
 import { confirmDialog } from "../../shell/confirm.ts";
 import { confirmDeleteProject, deleteProjectButton } from "../../shell/project_delete.ts";
-import { fileName, shortDate } from "../product/model.ts";
+import { fileName, parseRecentRuns, rememberRun, shortDate } from "../product/model.ts";
 import { mountRawCompilation } from "./raw_view.ts";
+
+/** Folders of the compilations started here, so a run saved beside its source videos (no saving folder chosen)
+ * is listed again after the app reopens (rc4 Windows check). */
+export const RECENT_COMPILATIONS_KEY = "dubflow.compilation.runs.v1";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 type ExportEntry = { path: string; created: number; duration: number };
@@ -200,6 +204,11 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
     setup: $("raw-setup"), result: $("raw-result"), outputRoot: settings.outputRoot, cpuOnly: settings.cpuOnly,
     mediaUrl: settings.mediaUrl, fromQueue: settings.fromQueueRaw,
     started: (dir, title, parts) => {
+      try {
+        window.localStorage.setItem(RECENT_COMPILATIONS_KEY, rememberRun(window.localStorage.getItem(RECENT_COMPILATIONS_KEY), dir));
+      } catch {
+        // Without storage the run is still listed while its folder is a saving folder.
+      }
       runs = [{ dir, title, layout: "toan-man-hinh", created: Math.floor(Date.now() / 1000), parts, version: 2,
         status: { state: "RUNNING", message: "Đang bắt đầu dựng…", done: 0, total: 0, path: null }, video: null,
         spec: { schema_version: 2, title } }, ...runs.filter((run) => run.dir !== dir)];
@@ -441,10 +450,18 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
 
   // ---------- The list of compilations ----------
 
+  function recentCompilations(): string[] {
+    try {
+      return parseRecentRuns(window.localStorage.getItem(RECENT_COMPILATIONS_KEY));
+    } catch {
+      return [];
+    }
+  }
+
   async function loadRuns(): Promise<void> {
     const token = ++runsToken;
     try {
-      const found = parseRuns(await invoke<unknown>("compilation_runs", { roots: settings.roots?.() ?? [] }));
+      const found = parseRuns(await invoke<unknown>("compilation_runs", { roots: [...(settings.roots?.() ?? []), ...recentCompilations()].slice(0, 64) }));
       if (token !== runsToken) return;
       // A run started here may not be written yet: keep it until it is found.
       const known = new Set(found.map((run) => run.dir.toLocaleLowerCase("en")));
