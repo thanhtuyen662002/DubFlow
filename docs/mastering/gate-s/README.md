@@ -33,3 +33,28 @@ After the run, only the rows of the three units with stolen key shots (and the o
 | Timeline problems | none | none | pass |
 
 Per group: beauty 98.4 %, education 100 %, entertainment 100 %, kitchen 91.9 % (1 silent), outdoor 71.9 %, travel names 100 %. Only the rows of the two scenarios named above were read after the run. The next change is evaluated on holdout7, frozen by #736 before it.
+
+## holdout7 result (after #735 check A and #739 card sentences) — the Gate S decision set
+
+Frozen by #736 at main `01f8f4d` before #739; evaluated once on main `7c4fb1f` at 2026-11-11T06:46:41Z (`holdout7-7c4fb1f.md`, `.json`).
+
+| Criterion | Bar | holdout7 | |
+|---|---|---|---|
+| Duration coverage | ≥ 90 % | 100.0 % (141 000 ms), 9 groups each 100 % | pass |
+| Silent misses | 0 | 0 | pass |
+| Contradicting footage | 0 | 0 ms | pass |
+| A. Stolen key footage | none unflagged | 0 ms | pass |
+| Sentence without footage | flagged | flagged, SOURCE_INSUFFICIENT | pass |
+| Calibration | unflagged all right | 24/24 right; 17 of 41 sentences with footage flagged, none of them wrong (false alarms) | pass, but 41 % review flags |
+| Timeline problems | none | none | pass |
+
+Caveat: holdout7 was written by the agent after seeing the holdout5 and holdout6 failures, mostly one shot per sentence, so 100 % says the rules hold on such videos, not that real videos reach it.
+
+## After-state of the sets already read (not independent)
+
+| Set | Coverage | Silent | Stolen (unflagged) | Note |
+|---|---:|---:|---:|---|
+| holdout5 | 92.4 % (was 93.9 %) | 0 | 8 500 ms (2 500) | speaker u1: a generic opening shows the picnic shot that u5 "dã ngoại" is about; u5 has no lexical match (picnic ≠ dã ngoại), so the planner cannot know the shot is u5's. u5 itself is flagged. |
+| holdout6 | 92.3 % | 0 (was 1) | 3 000 ms (0) | |
+| dev, dev2, dev3, holdout, holdout2, holdout4 | unchanged | 0 | unchanged | `runner-all-after-7c4fb1f.txt`, `<set>-after-7c4fb1f.md` |
+| dev4, dev5 | 93.1 %, 86.4 % | 0 | 0 | development sets of #735 and #739 |
