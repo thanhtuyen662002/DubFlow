@@ -1,0 +1,1262 @@
+{
+ "schema": "dubflow-real-labels-v1",
+ "split": "REAL-HOLDOUT",
+ "labeller": "agent (Claude, frame-checked)",
+ "created": "2026-11-11",
+ "method": "Narration written and labels set from timestamped contact sheets (1 frame/s, 2 s for >300 s) made with the rc6 ffmpeg, before any planner or Vision run on these sources. Not human-verified. Times are ms of the source file; spans snap to the sheet sampling step.",
+ "type_definitions": {
+  "footage_present": "clearly shown",
+  "footage_insufficient": "plausible but not shown anywhere",
+  "near_match": "a similar but different thing is shown",
+  "partial": "only part of the sentence is shown",
+  "synonym_or_indirect": "shown, but said with other words, a proper name or indirectly",
+  "generic": "opening/CTA, no specific footage needed"
+ },
+ "videos": [
+  {
+   "source_id": "v7",
+   "title": "Máy pha cà phê nhỏ giọt Moccamaster màu vàng",
+   "file": "D:\\Projects\\DubFlow\\_sandbox\\phase2-e2e\\footage\\product\\Moccamaster_coffee_maker.webm",
+   "sha256": "02f11c27554694f09d275df37d7b26e7d9eb7424f97cb07a9cff901c5491efc3",
+   "duration_ms": 140953,
+   "trim": null,
+   "group": "product-household",
+   "workflow": "product",
+   "frame_notes": "one static shot of a yellow Moccamaster drip coffee maker on a kitchen counter beside a steel sink, window and bottles behind. The clear water tank at top left and the black filter basket stay visible throughout. The glass carafe is empty at the start; steam and a faint drip appear from about 40-48 s; a dark coffee layer is visible from about 104 s and grows until the end (140 s). No hands, cup, milk or grinder.",
+   "sentences": [
+    {
+     "speech_ref": "v7-s1",
+     "source_id": "v7",
+     "text": "Góc bếp nhà bạn sẽ có thêm điểm nhấn với chiếc máy pha cà phê xinh xắn này.",
+     "type": "generic",
+     "words": 18,
+     "est_duration_ms": 5940,
+     "acceptable": [],
+     "partial": [],
+     "contra": [],
+     "key_for_other": [],
+     "state": "NOT_NEEDED",
+     "serious_if_wrong": false,
+     "notes": "opening line"
+    },
+    {
+     "speech_ref": "v7-s2",
+     "source_id": "v7",
+     "text": "Chiếc máy pha cà phê nhỏ giọt màu vàng nổi bật trên mặt bếp, ngay cạnh bồn rửa.",
+     "type": "footage_present",
+     "words": 18,
+     "est_duration_ms": 5940,
+     "acceptable": [
+      {
+       "start_ms": 0,
+       "end_ms": 140953,
+       "note": "whole clip shows the yellow machine beside the sink"
+      }
+     ],
+     "partial": [],
+     "contra": [],
+     "key_for_other": [],
+     "state": "MATCH_AVAILABLE",
+     "serious_if_wrong": false,
+     "notes": ""
+    },
+    {
+     "speech_ref": "v7-s3",
+     "source_id": "v7",
+     "text": "Cà phê nóng nhỏ giọt và đầy dần trong chiếc bình thủy tinh bên dưới.",
+     "type": "footage_present",
+     "words": 15,
+     "est_duration_ms": 4950,
+     "acceptable": [
+      {
+       "start_ms": 104000,
+       "end_ms": 140953,
+       "note": "coffee visibly filling the carafe"
+      }
+     ],
+     "partial": [
+      {
+       "start_ms": 48000,
+       "end_ms": 104000,
+       "note": "steam and faint drip, carafe still nearly empty"
+      }
+     ],
+     "contra": [
+      {
+       "start_ms": 0,
+       "end_ms": 40000,
+       "note": "carafe empty"
+      }
+     ],
+     "key_for_other": [
+      "v7-s5"
+     ],
+     "state": "MATCH_AVAILABLE",
+     "serious_if_wrong": false,
+     "notes": ""
+    },
+    {
+     "speech_ref": "v7-s4",
+     "source_id": "v7",
+     "text": "Máy xay tích hợp sẽ nghiền hạt cà phê tươi ngay trước mỗi lần pha.",
+     "type": "near_match",
+     "words": 15,
+     "est_duration_ms": 4950,
+     "acceptable": [],
+     "partial": [],
+     "contra": [
+      {
+       "start_ms": 0,
+       "end_ms": 140953,
+       "note": "the black filter basket on top looks like a hopper but there is no grinder"
+      }
+     ],
+     "key_for_other": [],
+     "state": "SOURCE_INSUFFICIENT",
+     "serious_if_wrong": true,
+     "notes": "this machine has no grinder"
+    },
+    {
+     "speech_ref": "v7-s5",
+     "source_id": "v7",
+     "text": "Chỉ sau vài phút, bình đã đủ cà phê cho cả nhà mỗi người một tách.",
+     "type": "synonym_or_indirect",
+     "words": 16,
+     "est_duration_ms": 5280,
+     "acceptable": [
+      {
+       "start_ms": 112000,
+       "end_ms": 140953,
+       "note": "carafe has a clear coffee layer"
+      }
+     ],
+     "partial": [
+      {
+       "start_ms": 48000,
+       "end_ms": 112000,
+       "note": "brewing in progress"
+      }
+     ],
+     "contra": [
+      {
+       "start_ms": 0,
+       "end_ms": 40000,
+       "note": "empty carafe"
+      }
+     ],
+     "key_for_other": [
+      "v7-s3"
+     ],
+     "state": "MATCH_AVAILABLE",
+     "serious_if_wrong": false,
+     "notes": "indirect: 'enough coffee' = filled carafe"
+    },
+    {
+     "speech_ref": "v7-s6",
+     "source_id": "v7",
+     "text": "Rót thêm chút sữa tươi vào tách là bạn có ngay ly cà phê sữa cho buổi sáng.",
+     "type": "footage_insufficient",
+     "words": 18,
+     "est_duration_ms": 5940,
+     "acceptable": [],
+     "partial": [],
+     "contra": [],
+     "key_for_other": [],
+     "state": "SOURCE_INSUFFICIENT",
+     "serious_if_wrong": false,
+     "notes": "no cup, no milk"
+    },
+    {
+     "speech_ref": "v7-s7",
+     "source_id": "v7",
+     "text": "Bình chứa nước trong suốt giúp bạn dễ dàng đổ đầy nước và theo dõi mực nước.",
+     "type": "partial",
+     "words": 17,
+     "est_duration_ms": 5610,
+     "acceptable": [],
+     "partial": [
+      {
+       "start_ms": 0,
+       "end_ms": 140953,
+       "note": "clear water tank visible, filling never shown"
+      }
+     ],
+     "contra": [],
+     "key_for_other": [],
+     "state": "SOURCE_INSUFFICIENT",
+     "serious_if_wrong": false,
+     "notes": ""
+    }
+   ]
+  },
+  {
+   "source_id": "v8",
+   "title": "MV cổ trang AI '半壶纱' (Douyin 7642640640311872795)",
+   "file": "%USERPROFILE%\\Downloads\\douyinsaver.com-7642640640311872795.mp4",
+   "sha256": "9e42b835d197c7bc7dfe0f87c9e63913b725b3ee2946433e2947b975cbae21ed",
+   "duration_ms": 220961,
+   "trim": null,
+   "group": "entertainment",
+   "workflow": "compilation",
+   "frame_notes": "0-2 title over lotus-lake desk; 3-8 brush dipped in inkstone, calligraphy desk by lotus lake; 9-11 monk's hands with bamboo and basket; 12-17 monk in bamboo forest, woman walks away with basket; 18-25 woman at tea table, sips tea 20-23, jade bangle; 26 face; 27-28 brush painting ink by the lake; 29-30 face at misty sunset lake; 31-37 woman in bamboo forest touching bamboo; 38-39 leaf on ground; 40-41,48-49 monk meditating in bamboo forest; 42-44 hand picks up fallen peach blossom; 45-47 woman walks; 50 table with red cloth under peach trees; 51-55 another woman dresses her hair with golden pin, mirror; 56-59 mirror reflection with monk behind; 60-61 face; 62-68 tea table, writing, sips tea 66; 69-73 face, tea room, incense burner; 74-77 walks on stepping stones across lotus pond, lotus blooms under her feet; 78-79 praying hands; 80-84 reflection in water; 85 face with lotus; 86-88 old woman in peach orchard, then snow; 89-92 woman in dry steppe; 93-94 old woman; 95-98 blows a petal from her palm; 99-102 woman from behind, monk fading among peach trees; 103-104 empty orchard; 105-112 empty tea room, butterfly, jade bangle on table; 113-114 window onto orchard; 115-122 woman sits by lotus pond eating lotus seeds; 123-124 misty lake; 125-126 puts on golden headdress; 127-128 hairpin on stone table with teacup; 129-133 removes hairpin, hair falls; 134-135 walks away in orchard; 136-137 jade bangle; 138-140 pours tea, holds cup; 141-142 sips; 143 cup; 144-146 tea room wide, she leaves; 147-148 walks lotus-pond steps; 149-155 monk and woman by lotus pond, she bows with joined hands; 156-157 reflections; 158-169 white-haired woman on a peak above clouds, arms spread; 170-172 paints a blue lotus on the water with a brush; 173-179 reflection, stands by pond; 180-183 kneels on stepping stones; 184-187 lotus blooms under her feet; 187-189 walks to pavilion; 190-193 her face in a dewdrop on grass turns old; 194-199 grass, clouds; 200-210 woman joyful in peach orchard; 211-217 desk with brushes by lake, inkstone close-up; 218-220 white crane flies over the lake.",
+   "sentences": [
+    {
+     "speech_ref": "v8-s1",
+     "source_id": "v8",
+     "text": "Nàng nhẹ nhàng rót trà ra chén sứ rồi nâng lên nhấp một ngụm.",
+     "type": "footage_present",
+     "words": 14,
+     "est_duration_ms": 4620,
+     "acceptable": [
+      {
+       "start_ms": 138000,
+       "end_ms": 143000,
+       "note": "pours tea, holds and sips"
+      },
+      {
+       "start_ms": 20000,
+       "end_ms": 24000,
+       "note": "sips tea"
+      },
+      {
+       "start_ms": 65000,
+       "end_ms": 68000,
+       "note": "sips tea"
+      }
+     ],
+     "partial": [
+      {
+       "start_ms": 18000,
+       "end_ms": 20000,
+       "note": "tea table, hands"
+      },
+      {
+       "start_ms": 62000,
+       "end_ms": 65000,
+       "note": "tea table, writing"
+      }
+     ],
+     "contra": [],
+     "key_for_other": [],
+     "state": "MATCH_AVAILABLE",
+     "serious_if_wrong": false,
+     "notes": ""
+    },
+    {
+     "speech_ref": "v8-s2",
+     "source_id": "v8",
+     "text": "Thời gian lặng lẽ trôi, mái tóc xanh của nàng đã điểm bạc lúc nào không hay.",
+     "type": "synonym_or_indirect",
+     "words": 17,
+     "est_duration_ms": 5610,
+     "acceptable": [
+      {
+       "start_ms": 86000,
+       "end_ms": 89000,
+       "note": "woman shown old"
+      },
+      {
+       "start_ms": 93000,
+       "end_ms": 95000,
+       "note": "old woman"
+      },
+      {
+       "start_ms": 190000,
+       "end_ms": 194000,
+       "note": "face in dewdrop turns old"
+      }
+     ],
+     "partial": [
+      {
+       "start_ms": 158000,
+       "end_ms": 169000,
+       "note": "white hair but young face"
+      }
+     ],
+     "contra": [],
+     "key_for_other": [],
+     "state": "MATCH_AVAILABLE",
+     "serious_if_wrong": false,
+     "notes": "ageing said indirectly"
+    },
+    {
+     "speech_ref": "v8-s3",
+     "source_id": "v8",
+     "text": "Mỗi bước chân nàng đặt lên phiến đá giữa hồ, một đóa sen trắng lại bừng nở.",
+     "type": "footage_present",
+     "words": 17,
+     "est_duration_ms": 5610,
+     "acceptable": [
+      {
+       "start_ms": 74000,
+       "end_ms": 78000,
+       "note": "walks on stones, lotus blooms"
+      },
+      {
+       "start_ms": 184000,
+       "end_ms": 187000,
+       "note": "lotus blooms under her feet"
+      }
+     ],
+     "partial": [
+      {
+       "start_ms": 180000,
+       "end_ms": 184000,
+       "note": "kneels on stepping stones"
+      },
+      {
+       "start_ms": 187000,
+       "end_ms": 190000,
+       "note": "walks on stones to pavilion"
+      }
+     ],
+     "contra": [],
+     "key_for_other": [],
+     "state": "MATCH_AVAILABLE",
+     "serious_if_wrong": false,
+     "notes": ""
+    },
+    {
+     "speech_ref": "v8-s4",
+     "source_id": "v8",
+     "text": "Nàng thả chiếc đèn hoa đăng xuống hồ sen, cầu cho người thương được bình an.",
+     "type": "near_match",
+     "words": 16,
+     "est_duration_ms": 5280,
+     "acceptable": [],
+     "partial": [
+      {
+       "start_ms": 78000,
+       "end_ms": 80000,
+       "note": "praying hands, no lantern"
+      },
+      {
+       "start_ms": 152000,
+       "end_ms": 156000,
+       "note": "bows with joined hands by the pond"
+      }
+     ],
+     "contra": [
+      {
+       "start_ms": 170000,
+       "end_ms": 173000,
+       "note": "paints a lotus on the water, not a floating lantern"
+      }
+     ],
+     "key_for_other": [],
+     "state": "SOURCE_INSUFFICIENT",
+     "serious_if_wrong": true,
+     "notes": "no lantern anywhere"
+    },
+    {
+     "speech_ref": "v8-s5",
+     "source_id": "v8",
+     "text": "Dưới rừng đào, nàng cài trâm ngọc rồi khoác áo cưới đỏ chờ ngày xuất giá.",
+     "type": "partial",
+     "words": 16,
+     "est_duration_ms": 5280,
+     "acceptable": [],
+     "partial": [
+      {
+       "start_ms": 51000,
+       "end_ms": 56000,
+       "note": "hair dressed with golden pin under peach trees"
+      },
+      {
+       "start_ms": 125000,
+       "end_ms": 127000,
+       "note": "puts on golden headdress"
+      },
+      {
+       "start_ms": 50000,
+       "end_ms": 51000,
+       "note": "red cloth on table"
+      }
+     ],
+     "contra": [],
+     "key_for_other": [],
+     "state": "SOURCE_INSUFFICIENT",
+     "serious_if_wrong": false,
+     "notes": "no red wedding dress"
+    },
+    {
+     "speech_ref": "v8-s6",
+     "source_id": "v8",
+     "text": "Nàng một mình chèo chiếc thuyền nhỏ qua dòng sông trong đêm mưa tầm tã.",
+     "type": "footage_insufficient",
+     "words": 15,
+     "est_duration_ms": 4950,
+     "acceptable": [],
+     "partial": [],
+     "contra": [],
+     "key_for_other": [],
+     "state": "SOURCE_INSUFFICIENT",
+     "serious_if_wrong": false,
+     "notes": "no boat, night or rain"
+    },
+    {
+     "speech_ref": "v8-s7",
+     "source_id": "v8",
+     "text": "Một cánh hạc trắng sải cánh bay qua mặt hồ phẳng lặng, khép lại câu chuyện.",
+     "type": "footage_present",
+     "words": 16,
+     "est_duration_ms": 5280,
+     "acceptable": [
+      {
+       "start_ms": 218000,
+       "end_ms": 220961,
+       "note": "white crane over the lake"
+      }
+     ],
+     "partial": [],
+     "contra": [],
+     "key_for_other": [],
+     "state": "MATCH_AVAILABLE",
+     "serious_if_wrong": false,
+     "notes": ""
+    }
+   ]
+  },
+  {
+   "source_id": "v9",
+   "title": "Elephants Dream (Blender open movie, CC BY 2.5)",
+   "file": "D:\\Projects\\DubFlow\\_sandbox\\data-link\\source-media\\f089dcd627ae68c54a2e06bf6331b01932603a66aa7eb640777e7825db5cfa63\\link-1141145083998a0252b2685a\\9c48d615f9ff26d74b9677d818f694f68a8ee30e3717a7ecc1ea5ea448b4bfe7\\dfd09303f99a0fd3300c301cc1fc097ecc1c8334b2259057f3bf537a5132aaaa.mp4",
+   "sha256": "dfd09303f99a0fd3300c301cc1fc097ecc1c8334b2259057f3bf537a5132aaaa",
+   "duration_ms": 653792,
+   "trim": null,
+   "group": "entertainment",
+   "workflow": "compilation",
+   "frame_notes": "sampled every 2 s. 0-24 title 'elephants dream' on a tiled wall; 26 old man Proog's face; 28-36 young man Emo tangled in cables/machinery; 38-48 Emo crawls on a platform while Proog walks; 50-62 Emo close-ups, Proog talking; 64-68 wire machinery; 70-78 Proog in a doorway; 80-96 dark wire void with walkway, characters; 98-100 Proog jumps; 102-104 flying objects; 106-118 wire void; 120-126 snaking walkway; 128-142 both on a platform; 144-148 flying debris; 150 black; 152-158 dark room with red carpet, lamp, pedestal; 160,166,170-172 old candlestick telephone on a round table; 162,168 Proog; 164 Emo; 174-176 Proog holds the receiver; 178-180 ornate mechanism; 182-188 red room in silhouette; 190-192 Emo; 194-212 hanging lamp descends onto pedestal with the phone; 214 Emo; 216-220 mechanical bird creature; 222 feet on red carpet; 224-232 brass horn machines; 234-236 both by a bright window; 238-246 platform in the dark, Proog spreads arms; 250-260 Proog jumps across thin posts over an abyss; 262-266 Emo stands on a post; 270-276 both jump on posts; 278 bell device; 280-290 Emo, Proog, platform; 292-302 both before a huge mechanical gate; 306 hand at red button; 308 both; 310-316 vortex tunnel; 318 both; 320-338 dark machinery, cylinder flying in a tube; 340-350 Proog talks to Emo, face; 352-356 giant dark arch; 358-378 both on a floating glowing platform; 380-382 machinery; 384 Emo by glowing structure, Proog crouched; 388-394 machine room with cylinders; 396-404 Emo walks along walkway, Proog behind; 406-418 by a door, Proog offers a strange tool; 420-426 close-ups, door light; 428-450 both in a green tiled room; 452-458 close-ups, Proog with device; 460 Proog lunges at Emo; 462-466 Emo holds his face, scuffle; 468-476 Emo, Proog spreads arms; 478-480 Emo dances with arms out in empty room; 482 Emo among red cables; 484 Proog screams; 488-500 Emo in golden cable world with streaks of light; 502-506 Proog holds his head; 508 Proog small in huge machine; 510-516 Proog kneels on floor; 520-524 Emo; 526-532 Proog standing in golden streaks; 534-542 Proog crouches beside Emo lying on the floor; 544-562 hand and cables; 564-652 credits.",
+   "sentences": [
+    {
+     "speech_ref": "v9-s1",
+     "source_id": "v9",
+     "text": "Ông lão Proog nhảy qua từng cột trụ chênh vênh giữa vực tối, Emo dè dặt theo sau.",
+     "type": "footage_present",
+     "words": 18,
+     "est_duration_ms": 5940,
+     "acceptable": [
+      {
+       "start_ms": 250000,
+       "end_ms": 260000,
+       "note": "Proog jumps across posts"
+      },
+      {
+       "start_ms": 270000,
+       "end_ms": 278000,
+       "note": "both jump on posts"
+      }
+     ],
+     "partial": [
+      {
+       "start_ms": 262000,
+       "end_ms": 268000,
+       "note": "Emo stands on a post"
+      }
+     ],
+     "contra": [],
+     "key_for_other": [],
+     "state": "MATCH_AVAILABLE",
+     "serious_if_wrong": false,
+     "notes": ""
+    },
+    {
+     "speech_ref": "v9-s2",
+     "source_id": "v9",
+     "text": "Một chiếc máy liên lạc cổ lỗ nằm lẻ loi trên bàn tròn giữa căn phòng trải thảm đỏ.",
+     "type": "synonym_or_indirect",
+     "words": 19,
+     "est_duration_ms": 6270,
+     "acceptable": [
+      {
+       "start_ms": 160000,
+       "end_ms": 162000,
+       "note": "candlestick telephone on table"
+      },
+      {
+       "start_ms": 166000,
+       "end_ms": 168000,
+       "note": "telephone"
+      },
+      {
+       "start_ms": 170000,
+       "end_ms": 174000,
+       "note": "telephone on table"
+      },
+      {
+       "start_ms": 208000,
+       "end_ms": 214000,
+       "note": "pedestal with the telephone"
+      }
+     ],
+     "partial": [
+      {
+       "start_ms": 152000,
+       "end_ms": 160000,
+       "note": "red-carpet room, phone too small to see"
+      },
+      {
+       "start_ms": 174000,
+       "end_ms": 178000,
+       "note": "receiver in Proog's hand"
+      }
+     ],
+     "contra": [],
+     "key_for_other": [],
+     "state": "MATCH_AVAILABLE",
+     "serious_if_wrong": false,
+     "notes": "telephone described indirectly"
+    },
+    {
+     "speech_ref": "v9-s3",
+     "source_id": "v9",
+     "text": "Emo nhấc ống nghe lên và gọi điện cho người thân ở thành phố bên ngoài.",
+     "type": "near_match",
+     "words": 16,
+     "est_duration_ms": 5280,
+     "acceptable": [],
+     "partial": [],
+     "contra": [
+      {
+       "start_ms": 174000,
+       "end_ms": 178000,
+       "note": "Proog, not Emo, holds the receiver; no call"
+      }
+     ],
+     "key_for_other": [],
+     "state": "SOURCE_INSUFFICIENT",
+     "serious_if_wrong": true,
+     "notes": "Emo never uses the phone"
+    },
+    {
+     "speech_ref": "v9-s4",
+     "source_id": "v9",
+     "text": "Trong căn phòng màu xanh, Proog nổi giận tát Emo rồi đuổi cậu ra khỏi cửa.",
+     "type": "partial",
+     "words": 16,
+     "est_duration_ms": 5280,
+     "acceptable": [],
+     "partial": [
+      {
+       "start_ms": 444000,
+       "end_ms": 468000,
+       "note": "argument in green room, lunge, Emo holds his face"
+      }
+     ],
+     "contra": [],
+     "key_for_other": [],
+     "state": "SOURCE_INSUFFICIENT",
+     "serious_if_wrong": false,
+     "notes": "being thrown out of a door is not shown"
+    },
+    {
+     "speech_ref": "v9-s5",
+     "source_id": "v9",
+     "text": "Cuối cùng, Emo nằm bất động trên sàn, còn Proog lặng lẽ cúi xuống bên cạnh cậu.",
+     "type": "footage_present",
+     "words": 17,
+     "est_duration_ms": 5610,
+     "acceptable": [
+      {
+       "start_ms": 534000,
+       "end_ms": 544000,
+       "note": "Proog crouches beside Emo lying on the floor"
+      }
+     ],
+     "partial": [
+      {
+       "start_ms": 510000,
+       "end_ms": 518000,
+       "note": "Proog kneels alone"
+      }
+     ],
+     "contra": [],
+     "key_for_other": [],
+     "state": "MATCH_AVAILABLE",
+     "serious_if_wrong": true,
+     "notes": ""
+    },
+    {
+     "speech_ref": "v9-s6",
+     "source_id": "v9",
+     "text": "Đàn voi khổng lồ chậm rãi bước qua thảo nguyên dưới ánh hoàng hôn rực đỏ.",
+     "type": "footage_insufficient",
+     "words": 16,
+     "est_duration_ms": 5280,
+     "acceptable": [],
+     "partial": [],
+     "contra": [
+      {
+       "start_ms": 0,
+       "end_ms": 25000,
+       "note": "title card reads 'elephants dream' but shows no elephants"
+      }
+     ],
+     "key_for_other": [],
+     "state": "SOURCE_INSUFFICIENT",
+     "serious_if_wrong": true,
+     "notes": "no elephants anywhere; tests title/filename metadata"
+    },
+    {
+     "speech_ref": "v9-s7",
+     "source_id": "v9",
+     "text": "Hãy để lại cảm nhận của bạn về bộ phim kỳ lạ này ở phần bình luận nhé.",
+     "type": "generic",
+     "words": 18,
+     "est_duration_ms": 5940,
+     "acceptable": [],
+     "partial": [],
+     "contra": [],
+     "key_for_other": [],
+     "state": "NOT_NEEDED",
+     "serious_if_wrong": false,
+     "notes": "CTA"
+    }
+   ]
+  },
+  {
+   "source_id": "v10",
+   "title": "Hoạt hình giải thích: nếu bạn nhanh gấp 10 lần (IFOLOGY, 619 s)",
+   "file": "%USERPROFILE%\\Downloads\\2HGb6FHfdbHeCwv9e3SccHWhb4xJbutExkVU.mp4",
+   "sha256": "c06964b1fa05b074330a7098b00df29dde5878e55cfa473e31630b665f7cb176",
+   "duration_ms": 618974,
+   "trim": null,
+   "group": "educational-technical",
+   "workflow": "compilation",
+   "frame_notes": "sampled every 2 s. 0-10 intro (boy in yellow, house, classroom, kitchen); 12-14 title 'WHAT IF YOU WERE 10X FASTER?'; 16-20 runs past a car; 22 at home; 24-28 brain/nerve signal diagram; 30-34 track runners, speedometer 25 km/h; 36 night city; 38 driver in helmet; 40 F1 car; 42-48 sprinter in green, 44 km/h; 50 timer 0.25; 52-56 'WORLD RECORD 9.58' board; 58-76 coach in red with clipboard and stopwatch on track; 78-86 lab: treadmill, scientists at computers, force plate; 88-90 leg biomechanics diagram; 92-104 treadmill footsteps with timers 1/10 s, 1/100 s, skeleton 100; 106-108 runs on track; 110-112 school gate; 114-118 home TV, couch; 120-132 pizza shop, chef, pizza box at door; 134-136 kid in green by road; 138-152 football: kicks ball, field, goal; 154-156 map 100 km; 158-160 diner, burger; 162-164 runs down street; 166-170 stick figure 250 km/h; 172 hurricane 'CATEGORY 5'; 174-190 wind-blown face; 192 buys goggles in a shop; 194-198 runs wearing goggles; 200-208 speed graph 1,235 km/h, 50X; 210-212 pigeons on a wire; 214 runs; 216-218 shoe skids, smoking sole; 220-222 shoe-shop counter; 224-228 home with mum; 230-248 calorie diagrams, '14,000 CALORIES'; 250 eats a huge pile of food; 252-258 drinks while running, eats; 260-262 pizza delivery at door; 264-268 subscribe overlay; 270-272 running; 274-282 binocular-style blurred street view; 284-288 brain reaction diagram 1/5 s; 290-296 stick figure + dog, '14 METERS'; 298-308 dog on street, he jumps over it; 310-318 stopping diagram '300 METERS'; 320 football field aerial; 322-326 grid path diagram; 328-334 crosswalk; 336 hedge; 338 kiddie pool with rubber duck; 340-342 duck on his head; 344-360 cheetah sprinting on savanna, 100 km/h, tumbles; 362-364 speed vs grip diagram; 366-368 buys green spiked shoes; 370-372 runs in them; 374-382 kid in green with a map; 384-404 street running, crosswalk, truck; 406 bus stop; 408 kid in orange scared; 410-424 diagrams; 426-442 sprint, green shoes sparking; 444-450 kicks ball away and grabs the kid in orange from in front of a truck; 452 kid at home door; 454 truck tyre and ball; 456-466 hug, mum; 468-470 phone video 'SLOWEST RESCUE EVER'; 472-478 home, eating, door; 480-584 night street: neighbours, robots, girl in purple headphones, figure on a truck; 586-598 CCTV highway view; 600-604 group; 606-616 line-up 'WHO IS THE VILLAIN?', IFOLOGY logo.",
+   "sentences": [
+    {
+     "speech_ref": "v10-s1",
+     "source_id": "v10",
+     "text": "Usain Bolt vẫn giữ kỷ lục thế giới chạy một trăm mét với thời gian chín giây năm mươi tám.",
+     "type": "synonym_or_indirect",
+     "words": 20,
+     "est_duration_ms": 6600,
+     "acceptable": [
+      {
+       "start_ms": 42000,
+       "end_ms": 50000,
+       "note": "elite sprinter at 44 km/h"
+      },
+      {
+       "start_ms": 52000,
+       "end_ms": 58000,
+       "note": "world record board 9.58"
+      }
+     ],
+     "partial": [
+      {
+       "start_ms": 30000,
+       "end_ms": 36000,
+       "note": "ordinary runners on track"
+      }
+     ],
+     "contra": [],
+     "key_for_other": [],
+     "state": "MATCH_AVAILABLE",
+     "serious_if_wrong": false,
+     "notes": "proper name; Bolt is never named on screen"
+    },
+    {
+     "speech_ref": "v10-s2",
+     "source_id": "v10",
+     "text": "Trên máy chạy bộ trong phòng thí nghiệm, các nhà khoa học đo từng bước chân của bạn.",
+     "type": "footage_present",
+     "words": 18,
+     "est_duration_ms": 5940,
+     "acceptable": [
+      {
+       "start_ms": 78000,
+       "end_ms": 88000,
+       "note": "lab treadmill, scientists at computers"
+      },
+      {
+       "start_ms": 92000,
+       "end_ms": 106000,
+       "note": "footsteps on treadmill with timers"
+      }
+     ],
+     "partial": [
+      {
+       "start_ms": 88000,
+       "end_ms": 92000,
+       "note": "biomechanics diagram"
+      }
+     ],
+     "contra": [],
+     "key_for_other": [],
+     "state": "MATCH_AVAILABLE",
+     "serious_if_wrong": false,
+     "notes": ""
+    },
+    {
+     "speech_ref": "v10-s3",
+     "source_id": "v10",
+     "text": "Chạy nhanh gấp mười lần nghĩa là cơ thể bạn cần tới mười bốn nghìn calo mỗi ngày.",
+     "type": "footage_present",
+     "words": 18,
+     "est_duration_ms": 5940,
+     "acceptable": [
+      {
+       "start_ms": 244000,
+       "end_ms": 252000,
+       "note": "'14,000 CALORIES' diagram, huge meal"
+      }
+     ],
+     "partial": [
+      {
+       "start_ms": 230000,
+       "end_ms": 244000,
+       "note": "calorie-per-km diagrams"
+      }
+     ],
+     "contra": [],
+     "key_for_other": [],
+     "state": "MATCH_AVAILABLE",
+     "serious_if_wrong": false,
+     "notes": ""
+    },
+    {
+     "speech_ref": "v10-s4",
+     "source_id": "v10",
+     "text": "Bạn sẽ phải đội mũ bảo hiểm và mặc áo giáp như tay đua mô tô để chống lại sức gió.",
+     "type": "near_match",
+     "words": 21,
+     "est_duration_ms": 6930,
+     "acceptable": [],
+     "partial": [],
+     "contra": [
+      {
+       "start_ms": 192000,
+       "end_ms": 200000,
+       "note": "goggles, not helmet or armour"
+      },
+      {
+       "start_ms": 38000,
+       "end_ms": 42000,
+       "note": "car racing driver and F1 car, not motorbike gear for the runner"
+      }
+     ],
+     "key_for_other": [],
+     "state": "SOURCE_INSUFFICIENT",
+     "serious_if_wrong": true,
+     "notes": "only goggles are shown"
+    },
+    {
+     "speech_ref": "v10-s5",
+     "source_id": "v10",
+     "text": "Báo săn đạt tốc độ trăm cây số mỗi giờ nhưng chỉ giữ được vài giây rồi phải nằm nghỉ.",
+     "type": "partial",
+     "words": 20,
+     "est_duration_ms": 6600,
+     "acceptable": [],
+     "partial": [
+      {
+       "start_ms": 344000,
+       "end_ms": 362000,
+       "note": "cheetah sprinting at 100 km/h, tumbles"
+      }
+     ],
+     "contra": [],
+     "key_for_other": [],
+     "state": "SOURCE_INSUFFICIENT",
+     "serious_if_wrong": false,
+     "notes": "resting not shown"
+    },
+    {
+     "speech_ref": "v10-s6",
+     "source_id": "v10",
+     "text": "Ở tốc độ đó, bạn thậm chí có thể chạy trên mặt nước mà không hề bị chìm.",
+     "type": "footage_insufficient",
+     "words": 18,
+     "est_duration_ms": 5940,
+     "acceptable": [],
+     "partial": [],
+     "contra": [
+      {
+       "start_ms": 338000,
+       "end_ms": 344000,
+       "note": "kiddie pool and rubber duck, nobody running on water"
+      }
+     ],
+     "key_for_other": [],
+     "state": "SOURCE_INSUFFICIENT",
+     "serious_if_wrong": true,
+     "notes": ""
+    },
+    {
+     "speech_ref": "v10-s7",
+     "source_id": "v10",
+     "text": "Nhờ phản xạ siêu nhanh, cậu bé kịp lao tới kéo một em nhỏ ra khỏi đầu xe tải.",
+     "type": "footage_present",
+     "words": 19,
+     "est_duration_ms": 6270,
+     "acceptable": [
+      {
+       "start_ms": 444000,
+       "end_ms": 452000,
+       "note": "grabs the kid from in front of the truck"
+      },
+      {
+       "start_ms": 454000,
+       "end_ms": 456000,
+       "note": "truck tyre and ball"
+      }
+     ],
+     "partial": [
+      {
+       "start_ms": 426000,
+       "end_ms": 444000,
+       "note": "sprints towards the scene"
+      }
+     ],
+     "contra": [],
+     "key_for_other": [],
+     "state": "MATCH_AVAILABLE",
+     "serious_if_wrong": false,
+     "notes": ""
+    }
+   ]
+  },
+  {
+   "source_id": "v11",
+   "title": "Trại lợn lớn nhất thế giới và cách xử lý phân (Bilibili BV1VG411777E)",
+   "file": "%USERPROFILE%\\Videos\\DubFlow Sources\\BV1VG411777E\\source-media.mp4",
+   "sha256": "b70b43445ccbd5990e956f105f2cc4131ee4185bc5e8b0beb2c9f9b7e7ba5bea",
+   "duration_ms": 300117,
+   "trim": null,
+   "group": "long-form-documentary",
+   "workflow": "compilation",
+   "frame_notes": "sampled every 2 s. 0-4 pigs in pen with title text; 6 tower facade with tree; 8 feeder pipes; 10 aerial of the tower; 12-14 city of high-rise flats; 16-18 villa complex with fountain pond; 20 red-white tower; 22 pigs in a truck/crate with workers; 24-28 construction workers in hard hats at red building, lift corridor; 30 aerial construction site, '40亿元'; 32-38 tower under construction with cranes, '40万平方米'; 40-42 bare concrete floor; 44-46 finished tower, car park; 48 pigs; 50-52 aerial; 54 piglets around a feeder; 56 large barn; 58 construction start; 60-62 pigs, worker in a barn; 64-66 tower with cranes; 68-70 crowded pigs; 72-74 pens; 76 pigs; 78-80 worker in mask at freight lift; 82 pigs in lift; 84 workers and pigs with red crates in lift; 86-88 facade; 90-94 barns; 96-100 piglets at feeder; 102 '该如何喂养?'; 104 pigs; 106-108 feeders, sows; 110-112 pig snout behind bar; 114-116 worker's hand gives a pill/handles piglet; 118-120 Western farmer crouching by pen; 122 rooftop exhaust fans; 124 courtyard of building; 126 pig running; 128-130 dirty barn, pigs; 132 pigs lying in green pens; 134 '1200吨' graphic; 136-138 red tractor pulling a slurry tanker on a dirt road; 140 hands holding a piglet; 142 pig in pen; 144 pens; 146 man in camouflage pours feed from a scoop; 148 pigs; 150 worker walks aisle; 152-154 feed pipe into trough; 156 control panel with buttons; 158 long automated barn; 160 shovel in feed pile; 162-166 feed hopper, conveyor; 168-170 feeders over crates; 172 control screen; 174-180 feed tube valves; 182 pigs in pen; 184 workers walking; 186-188 man at computer clicks, screen; 190 pig; 192 digital controller display; 194 pig skin; 196-198 worker in aisle; 200-202 crowded pigs, '该如何解决排泄物?'; 204 pigs; 206-208 water flushing manure channel; 210 '自动化排污系统' sludge; 212-214 orange robot scraper moving between pens; 216 facade; 218-224 clean pigs, piglets under red heat lamps; 226 robot; 228-230 piglets; 232-234 pig face; 236 sow and piglets in crate; 238-242 workers in white herding pigs with paddles; 244 pipes; 246-248 sows; 250-256 meat market, pork cuts with parsley, '5000万吨'; 258-260 hanging carcasses; 262-264 pens; 266-268 man pours feed; 270 worker herds pigs; 272 empty barn; 274 pigs; 276 crates; 278-280 tower under construction '5-7年'; 282 barn; 284-286 worker; 288 pigs; 290 man in suit with pigs (founder); 292-294 piglets under heat lamps; 296 piglets; 298-300 pigs on grass.",
+   "sentences": [
+    {
+     "speech_ref": "v11-s1",
+     "source_id": "v11",
+     "text": "Những chiếc xe đầu kéo màu đỏ phải kéo bồn chứa đi về phía cánh đồng để xử lý chất thải mỗi ngày.",
+     "type": "footage_present",
+     "words": 23,
+     "est_duration_ms": 7590,
+     "acceptable": [
+      {
+       "start_ms": 136000,
+       "end_ms": 140000,
+       "note": "red tractor pulling a tanker"
+      }
+     ],
+     "partial": [
+      {
+       "start_ms": 134000,
+       "end_ms": 136000,
+       "note": "1200-ton graphic"
+      }
+     ],
+     "contra": [],
+     "key_for_other": [],
+     "state": "MATCH_AVAILABLE",
+     "serious_if_wrong": false,
+     "notes": ""
+    },
+    {
+     "speech_ref": "v11-s2",
+     "source_id": "v11",
+     "text": "Rô bốt cào phân màu cam tự động chạy dọc lối đi để dọn sạch chuồng.",
+     "type": "footage_present",
+     "words": 16,
+     "est_duration_ms": 5280,
+     "acceptable": [
+      {
+       "start_ms": 212000,
+       "end_ms": 216000,
+       "note": "orange scraper robot"
+      },
+      {
+       "start_ms": 226000,
+       "end_ms": 228000,
+       "note": "robot in aisle"
+      }
+     ],
+     "partial": [
+      {
+       "start_ms": 206000,
+       "end_ms": 212000,
+       "note": "flush channel and sludge, no robot"
+      }
+     ],
+     "contra": [],
+     "key_for_other": [],
+     "state": "MATCH_AVAILABLE",
+     "serious_if_wrong": false,
+     "notes": ""
+    },
+    {
+     "speech_ref": "v11-s3",
+     "source_id": "v11",
+     "text": "Bốn tỷ nhân dân tệ đã được rót vào công trường này từ mùa hè năm hai nghìn hai mươi.",
+     "type": "synonym_or_indirect",
+     "words": 20,
+     "est_duration_ms": 6600,
+     "acceptable": [
+      {
+       "start_ms": 30000,
+       "end_ms": 40000,
+       "note": "construction site, cranes, '40亿元'"
+      },
+      {
+       "start_ms": 58000,
+       "end_ms": 60000,
+       "note": "construction start"
+      },
+      {
+       "start_ms": 64000,
+       "end_ms": 68000,
+       "note": "tower with cranes"
+      },
+      {
+       "start_ms": 278000,
+       "end_ms": 282000,
+       "note": "tower under construction"
+      }
+     ],
+     "partial": [
+      {
+       "start_ms": 24000,
+       "end_ms": 30000,
+       "note": "construction workers"
+      }
+     ],
+     "contra": [
+      {
+       "start_ms": 44000,
+       "end_ms": 48000,
+       "note": "finished tower, not the construction phase"
+      }
+     ],
+     "key_for_other": [],
+     "state": "MATCH_AVAILABLE",
+     "serious_if_wrong": false,
+     "notes": "investment said indirectly; must show the construction"
+    },
+    {
+     "speech_ref": "v11-s4",
+     "source_id": "v11",
+     "text": "Chỉ cần vài người, cả tòa nhà được điều khiển từ một màn hình cảm ứng khổng lồ trên tường.",
+     "type": "near_match",
+     "words": 20,
+     "est_duration_ms": 6600,
+     "acceptable": [],
+     "partial": [
+      {
+       "start_ms": 186000,
+       "end_ms": 190000,
+       "note": "man at desktop computer"
+      },
+      {
+       "start_ms": 172000,
+       "end_ms": 174000,
+       "note": "control screen"
+      }
+     ],
+     "contra": [
+      {
+       "start_ms": 156000,
+       "end_ms": 158000,
+       "note": "button panel on wall, not a giant touch screen"
+      }
+     ],
+     "key_for_other": [],
+     "state": "SOURCE_INSUFFICIENT",
+     "serious_if_wrong": false,
+     "notes": "only desktop monitors and a button panel"
+    },
+    {
+     "speech_ref": "v11-s5",
+     "source_id": "v11",
+     "text": "Thịt lợn được bày bán khắp các chợ, và Trung Quốc tiêu thụ tới một nửa sản lượng thịt lợn của cả thế giới.",
+     "type": "partial",
+     "words": 24,
+     "est_duration_ms": 7920,
+     "acceptable": [],
+     "partial": [
+      {
+       "start_ms": 250000,
+       "end_ms": 262000,
+       "note": "meat market and carcasses, '5000万吨'"
+      }
+     ],
+     "contra": [],
+     "key_for_other": [],
+     "state": "SOURCE_INSUFFICIENT",
+     "serious_if_wrong": false,
+     "notes": "world-share claim cannot be shown"
+    },
+    {
+     "speech_ref": "v11-s6",
+     "source_id": "v11",
+     "text": "Khí sinh học từ hầm ủ phân được dùng để phát điện cho toàn bộ khu trang trại.",
+     "type": "footage_insufficient",
+     "words": 18,
+     "est_duration_ms": 5940,
+     "acceptable": [],
+     "partial": [],
+     "contra": [],
+     "key_for_other": [],
+     "state": "SOURCE_INSUFFICIENT",
+     "serious_if_wrong": false,
+     "notes": "no biogas digester or power plant"
+    },
+    {
+     "speech_ref": "v11-s7",
+     "source_id": "v11",
+     "text": "Lợn được đưa lên các tầng bằng thang máy chở hàng, mỗi chuyến chở được hơn tám mươi con.",
+     "type": "footage_present",
+     "words": 19,
+     "est_duration_ms": 6270,
+     "acceptable": [
+      {
+       "start_ms": 78000,
+       "end_ms": 86000,
+       "note": "freight lift with workers and pigs"
+      }
+     ],
+     "partial": [
+      {
+       "start_ms": 22000,
+       "end_ms": 24000,
+       "note": "pigs in a crate/truck"
+      }
+     ],
+     "contra": [],
+     "key_for_other": [],
+     "state": "MATCH_AVAILABLE",
+     "serious_if_wrong": false,
+     "notes": ""
+    }
+   ]
+  },
+  {
+   "source_id": "v12",
+   "title": "Phim xã hội đen AI, tập 22 (Douyin 7697621631518166282)",
+   "file": "%USERPROFILE%\\Downloads\\douyinsaver.com-7697621631518166282.mp4",
+   "sha256": "bbba2c9be2d6717d694c05eba090b5f85af341123d313732bbf7cef9224785b1",
+   "duration_ms": 246155,
+   "trim": null,
+   "group": "entertainment",
+   "workflow": "compilation",
+   "frame_notes": "0-2 bald tattooed man and young man smoking in a concrete corridor, women in black walk past; 3-5 young man (grey shirt) face; 6-9 women escorted by guards, young man grabs a woman; 10-11 warning card; 12 '第二十二集'; 13-28 bearded man in camo shirt smoking, talks to the young man; 29-30 inside a car on a mountain road; 31-34 driving towards a checkpoint, flashlight glare; 35-37 young man holds the grab handle; 38-50 bearded man drives, rear-view mirror; 51-55 car interior; 56-62 young man, construction site outside, raises his arms; 63-72 talks while driving; 73-74 walled compound with gate, soldiers; 75-77 men meet boss in floral shirt by a jeep; 78-80 walk through a dirty alley; 81-84 young man; 85-86 a man lies on the basketball court with a blood pool; 87-110 alley talk between bearded man and boss in floral shirt, armed soldiers behind; 111-113 office meeting table, boss pushes a box; 114-121 boss in leather chair blowing cigar smoke; 122-136 bearded man argues; 137-147 meeting table; 148-149 boss smokes; 150-160 bearded man angry; 161-164 boss at desk; 165-167 two fingers, points at table; 168-191 negotiation at table/desk; 192-201 boss points; 198-199 young man stands to go to the toilet; 202-213 bald man in black shirt with young man in corridor with armed guards, lights cigarette; 214-219 women in black walk past; 220-223 young man reacts; 224-227 women, he grabs a woman, she falls; 228-232 bald man grabs him, fight; 233-235 he pulls a woman; 236-237 riot police in black armour tackle him; 238-244 his face pinned on the floor; 245 '下集更精彩'.",
+   "sentences": [
+    {
+     "speech_ref": "v12-s1",
+     "source_id": "v12",
+     "text": "Gã râu rậm vừa lái chiếc xe địa hình băng qua con đường núi mù sương vừa nghiêm giọng dặn dò.",
+     "type": "footage_present",
+     "words": 21,
+     "est_duration_ms": 6930,
+     "acceptable": [
+      {
+       "start_ms": 29000,
+       "end_ms": 35000,
+       "note": "car on mountain road, driving"
+      },
+      {
+       "start_ms": 38000,
+       "end_ms": 56000,
+       "note": "driver talking, rear-view mirror"
+      },
+      {
+       "start_ms": 63000,
+       "end_ms": 73000,
+       "note": "driving and talking"
+      }
+     ],
+     "partial": [
+      {
+       "start_ms": 35000,
+       "end_ms": 38000,
+       "note": "passenger only"
+      }
+     ],
+     "contra": [],
+     "key_for_other": [],
+     "state": "MATCH_AVAILABLE",
+     "serious_if_wrong": false,
+     "notes": ""
+    },
+    {
+     "speech_ref": "v12-s2",
+     "source_id": "v12",
+     "text": "Ông trùm áo hoa ngả lưng trên ghế da, thong thả nhả khói xì gà như chẳng có gì phải vội.",
+     "type": "synonym_or_indirect",
+     "words": 21,
+     "est_duration_ms": 6930,
+     "acceptable": [
+      {
+       "start_ms": 114000,
+       "end_ms": 122000,
+       "note": "boss in leather chair blowing smoke"
+      },
+      {
+       "start_ms": 148000,
+       "end_ms": 150000,
+       "note": "boss smokes"
+      }
+     ],
+     "partial": [
+      {
+       "start_ms": 161000,
+       "end_ms": 165000,
+       "note": "boss at desk"
+      }
+     ],
+     "contra": [
+      {
+       "start_ms": 13000,
+       "end_ms": 17000,
+       "note": "the bearded man smoking, wrong person"
+      },
+      {
+       "start_ms": 202000,
+       "end_ms": 213000,
+       "note": "bald man lighting a cigarette, wrong person"
+      }
+     ],
+     "key_for_other": [],
+     "state": "MATCH_AVAILABLE",
+     "serious_if_wrong": true,
+     "notes": "'ông trùm áo hoa' = the floral-shirt boss; other smokers are wrong"
+    },
+    {
+     "speech_ref": "v12-s3",
+     "source_id": "v12",
+     "text": "Bị cảnh sát đặc nhiệm quật ngã, cậu thanh niên nằm úp mặt xuống sàn xi măng lạnh lẽo.",
+     "type": "footage_present",
+     "words": 19,
+     "est_duration_ms": 6270,
+     "acceptable": [
+      {
+       "start_ms": 236000,
+       "end_ms": 245000,
+       "note": "riot police tackle him, face on floor"
+      }
+     ],
+     "partial": [],
+     "contra": [
+      {
+       "start_ms": 85000,
+       "end_ms": 87000,
+       "note": "a different man lying on the court"
+      }
+     ],
+     "key_for_other": [],
+     "state": "MATCH_AVAILABLE",
+     "serious_if_wrong": true,
+     "notes": ""
+    },
+    {
+     "speech_ref": "v12-s4",
+     "source_id": "v12",
+     "text": "Trong văn phòng, hai bên đặt bút ký hợp đồng và trao nhau những xấp tiền dày cộp.",
+     "type": "near_match",
+     "words": 18,
+     "est_duration_ms": 5940,
+     "acceptable": [],
+     "partial": [
+      {
+       "start_ms": 111000,
+       "end_ms": 114000,
+       "note": "a box pushed across the table"
+      }
+     ],
+     "contra": [
+      {
+       "start_ms": 176000,
+       "end_ms": 178000,
+       "note": "two raised fingers, no contract signing"
+      },
+      {
+       "start_ms": 168000,
+       "end_ms": 191000,
+       "note": "negotiation, no signing or cash"
+      }
+     ],
+     "key_for_other": [],
+     "state": "SOURCE_INSUFFICIENT",
+     "serious_if_wrong": true,
+     "notes": "no signing or cash"
+    },
+    {
+     "speech_ref": "v12-s5",
+     "source_id": "v12",
+     "text": "Chiếc xe dừng trước cổng khu trại, nơi binh lính cầm súng canh gác và tên quản lý đã chờ sẵn.",
+     "type": "partial",
+     "words": 21,
+     "est_duration_ms": 6930,
+     "acceptable": [],
+     "partial": [
+      {
+       "start_ms": 73000,
+       "end_ms": 75000,
+       "note": "walled compound gate with soldiers"
+      },
+      {
+       "start_ms": 75000,
+       "end_ms": 78000,
+       "note": "manager waiting by the jeep"
+      }
+     ],
+     "contra": [],
+     "key_for_other": [],
+     "state": "SOURCE_INSUFFICIENT",
+     "serious_if_wrong": false,
+     "notes": "the car stopping at the gate is not shown"
+    },
+    {
+     "speech_ref": "v12-s6",
+     "source_id": "v12",
+     "text": "Đêm đó, cậu lén trèo qua hàng rào dây thép gai và chạy trốn vào rừng.",
+     "type": "footage_insufficient",
+     "words": 16,
+     "est_duration_ms": 5280,
+     "acceptable": [],
+     "partial": [],
+     "contra": [],
+     "key_for_other": [],
+     "state": "SOURCE_INSUFFICIENT",
+     "serious_if_wrong": false,
+     "notes": "no night escape or fence"
+    },
+    {
+     "speech_ref": "v12-s7",
+     "source_id": "v12",
+     "text": "Thấy những cô gái bị dẫn đi, cậu lao tới kéo một người lại rồi lao vào ẩu đả với gã đầu trọc.",
+     "type": "footage_present",
+     "words": 23,
+     "est_duration_ms": 7590,
+     "acceptable": [
+      {
+       "start_ms": 224000,
+       "end_ms": 236000,
+       "note": "grabs a woman, fights the bald man"
+      },
+      {
+       "start_ms": 6000,
+       "end_ms": 10000,
+       "note": "grabs a woman"
+      }
+     ],
+     "partial": [
+      {
+       "start_ms": 214000,
+       "end_ms": 224000,
+       "note": "women walk past, reaction"
+      }
+     ],
+     "contra": [],
+     "key_for_other": [],
+     "state": "MATCH_AVAILABLE",
+     "serious_if_wrong": false,
+     "notes": ""
+    }
+   ]
+  }
+ ]
+}
