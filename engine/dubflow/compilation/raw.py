@@ -27,6 +27,7 @@ from engine.dubflow.mastering import analysis as scene
 from engine.dubflow.mastering import candidates as shots
 from engine.dubflow.mastering import evidence as ev
 from engine.dubflow.mastering import plan as m
+from engine.dubflow.mastering import review as reviewing
 from engine.dubflow.mastering import vision as seeing
 from engine.dubflow.mastering.planners import compilation as planner
 from engine.dubflow.product import render as narration_render, script
@@ -284,6 +285,9 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
         all_captions: list[script.Caption] = []
         review = 0
         modes = {}
+        review_parts: dict[str, dict[str, Any]] = {}
+        rendered_parts: list[str] = []
+        reused_parts: list[str] = []
         cursor = 0
         for index, (part_id, kind, text, title, rank, source_ids, keep) in enumerate(parts, 1):
             check()
@@ -306,16 +310,24 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
             status.write(message=f"{context}Đang chọn cảnh ({index}/{len(parts)})…")
             part_footage = [footage[s] for s in source_ids]
             avoid = sorted(shown) if kind in ("intro", "outro") else []  # the opening and closing show something new
+            # the user's review of this part (review-<part>.json, from the desktop panel) on top of the spec's edits
+            decisions_path = reviewing.part_path(work, part_id)
+            try:
+                decisions = reviewing.load(decisions_path)
+            except (reviewing.ReviewError, ValueError, OSError):
+                decisions = reviewing.Review()  # unreadable decisions: plan without them, never stop the video
+                warnings.append(f"{context}Không đọc được lựa chọn cảnh đã lưu của phần này; dựng theo đề xuất của AI.")
+            edits = decisions.edits(resolved.editorial.edits.get(part_id))
             inputs = {s: m.file_identity(footage[s].path, scene.RECIPE) for s in source_ids}
             inputs["part"] = m.digest_json({"spoken": spoken, "kind": kind, "title": title, "keep": keep,
-                                            "editorial": resolved.editorial.digest_input(part_id),
+                                            "editorial": {**resolved.editorial.digest_input(part_id), "edits": edits.to_dict()},
                                             # what the AI saw, not how many frames it was asked this run (cached answers)
                                             "vision": None if vision_report is None else
                                             {k: vision_report[k] for k in ("provider", "model")},
                                             "shown": avoid, "trim": [footage[s].trim for s in source_ids]})
             made = planner.plan_part(part_id, kind, spoken, narration_ms, resolved.mastering, lead_ms=script.LEAD_MS,
                                      gap_ms=script.GAP_MS, footage=part_footage, candidates=candidates, evidence=evidence,
-                                     groups=groups, edits=resolved.editorial.edits.get(part_id), keep_audio=keep, title=title,
+                                     groups=groups, edits=edits, keep_audio=keep, title=title,
                                      inputs=inputs, shown=avoid)
             room = describer.budget - describer.taken if vision_report is not None else 0
             if room > 0:
@@ -337,8 +349,18 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
                     if extra:
                         made = planner.plan_part(part_id, kind, spoken, narration_ms, resolved.mastering, lead_ms=script.LEAD_MS,
                                                  gap_ms=script.GAP_MS, footage=part_footage, candidates=candidates, evidence=evidence,
-                                                 groups=groups, edits=resolved.editorial.edits.get(part_id), keep_audio=keep, title=title,
+                                                 groups=groups, edits=edits, keep_audio=keep, title=title,
                                                  inputs=inputs, shown=avoid)
+            reviewing.annotate(made.log, made.plan.to_dict())
+            invalidated = decisions.reconcile(made.log)
+            if invalidated or decisions.plan_id != made.log.get("plan_id"):
+                decisions.plan_id = str(made.log.get("plan_id") or "")
+                if decisions_path.is_file() or invalidated:
+                    reviewing.save(decisions_path, decisions)
+            warnings += [f"{context}{message}" for message in invalidated]
+            review_parts[part_id] = {"summary": made.log.get("review_summary") or {},
+                                     "unreviewed": len(reviewing.unreviewed(made.log, decisions)),
+                                     "accept_unreviewed": decisions.accept_unreviewed}
             m.save(folder / f"plan-{part_id}.json", made.plan)
             shown.update(choice for unit in made.log["units"] for choice in unit["chosen"])
             made.log["vision"] = vision_report
@@ -385,6 +407,9 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
                     raise CompilationError("Thời lượng đoạn video không khớp")
                 os.replace(unfinished, part)
                 _atomic_text(receipt_path, json.dumps({"key": key, "sha256": _digest_file(part, cancelled), "duration_ms": part_ms}))
+                rendered_parts.append(part_id)
+            else:
+                reused_parts.append(part_id)
             names.append(name)
             chapter = {"hook": "", "intro": "Mở đầu", "outro": "Kết thúc"}.get(kind, f"#{rank} {title}" if resolved.kind == "top_n" else title)
             timeline.append((chapter, part_ms))
@@ -422,11 +447,14 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
             "ranking": record, "parts": [{"id": p[0], "kind": p[1], "title": p[3], "rank": p[4], "sources": p[5],
                                           "narration": p[2], "mode": modes.get(p[0])} for p in parts],
             "verify": {i.item_id: list(i.verify) for i in resolved.items if i.verify}, "credits": credits,
-            "warnings": warnings, "vision": vision_report, "joined": joined}, ensure_ascii=False, indent=1))
+            "warnings": warnings, "vision": vision_report, "joined": joined, "review": review_parts,
+            "rendered_parts": rendered_parts, "reused_parts": reused_parts}, ensure_ascii=False, indent=1))
         final = output_dir / "compilation.mp4"
         os.replace(partial, final)
+        unreviewed = sum(p["unreviewed"] for p in review_parts.values() if not p["accept_unreviewed"])
         status.write(state="COMPLETED", message="Đã tạo video tổng hợp.", path=str(final), duration_ms=expected,
-                     review=review, warnings=warnings[:20], modes=modes)
+                     review=review, warnings=warnings[:20], modes=modes, review_parts=review_parts, unreviewed=unreviewed,
+                     rendered_parts=rendered_parts, reused_parts=reused_parts)
     except Cancelled:
         status.write(state="CANCELLED", message="Đã hủy tổng hợp. Có thể dùng lại các đoạn đã xong.")
     except (CompilationError, ValueError, scene.AnalysisError, m.PlanError) as error:
