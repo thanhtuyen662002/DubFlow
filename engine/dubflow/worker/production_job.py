@@ -934,18 +934,23 @@ def _voiced_end_ms(path: str | os.PathLike[str] | None, start_ms: int, end_ms: i
             frames = reader.readframes(reader.getnframes())
     except (OSError, EOFError, TypeError, wave.Error):
         return end_ms
-    import numpy as np
+    from array import array
 
-    samples = np.frombuffer(frames, dtype="<i2").astype(np.float64)
+    samples = array("h")
+    samples.frombytes(frames[:len(frames) // 2 * 2])
+    if sys.byteorder != "little":
+        samples.byteswap()
     size = max(1, rate * VOICED_FRAME_MS // 1000) * channels
-    count = samples.size // size
+    count = len(samples) // size
     if count == 0:
         return end_ms
-    rms = np.sqrt(np.mean(samples[:count * size].reshape(count, size) ** 2, axis=1))
-    loud = np.flatnonzero(rms >= max(VOICED_FLOOR, float(rms.max()) * VOICED_RELATIVE))
-    if loud.size == 0:
+    # plain Python (no numpy in the worker's light path): a few seconds of 24 kHz audio per piece
+    rms = [math.sqrt(sum(value * value for value in samples[index * size:(index + 1) * size]) / size) for index in range(count)]
+    threshold = max(VOICED_FLOOR, max(rms) * VOICED_RELATIVE)
+    last = next((index for index in range(count - 1, -1, -1) if rms[index] >= threshold), None)
+    if last is None:
         return end_ms
-    voiced = start_ms + (int(loud[-1]) + 1) * VOICED_FRAME_MS + VOICED_TAIL_MS
+    voiced = start_ms + (last + 1) * VOICED_FRAME_MS + VOICED_TAIL_MS
     return max(start_ms + 1, min(end_ms, voiced))
 
 
