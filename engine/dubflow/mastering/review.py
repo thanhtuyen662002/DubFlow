@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 import hashlib
 import json
 from pathlib import Path
+import re
 from typing import Any, Iterable, Mapping
 
 from . import align
@@ -382,15 +383,29 @@ def _read_json(path: Path, limit: int = 32 * 1024 * 1024) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+PART = re.compile(r"[A-Za-z0-9_-]{1,40}")
+
+
+def part_path(work: Path, part: str) -> Path:
+    """The user's decisions on one part of a Tổng hợp programme (``review-<part>.json``)."""
+    if not PART.fullmatch(part):
+        raise ReviewError("unknown part")
+    return work / f"review-{part}.json"
+
+
 def main(argv: list[str] | None = None) -> int:
-    """``python -m engine.dubflow.mastering.review --work DIR --video N <action> …``: the desktop's review calls.
+    """``python -m engine.dubflow.mastering.review --work DIR (--video N | --part ID) <action> …``: the desktop's
+    review calls, for a Bán hàng video (``--video``) or a part of a Tổng hợp programme (``--part``: hook, intro, an
+    item id, outro).
 
     Prints the panel's view (JSON) after the action; exit 2 with a message on a refused action."""
     import argparse
     import sys
     parser = argparse.ArgumentParser(prog="dubflow.mastering.review")
     parser.add_argument("--work", type=Path, required=True)
-    parser.add_argument("--video", type=int, required=True)
+    which = parser.add_mutually_exclusive_group(required=True)
+    which.add_argument("--video", type=int)
+    which.add_argument("--part")
     sub = parser.add_subparsers(dest="action", required=True)
     sub.add_parser("view")
     decide_p = sub.add_parser("decide")
@@ -403,20 +418,27 @@ def main(argv: list[str] | None = None) -> int:
     accept = sub.add_parser("accept")
     accept.add_argument("value", choices=["true", "false"])
     args = parser.parse_args(argv)
-    if not 1 <= args.video <= 99:
-        parser.error("--video must be 1-99")
     work: Path = args.work
-    log = _read_json(work / f"editorial-{args.video}.json")
-    if not isinstance(log, dict):
-        print(json.dumps({"error": "Video này chưa có kế hoạch dựng để duyệt."}, ensure_ascii=False))
-        return 2
-    plan = _read_json(work / f"mastering_plan-{args.video}.json")
-    status = _read_json(work / "status.json", 4 * 1024 * 1024) or {}
     extra: list[str] = []
-    for video in status.get("videos") or ():
-        if isinstance(video, dict) and video.get("index") == args.video:
-            extra = [w for w in ((video.get("mastering") or {}).get("warnings") or []) if isinstance(w, str)]
-    path = path_for(work, args.video)
+    if args.part is not None:
+        if not PART.fullmatch(args.part):
+            parser.error("--part must be a part id")
+        log = _read_json(work / "mastering" / f"editorial-{args.part}.json")
+        plan = _read_json(work / "mastering" / f"plan-{args.part}.json")
+        path = part_path(work, args.part)
+    else:
+        if not 1 <= args.video <= 99:
+            parser.error("--video must be 1-99")
+        log = _read_json(work / f"editorial-{args.video}.json")
+        plan = _read_json(work / f"mastering_plan-{args.video}.json")
+        status = _read_json(work / "status.json", 4 * 1024 * 1024) or {}
+        for video in status.get("videos") or ():
+            if isinstance(video, dict) and video.get("index") == args.video:
+                extra = [w for w in ((video.get("mastering") or {}).get("warnings") or []) if isinstance(w, str)]
+        path = path_for(work, args.video)
+    if not isinstance(log, dict):
+        print(json.dumps({"error": "Phần này chưa có kế hoạch dựng để duyệt."}, ensure_ascii=False))
+        return 2
     try:
         review = load(path)
         if args.action == "decide":
@@ -443,7 +465,7 @@ def main(argv: list[str] | None = None) -> int:
 
 __all__ = ["INVALIDATED", "MATCH_AVAILABLE", "MATCH_NOT_FOUND", "NEEDS_REVIEW", "NOT_NEEDED", "READY", "Review",
            "ReviewError", "SOURCE_INSUFFICIENT", "USER_APPROVED", "UnitDecision", "annotate", "evidence_state", "load",
-           "path_for", "save", "unit_state", "unreviewed", "user_state", "main", "view", "warning_id"]
+           "part_path", "path_for", "save", "unit_state", "unreviewed", "user_state", "main", "view", "warning_id"]
 
 
 if __name__ == "__main__":

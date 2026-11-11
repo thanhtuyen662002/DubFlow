@@ -238,6 +238,36 @@ class RealMediaProgrammeTest(unittest.TestCase):
             self.assertFalse([c for c in commands if "scdet" in " ".join(c)])  # sources not analysed again
             self.assertEqual(len(drafts), 1)  # the AI's draft was kept, not written again
             self.assertEqual(m.load(work / "mastering" / "plan-i5.json"), first_draft)
+            self.assertEqual(again["rendered_parts"], ["i2"])
+            self.assertEqual(len(again["reused_parts"]), 7)
+            self.assertIn("i2", again["review_parts"])
+            # The desktop's review panel pins another shot for a sentence of item 4: the next run plans that part
+            # with the pin, renders only it, and the decision is still there afterwards.
+            from engine.dubflow.mastering import review as reviewing
+            import contextlib
+            import io
+            part, unit, other = next((p, u, c["id"]) for p in ("intro", "outro", "hook")
+                                     for log in [json.loads((work / "mastering" / f"editorial-{p}.json").read_text(encoding="utf-8"))]
+                                     for u in log["units"] for c in log["candidates"] if c["id"] not in u["chosen"])
+            shown = io.StringIO()
+            with contextlib.redirect_stdout(shown):
+                code = reviewing.main(["--work", str(work), "--part", part, "decide", unit["unit_id"], "pin", other])
+            self.assertEqual(code, 0, shown.getvalue())
+            self.assertTrue((work / f"review-{part}.json").is_file())
+            commands.clear()
+            third = run_program(job.load_spec(write_spec(root, value)), out, speaker=lambda status: FakeSpeaker(), probe=probe,
+                                inspect=lambda path: scene.probe(Path(FFPROBE), path), ffmpeg=Path(FFMPEG), ffmpeg_runner=runner,
+                                encoder="mpeg4", vision=Seeing, ask_text=ask_text)
+            self.assertEqual(third["state"], "COMPLETED", third)
+            self.assertEqual(third["rendered_parts"], [part])
+            pinned = next(u for u in json.loads((work / "mastering" / f"editorial-{part}.json").read_text(encoding="utf-8"))["units"]
+                          if u["unit_id"] == unit["unit_id"])
+            self.assertEqual(pinned["chosen"][0], other)
+            kept = reviewing.load(work / f"review-{part}.json")
+            self.assertEqual(kept.units[unit["unit_id"]].pin, [other])
+            self.assertFalse(kept.units[unit["unit_id"]].invalidated)
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                reviewing.main(["--work", str(work), "--part", "../i4", "view"])  # a part id is a name, never a path
 
 
 class MomentTest(unittest.TestCase):
