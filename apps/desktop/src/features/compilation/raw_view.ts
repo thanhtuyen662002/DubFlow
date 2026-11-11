@@ -445,6 +445,9 @@ export function mountRawCompilation(invoke: Invoke, session: AiSession, host: Ra
     editing = run.dir;
     fillFields(); rerenderItems();
     host.openSetup();
+    // after the app reopens the voice list may not be loaded yet: load it, then select the programme's voice
+    // (rc4 Windows check: "Sửa chương trình…" said "Hãy chọn giọng đọc.")
+    void loadVoices().then(() => { if (draft.voiceId) voice.value = draft.voiceId; });
   }
 
   function partRow(run: RawRun, part: RawPart, programKind: RawDraft["kind"]): HTMLElement {

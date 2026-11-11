@@ -254,6 +254,7 @@ class RealMediaProgrammeTest(unittest.TestCase):
                                      for u in log["units"] for c in log["candidates"] if c["id"] not in u["chosen"])
             shown = io.StringIO()
             with contextlib.redirect_stdout(shown):
+                self.assertEqual(reviewing.main(["--work", str(work), "--part", part, "accept", "true"]), 0)
                 code = reviewing.main(["--work", str(work), "--part", part, "decide", unit["unit_id"], "pin", other])
             self.assertEqual(code, 0, shown.getvalue())
             self.assertTrue((work / f"review-{part}.json").is_file())
@@ -269,6 +270,9 @@ class RealMediaProgrammeTest(unittest.TestCase):
             kept = reviewing.load(work / f"review-{part}.json")
             self.assertEqual(kept.units[unit["unit_id"]].pin, [other])
             self.assertFalse(kept.units[unit["unit_id"]].invalidated)
+            # the part changed after the user accepted to export it with unreviewed sentences: the export asks again
+            self.assertFalse(kept.accept_unreviewed)
+            self.assertFalse(third["review_parts"][part]["accept_unreviewed"])
             with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 reviewing.main(["--work", str(work), "--part", "../i4", "view"])  # a part id is a name, never a path
 

@@ -69,6 +69,10 @@ def wanted(units: Sequence[Mapping[str, Any]], pool: Sequence[Candidate], eviden
     out: list[str] = []
 
     def add(candidate_id: str) -> None:
+        # a part of a shot already split by its frames is not split again (``c3f2f3`` is no shot id the
+        # desktop or a decision accepts: rc4 Windows check, "Cảnh không hợp lệ")
+        if parent(candidate_id) != candidate_id:
+            return
         if candidate_id not in done and candidate_id not in out and candidate_id in by_id and len(out) < limit:
             out.append(candidate_id)
 
