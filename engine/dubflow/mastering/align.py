@@ -30,6 +30,7 @@ import math
 import re
 from typing import Any, Iterable, Mapping, Sequence
 
+from . import entities as names
 from . import evidence as ev
 from .candidates import Candidate
 from .policy import Pacing
@@ -209,14 +210,56 @@ class Scorer:
                                 if described >= COMMON_MIN_SHOTS and seen * 1000 > COMMON_SHARE * described)
         self.default_idf = math.log(1 + count)
         self.content = any(evidence[c.candidate_id].content for c in self.candidates if c.candidate_id in evidence)
+        # proper names across languages (Kavkaz / Caucasus / Кавказ): the built-in table and the user's own aliases
+        notes = [i.text for c in self.candidates if c.candidate_id in evidence for i in evidence[c.candidate_id].items
+                 if i.origin == "user"]
+        self.names = names.BUILTIN.with_notes(notes)
+        self._mention_cache: dict[str, list[names.Mention]] = {}
+        self.entities: dict[str, dict[str, list[tuple[names.Mention, int]]]] = {}
+        seen_with: dict[str, int] = {}
+        for c in self.candidates:
+            info = evidence.get(c.candidate_id)
+            texts: dict[str, int] = {}
+            for item in info.items if info else ():
+                if item.origin != "signal" and item.text:
+                    weight = item.confidence * ev.TRUST[item.origin] // 1000
+                    texts[item.text] = max(texts.get(item.text, 0), weight)
+            found = names.found_in(texts, self.names)
+            self.entities[c.candidate_id] = found
+            for entity_id in found:
+                seen_with[entity_id] = seen_with.get(entity_id, 0) + 1
+        self.entity_idf = {e: math.log(1 + count / (1 + n)) for e, n in seen_with.items()}
+        self.common_entities = frozenset(e for e, n in seen_with.items()
+                                         if described >= COMMON_MIN_SHOTS and n * 1000 > COMMON_SHARE * described)
 
     def relevance(self, unit: Unit, candidate: Candidate) -> tuple[int, list[str]]:
         """0–1000 and the matched words (for the reason)."""
         wanted = ev.terms(unit.text)
-        if not wanted:
+        mentions = self._mentions(unit.text)
+        if mentions:
+            # a name is matched as the entity it names, in whatever language the footage says it: its words are not
+            # matched again one by one (nor in pairs with the words around them)
+            name_words = {w for m in mentions for w in m.words}
+            wanted = frozenset(t for t in wanted if not any(names.fold(w.removeprefix(ev.LOOSE)) in name_words
+                                                            for w in t.split()))
+        if not wanted and not mentions:
             return 0, []
         found, loose = self.terms[candidate.candidate_id], self.loose[candidate.candidate_id]
         matched, total, words = 0.0, 0.0, []
+        shot_names = self.entities.get(candidate.candidate_id, {})
+        for mention in {m.entity_id: m for m in mentions}.values():
+            weight = 2 * self.entity_idf.get(mention.entity_id, self.default_idf)
+            total += weight
+            if mention.entity_id in self.common_entities:
+                continue
+            value, form = 0, ""
+            for shot_mention, confidence in shot_names.get(mention.entity_id, ()):
+                sure = names.tier(mention, shot_mention, self.names) * confidence // 1000
+                if sure > value:
+                    value, form = sure, shot_mention.written
+            if value:
+                matched += weight * value / 1000
+                words.append(mention.written if names.fold(form) == names.fold(mention.written) else f"{mention.written} = {form}")
         for term in wanted:
             weight = self.idf.get(term, self.default_idf) * (2 if " " in term else 1)
             total += weight
@@ -227,8 +270,14 @@ class Scorer:
         if not matched:
             return 0, []
         value = min(1.0, matched / max(1.5, 0.45 * total))
-        words.sort(key=lambda w: (-(" " in w), -self.idf.get(w, 0), w))
+        words.sort(key=lambda w: (-("=" in w), -(" " in w), -self.idf.get(w, 0), w))
         return round(value * 1000), words[:4]
+
+    def _mentions(self, text: str) -> list[names.Mention]:
+        cached = self._mention_cache.get(text)
+        if cached is None:
+            cached = self._mention_cache[text] = self.names.mentions(text)
+        return cached
 
     def _common(self, term: str) -> bool:
         if term in self.common:
