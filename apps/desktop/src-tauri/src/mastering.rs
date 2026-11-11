@@ -1,5 +1,6 @@
-//! Tối ưu hậu kỳ tự động (ADR-0052/0055, Phase 5 MVP): the level a render
-//! asks for, and the review panel of a mastered product video.
+//! Tối ưu hậu kỳ tự động (Phase 5 MVP): the level a render asks for (ADR-0052;
+//! Lồng tiếng's mastering.json is ADR-0055), and the review panel of a mastered
+//! Bán hàng video (ADR-0052 + ADR-0054, the editorial layer).
 //!
 //! The panel never edits plan files itself: each action is one call of
 //! `python -m engine.dubflow.mastering.review`, after the host has checked
@@ -117,6 +118,11 @@ pub async fn mastering_review(output_dir: String, video: u32, action: String, un
                               ids: Option<Vec<String>>, warning: Option<String>, value: Option<bool>) -> Result<Value, String> {
     let run = crate::product::run_dir(&output_dir)?;
     let video = video_number(video)?;
+    // the engine reads and replaces review-<n>.json in the work folder: never through a link
+    if fs::symlink_metadata(run.join(".dubflow-work").join(format!("review-{video}.json")))
+        .is_ok_and(|metadata| crate::edit::is_link(&metadata) || !metadata.is_file()) {
+        return Err(fail("Tệp duyệt cảnh của video này không an toàn (là liên kết)"));
+    }
     let args = action_args(&action, unit.as_deref(), what.as_deref(), ids.as_deref().unwrap_or_default(), warning.as_deref(), value)?;
     tauri::async_runtime::spawn_blocking(move || run_review(&run, &video, &args))
         .await.map_err(|error| fail(error.to_string()))?
@@ -129,16 +135,60 @@ fn keyframe_path(run: &Path, name: &str) -> Result<PathBuf, String> {
     Ok(run.join(".dubflow-work").join("mastering").join(name))
 }
 
+/// Opens a file without following a link at its last step (the folders above it are checked plain by the caller).
+fn open_no_follow(path: &Path) -> std::io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(0o400_000); // O_NOFOLLOW
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(0x0100); // O_NOFOLLOW
+    }
+    options.open(path)
+}
+
+/// The keyframe's bytes: only a plain file in the run's own plain mastering folder, checked on the opened handle
+/// (a link put there between the check and the read is not followed).
+fn read_keyframe(run: &Path, name: &str) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let path = keyframe_path(run, name)?;
+    let missing = || fail("Không có ảnh của cảnh này");
+    if !crate::product::plain_dir(path.parent().expect("mastering folder")) {
+        return Err(missing());
+    }
+    let before = fs::symlink_metadata(&path).map_err(|_| missing())?;
+    if crate::edit::is_link(&before) || !before.is_file() || before.len() > KEYFRAME_LIMIT {
+        return Err(missing());
+    }
+    let mut file = open_no_follow(&path).map_err(|_| missing())?;
+    let opened = file.metadata().map_err(|_| missing())?;
+    if crate::edit::is_link(&opened) || !opened.is_file() || opened.len() > KEYFRAME_LIMIT {
+        return Err(missing());
+    }
+    let mut bytes = Vec::with_capacity(opened.len() as usize);
+    file.by_ref().take(KEYFRAME_LIMIT + 1).read_to_end(&mut bytes).map_err(|_| fail("Không đọc được ảnh của cảnh"))?;
+    if bytes.len() as u64 > KEYFRAME_LIMIT {
+        return Err(missing());
+    }
+    Ok(bytes)
+}
+
 /// A shot's keyframe (JPEG) for the review panel.
 #[tauri::command]
 pub fn mastering_keyframe(output_dir: String, name: String) -> Result<tauri::ipc::Response, String> {
     let run = crate::product::run_dir(&output_dir)?;
-    let path = keyframe_path(&run, &name)?;
-    let metadata = fs::metadata(&path).map_err(|_| fail("Không có ảnh của cảnh này"))?;
-    if !metadata.is_file() || metadata.len() > KEYFRAME_LIMIT {
-        return Err(fail("Không có ảnh của cảnh này"));
-    }
-    Ok(tauri::ipc::Response::new(fs::read(&path).map_err(|_| fail("Không đọc được ảnh của cảnh"))?))
+    Ok(tauri::ipc::Response::new(read_keyframe(&run, &name)?))
 }
 
 #[cfg(test)]
@@ -172,6 +222,38 @@ mod tests {
         assert_eq!(action_args("accept", None, None, &[], None, Some(true)).unwrap(), vec!["accept", "true"]);
         assert!(action_args("ack", None, None, &[], Some("nope"), None).is_err());
         assert!(action_args("shell", None, None, &[], None, None).is_err());
+    }
+
+    #[test]
+    fn a_keyframe_that_is_a_link_or_sits_in_a_linked_folder_is_not_read() {
+        let base = std::env::temp_dir().join(format!("dubflow-keyframe-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let run = base.join("DubFlow Output").join("Ban hang - A").join("run-1");
+        let mastering = run.join(".dubflow-work").join("mastering");
+        fs::create_dir_all(&mastering).unwrap();
+        let name = "89fe52a42e57f33f-c1.jpg";
+        fs::write(mastering.join(name), b"jpeg").unwrap();
+        assert_eq!(read_keyframe(&run, name).unwrap(), b"jpeg");
+        let outside = base.join("secret");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join(name), b"outside marker").unwrap();
+        // a linked mastering folder
+        let other = base.join("DubFlow Output").join("Ban hang - A").join("run-2");
+        fs::create_dir_all(other.join(".dubflow-work")).unwrap();
+        if crate::product::tests::link_dir(&outside, &other.join(".dubflow-work").join("mastering")) {
+            assert!(read_keyframe(&other, name).is_err());
+        } else {
+            assert!(cfg!(not(windows)), "junctions need no privilege on Windows");
+        }
+        // a keyframe that is itself a link (a symlink where allowed; a hard link is a plain file and stays readable)
+        #[cfg(unix)]
+        {
+            fs::remove_file(mastering.join(name)).unwrap();
+            std::os::unix::fs::symlink(outside.join(name), mastering.join(name)).unwrap();
+            assert!(read_keyframe(&run, name).is_err());
+        }
+        assert_eq!(fs::read(outside.join(name)).unwrap(), b"outside marker");
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]
