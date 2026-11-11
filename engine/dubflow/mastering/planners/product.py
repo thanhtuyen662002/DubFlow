@@ -30,7 +30,7 @@ from ..candidates import Candidate
 PLANNER = "dubflow.mastering.product"
 # 1: shot-aware parts in turn (Phase 1). 2: each sentence illustrated by the footage that matches it (ADR-0054).
 VERSION = "8"
-RECIPE = "product-editorial-v13"  # v13: multilingual proper names (#722); v12: semantic root-cause fixes (#705); v11: every piece inside its shot
+RECIPE = "product-editorial-v14"  # v14: multi-frame evidence (#724); v13: proper names (#722); v12: semantic root-cause fixes (#705); v11: every piece inside its shot
 WORKFLOW = "product_showcase"
 SHOT_MARGIN_MS = 120
 # A shot shorter than this is skipped while longer ones exist; it is used when nothing else is left.

@@ -47,12 +47,24 @@ fn is_unit(value: &str) -> bool {
     (1..=3).contains(&letters) && (1..=4).contains(&(value.len() - letters)) && value.bytes().skip(letters).all(|b| b.is_ascii_digit())
 }
 
-/// A shot id as the planner writes it: `v<n>c<n>` (a clip or photo of a product run).
+fn digits(value: &str, most: usize) -> bool {
+    (1..=most).contains(&value.len()) && value.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// `<n>` or `<n>f<n>`: a shot number, or a part of a long shot split by its extra frames.
+fn shot_number(value: &str) -> bool {
+    match value.split_once('f') {
+        Some((number, part)) => digits(number, 4) && digits(part, 1),
+        None => digits(value, 4),
+    }
+}
+
+/// A shot id as the planner writes it: `v<n>c<n>`, or `v<n>c<n>f<n>` for a part of a long shot (a clip or photo
+/// of a product run).
 fn is_shot(value: &str) -> bool {
     let Some(rest) = value.strip_prefix('v') else { return false };
     let Some((source, number)) = rest.split_once('c') else { return false };
-    (1..=2).contains(&source.len()) && source.bytes().all(|b| b.is_ascii_digit())
-        && (1..=4).contains(&number.len()) && number.bytes().all(|b| b.is_ascii_digit())
+    digits(source, 2) && shot_number(number)
 }
 
 fn is_warning(value: &str) -> bool {
@@ -63,7 +75,7 @@ fn is_warning(value: &str) -> bool {
 fn is_keyframe(value: &str) -> bool {
     let Some(stem) = value.strip_suffix(".jpg") else { return false };
     let Some((tag, part)) = stem.split_once('-') else { return false };
-    is_warning(tag) && (part == "still" || part.strip_prefix('c').is_some_and(|n| (1..=4).contains(&n.len()) && n.bytes().all(|b| b.is_ascii_digit())))
+    is_warning(tag) && (part == "still" || part.strip_prefix('c').is_some_and(shot_number))
 }
 
 fn video_number(video: u32) -> Result<String, String> {
@@ -348,7 +360,9 @@ mod tests {
     fn ids_and_names_have_the_planners_shapes_only() {
         assert!(is_unit("s1") && is_unit("u12") && !is_unit("s") && !is_unit("../s1") && !is_unit("S1"));
         assert!(is_shot("v1c3") && is_shot("v12c1234") && !is_shot("v1c") && !is_shot("v1c3;rm") && !is_shot("../v1c3"));
+        assert!(is_shot("v1c3f2") && !is_shot("v1c3f") && !is_shot("v1c3f12") && !is_shot("v1cf2") && !is_shot("v1c3f2f1"));
         assert!(is_keyframe("89fe52a42e57f33f-c12.jpg") && is_keyframe("89fe52a42e57f33f-still.jpg"));
+        assert!(is_keyframe("89fe52a42e57f33f-c12f3.jpg") && !is_keyframe("89fe52a42e57f33f-c12f.jpg"));
         assert!(!is_keyframe("../89fe52a42e57f33f-c1.jpg") && !is_keyframe("89fe52a42e57f33f-c1.png") && !is_keyframe("x-c1.jpg"));
         assert!(is_warning("0123456789abcdef") && !is_warning("0123456789ABCDEF") && !is_warning("0123"));
     }
