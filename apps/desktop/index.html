@@ -531,6 +531,8 @@
                     </div>
                   </section>
 
+                  <section id="mastering-qc" class="result-card mqc-card" aria-label="Hậu kỳ tự động" hidden></section>
+
                   <section id="edit-exports" class="edit-exports" aria-labelledby="edit-exports-title" hidden>
                     <h3 id="edit-exports-title">Bản đã sửa</h3>
                     <div id="edit-export-progress" class="edit-export-progress" role="status" hidden>
@@ -621,6 +623,18 @@
                       <input id="multi-voice" class="switch" type="checkbox" role="switch" />
                     </label>
                     <p id="voice-catalog-status" class="hint"></p>
+                    <label id="mastering-row" class="select-row">
+                      <span>
+                        <strong>Tối ưu hậu kỳ tự động</strong>
+                        <small id="mastering-summary">Xuất như cũ, không phân tích thêm.</small>
+                      </span>
+                      <select id="mastering-level" aria-label="Tối ưu hậu kỳ tự động">
+                        <option value="off">Tắt</option>
+                        <option value="light">Nhẹ</option>
+                        <option value="balanced">Cân bằng</option>
+                        <option value="dynamic">Mạnh</option>
+                      </select>
+                    </label>
 
                     <h3 class="setup-group">Phụ đề</h3>
                     <label class="switch-row">

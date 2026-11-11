@@ -5,6 +5,12 @@ import { isDubbingOptions, type DubbingOptions } from "../voices/model.ts";
 export const QUEUE_SCHEMA_VERSION = 1 as const;
 export const DEFAULT_QUEUE_LIMIT = 10_000;
 
+/** The levels of Tối ưu hậu kỳ tự động a job can keep (Tắt is no value). */
+export type MasteringLevel = "light" | "balanced" | "dynamic";
+export function isMasteringLevel(value: unknown): value is MasteringLevel {
+  return value === "light" || value === "balanced" || value === "dynamic";
+}
+
 export type QueueJob = {
   id: string;
   sourcePath: string;
@@ -35,6 +41,8 @@ export type QueueJob = {
   multiVoice?: true;
   /** Experimental: dub over the separated music/effects instead of the ducked original audio. */
   separateBackground?: true;
+  /** Tối ưu hậu kỳ tự động (ADR-0055); undefined is Tắt: rendered exactly as before. */
+  mastering?: MasteringLevel;
   /** Speaker id ("S1"…) -> voice id, chosen in review after a multi-voice run. */
   speakerVoices?: Record<string, string>;
   /** When processing first ran and when it reached a terminal state (ISO). */
@@ -197,6 +205,7 @@ function isQueueJob(value: unknown): value is QueueJob {
     (job.blurAuto === undefined || job.blurAuto === true) &&
     (job.multiVoice === undefined || job.multiVoice === true) &&
     (job.separateBackground === undefined || job.separateBackground === true) &&
+    (job.mastering === undefined || isMasteringLevel(job.mastering)) &&
     (job.speakerVoices === undefined || isSpeakerVoices(job.speakerVoices)) &&
     (job.startedAt === undefined || !Number.isNaN(Date.parse(job.startedAt))) &&
     (job.finishedAt === undefined || !Number.isNaN(Date.parse(job.finishedAt)))
@@ -282,6 +291,7 @@ function copyOptions(from: QueueJob, to: QueueJob): void {
   if (from.blurAuto) to.blurAuto = true;
   if (from.multiVoice) to.multiVoice = true;
   if (from.separateBackground) to.separateBackground = true;
+  if (from.mastering) to.mastering = from.mastering;
   if (from.speakerVoices) to.speakerVoices = { ...from.speakerVoices };
 }
 
@@ -498,6 +508,16 @@ export class QueueController {
     if (job.status.state !== "QUEUED") throw new Error("Options can only change before processing");
     if (separate) job.separateBackground = true;
     else delete job.separateBackground;
+    this.commit();
+  }
+
+  /** Tối ưu hậu kỳ tự động for one video; "off" removes it. */
+  setMastering(jobId: string, level: string): void {
+    const job = this.requireJob(jobId);
+    if (job.status.state !== "QUEUED") throw new Error("Options can only change before processing");
+    if (level === "off") delete job.mastering;
+    else if (isMasteringLevel(level)) job.mastering = level;
+    else throw new Error("Invalid mastering level");
     this.commit();
   }
 

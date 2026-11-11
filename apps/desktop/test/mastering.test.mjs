@@ -64,3 +64,39 @@ assert.equal("mastering" in buildRequest({ ...base, template: "chi-chu", info: {
 assert.equal("mastering" in buildRequest({ ...base, mastering: "max" }), false);
 
 console.log("mastering tests passed");
+
+// Lồng tiếng: the Hậu kỳ card reads the export's QC; off has no card; the true-peak ceiling is checked after AAC.
+{
+  const { parseDubbingQc, qcRows, climaxText } = await import("../src/features/mastering/qc.ts");
+  assert.equal(parseDubbingQc(null), null);
+  assert.equal(parseDubbingQc({ level: "max" }), null);
+  const qc = parseDubbingQc({
+    level: "balanced", loudness: true, fallback: false, video_filters: ["crop"], notes: ["Màu: giữ nguyên.", 3],
+    measured: { mix: { integrated: -12.4, true_peak: 0.3, lra: 7.6 } },
+    output_loudness: { integrated: -16.1, true_peak: -1.2, lra: 7.1 },
+    climax: { start_ms: 63500, end_ms: 68500 }, climax_decision: "apply",
+  });
+  assert.deepEqual(qc.notes, ["Màu: giữ nguyên."]);
+  assert.equal(qc.climaxDecision, null, "only keep/drop are decisions");
+  const rows = qcRows(qc);
+  const loudRow = rows.find((row) => row.label === "Âm lượng");
+  assert.equal(loudRow.tone, "warn");
+  assert.match(loudRow.text, /−12,4 LUFS.*−16,1 LUFS.*−1,2 dBTP sau AAC.*vượt trần/);
+  assert.ok(rows.some((row) => row.label === "Màu" && row.text === "Giữ nguyên."));
+  assert.match(climaxText(qc), /1:03–1:08.*không chèn vào video/);
+  const ok = qcRows(parseDubbingQc({ level: "light", loudness: true, notes: [], measured: {}, output_loudness: { integrated: -16, true_peak: -2.5, lra: 5 } }));
+  assert.equal(ok.find((row) => row.label === "Âm lượng").tone, "ok");
+  const back = qcRows(parseDubbingQc({ level: "light", loudness: false, fallback: true, notes: ["Đã quay về âm thanh gốc (B1)"], measured: {} }));
+  assert.ok(back.some((row) => row.label === "Quay về"));
+}
+
+// Queue: a job keeps its level; off is no value; unknown levels are refused.
+{
+  const { isMasteringLevel } = await import("../src/features/queue/model.ts");
+  assert.ok(isMasteringLevel("light") && isMasteringLevel("dynamic") && !isMasteringLevel("off") && !isMasteringLevel("max"));
+  const { readJobDefaults, serializeJobDefaults } = await import("../src/features/queue/defaults.ts");
+  const saved = serializeJobDefaults({ dubbing: { enabled: true, voiceId: null }, mastering: "balanced" });
+  assert.equal(readJobDefaults(saved, null).mastering, "balanced");
+  assert.equal(readJobDefaults(JSON.stringify({ ...JSON.parse(saved), mastering: "max" }), null).mastering, undefined);
+}
+console.log("mastering qc ok");

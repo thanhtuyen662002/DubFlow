@@ -141,6 +141,79 @@ pub fn mastering_keyframe(output_dir: String, name: String) -> Result<tauri::ipc
     Ok(tauri::ipc::Response::new(fs::read(&path).map_err(|_| fail("Không đọc được ảnh của cảnh"))?))
 }
 
+/// Lồng tiếng reads its level from this file beside the outputs (ADR-0055); absent is off.
+pub(crate) const DUBBING_FILE: &str = "mastering.json";
+const QC_LIMIT: u64 = 4 * 1024 * 1024;
+
+/// A level writes `mastering.json` in a Lồng tiếng output folder; off (or no level) removes it, so off renders as before.
+pub(crate) fn write_dubbing_options(output: &Path, level: Option<&str>) -> Result<(), String> {
+    let path = output.join(DUBBING_FILE);
+    match options(level)? {
+        Some(value) => {
+            let temp = output.join(".mastering.json.tmp");
+            fs::write(&temp, serde_json::to_vec(&value).map_err(|error| fail(error.to_string()))?)
+                .and_then(|()| fs::rename(&temp, &path))
+                .map_err(|error| fail(format!("Không ghi được mức tối ưu hậu kỳ: {error}")))
+        }
+        None => match fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(fail(format!("Không bỏ được mức tối ưu hậu kỳ cũ: {error}"))),
+        },
+    }
+}
+
+fn climax_file(dir: &Path) -> PathBuf {
+    dir.join(".dubflow-work").join("mastering").join("climax-decision.json")
+}
+
+/// What the Hậu kỳ card shows of a finished Lồng tiếng video: the export's own QC, nothing recomputed. Null when
+/// the video was made with mastering off (or before it existed).
+fn qc_view(dir: &Path) -> Result<Value, String> {
+    let path = dir.join("qc_report.json");
+    if !path.is_file() {
+        return Ok(Value::Null);
+    }
+    let qc = crate::read_json(&path, QC_LIMIT)?;
+    let Some(mastering) = qc.get("mastering").filter(|value| value.is_object()) else { return Ok(Value::Null) };
+    let fallback = qc["warnings"].as_array().is_some_and(|warnings| warnings.iter()
+        .any(|warning| warning.as_str().is_some_and(|text| text.starts_with("B2_AUDIO_FALLBACK_TO_B1"))));
+    let decision = crate::read_json(&climax_file(dir), 64 * 1024).ok()
+        .and_then(|value| value["climax"].as_str().filter(|choice| ["keep", "drop"].contains(choice)).map(str::to_owned));
+    Ok(json!({
+        "level": mastering["level"], "notes": mastering["notes"], "loudness": mastering["loudness"],
+        "video_filters": mastering["video_filters"], "measured": mastering["measured"],
+        "output_loudness": mastering["output_loudness"], "climax": mastering["climax"],
+        "climax_decision": decision, "fallback": fallback,
+    }))
+}
+
+/// The Hậu kỳ card of a finished Lồng tiếng video (`output_path` is its final video).
+#[tauri::command]
+pub fn dubbing_qc(output_path: String) -> Result<Value, String> {
+    qc_view(&crate::review_dir(&output_path)?)
+}
+
+/// Giữ / Bỏ on the climax suggestion: only recorded (the suggestion is never put into the video by itself).
+#[tauri::command]
+pub fn dubbing_qc_climax(output_path: String, keep: bool) -> Result<Value, String> {
+    let dir = crate::review_dir(&output_path)?;
+    let view = qc_view(&dir)?;
+    let climax = &view["climax"];
+    if !climax.is_object() {
+        return Err(fail("Video này không có gợi ý cao trào"));
+    }
+    let path = climax_file(&dir);
+    fs::create_dir_all(path.parent().expect("mastering folder")).map_err(|error| fail(error.to_string()))?;
+    let record = json!({"schema_version": 1, "climax": if keep { "keep" } else { "drop" },
+                        "start_ms": climax["start_ms"], "end_ms": climax["end_ms"]});
+    let temp = path.with_extension("json.tmp");
+    fs::write(&temp, serde_json::to_vec(&record).map_err(|error| fail(error.to_string()))?)
+        .and_then(|()| fs::rename(&temp, &path))
+        .map_err(|error| fail(format!("Không lưu được lựa chọn: {error}")))?;
+    qc_view(&dir)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,5 +253,43 @@ mod tests {
         assert_eq!(keyframe_path(run, "89fe52a42e57f33f-c1.jpg").unwrap(),
                    run.join(".dubflow-work").join("mastering").join("89fe52a42e57f33f-c1.jpg"));
         assert!(keyframe_path(run, "..\\..\\secret.jpg").is_err());
+    }
+
+    #[test]
+    fn dubbing_level_file_is_written_for_a_level_and_removed_for_off() {
+        let dir = std::env::temp_dir().join(format!("dubflow-mastering-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        write_dubbing_options(&dir, Some("light")).unwrap();
+        let written: Value = serde_json::from_slice(&fs::read(dir.join(DUBBING_FILE)).unwrap()).unwrap();
+        assert_eq!(written, json!({"schema_version": 1, "level": "light"}));
+        write_dubbing_options(&dir, Some("off")).unwrap();
+        assert!(!dir.join(DUBBING_FILE).exists());
+        write_dubbing_options(&dir, None).unwrap();
+        assert!(write_dubbing_options(&dir, Some("../x")).is_err());
+        assert!(!dir.join(DUBBING_FILE).exists());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn qc_card_reads_the_exports_mastering_block_and_records_the_climax_choice() {
+        let dir = std::env::temp_dir().join(format!("dubflow-qc-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        assert_eq!(qc_view(&dir).unwrap(), Value::Null);
+        fs::write(dir.join("qc_report.json"), r#"{"warnings":[]}"#).unwrap();
+        assert_eq!(qc_view(&dir).unwrap(), Value::Null, "off: no card");
+        fs::write(dir.join("qc_report.json"), serde_json::to_vec(&json!({
+            "warnings": ["B2_AUDIO_FALLBACK_TO_B1: x"],
+            "mastering": {"level": "dynamic", "notes": ["Âm lượng: …"], "loudness": false, "video_filters": [],
+                          "measured": {}, "climax": {"start_ms": 1000, "end_ms": 6000}}})).unwrap()).unwrap();
+        let view = qc_view(&dir).unwrap();
+        assert_eq!(view["level"], "dynamic");
+        assert_eq!(view["fallback"], true);
+        assert_eq!(view["climax_decision"], Value::Null);
+        fs::create_dir_all(climax_file(&dir).parent().unwrap()).unwrap();
+        fs::write(climax_file(&dir), r#"{"climax":"keep"}"#).unwrap();
+        assert_eq!(qc_view(&dir).unwrap()["climax_decision"], "keep");
+        fs::write(climax_file(&dir), r#"{"climax":"apply-now"}"#).unwrap();
+        assert_eq!(qc_view(&dir).unwrap()["climax_decision"], Value::Null);
+        fs::remove_dir_all(&dir).unwrap();
     }
 }

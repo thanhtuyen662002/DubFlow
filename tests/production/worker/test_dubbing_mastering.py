@@ -209,6 +209,24 @@ class VoiceTimedFallbackTests(unittest.TestCase):
             self.assertFalse(any(note.startswith(("Âm lượng:", "Phụ đề:")) for note in notes), notes)
             self.assertTrue(any("B1" in note for note in notes))
             self.assertFalse(qc["mastering"]["loudness"])
+            self.assertIsNone(qc["mastering"]["output_loudness"])  # nothing normalised: nothing measured after AAC
+
+
+class OutputLoudnessTests(unittest.TestCase):
+    """QC states what the viewer hears: the final MP4 audio after AAC (Phase 5 Hậu kỳ card)."""
+
+    def test_the_final_video_is_measured_and_a_failed_measurement_is_none(self):
+        from types import SimpleNamespace
+        config = SimpleNamespace(ffmpeg_path=Path("ffmpeg"))
+        found = worker.mastering_measure.Loudness(-16.2, -2.4, 6.1, -26.3, 0.2)
+        with patch.object(worker.mastering_measure, "loudness", return_value=found) as measure:
+            self.assertEqual(worker._output_loudness(config, Path("final_vi.mp4")),
+                             {"integrated": -16.2, "true_peak": -2.4, "lra": 6.1, "threshold": -26.3, "offset": 0.2})
+        measure.assert_called_once_with(Path("ffmpeg"), Path("final_vi.mp4"))
+        with patch.object(worker.mastering_measure, "loudness", side_effect=worker.mastering_measure.MeasureError("x")):
+            self.assertIsNone(worker._output_loudness(config, Path("final_vi.mp4")))
+        with patch.object(worker.mastering_measure, "loudness", return_value=None):
+            self.assertIsNone(worker._output_loudness(config, Path("final_vi.mp4")))
 
 
 if __name__ == "__main__":

@@ -307,6 +307,8 @@ type PreviewExport = {
 };
 
 /** Finished videos the browser preview offers in "Chèn › Từ DubFlow" (it has no real queue jobs to insert). */
+let previewClimax: string | null = null;
+
 export const PREVIEW_EDIT_LIBRARY = [
   { id: "preview-intro", title: "Mở đầu kênh Phim Hay", outputPath: "D:\\Videos\\DubFlow Output\\Mo dau kenh - vi\\run-1\\final_vi.mp4" },
   { id: "preview-trailer", title: "Trailer phim cổ trang tập 2", outputPath: "D:\\Videos\\DubFlow Output\\Trailer co trang - vi\\run-1\\final_vi.mp4" },
@@ -919,6 +921,19 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
     case "product_runs": return previewProductRuns() as T;
     case "product_rerender": { const run = productRuns.get(String(args.outputDir)); if (run) { run.started = Date.now(); run.cancelled = 0; } return null as T; }
     case "mastering_keyframe": throw new Error("preview has no keyframes");
+    case "dubbing_qc":
+    case "dubbing_qc_climax": {
+      if (args?.keep !== undefined) previewClimax = args.keep ? "keep" : "drop";
+      return {
+        level: "dynamic", loudness: true, fallback: false, video_filters: ["crop=…", "colorlevels=…"],
+        notes: ["Âm lượng: tuyến tính tới −16 LUFS, chừa chỗ cho AAC.", "Màu: kéo giãn mức đen/trắng 0.031–0.962 (giới hạn 0.06 mỗi đầu), không đổi độ bão hòa.",
+          "Khung hình: bỏ viền đen bốn phía, phóng 1.042× đều hai chiều (giới hạn 1.06×).",
+          "Phụ đề: canh theo lúc giọng Việt thật (TTS) được nghe, tối đa 2 dòng × 42 ký tự, tối thiểu 1 giây, không chồng nhau."],
+        measured: { mix: { integrated: -12.4, true_peak: 0.3, lra: 7.6 } },
+        output_loudness: { integrated: -16.1, true_peak: -2.6, lra: 7.1 },
+        climax: { start_ms: 63500, end_ms: 68500 }, climax_decision: previewClimax,
+      } as T;
+    }
     case "mastering_review": {
       const view = previewReview(String(args.outputDir), Number(args.video));
       const unit = view.units.find((item) => item.unit_id === args.unit);
