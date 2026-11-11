@@ -263,7 +263,7 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
             check()
             seeing.apply(seen, evidence, f"AI {describer.provider}/{describer.used_model}")
             vision_report = {"provider": describer.provider, "model": describer.used_model, "frames": len(seen), "asked": describer.asked,
-                             "broad": len(first), "targeted": 0}
+                             "broad": len(first), "targeted": 0, "warnings": []}
             warnings += describer.warnings
             warned = len(describer.warnings)
             if len(everything_seen) > describer.budget:
@@ -402,6 +402,11 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
                                      "accept_unreviewed": decisions.accept_unreviewed}
             m.save(folder / f"plan-{part_id}.json", made.plan)
             shown.update(choice for unit in made.log["units"] for choice in unit["chosen"])
+            if vision_report is not None:
+                # what the AI could not see is said in every part's own log too, so the review panel shows it (real
+                # set v5: the quota ran out mid-run and the part logs said nothing)
+                vision_report["warnings"] = list(dict.fromkeys(describer.warnings))[:20]
+                made.log["warnings"] = list(dict.fromkeys([*made.log["warnings"], *vision_report["warnings"]]))
             made.log["vision"] = vision_report
             _atomic_text(folder / f"editorial-{part_id}.json", json.dumps(made.log, ensure_ascii=False, indent=1))
             review += sum(s.needs_review for s in made.plan.segments)

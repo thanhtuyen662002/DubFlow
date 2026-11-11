@@ -165,7 +165,8 @@ class RealMediaProgrammeTest(unittest.TestCase):
                 return {"narration": f"Một con gà gáy vang lần thứ {len(drafts)}.", "needs_check": []}
 
             class Seeing:  # a describer whose answers are cached: the second run asks for nothing
-                provider, used_model, warnings, budget = "gemini", "fake", [], 60
+                # the quota ran out after some frames (real set v5): the part logs must say so
+                provider, used_model, warnings, budget = "gemini", "fake", ["AI không xem được 4 khung hình (QUOTA)"], 60
                 runs = 0
 
                 def __init__(self, cache, context="", labels=()):
@@ -191,6 +192,9 @@ class RealMediaProgrammeTest(unittest.TestCase):
                                  ffmpeg_runner=runner, encoder="mpeg4", vision=Seeing, ask_text=ask_text)
             self.assertEqual(result["state"], "COMPLETED", result)
             work = out / ".dubflow-work"
+            first_log = json.loads((work / "mastering" / "editorial-i1.json").read_text(encoding="utf-8"))
+            self.assertEqual(first_log["vision"]["warnings"], ["AI không xem được 4 khung hình (QUOTA)"])
+            self.assertIn("AI không xem được 4 khung hình (QUOTA)", first_log["warnings"])
             hook = m.load(work / "mastering" / "plan-hook.json")
             self.assertEqual(hook.segments[0].role, "hook")
             self.assertEqual(hook.segments[0].source_id, "i3-s1")  # the hook line's words are in source 3's subtitles
