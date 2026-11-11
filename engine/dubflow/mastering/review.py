@@ -238,7 +238,10 @@ class Review:
         current = self.units.get(unit_id, UnitDecision())
         decision = UnitDecision(current.approved, list(current.pin), list(current.exclude))
         if action == "approve":
-            decision.approved = list(units[unit_id].get("chosen") or [])
+            chosen = list(units[unit_id].get("chosen") or [])
+            # approving a pin before the render that applies it approves the user's own pick (P2-5): what the
+            # sentence will show is the pinned shots, not the planner's choice still on screen
+            decision.approved = chosen if not decision.pin or _applied(decision.pin, chosen) else list(decision.pin)
         elif action == "unapprove":
             decision.approved = None
         elif action == "pin":
@@ -299,7 +302,13 @@ class Review:
                 decision.invalidated = "Cảnh đã chọn không còn trong nguồn (nguồn đã đổi); hãy chọn lại."
                 messages.append(f"Câu {unit_id[1:]}: {decision.invalidated}")
                 continue
-            if decision.approved is not None and list(decision.approved) != list(unit.get("chosen") or []):
+            chosen = list(unit.get("chosen") or [])
+            # A pin approved and then applied by a re-render is still approved (P2-5): a pin resets an earlier
+            # approval, so an approval that sits with a pin was given to the pinned shots. It goes only when the
+            # sentence no longer shows them (the plan could not honour the pin) or shows something else.
+            if decision.approved is not None and decision.pin and _applied(decision.pin, chosen):
+                decision.approved = chosen
+            if decision.approved is not None and list(decision.approved) != chosen:
                 decision.approved = None
                 decision.invalidated = "Cảnh của câu đã đổi sau khi bạn duyệt; hãy xem lại."
                 messages.append(f"Câu {unit_id[1:]}: {decision.invalidated}")
@@ -307,6 +316,14 @@ class Review:
             if decision.invalidated and decision.pin and all(i in known for i in decision.pin):
                 decision.invalidated = ""
         return messages
+
+
+def _applied(pin: Iterable[str], chosen: list[str]) -> bool:
+    """Whether the sentence opens with every pinned shot, in the pin's order: the plan honoured the pin. A pinned
+    shot shorter than the sentence is followed by what the planner adds to fill it (rc5: Câu 1 pinned to v1c1 shows
+    v1c1 then v1c2); that filling is the pin applied, not a change of the user's decision."""
+    pinned = list(dict.fromkeys(pin))
+    return bool(pinned) and list(dict.fromkeys(chosen))[:len(pinned)] == pinned
 
 
 def user_state(decision: UnitDecision | None) -> str | None:
