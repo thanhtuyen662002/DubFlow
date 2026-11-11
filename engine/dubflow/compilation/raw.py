@@ -25,7 +25,9 @@ from typing import Any, Callable, Mapping, Sequence
 from engine.dubflow.mastering import align
 from engine.dubflow.mastering import analysis as scene
 from engine.dubflow.mastering import candidates as shots
+from engine.dubflow.mastering import entities as proper_names
 from engine.dubflow.mastering import evidence as ev
+from engine.dubflow.mastering import frames as more
 from engine.dubflow.mastering import plan as m
 from engine.dubflow.mastering import review as reviewing
 from engine.dubflow.mastering import vision as seeing
@@ -275,11 +277,12 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
         if resolved.outro:
             parts.append(("outro", "outro", resolved.outro, resolved.title, None, everything, "off"))
         code = hashlib.sha256()
-        for module in (render, layout, planner, align, shots, ev, scene):
+        for module in (render, layout, planner, align, more, proper_names, shots, ev, scene):
             code.update(Path(module.__file__).read_bytes())
         blur = render.available_blur(ffmpeg) if ffmpeg.is_file() else "boxblur=20:2"
         music_hash = _digest_file(resolved.music, cancelled) if resolved.music else None
         names: list[str] = []
+        sampled: set[str] = set()  # shots whose extra frames were described (a shot is looked at again only once)
         shown: set[str] = set()  # candidates the parts so far showed
         timeline: list[tuple[str, int]] = []
         all_captions: list[script.Caption] = []
@@ -347,6 +350,36 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
                     warnings += describer.warnings[warned:]
                     warned = len(describer.warnings)
                     if extra:
+                        made = planner.plan_part(part_id, kind, spoken, narration_ms, resolved.mastering, lead_ms=script.LEAD_MS,
+                                                 gap_ms=script.GAP_MS, footage=part_footage, candidates=candidates, evidence=evidence,
+                                                 groups=groups, edits=edits, keep_audio=keep, title=title,
+                                                 inputs=inputs, shown=avoid)
+            room = describer.budget - describer.taken if vision_report is not None else 0
+            if room >= 2:
+                # More frames of the shots one frame does not represent (long takes, unsure answers), then plan again.
+                locked = ({i for ids in edits.pin.values() for i in ids} | set(edits.exclude)) if edits is not None else set()
+                part_pool = [c for s in source_ids for c in candidates[s]]
+                ids = more.wanted(made.log["units"], part_pool, evidence, sampled, limit=min(more.EXTRA_SHOTS, room // 2),
+                                  forward_only=True, locked={i for i in locked if more.parent(i) == i},
+                                  again={more.parent(i) for i in locked if more.parent(i) != i})
+                if ids:
+                    status.write(message=f"{context}AI xem thêm khung hình của cảnh dài ({index}/{len(parts)})…")
+                    mine = {s: candidates[s] for s in source_ids}
+                    mine, described = more.look_again(
+                        ids, mine, evidence, describer, folder, {s: footage[s].path for s in source_ids},
+                        grab=lambda video, at, jpeg, grey: ffmpeg_runner(shots.grab_argv(ffmpeg, video, at, jpeg, grey), folder, cancelled),
+                        measure=shots.measure, detail=f"AI {describer.provider}/{describer.used_model}", cancelled=cancelled)
+                    check()
+                    sampled.update(ids)
+                    candidates.update(mine)
+                    pool = [c for every in candidates.values() for c in every]
+                    groups = shots.duplicate_groups(pool)
+                    vision_report["multi_frame"] = vision_report.get("multi_frame", 0) + described
+                    vision_report["frames"] += described
+                    vision_report["asked"] = describer.asked
+                    warnings += describer.warnings[warned:]
+                    warned = len(describer.warnings)
+                    if described:
                         made = planner.plan_part(part_id, kind, spoken, narration_ms, resolved.mastering, lead_ms=script.LEAD_MS,
                                                  gap_ms=script.GAP_MS, footage=part_footage, candidates=candidates, evidence=evidence,
                                                  groups=groups, edits=edits, keep_audio=keep, title=title,

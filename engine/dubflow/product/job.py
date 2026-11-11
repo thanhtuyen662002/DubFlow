@@ -297,6 +297,7 @@ def _mastered(spec: Spec, visuals: Sequence[render.Visual], total_ms: int, work:
     """
     from dataclasses import replace
     from engine.dubflow.mastering import analysis as scene, candidates as shots, plan as mastering_plan
+    from engine.dubflow.mastering import frames as more
     from engine.dubflow.mastering import vision as seeing
     from engine.dubflow.mastering.candidates import duplicate_groups
     from engine.dubflow.mastering.planners import product as planner
@@ -381,6 +382,24 @@ def _mastered(spec: Spec, visuals: Sequence[render.Visual], total_ms: int, work:
                     seeing.apply(extra, evidence, f"AI {describer.provider}/{describer.used_model}")
                     vision_report.update(frames=vision_report["frames"] + len(extra), targeted=len(extra), asked=describer.asked)
                     if extra:
+                        saved, log = make()
+            if vision_report is not None and describer.budget - describer.taken >= 2:
+                # More frames of the shots one frame does not represent (long takes, unsure answers), then plan again.
+                locked = {i for ids in edits.pin.values() for i in ids} | set(edits.exclude)
+                ids = more.wanted(log["units"], pool, evidence, (), limit=min(more.EXTRA_SHOTS, (describer.budget - describer.taken) // 2),
+                                  locked={i for i in locked if more.parent(i) == i},
+                                  again={more.parent(i) for i in locked if more.parent(i) != i})
+                if ids:
+                    video_of = {f"v{i + 1}": v.path for i, v in enumerate(visuals) if v.duration_ms is not None}
+                    found, described = more.look_again(
+                        ids, found, evidence, describer, folder, video_of,
+                        grab=lambda video, at, jpeg, grey: ffmpeg_runner(shots.grab_argv(ffmpeg, video, at, jpeg, grey), folder, cancelled),
+                        measure=shots.measure, detail=f"AI {describer.provider}/{describer.used_model}", cancelled=cancelled)
+                    if cancelled():
+                        raise Cancelled()
+                    pool = [c for mine in found.values() for c in mine]
+                    vision_report.update(frames=vision_report["frames"] + described, multi_frame=described, asked=describer.asked)
+                    if described:
                         saved, log = make()
             log["vision"] = vision_report
             if vision_report and vision_report["warnings"]:
