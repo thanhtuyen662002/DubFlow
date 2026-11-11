@@ -2574,3 +2574,13 @@ body.settings-open .rail-item.active:not(#nav-settings)::before { display: none;
   .mreview-body { grid-template-columns: 1fr; overflow: auto; }
   .mreview-side { border-right: 0; border-bottom: 1px solid var(--line); }
 }
+
+/* Hậu kỳ tự động: the QC card of a finished Lồng tiếng video */
+.mqc-card h3 { font-size: 14px; font-weight: 600; margin-bottom: 8px; }
+.mqc-rows { display: grid; grid-template-columns: max-content 1fr; gap: 6px 12px; font-size: 13px; }
+.mqc-rows dt { color: var(--muted); }
+.mqc-rows dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.mqc-ok { color: var(--ok, inherit); }
+.mqc-warn { color: var(--warn, inherit); font-weight: 500; }
+.mqc-climax { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 13px; }
+.mqc-actions { display: flex; gap: 8px; margin-top: 8px; }

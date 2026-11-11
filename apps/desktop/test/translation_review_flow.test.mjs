@@ -28,8 +28,14 @@ assert.deepEqual(startJobRequest(job(reopened, zhId), "D:/Results"), {
   jobId: zhId, sourcePath: "C:/clips/douyin.mp4", outputDir: null, outputRoot: "D:/Results",
   enableDubbing: true, ttsVoiceId: VOICE, burnIn: true, sourceLanguage: "zh", subtitleBox: false,
   translationEngine: "hachimi", blurRegions: null, blurAuto: false, multiVoice: false, speakerVoices: null,
-  separateBackground: false, cpuOnly: false,
+  separateBackground: false, mastering: "off", cpuOnly: false,
 });
+// Tối ưu hậu kỳ tự động: the job's level reaches start_job, kept across a reopen; off is sent too (the host removes a stale file)
+reopened.setMastering(zhId, "balanced");
+assert.equal(startJobRequest(job(new QueueController(storage, clock), zhId), null).mastering, "balanced");
+assert.throws(() => reopened.setMastering(zhId, "max"));
+reopened.setMastering(zhId, "off");
+assert.equal(job(reopened, zhId).mastering, undefined);
 assert.equal(startJobRequest(job(reopened, zhId), null, true).cpuOnly, true, "the app-wide CPU choice reaches start_job");
 const autoRequest = startJobRequest(job(reopened, autoId), null);
 assert.equal(autoRequest.sourceLanguage, "auto", "Auto must never silently become English");

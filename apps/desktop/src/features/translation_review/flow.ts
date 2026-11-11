@@ -55,6 +55,8 @@ export function startJobRequest(job: QueueJob, outputRoot: string | null, cpuOnl
     blurAuto: job.blurAuto ?? false,
     multiVoice: job.multiVoice ?? false, speakerVoices: job.speakerVoices ?? null,
     separateBackground: job.separateBackground ?? false,
+    // always sent, so a resumed folder that once had a level drops it when the video is now Tắt
+    mastering: job.mastering ?? "off",
     cpuOnly,
     ...(subtitleStyle ? { subtitleStyle } : {}),
     ...(coverStyle ? { coverStyle } : {}),

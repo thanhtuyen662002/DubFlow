@@ -1,3 +1,5 @@
+import { isLevel, levelText } from "./features/mastering/model.ts";
+import { renderDubbingQc } from "./features/mastering/qc_card.ts";
 import { convertFileSrc, invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -139,6 +141,7 @@ const voiceControls = $<HTMLFieldSetElement>("#voice-controls");
 const dubbingToggle = $<HTMLInputElement>("#enable-dubbing");
 const multiVoiceToggle = $<HTMLInputElement>("#multi-voice");
 const separateToggle = $<HTMLInputElement>("#separate-background");
+const masteringSelect = $<HTMLSelectElement>("#mastering-level");
 const burnInToggle = $<HTMLInputElement>("#burn-in");
 const sourceLanguageSelect = $<HTMLSelectElement>("#source-language");
 const hachimiOption = $<HTMLOptionElement>('#translation-engine option[value="hachimi"]');
@@ -317,6 +320,8 @@ function renderVoiceControls(job: QueueJob | undefined): void {
   $("#multi-voice-row").hidden = !dubbingToggle.checked;
   separateToggle.checked = job?.separateBackground ?? false;
   $("#separate-row").hidden = !dubbingToggle.checked;
+  masteringSelect.value = job?.mastering ?? "off";
+  $("#mastering-summary").textContent = levelText("dubbing", isLevel(masteringSelect.value) ? masteringSelect.value : "off");
   burnInToggle.checked = job?.burnIn ?? true;
   const blurMode = job?.blurAuto ? "auto" : job?.blurRegions?.length ? "manual" : "off";
   // "Thủ công" stays selected while the user has not drawn a region yet.
@@ -519,6 +524,7 @@ function renderInspector(job: QueueJob | null): void {
   $("#open-post").hidden = !output;
   $("#result-title").textContent = finishedLabel(job);
   $("#result-card").hidden = !output;
+  void renderDubbingQc($("#mastering-qc"), invoke, output);
   // Partial dubbing keeps the original voice for some lines; say so and point
   // to the review dialog, whose filter starts on those lines.
   const warning = $("#result-warning");
@@ -1064,6 +1070,7 @@ function applyDefaults(jobIds: readonly string[]): void {
       else if (defaults.blurAuto) queue.setBlurAuto(id, true);
       if (defaults.multiVoice) queue.setMultiVoice(id, true);
       if (defaults.separateBackground) queue.setSeparateBackground(id, true);
+      if (defaults.mastering) queue.setMastering(id, defaults.mastering);
       if (defaults.translationEngine) queue.setTranslationEngine(id, defaults.translationEngine);
       if (defaults.dubbing) applyDubbingDefault(id, defaults.voiceId);
     } catch {
@@ -1382,6 +1389,7 @@ function copyOptions(from: QueueJob, id: string): void {
   if (from.multiVoice) queue.setMultiVoice(id, true);
   if (from.speakerVoices) queue.setSpeakerVoices(id, from.speakerVoices);
   if (from.separateBackground) queue.setSeparateBackground(id, true);
+  if (from.mastering) queue.setMastering(id, from.mastering);
 }
 
 /** "Thử lại" on a stopped video: a new version with the same options, started at once. */
@@ -2650,6 +2658,12 @@ separateToggle.addEventListener("change", () => {
   const job = selectedJob();
   if (!job) return;
   queue.setSeparateBackground(job.id, separateToggle.checked);
+  rememberDefaults(selectedJob() ?? job);
+});
+masteringSelect.addEventListener("change", () => {
+  const job = selectedJob();
+  if (!job) return;
+  queue.setMastering(job.id, masteringSelect.value);
   rememberDefaults(selectedJob() ?? job);
 });
 multiVoiceToggle.addEventListener("change", () => {

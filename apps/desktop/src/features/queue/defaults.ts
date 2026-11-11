@@ -1,5 +1,6 @@
 import { isBlurRegionList, type BlurRegion } from "../blur/region.ts";
 import { translatorDefaults } from "../translation_review/flow.ts";
+import { isMasteringLevel, type MasteringLevel } from "./model.ts";
 
 /** Options a newly added video starts with. */
 export type JobDefaults = {
@@ -12,6 +13,7 @@ export type JobDefaults = {
   sourceLanguage?: "zh" | "en";
   translationEngine?: "hachimi";
   blurRegions?: BlurRegion[];
+  mastering?: MasteringLevel;
 };
 
 export const DEFAULTS_KEY = "dubflow.defaults.v2";
@@ -54,6 +56,7 @@ export function readJobDefaults(v2: string | null, v1: string | null): JobDefaul
     ...(value.sourceLanguage === "zh" || value.sourceLanguage === "en" ? { sourceLanguage: value.sourceLanguage } : {}),
     ...(value.translationEngine === "hachimi" ? { translationEngine: "hachimi" as const } : {}),
     ...(blurRegions ? { blurRegions } : {}),
+    ...(isMasteringLevel(value.mastering) ? { mastering: value.mastering } : {}),
   });
 }
 
@@ -61,7 +64,7 @@ export function readJobDefaults(v2: string | null, v1: string | null): JobDefaul
 export function serializeJobDefaults(job: {
   dubbing: { enabled: boolean; voiceId: string | null };
   burnIn?: boolean; blurAuto?: boolean; separateBackground?: boolean; multiVoice?: boolean;
-  sourceLanguage?: "zh" | "en"; translationEngine?: "hachimi"; blurRegions?: BlurRegion[];
+  sourceLanguage?: "zh" | "en"; translationEngine?: "hachimi"; blurRegions?: BlurRegion[]; mastering?: MasteringLevel;
 }): string {
   const defaults: JobDefaults = translatorDefaults<JobDefaults>({
     dubbing: job.dubbing.enabled,
@@ -73,6 +76,7 @@ export function serializeJobDefaults(job: {
     ...(job.sourceLanguage ? { sourceLanguage: job.sourceLanguage } : {}),
     ...(job.translationEngine ? { translationEngine: job.translationEngine } : {}),
     ...(job.blurRegions?.length ? { blurRegions: job.blurRegions } : {}),
+    ...(job.mastering ? { mastering: job.mastering } : {}),
   });
   return JSON.stringify(defaults);
 }
