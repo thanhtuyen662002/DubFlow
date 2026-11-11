@@ -1,0 +1,150 @@
+{
+ "schema": "dubflow-real-sources-v1",
+ "created": "2026-11-11",
+ "sources": [
+  {
+   "source_id": "v1",
+   "split": "dev",
+   "group": "product-household",
+   "workflow": "product",
+   "file": "D:\\Projects\\DubFlow\\_sandbox\\phase2-e2e\\footage\\product\\Tassimo_coffee_system.webm",
+   "sha256": "52f52738f57450e944636d80714f7cbc08c7ed6a9c54a77a157ccfa698380329",
+   "duration_ms": 83808,
+   "width": 1920,
+   "height": 1080,
+   "trim": null
+  },
+  {
+   "source_id": "v2",
+   "split": "dev",
+   "group": "entertainment",
+   "workflow": "compilation",
+   "file": "D:\\Tools\\DubFlow\\source-media\\6107398d76e6c19bfb6a4bddad6974fbc1688e5423c8d0cb018053293baa593e\\link-880b7fcf366d48dfdfeea561\\a502407d507432cf317876fc378a942ac60f853dc76db5ab7051f920055f83ec\\85f9506a4bc27036d288c9f8905829f7791274a7766c605387635a14743367b4.mp4",
+   "sha256": "85f9506a4bc27036d288c9f8905829f7791274a7766c605387635a14743367b4",
+   "duration_ms": 143488,
+   "width": 1280,
+   "height": 720,
+   "trim": null
+  },
+  {
+   "source_id": "v3",
+   "split": "dev",
+   "group": "entertainment",
+   "workflow": "compilation",
+   "file": "D:\\Tools\\DubFlow\\source-media\\ed22363c024d949bdf8026be26420da579726d8636860c544ee0ed5753b85733\\link-7699798b04ea85a8a282fada\\6a3f466dc1fcaeb091026758e9077f5a27618a19286b239159c55114dfee0034\\2b47efae6c42932e176cd1e0c90f36e8bf7a60003d9f00defa7d1dc161b7375b.mp4",
+   "sha256": "2b47efae6c42932e176cd1e0c90f36e8bf7a60003d9f00defa7d1dc161b7375b",
+   "duration_ms": 185945,
+   "width": 1920,
+   "height": 1080,
+   "trim": null
+  },
+  {
+   "source_id": "v4",
+   "split": "dev",
+   "group": "educational-technical",
+   "workflow": "compilation",
+   "file": "%USERPROFILE%\\Downloads\\snaptik.vn_7694150556495006994.mp4",
+   "sha256": "21799f230fbe7106ac3d6024cfb276ef8a39451be4bc5776b7857a73333164ca",
+   "duration_ms": 483133,
+   "width": 576,
+   "height": 1024,
+   "trim": null
+  },
+  {
+   "source_id": "v5",
+   "split": "dev",
+   "group": "educational-technical",
+   "workflow": "compilation",
+   "file": "%USERPROFILE%\\Downloads\\FSave.com_Facebook_Dang-video-dang-viral-o-moi-niche-Video-_Media_1643482660895393_001_720p.mp4",
+   "sha256": "4973649802e14e914b579429e582353274c3c6dfc2f6b1a9994bc9a3841d3d3b",
+   "duration_ms": 39240,
+   "width": 720,
+   "height": 1280,
+   "trim": null
+  },
+  {
+   "source_id": "v6",
+   "split": "dev",
+   "group": "long-form-documentary",
+   "workflow": "compilation",
+   "file": "%USERPROFILE%\\Videos\\DubFlow Sources\\BV1KmbhzXEib\\source-media.mp4",
+   "sha256": "d8d4692fb49d77b16d45338237b647cab7c37dbe4c0661d0b28ad1cdf341ddce",
+   "duration_ms": 343133,
+   "width": 1280,
+   "height": 720,
+   "trim": null
+  },
+  {
+   "source_id": "v7",
+   "split": "holdout",
+   "group": "product-household",
+   "workflow": "product",
+   "file": "D:\\Projects\\DubFlow\\_sandbox\\phase2-e2e\\footage\\product\\Moccamaster_coffee_maker.webm",
+   "sha256": "02f11c27554694f09d275df37d7b26e7d9eb7424f97cb07a9cff901c5491efc3",
+   "duration_ms": 140953,
+   "width": 1920,
+   "height": 1080,
+   "trim": null
+  },
+  {
+   "source_id": "v8",
+   "split": "holdout",
+   "group": "entertainment",
+   "workflow": "compilation",
+   "file": "%USERPROFILE%\\Downloads\\douyinsaver.com-7642640640311872795.mp4",
+   "sha256": "9e42b835d197c7bc7dfe0f87c9e63913b725b3ee2946433e2947b975cbae21ed",
+   "duration_ms": 220961,
+   "width": 1280,
+   "height": 720,
+   "trim": null
+  },
+  {
+   "source_id": "v9",
+   "split": "holdout",
+   "group": "entertainment",
+   "workflow": "compilation",
+   "file": "D:\\Projects\\DubFlow\\_sandbox\\data-link\\source-media\\f089dcd627ae68c54a2e06bf6331b01932603a66aa7eb640777e7825db5cfa63\\link-1141145083998a0252b2685a\\9c48d615f9ff26d74b9677d818f694f68a8ee30e3717a7ecc1ea5ea448b4bfe7\\dfd09303f99a0fd3300c301cc1fc097ecc1c8334b2259057f3bf537a5132aaaa.mp4",
+   "sha256": "dfd09303f99a0fd3300c301cc1fc097ecc1c8334b2259057f3bf537a5132aaaa",
+   "duration_ms": 653792,
+   "width": 426,
+   "height": 240,
+   "trim": null
+  },
+  {
+   "source_id": "v10",
+   "split": "holdout",
+   "group": "educational-technical",
+   "workflow": "compilation",
+   "file": "%USERPROFILE%\\Downloads\\2HGb6FHfdbHeCwv9e3SccHWhb4xJbutExkVU.mp4",
+   "sha256": "c06964b1fa05b074330a7098b00df29dde5878e55cfa473e31630b665f7cb176",
+   "duration_ms": 618974,
+   "width": 1280,
+   "height": 720,
+   "trim": null
+  },
+  {
+   "source_id": "v11",
+   "split": "holdout",
+   "group": "long-form-documentary",
+   "workflow": "compilation",
+   "file": "%USERPROFILE%\\Videos\\DubFlow Sources\\BV1VG411777E\\source-media.mp4",
+   "sha256": "b70b43445ccbd5990e956f105f2cc4131ee4185bc5e8b0beb2c9f9b7e7ba5bea",
+   "duration_ms": 300117,
+   "width": 1920,
+   "height": 1080,
+   "trim": null
+  },
+  {
+   "source_id": "v12",
+   "split": "holdout",
+   "group": "entertainment",
+   "workflow": "compilation",
+   "file": "%USERPROFILE%\\Downloads\\douyinsaver.com-7697621631518166282.mp4",
+   "sha256": "bbba2c9be2d6717d694c05eba090b5f85af341123d313732bbf7cef9224785b1",
+   "duration_ms": 246155,
+   "width": 1024,
+   "height": 576,
+   "trim": null
+  }
+ ]
+}

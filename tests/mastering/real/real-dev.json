@@ -1,0 +1,1244 @@
+{
+ "schema": "dubflow-real-labels-v1",
+ "split": "REAL-DEV",
+ "labeller": "agent (Claude, frame-checked)",
+ "created": "2026-11-11",
+ "method": "Narration written and labels set from timestamped contact sheets (1 frame/s, 2 s for >300 s) made with the rc6 ffmpeg, before any planner or Vision run on these sources. Not human-verified. Times are ms of the source file; spans snap to the sheet sampling step.",
+ "type_definitions": {
+  "footage_present": "clearly shown",
+  "footage_insufficient": "plausible but not shown anywhere",
+  "near_match": "a similar but different thing is shown",
+  "partial": "only part of the sentence is shown",
+  "synonym_or_indirect": "shown, but said with other words, a proper name or indirectly",
+  "generic": "opening/CTA, no specific footage needed"
+ },
+ "videos": [
+  {
+   "source_id": "v1",
+   "title": "Máy pha cà phê viên nén Tassimo",
+   "file": "D:\\Projects\\DubFlow\\_sandbox\\phase2-e2e\\footage\\product\\Tassimo_coffee_system.webm",
+   "sha256": "52f52738f57450e944636d80714f7cbc08c7ed6a9c54a77a157ccfa698380329",
+   "duration_ms": 83808,
+   "trim": null,
+   "group": "product-household",
+   "workflow": "product",
+   "frame_notes": "0-2 hand at machine/lid; 2-4 lid open; 5 hand holds red T-disc pod; 6-8 closes lid; 9 presses button; 10-47 machine idle, dark-blue mug under spout, second blue mug on coaster at right, red pod on counter bottom-right throughout; 48-83 coffee stream pours into the dark-blue mug. No milk, no water tank, no barcode reading, no screen.",
+   "sentences": [
+    {
+     "speech_ref": "v1-s1",
+     "source_id": "v1",
+     "text": "Bạn có muốn mỗi sáng chỉ cần một nút bấm là có ngay tách cà phê nóng?",
+     "type": "generic",
+     "words": 17,
+     "est_duration_ms": 5610,
+     "acceptable": [],
+     "partial": [],
+     "contra": [],
+     "key_for_other": [],
+     "state": "NOT_NEEDED",
+     "serious_if_wrong": false,
+     "notes": "opening hook; any machine shot is fine"
+    },
+    {
+     "speech_ref": "v1-s2",
+     "source_id": "v1",
+     "text": "Mở nắp máy, đặt viên nén cà phê vào khay rồi đóng nắp lại thật nhẹ nhàng.",
+     "type": "footage_present",
+     "words": 17,
+     "est_duration_ms": 5610,
+     "acceptable": [
+      {
+       "start_ms": 2000,
+       "end_ms": 8500,
+       "note": "lid open, pod in hand at 5s, lid closed 6-8s"
+      }
+     ],
+     "partial": [
+      {
+       "start_ms": 0,
+       "end_ms": 2000,
+       "note": "hand reaches machine, lid not yet open"
+      }
+     ],
+     "contra": [],
+     "key_for_other": [],
+     "state": "MATCH_AVAILABLE",
+     "serious_if_wrong": false,
+     "notes": "pod insertion itself is quick; whole 2-8.5s window shows the loading action"
+    },
+    {
+     "speech_ref": "v1-s3",
+     "source_id": "v1",
+     "text": "Dòng cà phê nóng chảy đều từ vòi xuống chiếc cốc sứ màu xanh đậm.",
+     "type": "footage_present",
+     "words": 15,
+     "est_duration_ms": 4950,
+     "acceptable": [
+      {
+       "start_ms": 48000,
+       "end_ms": 83800,
+       "note": "coffee stream into dark-blue mug"
+      }
+     ],
+     "partial": [],
+     "contra": [],
+     "key_for_other": [],
+     "state": "MATCH_AVAILABLE",
+     "serious_if_wrong": false,
+     "notes": "10-47s shows the same mug but no stream yet: not acceptable"
+    },
+    {
+     "speech_ref": "v1-s4",
+     "source_id": "v1",
+     "text": "Máy còn đánh sữa nóng tạo lớp bọt mịn để bạn pha ngay một ly cappuccino.",
+     "type": "near_match",
+     "words": 16,
+     "est_duration_ms": 5280,
+     "acceptable": [],
+     "partial": [],
+     "contra": [
+      {
+       "start_ms": 48000,
+       "end_ms": 83800,
+       "note": "dark coffee stream, not milk foam: looks like it but is not"
+      }
+     ],
+     "key_for_other": [],
+     "state": "SOURCE_INSUFFICIENT",
+     "serious_if_wrong": true,
+     "notes": "no milk or foam anywhere in the clip"
+    },
+    {
+     "speech_ref": "v1-s5",
+     "source_id": "v1",
+     "text": "Chỉ một lần chạm, Tassimo tự lo phần còn lại trong lúc bạn thong thả chờ đợi.",
+     "type": "synonym_or_indirect",
+     "words": 17,
+     "est_duration_ms": 5610,
+     "acceptable": [
+      {
+       "start_ms": 8500,
+       "end_ms": 10500,
+       "note": "finger presses the start button"
+      },
+      {
+       "start_ms": 10500,
+       "end_ms": 47500,
+       "note": "machine working, user waiting, nothing to do"
+      }
+     ],
+     "partial": [],
+     "contra": [],
+     "key_for_other": [],
+     "state": "MATCH_AVAILABLE",
+     "serious_if_wrong": false,
+     "notes": "indirect wording for press button + wait; brand name only"
+    },
+    {
+     "speech_ref": "v1-s6",
+     "source_id": "v1",
+     "text": "Bình chứa nước phía sau có thể tháo rời nên việc vệ sinh rất dễ dàng.",
+     "type": "footage_insufficient",
+     "words": 16,
+     "est_duration_ms": 5280,
+     "acceptable": [],
+     "partial": [],
+     "contra": [],
+     "key_for_other": [],
+     "state": "SOURCE_INSUFFICIENT",
+     "serious_if_wrong": false,
+     "notes": "water tank never shown (camera only at the front)"
+    },
+    {
+     "speech_ref": "v1-s7",
+     "source_id": "v1",
+     "text": "Viên nén có mã vạch riêng để máy tự nhận biết loại đồ uống và chỉnh nhiệt độ phù hợp.",
+     "type": "partial",
+     "words": 20,
+     "est_duration_ms": 6600,
+     "acceptable": [],
+     "partial": [
+      {
+       "start_ms": 4500,
+       "end_ms": 6500,
+       "note": "red pod in hand"
+      },
+      {
+       "start_ms": 0,
+       "end_ms": 2000,
+       "note": "red pod on counter"
+      }
+     ],
+     "contra": [],
+     "key_for_other": [],
+     "state": "SOURCE_INSUFFICIENT",
+     "serious_if_wrong": false,
+     "notes": "pod is visible, barcode reading / temperature are not"
+    }
+   ]
+  },
+  {
+   "source_id": "v2",
+   "title": "Phim ngắn cổ trang (Douyin 7699053575086918966)",
+   "file": "D:\\Tools\\DubFlow\\source-media\\6107398d76e6c19bfb6a4bddad6974fbc1688e5423c8d0cb018053293baa593e\\link-880b7fcf366d48dfdfeea561\\a502407d507432cf317876fc378a942ac60f853dc76db5ab7051f920055f83ec\\85f9506a4bc27036d288c9f8905829f7791274a7766c605387635a14743367b4.mp4",
+   "sha256": "85f9506a4bc27036d288c9f8905829f7791274a7766c605387635a14743367b4",
+   "duration_ms": 143488,
+   "trim": null,
+   "group": "entertainment",
+   "workflow": "compilation",
+   "frame_notes": "AI-rendered costume drama (not live action). 0-1 wooden gate; 2 man lying dead; 3-4 rows of black-clad killers; 5 girl tends young man in field; 7-8 red-veiled bride + groom; 9-10 peach-blossom vase '王府'; 11-14 older lady + two girls seated; 15-20 girls, flower in hair; 21-29 young man in white with girl; 30 banquet hall; 31-32 armoured guards enter; 33-34,38-41 prince in black-gold robe raises cup (smug); 35-36 prince seated between guards; 37 two wine glasses + petal; 42-45 old lord in blue robe seated with wine; 46 glass with pink petal; 47-50 girl inspects with chopsticks; 51-52 old lord drinks; 53-54 glass falls and shatters; 55-56 old lord collapses face onto red flower dish; 57-59 son in white holds father; 60-62 girl in purple + mother, sword; 63-64 prince smirks; 66 hooded silhouettes; 67 jade token; 68-75 old man in grey, swords pointed, 71 spilled medicine chest; 76-77 son with bleeding father + mother; 78-80 son in white points sword at prince; 81-86 prince among armoured guards, sword at him; 87-88 official reads yellow edict; 91-93 document + red seal; 94-99 eye close-up; 100-102 son in white escorted by guards; 103 crossed swords; 104-105 prince at table; 106-109 hands, cup, food; 110-114 man in navy (萧景川) shouts among guards; 115-116 sword fight, runs out; 117 courtyard wall with peach blossoms; 118-119 archers on wall; 120-121 arrows flying; 122 man vs two black assassins; 123-124 man with sword; 125-128 arrow hits his shoulder; 129-132 fights, bodies on ground; 133-136 young man in light blue runs, fights assassins; 137-139 swords at his neck; 140-142 black end card.",
+   "sentences": [
+    {
+     "speech_ref": "v2-s1",
+     "source_id": "v2",
+     "text": "Giữa yến tiệc mừng thọ, lão vương gia vừa uống cạn chén rượu thì gục xuống bàn.",
+     "type": "footage_present",
+     "words": 17,
+     "est_duration_ms": 5610,
+     "acceptable": [
+      {
+       "start_ms": 51000,
+       "end_ms": 57000,
+       "note": "old lord drinks, glass falls, he collapses"
+      }
+     ],
+     "partial": [
+      {
+       "start_ms": 42000,
+       "end_ms": 46000,
+       "note": "old lord seated with wine, no drinking"
+      }
+     ],
+     "contra": [
+      {
+       "start_ms": 38000,
+       "end_ms": 42000,
+       "note": "the prince drinks, wrong person"
+      }
+     ],
+     "key_for_other": [],
+     "state": "MATCH_AVAILABLE",
+     "serious_if_wrong": true,
+     "notes": "prince drinking would show the wrong man being poisoned"
+    },
+    {
+     "speech_ref": "v2-s2",
+     "source_id": "v2",
+     "text": "Kẻ đứng sau tất cả vẫn ung dung nâng chén, nở nụ cười lạnh lùng như chưa có chuyện gì.",
+     "type": "synonym_or_indirect",
+     "words": 20,
+     "est_duration_ms": 6600,
+     "acceptable": [
+      {
+       "start_ms": 33000,
+       "end_ms": 35000,
+       "note": "prince raises cup"
+      },
+      {
+       "start_ms": 38000,
+       "end_ms": 42000,
+       "note": "prince toasts and drinks"
+      },
+      {
+       "start_ms": 63000,
+       "end_ms": 65000,
+       "note": "prince smirks"
+      }
+     ],
+     "partial": [
+      {
+       "start_ms": 104000,
+       "end_ms": 106000,
+       "note": "prince seated at table"
+      }
+     ],
+     "contra": [
+      {
+       "start_ms": 42000,
+       "end_ms": 46000,
+       "note": "victim, not the villain"
+      }
+     ],
+     "key_for_other": [],
+     "state": "MATCH_AVAILABLE",
+     "serious_if_wrong": true,
+     "notes": "villain never named; must be the black-gold prince"
+    },
+    {
+     "speech_ref": "v2-s3",
+     "source_id": "v2",
+     "text": "Hàng cung thủ trên tường đồng loạt buông tên, mưa tên lao xuống giữa sân hoa đào.",
+     "type": "footage_present",
+     "words": 17,
+     "est_duration_ms": 5610,
+     "acceptable": [
+      {
+       "start_ms": 118000,
+       "end_ms": 122000,
+       "note": "archers on wall, arrows in flight"
+      }
+     ],
+     "partial": [
+      {
+       "start_ms": 117000,
+       "end_ms": 118000,
+       "note": "wall + blossoms, no archers"
+      },
+      {
+       "start_ms": 125000,
+       "end_ms": 127000,
+       "note": "arrow hits"
+      }
+     ],
+     "contra": [],
+     "key_for_other": [],
+     "state": "MATCH_AVAILABLE",
+     "serious_if_wrong": false,
+     "notes": ""
+    },
+    {
+     "speech_ref": "v2-s4",
+     "source_id": "v2",
+     "text": "Chàng thư sinh áo xanh rút kiếm đâm thẳng vào ngực tên hoàng tử độc ác.",
+     "type": "near_match",
+     "words": 16,
+     "est_duration_ms": 5280,
+     "acceptable": [],
+     "partial": [
+      {
+       "start_ms": 133000,
+       "end_ms": 139000,
+       "note": "scholar in light blue, but he is the one threatened"
+      }
+     ],
+     "contra": [
+      {
+       "start_ms": 78000,
+       "end_ms": 81000,
+       "note": "son in white points sword at prince, no stab"
+      },
+      {
+       "start_ms": 81000,
+       "end_ms": 87000,
+       "note": "sword pointed at prince, no stab"
+      }
+     ],
+     "key_for_other": [],
+     "state": "SOURCE_INSUFFICIENT",
+     "serious_if_wrong": true,
+     "notes": "no stabbing of the prince anywhere"
+    },
+    {
+     "speech_ref": "v2-s5",
+     "source_id": "v2",
+     "text": "Đêm ấy nàng lặng lẽ cưỡi ngựa rời khỏi kinh thành dưới ánh trăng mờ.",
+     "type": "footage_insufficient",
+     "words": 15,
+     "est_duration_ms": 4950,
+     "acceptable": [],
+     "partial": [],
+     "contra": [],
+     "key_for_other": [],
+     "state": "SOURCE_INSUFFICIENT",
+     "serious_if_wrong": false,
+     "notes": "no horse, no night ride"
+    },
+    {
+     "speech_ref": "v2-s6",
+     "source_id": "v2",
+     "text": "Thánh chỉ được đọc giữa điện, vu cho vương phủ nuôi tử sĩ và cả nhà bị bắt giam.",
+     "type": "partial",
+     "words": 19,
+     "est_duration_ms": 6270,
+     "acceptable": [],
+     "partial": [
+      {
+       "start_ms": 87000,
+       "end_ms": 93000,
+       "note": "official reads edict, document and seal"
+      },
+      {
+       "start_ms": 100000,
+       "end_ms": 103000,
+       "note": "son escorted by guards"
+      }
+     ],
+     "contra": [],
+     "key_for_other": [],
+     "state": "SOURCE_INSUFFICIENT",
+     "serious_if_wrong": false,
+     "notes": "edict + escort shown; whole family arrested is not"
+    },
+    {
+     "speech_ref": "v2-s7",
+     "source_id": "v2",
+     "text": "Cùng xem tiếp để biết số phận của cả vương phủ sẽ ra sao nhé.",
+     "type": "generic",
+     "words": 15,
+     "est_duration_ms": 4950,
+     "acceptable": [],
+     "partial": [],
+     "contra": [],
+     "key_for_other": [],
+     "state": "NOT_NEEDED",
+     "serious_if_wrong": false,
+     "notes": "CTA"
+    }
+   ]
+  },
+  {
+   "source_id": "v3",
+   "title": "Bình luận phim ngắn: dị vật trong mũi (Bilibili BV1ckx16aEBz)",
+   "file": "D:\\Tools\\DubFlow\\source-media\\ed22363c024d949bdf8026be26420da579726d8636860c544ee0ed5753b85733\\link-7699798b04ea85a8a282fada\\6a3f466dc1fcaeb091026758e9077f5a27618a19286b239159c55114dfee0034\\2b47efae6c42932e176cd1e0c90f36e8bf7a60003d9f00defa7d1dc161b7375b.mp4",
+   "sha256": "2b47efae6c42932e176cd1e0c90f36e8bf7a60003d9f00defa7d1dc161b7375b",
+   "duration_ms": 185945,
+   "trim": null,
+   "group": "entertainment",
+   "workflow": "compilation",
+   "frame_notes": "0-1 pile of used tissues; 2,5-6,58,113-114 wide shot man slumped in armchair, red lamp, tissues on floor; 3-4 bloody nose; 7-12 tissues wiping nose; 13 dark room man in chair; 14-17,115-119,127-137 man in armchair holding tissue to nose (129-130 holds red phone receiver to ear); 18-20 face in pain; 21-22 bloody fragment in fingers; 23-35 face/dark; 36-44 bathroom, man touching nose; 45-47 bathroom counter with bloody tissues, man uses tweezers at sink; 48-51 blood, at sink/mirror; 52-57 head back, bloody face and hands; 59-61,65-67 man in chair bloody nose and vest; 62-64 TV shows vacuum-cleaner advert; 68-70 man crouches by coffee table with tissue box; 71-72 face seen through vacuum hose (fish-eye); 73-76 dark kitchen struggle; 77-78 man on kitchen floor, cord; 79-84 lying on floor gasping; 85-87 bloody nose close; 88-91,144-146 man on grassy hilltop above city; 92-96,147-153 sniffs white flower; 97,163-167 blue/white flowers; 98-100,175-182 bends over in flowers, sneezes; 101-103 blur; 104-105 bloody face; 106-107 bloody palm; 108-110 pixelated grey thing; 111-112 cupped bloody hands; 120 another man in suit with same symptom; 121-122 other people in a street; 123-126,168-170 man on hill holding his head; 138-143 tissue close-ups; 154-159 city hills; 160-162,171-174 nose close-ups; 183-185 face, hand on neck.",
+   "sentences": [
+    {
+     "speech_ref": "v3-s1",
+     "source_id": "v3",
+     "text": "Chỉ trong năm phút, khăn giấy anh dùng để xì mũi đã chất thành một đống lớn.",
+     "type": "footage_present",
+     "words": 17,
+     "est_duration_ms": 5610,
+     "acceptable": [
+      {
+       "start_ms": 0,
+       "end_ms": 2500,
+       "note": "pile of used tissues"
+      },
+      {
+       "start_ms": 5000,
+       "end_ms": 7000,
+       "note": "room with tissues strewn"
+      },
+      {
+       "start_ms": 113000,
+       "end_ms": 115000,
+       "note": "room with tissues strewn"
+      }
+     ],
+     "partial": [
+      {
+       "start_ms": 14000,
+       "end_ms": 18000,
+       "note": "blows nose, no pile"
+      }
+     ],
+     "contra": [],
+     "key_for_other": [],
+     "state": "MATCH_AVAILABLE",
+     "serious_if_wrong": false,
+     "notes": ""
+    },
+    {
+     "speech_ref": "v3-s2",
+     "source_id": "v3",
+     "text": "Món đồ vốn để dọn dẹp nhà cửa bỗng trở thành phương án cuối cùng để cứu chiếc mũi của anh.",
+     "type": "synonym_or_indirect",
+     "words": 21,
+     "est_duration_ms": 6930,
+     "acceptable": [
+      {
+       "start_ms": 62000,
+       "end_ms": 65000,
+       "note": "TV advert for a vacuum cleaner"
+      },
+      {
+       "start_ms": 68000,
+       "end_ms": 73000,
+       "note": "uses the vacuum hose on his nose"
+      }
+     ],
+     "partial": [
+      {
+       "start_ms": 77000,
+       "end_ms": 79000,
+       "note": "kitchen floor with cord"
+      }
+     ],
+     "contra": [],
+     "key_for_other": [],
+     "state": "MATCH_AVAILABLE",
+     "serious_if_wrong": false,
+     "notes": "vacuum cleaner never named"
+    },
+    {
+     "speech_ref": "v3-s3",
+     "source_id": "v3",
+     "text": "Anh đứng trước bồn rửa trong nhà tắm, dùng nhíp cố gắp dị vật ra khỏi mũi.",
+     "type": "footage_present",
+     "words": 17,
+     "est_duration_ms": 5610,
+     "acceptable": [
+      {
+       "start_ms": 45000,
+       "end_ms": 48000,
+       "note": "tweezers at sink, bloody tissues"
+      },
+      {
+       "start_ms": 50000,
+       "end_ms": 52000,
+       "note": "at the sink"
+      }
+     ],
+     "partial": [
+      {
+       "start_ms": 36000,
+       "end_ms": 45000,
+       "note": "in bathroom touching nose"
+      }
+     ],
+     "contra": [],
+     "key_for_other": [],
+     "state": "MATCH_AVAILABLE",
+     "serious_if_wrong": false,
+     "notes": ""
+    },
+    {
+     "speech_ref": "v3-s4",
+     "source_id": "v3",
+     "text": "Anh gọi xe cấp cứu và được các bác sĩ đưa ngay vào phòng khám của bệnh viện.",
+     "type": "near_match",
+     "words": 18,
+     "est_duration_ms": 5940,
+     "acceptable": [],
+     "partial": [],
+     "contra": [
+      {
+       "start_ms": 129000,
+       "end_ms": 130500,
+       "note": "phone call in armchair, not an ambulance"
+      },
+      {
+       "start_ms": 79000,
+       "end_ms": 85000,
+       "note": "collapsed on own kitchen floor, not a hospital"
+      }
+     ],
+     "key_for_other": [],
+     "state": "SOURCE_INSUFFICIENT",
+     "serious_if_wrong": true,
+     "notes": "no ambulance, doctor or hospital is ever shown"
+    },
+    {
+     "speech_ref": "v3-s5",
+     "source_id": "v3",
+     "text": "Ống hút của máy hút bụi khiến anh ngạt thở, phải đập cửa kêu cứu hàng xóm.",
+     "type": "partial",
+     "words": 17,
+     "est_duration_ms": 5610,
+     "acceptable": [],
+     "partial": [
+      {
+       "start_ms": 71000,
+       "end_ms": 85000,
+       "note": "vacuum on nose, struggle, gasping on floor"
+      }
+     ],
+     "contra": [],
+     "key_for_other": [],
+     "state": "SOURCE_INSUFFICIENT",
+     "serious_if_wrong": false,
+     "notes": "suffocation shown; banging on door / neighbours not"
+    },
+    {
+     "speech_ref": "v3-s6",
+     "source_id": "v3",
+     "text": "Trên đỉnh đồi ngập hoa, một cái hắt hơi thật mạnh đã đẩy dị vật rơi ra lòng bàn tay anh.",
+     "type": "footage_present",
+     "words": 21,
+     "est_duration_ms": 6930,
+     "acceptable": [
+      {
+       "start_ms": 98000,
+       "end_ms": 101000,
+       "note": "bends over in flowers, sneezes"
+      },
+      {
+       "start_ms": 104000,
+       "end_ms": 108000,
+       "note": "bloody face, bloody palm"
+      },
+      {
+       "start_ms": 111000,
+       "end_ms": 113000,
+       "note": "cupped hands"
+      },
+      {
+       "start_ms": 175000,
+       "end_ms": 183000,
+       "note": "bends over in flowers"
+      }
+     ],
+     "partial": [
+      {
+       "start_ms": 88000,
+       "end_ms": 97000,
+       "note": "on hill sniffing flower, before sneeze"
+      }
+     ],
+     "contra": [],
+     "key_for_other": [],
+     "state": "MATCH_AVAILABLE",
+     "serious_if_wrong": false,
+     "notes": ""
+    },
+    {
+     "speech_ref": "v3-s7",
+     "source_id": "v3",
+     "text": "Bạn gái của anh hoảng sợ bỏ chạy khi nhìn thấy sinh vật nhỏ trong tay anh.",
+     "type": "footage_insufficient",
+     "words": 17,
+     "est_duration_ms": 5610,
+     "acceptable": [],
+     "partial": [],
+     "contra": [
+      {
+       "start_ms": 120000,
+       "end_ms": 123000,
+       "note": "other people, not a girlfriend"
+      }
+     ],
+     "key_for_other": [],
+     "state": "SOURCE_INSUFFICIENT",
+     "serious_if_wrong": true,
+     "notes": "no girlfriend in the film"
+    }
+   ]
+  },
+  {
+   "source_id": "v4",
+   "title": "Hướng dẫn dựng 'bộ não thứ 2' với Obsidian + Claude (TikTok, dọc)",
+   "file": "%USERPROFILE%\\Downloads\\snaptik.vn_7694150556495006994.mp4",
+   "sha256": "21799f230fbe7106ac3d6024cfb276ef8a39451be4bc5776b7857a73333164ca",
+   "duration_ms": 483133,
+   "trim": null,
+   "group": "educational-technical",
+   "workflow": "compilation",
+   "frame_notes": "sampled every 2 s. 0-15 presenter talks to camera; 16 hand on a device showing folders; 18-26 Finder, folder 'Bộ não thứ 2' selected; 28-59 Obsidian website 'Get Obsidian for macOS'; 60-70 Claude Code app (Welcome back, sessions); 72-82 Finder picker 'Bộ não thứ 2'; 84 Open; 86 'Trust workspace'; 88-96 Claude Code prompt box; 98-162 rules text file luat-choi-de-dan.txt (folder tree for CLAUDE.md/raw/wiki); 164-166 paste into prompt; 168-170 Claude working; 172-174 Finder folders; 176-180 Obsidian graph view, large network; 182-192 Obsidian 'Open folder as vault' + Finder; 194-196 empty Obsidian; 198-210 Claude summary 'Bộ não đã dựng xong'; 212-254 Obsidian sidebar Clippings/raw/wiki/CLAUDE; 256-282 Finder, ho-so-lan.md moved to raw; 284-300 Claude 'đọc thư mục raw và gộp vào wiki'; 302-314 graph view with few nodes; 316-327 VnExpress article in browser; 328-336 Obsidian Web Clipper extension, 'Add to Obsidian'; 338-350 clipped note + Clippings folder in Obsidian; 352-364 Claude reads clipping, lists results; 366-396 graph view with many nodes; 398-418 Obsidian sidebar wiki subfolders; 420 graph; 422-442 Claude summary text; 444-478 another vault (ceo, company-kb...); 480-482 Chạm Station circular logo end card.",
+   "sentences": [
+    {
+     "speech_ref": "v4-s1",
+     "source_id": "v4",
+     "text": "Đầu tiên, vào trang chủ Obsidian và tải bản miễn phí dành cho máy Mac về cài đặt.",
+     "type": "footage_present",
+     "words": 18,
+     "est_duration_ms": 5940,
+     "acceptable": [
+      {
+       "start_ms": 28000,
+       "end_ms": 60000,
+       "note": "Obsidian website with 'Get Obsidian for macOS'"
+      }
+     ],
+     "partial": [],
+     "contra": [],
+     "key_for_other": [],
+     "state": "MATCH_AVAILABLE",
+     "serious_if_wrong": false,
+     "notes": ""
+    },
+    {
+     "speech_ref": "v4-s2",
+     "source_id": "v4",
+     "text": "Tiếp theo, mở trợ lý lập trình của Anthropic và cấp cho nó quyền làm việc trong thư mục bộ não.",
+     "type": "synonym_or_indirect",
+     "words": 21,
+     "est_duration_ms": 6930,
+     "acceptable": [
+      {
+       "start_ms": 60000,
+       "end_ms": 71000,
+       "note": "Claude Code app"
+      },
+      {
+       "start_ms": 72000,
+       "end_ms": 88000,
+       "note": "pick folder, Open, Trust workspace"
+      }
+     ],
+     "partial": [
+      {
+       "start_ms": 88000,
+       "end_ms": 97000,
+       "note": "empty Claude Code prompt"
+      }
+     ],
+     "contra": [],
+     "key_for_other": [],
+     "state": "MATCH_AVAILABLE",
+     "serious_if_wrong": false,
+     "notes": "Claude Code named only by its maker"
+    },
+    {
+     "speech_ref": "v4-s3",
+     "source_id": "v4",
+     "text": "Dán bộ luật chơi vào khung chat, Claude sẽ tự tạo cấu trúc thư mục rồi gửi email báo cáo cho bạn.",
+     "type": "partial",
+     "words": 22,
+     "est_duration_ms": 7260,
+     "acceptable": [],
+     "partial": [
+      {
+       "start_ms": 98000,
+       "end_ms": 171000,
+       "note": "rules text, paste, Claude working"
+      },
+      {
+       "start_ms": 198000,
+       "end_ms": 212000,
+       "note": "Claude's summary of created files"
+      }
+     ],
+     "contra": [],
+     "key_for_other": [],
+     "state": "SOURCE_INSUFFICIENT",
+     "serious_if_wrong": false,
+     "notes": "no e-mail anywhere"
+    },
+    {
+     "speech_ref": "v4-s4",
+     "source_id": "v4",
+     "text": "Khi đọc báo trên trình duyệt, chỉ cần bấm tiện ích Web Clipper là bài viết được lưu thẳng vào Obsidian.",
+     "type": "footage_present",
+     "words": 21,
+     "est_duration_ms": 6930,
+     "acceptable": [
+      {
+       "start_ms": 328000,
+       "end_ms": 338000,
+       "note": "Web Clipper extension, Add to Obsidian"
+      },
+      {
+       "start_ms": 338000,
+       "end_ms": 352000,
+       "note": "clipped article inside Obsidian"
+      }
+     ],
+     "partial": [
+      {
+       "start_ms": 316000,
+       "end_ms": 328000,
+       "note": "news article in browser only"
+      }
+     ],
+     "contra": [],
+     "key_for_other": [],
+     "state": "MATCH_AVAILABLE",
+     "serious_if_wrong": false,
+     "notes": ""
+    },
+    {
+     "speech_ref": "v4-s5",
+     "source_id": "v4",
+     "text": "Biểu đồ tròn trong Excel cho thấy tỷ lệ từng loại tài liệu trong kho kiến thức của bạn.",
+     "type": "near_match",
+     "words": 19,
+     "est_duration_ms": 6270,
+     "acceptable": [],
+     "partial": [],
+     "contra": [
+      {
+       "start_ms": 366000,
+       "end_ms": 398000,
+       "note": "Obsidian graph view, not an Excel pie chart"
+      },
+      {
+       "start_ms": 480000,
+       "end_ms": 483100,
+       "note": "circular logo animation, not a chart"
+      },
+      {
+       "start_ms": 176000,
+       "end_ms": 182000,
+       "note": "graph view"
+      }
+     ],
+     "key_for_other": [],
+     "state": "SOURCE_INSUFFICIENT",
+     "serious_if_wrong": true,
+     "notes": "no Excel or pie chart"
+    },
+    {
+     "speech_ref": "v4-s6",
+     "source_id": "v4",
+     "text": "Mỗi sáng, Claude còn tự động gửi bản tóm tắt kiến thức mới qua Telegram cho bạn.",
+     "type": "footage_insufficient",
+     "words": 17,
+     "est_duration_ms": 5610,
+     "acceptable": [],
+     "partial": [],
+     "contra": [],
+     "key_for_other": [],
+     "state": "SOURCE_INSUFFICIENT",
+     "serious_if_wrong": false,
+     "notes": "no Telegram, no phone notification"
+    },
+    {
+     "speech_ref": "v4-s7",
+     "source_id": "v4",
+     "text": "Mạng lưới ghi chú dày dần lên mỗi khi bạn nạp thêm tài liệu vào bộ não.",
+     "type": "footage_present",
+     "words": 17,
+     "est_duration_ms": 5610,
+     "acceptable": [
+      {
+       "start_ms": 366000,
+       "end_ms": 398000,
+       "note": "graph view with many linked nodes"
+      },
+      {
+       "start_ms": 176000,
+       "end_ms": 182000,
+       "note": "large graph network"
+      }
+     ],
+     "partial": [
+      {
+       "start_ms": 302000,
+       "end_ms": 316000,
+       "note": "graph with only a few nodes"
+      }
+     ],
+     "contra": [],
+     "key_for_other": [],
+     "state": "MATCH_AVAILABLE",
+     "serious_if_wrong": false,
+     "notes": ""
+    }
+   ]
+  },
+  {
+   "source_id": "v5",
+   "title": "Giải thích hoạt hình: mẹo ngủ chợp mắt lấy ý tưởng (FSave, dọc 39 s)",
+   "file": "%USERPROFILE%\\Downloads\\FSave.com_Facebook_Dang-video-dang-viral-o-moi-niche-Video-_Media_1643482660895393_001_720p.mp4",
+   "sha256": "4973649802e14e914b579429e582353274c3c6dfc2f6b1a9994bc9a3841d3d3b",
+   "duration_ms": 39240,
+   "trim": null,
+   "group": "educational-technical",
+   "workflow": "compilation",
+   "frame_notes": "0-10 cartoon man sits on a chair under a hanging bulb holding two steel balls above metal plates on the floor; 11 POV balls dropping; 12 blur; 13-15 transparent body with brain falling asleep, limp; 16-17 ball smashes plate (sound rings); 18 jolts awake; 19-20 annoyed face; 21-23 Edison in tuxedo in a library/lab; 24-26 sleep-depth diagram (awake/light/deep sleep as water layers, brain-wave line); 27-28 face, 'HYPNAGOGIA' text; 29-31 corkboard with idea cards linked by red strings (magnet car); 32-35 man on chair in an elevator, dial above door; 36-38 wakes up holding paper with magnet-car idea.",
+   "sentences": [
+    {
+     "speech_ref": "v5-s1",
+     "source_id": "v5",
+     "text": "Bạn ngồi trên ghế, hai tay cầm hai viên bi thép ngay phía trên chiếc đĩa kim loại dưới sàn.",
+     "type": "footage_present",
+     "words": 20,
+     "est_duration_ms": 6600,
+     "acceptable": [
+      {
+       "start_ms": 0,
+       "end_ms": 11000,
+       "note": "man on chair holding steel balls over metal plates"
+      }
+     ],
+     "partial": [],
+     "contra": [],
+     "key_for_other": [],
+     "state": "MATCH_AVAILABLE",
+     "serious_if_wrong": false,
+     "notes": ""
+    },
+    {
+     "speech_ref": "v5-s2",
+     "source_id": "v5",
+     "text": "Cha đẻ của bóng đèn điện từng dùng chính mẹo chợp mắt này để tìm ý tưởng.",
+     "type": "synonym_or_indirect",
+     "words": 17,
+     "est_duration_ms": 5610,
+     "acceptable": [
+      {
+       "start_ms": 21000,
+       "end_ms": 24000,
+       "note": "Edison"
+      }
+     ],
+     "partial": [
+      {
+       "start_ms": 0,
+       "end_ms": 11000,
+       "note": "the trick itself, without Edison"
+      }
+     ],
+     "contra": [],
+     "key_for_other": [],
+     "state": "MATCH_AVAILABLE",
+     "serious_if_wrong": true,
+     "notes": "Edison referred to only indirectly; showing the generic man misattributes"
+    },
+    {
+     "speech_ref": "v5-s3",
+     "source_id": "v5",
+     "text": "Khi cơ thể thả lỏng, viên bi rơi xuống đĩa kêu choang và đánh thức bạn dậy.",
+     "type": "footage_present",
+     "words": 17,
+     "est_duration_ms": 5610,
+     "acceptable": [
+      {
+       "start_ms": 11000,
+       "end_ms": 12000,
+       "note": "balls drop"
+      },
+      {
+       "start_ms": 15000,
+       "end_ms": 19000,
+       "note": "limp, ball smashes plate, wakes"
+      }
+     ],
+     "partial": [
+      {
+       "start_ms": 13000,
+       "end_ms": 15000,
+       "note": "falling asleep, no drop yet"
+      }
+     ],
+     "contra": [],
+     "key_for_other": [],
+     "state": "MATCH_AVAILABLE",
+     "serious_if_wrong": false,
+     "notes": ""
+    },
+    {
+     "speech_ref": "v5-s4",
+     "source_id": "v5",
+     "text": "Máy đo điện não trong phòng thí nghiệm ghi lại từng giai đoạn của giấc ngủ.",
+     "type": "near_match",
+     "words": 16,
+     "est_duration_ms": 5280,
+     "acceptable": [],
+     "partial": [],
+     "contra": [
+      {
+       "start_ms": 24000,
+       "end_ms": 27000,
+       "note": "animated sleep-stage diagram, not an EEG machine"
+      },
+      {
+       "start_ms": 21000,
+       "end_ms": 24000,
+       "note": "Edison's lab/library, no EEG"
+      }
+     ],
+     "key_for_other": [],
+     "state": "SOURCE_INSUFFICIENT",
+     "serious_if_wrong": true,
+     "notes": "no EEG device shown"
+    },
+    {
+     "speech_ref": "v5-s5",
+     "source_id": "v5",
+     "text": "Những ý tưởng rời rạc tự kết nối lại, và bạn ghi ngay chúng vào sổ tay khi vừa tỉnh giấc.",
+     "type": "partial",
+     "words": 21,
+     "est_duration_ms": 6930,
+     "acceptable": [],
+     "partial": [
+      {
+       "start_ms": 29000,
+       "end_ms": 32000,
+       "note": "ideas linked on corkboard"
+      },
+      {
+       "start_ms": 36000,
+       "end_ms": 39100,
+       "note": "wakes holding a drawn idea"
+      }
+     ],
+     "contra": [],
+     "key_for_other": [],
+     "state": "SOURCE_INSUFFICIENT",
+     "serious_if_wrong": false,
+     "notes": "no writing in a notebook"
+    },
+    {
+     "speech_ref": "v5-s6",
+     "source_id": "v5",
+     "text": "Hãy đặt đồng hồ báo thức sau hai mươi phút nếu trong nhà không có sẵn bi thép.",
+     "type": "footage_insufficient",
+     "words": 18,
+     "est_duration_ms": 5940,
+     "acceptable": [],
+     "partial": [],
+     "contra": [
+      {
+       "start_ms": 32000,
+       "end_ms": 36000,
+       "note": "dial above elevator door, not an alarm clock"
+      }
+     ],
+     "key_for_other": [],
+     "state": "SOURCE_INSUFFICIENT",
+     "serious_if_wrong": false,
+     "notes": "no alarm clock"
+    }
+   ]
+  },
+  {
+   "source_id": "v6",
+   "title": "Tòa nhà nuôi lợn 26 tầng ở Ngạc Châu (Bilibili BV1KmbhzXEib)",
+   "file": "%USERPROFILE%\\Videos\\DubFlow Sources\\BV1KmbhzXEib\\source-media.mp4",
+   "sha256": "d8d4692fb49d77b16d45338237b647cab7c37dbe4c0661d0b28ad1cdf341ddce",
+   "duration_ms": 343133,
+   "trim": null,
+   "group": "long-form-documentary",
+   "workflow": "compilation",
+   "frame_notes": "sampled every 2 s. 0 aerial of towers; 2-8 facade; 10 trees + tower; 12-14 two towers from hill; 16-18 aerial towers + plant; 20-22 facade; 24 aerial; 26-28 crowded piglets; 30 pigs behind bars; 32 rendered towers; 34 3D construction render; 36 workers at construction site; 38-40 feed pipes, green feeders; 42-44 pigs at troughs under feed hoppers; 46-48 pens full of pigs; 50 piglet close; 52-54 worker in blue walks aisle; 56 clean empty blue pens; 58-60 piglets under red heat lamp; 62-64 piglets; 66-68 rooftop exercise yard with grass, pigs walking; 70-72 pig face; 74 multi-floor atrium; 76 pigs eating; 78 sow-stall aisle; 80-86 pigs/pens; 88 lift door with worker; 90-92 freight lift with workers, red crates, pigs; 94 pigs running; 96-100 pens/aisles; 102-104 worker in blue among sows; 106-108 facade; 110-118 pens, pigs in crates; 120-122 green truck with manure (render); 124 worker climbing; 126 pig; 128 feeding equipment; 130-132 worker in aisle; 134 SCADA screen + cartoon cow; 136-138 clean empty pens; 140 pig, boots; 142-148 black pigs in dirty rural pen; 150-152 '自动化排污系统' sewage channel; 154-156 manure separation conveyor; 158 graphic '1200吨猪粪'; 160 truck; 162-164 SCADA screens; 166 feeders; 168-170 feed conveyor over pens; 172-174 orange feed valves; 176-178 worker at control touch screen; 180-182 hand presses control-panel buttons; 184-186 sow-stall aisle; 188 worker at computer; 190 feed bag; 192-194 screen + cow cartoon; 196 spreadsheet; 198 worker; 200 tower behind entrance gate; 202-204 workers carry a red board among pigs; 206 feeder; 208-210 facades; 212-216 sow with piglets; 218-220 piglets suckling under red light; 222-226 large clean pens; 228 two men with gloves checking pigs; 230-232 sow belly; 234-236 rooftop exercise yard; 238 piglets; 240-242 aerial; 244 screen; 246 two people in white protective suits; 248-256 sows/barn/piglets; 258-260 hanging pork carcasses; 262-264 pipe; 266-268 raw pork being cut; 270-274 piglets; 276-280 worker with sows; 282-284 man in suit drawing on whiteboard; 286-288 tower with power pylon; 290-292 red blur; 294-296 worker at computer; 298-304 aisles/pens; 306 worker carrying a piglet; 308-312 facade; 314-316 aerial rooftop; 318 pens; 320-322 SCADA; 324-330 feeder valves; 332-336 pigs; 338-340 facade; 342 logo.",
+   "sentences": [
+    {
+     "speech_ref": "v6-s1",
+     "source_id": "v6",
+     "text": "Ở Ngạc Châu, tỉnh Hồ Bắc, hai tòa nhà hai mươi sáu tầng này không dành cho người mà để nuôi lợn.",
+     "type": "footage_present",
+     "words": 22,
+     "est_duration_ms": 7260,
+     "acceptable": [
+      {
+       "start_ms": 0,
+       "end_ms": 26000,
+       "note": "aerials and facades of the two towers"
+      },
+      {
+       "start_ms": 32000,
+       "end_ms": 34000,
+       "note": "rendered towers"
+      },
+      {
+       "start_ms": 106000,
+       "end_ms": 110000,
+       "note": "facade"
+      },
+      {
+       "start_ms": 200000,
+       "end_ms": 202000,
+       "note": "tower behind gate"
+      },
+      {
+       "start_ms": 208000,
+       "end_ms": 212000,
+       "note": "facades"
+      },
+      {
+       "start_ms": 240000,
+       "end_ms": 244000,
+       "note": "aerial"
+      },
+      {
+       "start_ms": 286000,
+       "end_ms": 290000,
+       "note": "tower with pylon"
+      },
+      {
+       "start_ms": 308000,
+       "end_ms": 318000,
+       "note": "facade, aerial rooftop"
+      },
+      {
+       "start_ms": 338000,
+       "end_ms": 342000,
+       "note": "facade"
+      }
+     ],
+     "partial": [],
+     "contra": [
+      {
+       "start_ms": 142000,
+       "end_ms": 150000,
+       "note": "rural dirty pen, not the towers"
+      }
+     ],
+     "key_for_other": [],
+     "state": "MATCH_AVAILABLE",
+     "serious_if_wrong": false,
+     "notes": ""
+    },
+    {
+     "speech_ref": "v6-s2",
+     "source_id": "v6",
+     "text": "Thức ăn được hệ thống tự động chuyển theo đường ống rồi rót thẳng xuống máng của từng ô chuồng.",
+     "type": "footage_present",
+     "words": 20,
+     "est_duration_ms": 6600,
+     "acceptable": [
+      {
+       "start_ms": 38000,
+       "end_ms": 46000,
+       "note": "feed pipes, hoppers over troughs"
+      },
+      {
+       "start_ms": 166000,
+       "end_ms": 176000,
+       "note": "feeders, conveyor, valves"
+      },
+      {
+       "start_ms": 324000,
+       "end_ms": 332000,
+       "note": "feeder valves"
+      }
+     ],
+     "partial": [
+      {
+       "start_ms": 128000,
+       "end_ms": 130000,
+       "note": "feeding equipment"
+      }
+     ],
+     "contra": [],
+     "key_for_other": [],
+     "state": "MATCH_AVAILABLE",
+     "serious_if_wrong": false,
+     "notes": ""
+    },
+    {
+     "speech_ref": "v6-s3",
+     "source_id": "v6",
+     "text": "Chỉ cần vài cú nhấp chuột, nhân viên đã chỉnh được khẩu phần cho cả một tầng chuồng.",
+     "type": "synonym_or_indirect",
+     "words": 18,
+     "est_duration_ms": 5940,
+     "acceptable": [
+      {
+       "start_ms": 176000,
+       "end_ms": 184000,
+       "note": "worker on touch panel, presses buttons"
+      },
+      {
+       "start_ms": 188000,
+       "end_ms": 190000,
+       "note": "worker at computer"
+      },
+      {
+       "start_ms": 294000,
+       "end_ms": 298000,
+       "note": "worker at computer"
+      }
+     ],
+     "partial": [
+      {
+       "start_ms": 134000,
+       "end_ms": 136000,
+       "note": "control screen, no person"
+      },
+      {
+       "start_ms": 162000,
+       "end_ms": 166000,
+       "note": "control screens"
+      },
+      {
+       "start_ms": 192000,
+       "end_ms": 196000,
+       "note": "screens, spreadsheet"
+      }
+     ],
+     "contra": [],
+     "key_for_other": [],
+     "state": "MATCH_AVAILABLE",
+     "serious_if_wrong": false,
+     "notes": "feeding control described indirectly"
+    },
+    {
+     "speech_ref": "v6-s4",
+     "source_id": "v6",
+     "text": "Lợn con được bác sĩ thú y tiêm vắc xin phòng dịch ngay sau khi chào đời.",
+     "type": "near_match",
+     "words": 17,
+     "est_duration_ms": 5610,
+     "acceptable": [],
+     "partial": [],
+     "contra": [
+      {
+       "start_ms": 228000,
+       "end_ms": 230000,
+       "note": "vets checking pigs, no injection"
+      },
+      {
+       "start_ms": 306000,
+       "end_ms": 308000,
+       "note": "worker carries a piglet, no vaccine"
+      },
+      {
+       "start_ms": 246000,
+       "end_ms": 248000,
+       "note": "people in protective suits, no injection"
+      }
+     ],
+     "key_for_other": [],
+     "state": "SOURCE_INSUFFICIENT",
+     "serious_if_wrong": true,
+     "notes": "no vaccination shown"
+    },
+    {
+     "speech_ref": "v6-s5",
+     "source_id": "v6",
+     "text": "Phân lợn được xử lý tự động rồi chở đi làm phân bón hữu cơ cho nông dân trồng rau.",
+     "type": "partial",
+     "words": 20,
+     "est_duration_ms": 6600,
+     "acceptable": [],
+     "partial": [
+      {
+       "start_ms": 150000,
+       "end_ms": 162000,
+       "note": "sewage system, separation, graphic, truck"
+      },
+      {
+       "start_ms": 120000,
+       "end_ms": 124000,
+       "note": "truck with manure"
+      }
+     ],
+     "contra": [],
+     "key_for_other": [],
+     "state": "SOURCE_INSUFFICIENT",
+     "serious_if_wrong": false,
+     "notes": "farmers / vegetables not shown"
+    },
+    {
+     "speech_ref": "v6-s6",
+     "source_id": "v6",
+     "text": "Mỗi tầng đều có nhà ăn và phòng nghỉ riêng cho công nhân làm việc theo ba ca.",
+     "type": "footage_insufficient",
+     "words": 18,
+     "est_duration_ms": 5940,
+     "acceptable": [],
+     "partial": [],
+     "contra": [],
+     "key_for_other": [],
+     "state": "SOURCE_INSUFFICIENT",
+     "serious_if_wrong": false,
+     "notes": "no canteen or rest room"
+    },
+    {
+     "speech_ref": "v6-s7",
+     "source_id": "v6",
+     "text": "Trên sân thượng còn có khu vận động trồng cỏ, nơi đàn lợn được thả ra đi dạo.",
+     "type": "footage_present",
+     "words": 18,
+     "est_duration_ms": 5940,
+     "acceptable": [
+      {
+       "start_ms": 66000,
+       "end_ms": 70000,
+       "note": "rooftop exercise yard"
+      },
+      {
+       "start_ms": 234000,
+       "end_ms": 238000,
+       "note": "rooftop exercise yard"
+      }
+     ],
+     "partial": [],
+     "contra": [],
+     "key_for_other": [],
+     "state": "MATCH_AVAILABLE",
+     "serious_if_wrong": false,
+     "notes": ""
+    }
+   ]
+  }
+ ]
+}
