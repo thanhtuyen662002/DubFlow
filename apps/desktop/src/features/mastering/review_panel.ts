@@ -5,7 +5,7 @@
  * video again with the pins and exclusions, keeping its narration.
  */
 import {
-  coverageText, EVIDENCE_HELP, parseReview, seconds, STATE_LABELS, unitBadge, unitNumber, type ReviewUnit, type ReviewView, type Shot,
+  coverageText, evidenceHelp, parseReview, seconds, STATE_LABELS, unitBadge, unitNumber, type ReviewUnit, type ReviewView, type Shot,
 } from "./model.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
@@ -169,7 +169,7 @@ export function openReviewPanel(invoke: Invoke, target: ReviewTarget): Promise<v
     top.append(el("span", `mreview-badge ${badge.tone}`, badge.text), el("b", "", `Câu ${unitNumber(unit.unit_id)}`),
       el("span", "hint", ` ${seconds(unit.start_ms)}–${seconds(unit.end_ms)} · ${coverageText(unit)}`));
     const text = el("p", "mreview-text", unit.text);
-    const help = EVIDENCE_HELP[unit.evidence];
+    const help = evidenceHelp(unit);
     const facts = el("p", "hint", [help, ...unit.notes, unit.decision?.invalidated ?? ""].filter(Boolean).join(" "));
     if (unit.user_state === "USER_APPROVED" && unit.state !== "READY") {
       facts.textContent += ` Đánh giá của AI vẫn là “${STATE_LABELS[unit.state]?.text ?? unit.state}”.`;

@@ -205,6 +205,11 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
                 status.write(message=f"{context}Đang phân tích nguồn {k}/{len(item.sources)}…")
                 source_id = f"{item.item_id}-s{k}"
                 info = inspect(source.video)
+                picture = getattr(info, "picture_ms", None)
+                if picture and picture < info.duration_ms:
+                    # the picture ends before the sound (rc4 D1: 87 ms short): a moment past it would render without
+                    # picture and put the narration out of step, so only the picture's own length is footage
+                    info = replace(info, duration_ms=picture)
                 duration = info.duration_ms
                 trim = (source.start_ms or 0, source.end_ms if source.end_ms is not None else duration)
                 if trim[0] >= duration or trim[1] > duration or trim[1] - trim[0] < 1000:

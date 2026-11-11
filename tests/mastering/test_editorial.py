@@ -248,6 +248,33 @@ class AlignTests(unittest.TestCase):
         self.assertNotIn("v1c5", [c.candidate.candidate_id for c in choices if c.unit_id == "u1"])
         self.assertIn("v1c5", [c.candidate.candidate_id for c in choices if c.unit_id == "u3"])
 
+    def test_an_opening_that_half_matches_the_footage_is_not_a_silent_generic_line(self):
+        # rc4 Hũ tăm: "ấn nhẹ lên nút" met the AI's "nhấn… lấy tăm" only by a word or two (under a match): the
+        # hook counted as generic, took a held-jar shot and was READY without review.
+        pool = [candidate(f"v1c{i}", "v1", i * 3000, i * 3000 + 3000) for i in range(5)]
+        found = ev.gather(c.candidate_id for c in pool)
+        for c, text in zip(pool, ("Tay nhấn vào hũ tăm để lấy tăm, thao tác sản phẩm", "Hũ màu be đặt trên bàn",
+                                  "Hộp đựng sản phẩm", "Người cầm hũ", "Bàn gỗ")):
+            found[c.candidate_id].add(ev.Item("vision", 800, text))
+        hook = unit("u1", "Chỉ cần ấn nhẹ lên nút trên đỉnh, một que tăm sẽ bật lên để bạn rút ra dùng ngay.", 0, 4000, "hook")
+        _, log, _ = align.assign([hook], pool, found, PACING, forward_only=False)
+        self.assertTrue(log[0].coverage["needs_review"], log[0].notes)
+        plain = unit("u1", "Buổi sáng tuyệt vời bắt đầu từ đây.", 0, 3000, "hook")
+        _, log, _ = align.assign([plain], pool, found, PACING, forward_only=False)
+        self.assertEqual(log[0].coverage["status"], "generic")
+        self.assertFalse(log[0].coverage["needs_review"])
+
+    def test_a_single_word_met_only_without_marks_counts_less(self):
+        # rc4 Top 5: "Hạng ba… cỗ máy" met an unaccented AI answer's "hang" (hàng) and "co" (có)
+        pool = [candidate("v1c0", "v1", 0, 3000), candidate("v1c1", "v1", 3000, 6000)]
+        found = ev.gather(c.candidate_id for c in pool)
+        found["v1c0"].add(ev.Item("vision", 900, "nhieu hang domino mau sac"))
+        found["v1c1"].add(ev.Item("vision", 900, "nhiều hạng mục trên bảng"))
+        scorer = align.Scorer(pool, found)
+        sentence = unit("u1", "Hạng ba thuộc về một cỗ máy.", 0, 3000, "narration")
+        self.assertLess(scorer.relevance(sentence, pool[0])[0], scorer.relevance(sentence, pool[1])[0])
+        self.assertGreater(scorer.relevance(sentence, pool[0])[0], 0)
+
     def test_the_hook_leaves_a_later_sentences_shots_even_when_it_matches_them(self):
         # Real run 6: the hook (about the portafilter) matched the TAMP shot about as well as the tamping sentence did.
         pour = candidate("v1c12", "v1", 0, 6000, motion=20)
@@ -299,6 +326,22 @@ class AlignTests(unittest.TestCase):
         starts = [c.offset_ms for c in choices]
         self.assertEqual(starts, sorted(starts), [(c.candidate.candidate_id, c.offset_ms, c.length_ms) for c in choices])
         self.assertFalse(any("dùng lại" in r for c in choices for r in c.reasons))
+
+    def test_a_match_is_not_left_out_for_safety_when_nothing_ahead_is_safe(self):
+        # rc4 Windows Top 5: the sentence's one match was dropped as unsafe for the sentences to come, an equally
+        # unsafe neutral shot played instead ("has a match… 0 %") and the next sentence showed the match.
+        pool = [candidate("v1c0", "v1", 0, 2000), candidate("v1c1", "v1", 2000, 2700), candidate("v1c2", "v1", 2700, 4000)]
+        found = ev.gather(c.candidate_id for c in pool)
+        found["v1c0"].add(ev.Item("vision", 800, "Đoàn quân hành quân trên đường"))
+        found["v1c1"].add(ev.Item("vision", 800, "Bản đồ vùng Kavkaz với các mũi tên"))
+        found["v1c2"].add(ev.Item("vision", 800, "Khói bốc lên"))
+        units = [unit("u1", "Bản đồ cho thấy vùng Kavkaz.", 0, 3000, "narration"),
+                 unit("u2", "Quân đội tiến lên.", 3000, 6000, "narration")]
+        choices, log, _ = align.assign(units, pool, found, PACING, forward_only=True)
+        own = [c for c in choices if c.candidate.candidate_id == "v1c1"]
+        self.assertEqual({c.unit_id for c in own}, {"u1"})
+        self.assertGreater(log[0].coverage["illustrated_ms"], 0)
+        self.assertFalse(any("0 %" in note for d in log for note in d.notes))
 
     def test_a_long_match_far_ahead_does_not_strand_the_sentences_after_it(self):
         # Real run 6 (36-min set): sentence 1 skipped ahead from shot to shot, sentence 2 had 5 s of the source

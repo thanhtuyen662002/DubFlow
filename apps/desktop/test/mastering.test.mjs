@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import {
-  coverageText, isLevel, unitNumber, levelText, masteringOf, needsExportConfirm, parseReview, reviewSummary, seconds, unitBadge,
+  coverageText, evidenceHelp, isLevel, unitNumber, levelText, masteringOf, needsExportConfirm, parseReview, reviewSummary, seconds, unitBadge,
 } from "../src/features/mastering/model.ts";
 import { buildRequest } from "../src/features/product/model.ts";
 
@@ -62,6 +62,13 @@ assert.equal(on.mastering, "balanced");
 assert.deepEqual(on.visionAi, { provider: "gemini" });
 assert.equal("mastering" in buildRequest({ ...base, template: "chi-chu", info: { ...base.info, features: ["x"] }, mastering: "dynamic" }), false);
 assert.equal("mastering" in buildRequest({ ...base, mastering: "max" }), false);
+
+// A match the planner could not place is said so: never "has a match" beside "0 %" (rc4 Windows Top 5).
+const unplaced = { evidence: "MATCH_AVAILABLE", coverage: { milli: 0, illustrated_ms: 0, status: "none" }, decision: null };
+assert.match(evidenceHelp(unplaced), /chưa đặt được/);
+assert.equal(evidenceHelp({ ...unplaced, coverage: { milli: 500, illustrated_ms: 1500 } }), "Có cảnh khớp lời câu này.");
+assert.equal(evidenceHelp({ ...unplaced, decision: { pin: ["v1c1"], exclude: [] } }), "Có cảnh khớp lời câu này.");
+assert.equal(evidenceHelp({ evidence: "UNKNOWN", coverage: {}, decision: null }), "");
 
 console.log("mastering tests passed");
 

@@ -142,3 +142,13 @@ class MediaTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StreamLengthTests(unittest.TestCase):
+    def test_the_picture_length_is_read_from_mp4_and_matroska_fields(self):
+        # rc4 D1: the picture ended 87 ms before the container; a moment placed there rendered without picture
+        self.assertEqual(a._stream_ms({"duration": "40.040000"}), 40040)
+        self.assertEqual(a._stream_ms({"duration": "N/A", "tags": {"DURATION": "00:00:40.040000000"}}), 40040)
+        self.assertEqual(a._stream_ms({"tags": {"DURATION": "01:02:03.500000000"}}), 3723500)
+        self.assertIsNone(a._stream_ms({}))
+        self.assertIsNone(a._stream_ms({"duration": "0"}))

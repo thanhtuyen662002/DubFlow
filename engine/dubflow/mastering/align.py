@@ -183,6 +183,7 @@ MIN_RELEVANCE = 60  # below this the best match is noise (one common word): no r
 OPENING_CLOSING = ("hook", "intro", "cta", "outro")
 CARD_PENALTY = 300  # a title or end screen for a sentence that does not speak of what is written
 COMMON_SHARE = 500  # ‰ of the described shots a word is in before it tells no shot from another
+LOOSE_WORD_SHARE = 2  # a single word matched only without its marks counts this many times less
 COMMON_MIN_SHOTS = 4  # with fewer described shots every word is "common": the rule needs a few
 
 
@@ -264,6 +265,10 @@ class Scorer:
             weight = self.idf.get(term, self.default_idf) * (2 if " " in term else 1)
             total += weight
             value = 0 if self._common(term) else ev.match(term, found, loose)
+            if value and " " not in term and not term.startswith(ev.LOOSE) and term not in found:
+                # one marked word met only once the footage's marks were dropped is a guess: "hạng" and "hàng",
+                # "cỗ" and "có" all read "hang", "co" (rc4 Top 5: "Hạng ba… cỗ máy" took a domino shot)
+                value //= LOOSE_WORD_SHARE
             if value:
                 matched += weight * value / 1000
                 words.append(term.removeprefix(ev.LOOSE))
@@ -330,6 +335,8 @@ SKIP_PENALTY = 200  # forward only: passing over all the footage there is to spa
 def _coverage_note(milli: int, has_match: bool) -> str:
     if not has_match:
         return "không có cảnh nào khớp lời câu này: dùng cảnh chung, cần kiểm tra"
+    if not milli:
+        return "có cảnh khớp lời câu này nhưng không đặt được vào câu (cảnh quá ngắn hoặc cần cho câu sau): dùng cảnh chung, cần kiểm tra"
     if milli < GOOD_COVERAGE:
         return f"chỉ {milli // 10} % thời lượng câu có cảnh khớp lời (nguồn không đủ cảnh), phần còn lại dùng cảnh chung"
     return ""
@@ -696,8 +703,18 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
             fits = [c for c in usable if allowed(c) and remaining(c)[1] >= floor
                     # this sentence's own footage left out above for what it costs the next ones stays out
                     and not (c.candidate_id in accept and lost(c, min(remaining(c)[1], wanted), later) > min(remaining(c)[1], wanted))]
-            pool = [c for c in fits if safe(c, later_need, wanted)] or fits \
-                or [c for c in usable if allowed(c) and remaining(c)[1] >= SHORT_FLOOR]
+            pool = [c for c in fits if safe(c, later_need, wanted)]
+            if not pool and forward_only:
+                # nothing ahead is safe for the sentences to come: whatever plays now costs them alike, so this
+                # sentence's own footage goes before filler (rc4 Top 5: its one match was left out for safety, then
+                # an equally unsafe neutral shot was shown and the sentence read "has a match… 0 %")
+                own_left = [c for c in usable if c.candidate_id in accept and allowed(c) and remaining(c)[1] >= SHORT_FLOOR
+                            and lost(c, min(remaining(c)[1], wanted), later) <= min(remaining(c)[1], wanted)]
+                if own_left:
+                    ranked = rank(own_left, "match", wanted)
+                    if record(ranked[0][3], "match", max(wanted, PIECE_FLOOR), ranked):
+                        continue
+            pool = pool or fits or [c for c in usable if allowed(c) and remaining(c)[1] >= SHORT_FLOOR]
             # another sentence's own footage is not filler: rather than show what a sentence says elsewhere (the
             # keyboard shot behind the price), the sentence shows its own shot again, declared as a repeat
             # ... nor is the rest of a shot another sentence about it already showed (the tail of its key shot)
@@ -795,6 +812,11 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
                               or any(c.length_ms < pacing.minimum // 2 for c in mine))
         if choppy:
             decision.notes.append("câu mở đầu/kêu gọi dùng cảnh lặp hoặc cắt vụn: cần kiểm tra")
+            coverage["needs_review"] = True
+        # an opening that speaks of something the footage half-shows (some of its words, too few for a match) is not
+        # a generic line: the shot it needs may be there under other words (rc4 Hũ tăm: "ấn" vs the AI's "nhấn")
+        if generic and mode == "content" and 0 < best < MIN_RELEVANCE and not edits.pin.get(unit.unit_id):
+            decision.notes.append("câu mở đầu/kêu gọi nói tới nội dung cụ thể nhưng cảnh chỉ khớp một phần lời: cần kiểm tra")
             coverage["needs_review"] = True
         # an opening or closing that still shows a later sentence's own shot (nothing else was left) is never silent
         spoiler = unit.function in OPENING_CLOSING and not edits.pin.get(unit.unit_id) and any(
