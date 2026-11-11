@@ -259,7 +259,10 @@ class RealMediaProgrammeTest(unittest.TestCase):
             with contextlib.redirect_stdout(shown):
                 self.assertEqual(reviewing.main(["--work", str(work), "--part", part, "accept", "true"]), 0)
                 code = reviewing.main(["--work", str(work), "--part", part, "decide", unit["unit_id"], "pin", other])
+                # P2-5: Ghim → Duyệt cảnh này → Dựng lại keeps the approval
+                approve = reviewing.main(["--work", str(work), "--part", part, "decide", unit["unit_id"], "approve"])
             self.assertEqual(code, 0, shown.getvalue())
+            self.assertEqual(approve, 0, shown.getvalue())
             self.assertTrue((work / f"review-{part}.json").is_file())
             commands.clear()
             third = run_program(job.load_spec(write_spec(root, value)), out, speaker=lambda status: FakeSpeaker(), probe=probe,
@@ -273,6 +276,8 @@ class RealMediaProgrammeTest(unittest.TestCase):
             kept = reviewing.load(work / f"review-{part}.json")
             self.assertEqual(kept.units[unit["unit_id"]].pin, [other])
             self.assertFalse(kept.units[unit["unit_id"]].invalidated)
+            self.assertEqual(reviewing.user_state(kept.units[unit["unit_id"]]), reviewing.USER_APPROVED)
+            self.assertFalse([w for w in third.get("warnings", []) if "đã đổi sau khi bạn duyệt" in w])
             # the part changed after the user accepted to export it with unreviewed sentences: the export asks again
             self.assertFalse(kept.accept_unreviewed)
             self.assertFalse(third["review_parts"][part]["accept_unreviewed"])
