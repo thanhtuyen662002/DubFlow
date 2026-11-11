@@ -25,6 +25,7 @@ from typing import Any, Callable, Mapping, Sequence
 from engine.dubflow.mastering import align
 from engine.dubflow.mastering import analysis as scene
 from engine.dubflow.mastering import candidates as shots
+from engine.dubflow.mastering import entities as proper_names
 from engine.dubflow.mastering import evidence as ev
 from engine.dubflow.mastering import frames as more
 from engine.dubflow.mastering import plan as m
@@ -275,7 +276,7 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
         if resolved.outro:
             parts.append(("outro", "outro", resolved.outro, resolved.title, None, everything, "off"))
         code = hashlib.sha256()
-        for module in (render, layout, planner, align, more, shots, ev, scene):
+        for module in (render, layout, planner, align, more, proper_names, shots, ev, scene):
             code.update(Path(module.__file__).read_bytes())
         blur = render.available_blur(ffmpeg) if ffmpeg.is_file() else "boxblur=20:2"
         music_hash = _digest_file(resolved.music, cancelled) if resolved.music else None
