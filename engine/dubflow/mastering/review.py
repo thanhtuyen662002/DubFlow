@@ -67,7 +67,11 @@ def evidence_state(unit: Mapping[str, Any], log: Mapping[str, Any]) -> str:
         return NOT_NEEDED
     usable = [c for c in log.get("candidates") or () if _usable(c)]
     # Only when every usable shot was looked at for what it shows can the footage be said to lack this sentence.
-    if log.get("mode") == "content" and usable and all(_has_content(c) for c in usable):
+    # ... and only when none of them shares a word with it: a near miss (some of its words, under a match) is a shot
+    # that may show it in other words, so it is not found, not absent (rc5: "hàng domino… đứng xem" at 37, "hai anh em
+    # ngồi thử máy" at 57 were called absent while those shots showed them)
+    if log.get("mode") == "content" and usable and all(_has_content(c) for c in usable) \
+            and not coverage.get("best_relevance"):
         return SOURCE_INSUFFICIENT
     return MATCH_NOT_FOUND
 

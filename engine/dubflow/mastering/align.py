@@ -791,7 +791,7 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
         review = mode != "content" or (not generic and milli < GOOD_COVERAGE)
         coverage = {"need_ms": unit.length_ms, "illustrated_ms": illustrated, "milli": milli,
                     "status": "generic" if generic else ("full" if milli >= GOOD_COVERAGE else ("partial" if milli else "none")),
-                    "needs_review": review, "matched_footage": len(accept)}
+                    "needs_review": review, "matched_footage": len(accept), "best_relevance": best}
         decision.coverage = coverage
         note = "" if generic else _coverage_note(milli, has_match)
         if not has_match and unit.unit_id in on_card:

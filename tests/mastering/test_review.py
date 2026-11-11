@@ -53,6 +53,16 @@ class VerdictTests(unittest.TestCase):
         generic = unit("u3", status="generic", function="cta")
         self.assertEqual(rv.evidence_state(generic, log([generic], partly_seen)), rv.NOT_NEEDED)
 
+    def test_a_near_miss_is_not_found_never_insufficient(self):
+        # rc5 Windows: shots that showed the sentence in other words (relevance 37 and 57, under a match) were
+        # reported as footage the source does not have
+        everything_seen = [cand("c1", text="vòi phun"), cand("c2", text="hộp đựng")]
+        near = unit("u2", status="none", needs_review=True)
+        near["coverage"]["best_relevance"] = 37
+        self.assertEqual(rv.evidence_state(near, log([near], everything_seen)), rv.MATCH_NOT_FOUND)
+        near["coverage"]["best_relevance"] = 0
+        self.assertEqual(rv.evidence_state(near, log([near], everything_seen)), rv.SOURCE_INSUFFICIENT)
+
     def test_an_unusable_shot_does_not_block_insufficient(self):
         missing = unit("u2", status="none", needs_review=True)
         shots = [cand("c1", text="vòi phun"), cand("c2", problems=["dark"])]
