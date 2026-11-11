@@ -36,6 +36,14 @@
       "first_commit": "this PR (#705)",
       "tuned_on": false,
       "inspected": "never per scenario; written when the #705 rules were nearly final, only the aggregate line was read: b7fee92 95.4 % coverage 19/20 ok 1 silent miss; #705 100.0 % 20/20 ok 0 silent misses (read again unchanged after the last rule, the short-tail rule)"
+    },
+    "holdout5.json": {
+      "sha256": "9153154aafc7f69f92b9a497bd834139a442ddaf3ca63f9e74d4a49710575cfa",
+      "first_commit": "#720 PR (written on main be8b201, before any Gate S algorithm change)",
+      "locked_at": "2026-11-11T06:10:00Z",
+      "tuned_on": false,
+      "inspected": "never: not in runner.load('all'); first and only run is the Gate S evaluation PR",
+      "gate": "S (Phase 4 readiness): >=90 % duration coverage on sentences with footage, 0 silent misses"
     }
   }
 }
