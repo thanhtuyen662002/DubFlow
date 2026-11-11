@@ -79,7 +79,8 @@ def _loudness(found: Loudness | None, sample_rate: int, notes: list[str]) -> str
     if found.true_peak + (target - found.integrated) > ceiling:
         target = math.floor((found.integrated + ceiling - found.true_peak) * 10) / 10
         notes.append(f"Âm lượng: {found.integrated:.1f} → {target:.1f} LUFS (thấp hơn mục tiêu {TARGET_LUFS:.0f} LUFS vì đỉnh "
-                     f"{found.true_peak:.1f} dBTP: giữ tăng/giảm tuyến tính, đỉnh ≤ {ceiling:.1f} dBTP trước khi mã hóa AAC).")
+                     f"{found.true_peak:.1f} dBTP: giữ tăng/giảm tuyến tính, đỉnh ≤ {ceiling:.1f} dBTP trước khi mã hóa AAC)"
+                     + (f"; nhỏ hơn bản trộn gốc {found.integrated - target:.1f} dB vì đỉnh đã cao." if target < found.integrated else "."))
     else:
         notes.append(f"Âm lượng: {found.integrated:.1f} → {TARGET_LUFS:.0f} LUFS, đỉnh ≤ {ceiling:.1f} dBTP trước khi mã hóa AAC "
                      f"(tuyến tính, 2 lượt đo).")

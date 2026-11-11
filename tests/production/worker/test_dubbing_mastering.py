@@ -96,6 +96,34 @@ class DubbingMasteringTests(unittest.TestCase):
             self.assertNotIn("mastering_filters", fixture.calls_kwargs[-1])
             self.assertTrue(any(w.startswith("MASTERING_SKIPPED") for w in fixture.qc()["warnings"]))
 
+    def test_a_picture_filter_the_media_runtime_refuses_is_dropped_and_not_tried_again(self):
+        """rc1 Windows check: a failing mastering picture filter failed the job (the B1 fallback reused it) and the
+        saved plan kept failing every later run. Now the video renders without it and the plan forgets it."""
+        from engine.dubflow.media.adapter import MediaAdapterError
+
+        with self.job() as fixture:
+            render = fixture.render
+
+            def refusing(source, output, **kwargs):
+                if kwargs.get("mastering_filters"):
+                    fixture.calls_kwargs.append(kwargs)
+                    raise MediaAdapterError("MEDIA_COMMAND_FAILED", "filter refused")
+                render(source, output, **kwargs)
+            fixture.render = refusing
+            self.options(fixture, {"schema_version": 1, "level": "light"})
+            fixture.run()
+            self.assertIn("mastering_filters", fixture.calls_kwargs[0])
+            self.assertNotIn("mastering_filters", fixture.calls_kwargs[-1])
+            qc = fixture.qc()
+            self.assertTrue(any(w.startswith("MASTERING_VIDEO_SKIPPED: MEDIA_COMMAND_FAILED") for w in qc["warnings"]))
+            self.assertEqual(qc["mastering"]["video_filters"], [])
+            self.assertTrue(any("không render được" in note for note in qc["mastering"]["notes"]))
+            plan = json.loads((fixture.work / "mastering" / "dubbing-plan.json").read_text(encoding="utf-8"))
+            self.assertEqual(plan["video_filters"], [])
+            calls = len(fixture.calls_kwargs)
+            fixture.run()  # unchanged: the finished video is reused, the broken filter is not tried again
+            self.assertEqual(len(fixture.calls_kwargs), calls)
+
     def test_a_climax_is_suggested_for_review_only_when_turned_on_and_never_rendered(self):
         import wave
         for asked in (False, True):
@@ -151,6 +179,47 @@ class VoiceTimedCaptionTests(unittest.TestCase):
             srt, ass = worker._write_subtitles(Path(folder), timed)
             self.assertIn("rất dài", srt.read_text(encoding="utf-8"))
             self.assertTrue(ass.is_file())
+
+
+class VoicedEndTests(unittest.TestCase):
+    """rc1 Windows check: a short sentence padded with silence to its slot kept its caption up 0.2–2.6 s after the
+    voice stopped. The caption now leaves with the voice."""
+
+    @staticmethod
+    def _wav(path: Path, voiced_ms: int, silent_ms: int, rate: int = 24000) -> None:
+        import math
+        import struct
+        import wave
+
+        samples = [int(8000 * math.sin(2 * math.pi * 220 * i / rate)) for i in range(rate * voiced_ms // 1000)]
+        samples += [0] * (rate * silent_ms // 1000)
+        with wave.open(str(path), "wb") as writer:
+            writer.setnchannels(1)
+            writer.setsampwidth(2)
+            writer.setframerate(rate)
+            writer.writeframes(struct.pack(f"<{len(samples)}h", *samples))
+
+    def test_the_caption_ends_where_the_voice_stops_not_at_the_padding(self):
+        from types import SimpleNamespace
+        from engine.dubflow.asr import TimeBase, TimePoint
+
+        ms = TimeBase(1, 1000)
+        with TemporaryDirectory() as folder:
+            padded, full = Path(folder) / "padded.wav", Path(folder) / "full.wav"
+            self._wav(padded, 1500, 2500)
+            self._wav(full, 2000, 0)
+            self.assertEqual(worker._voiced_end_ms(padded, 1000, 5000), 1000 + 1500 + worker.VOICED_TAIL_MS)
+            self.assertEqual(worker._voiced_end_ms(full, 0, 2000), 2000, "never past the piece's own end")
+            self.assertEqual(worker._voiced_end_ms(Path(folder) / "missing.wav", 0, 2000), 2000)
+            self.assertEqual(worker._voiced_end_ms(None, 0, 2000), 2000)
+            silent = Path(folder) / "silent.wav"
+            self._wav(silent, 0, 1000)
+            self.assertEqual(worker._voiced_end_ms(silent, 0, 1000), 1000)
+            artifact = SimpleNamespace(segment_id="p", source_utterance_id="cue-1", slot_start=TimePoint(1000, ms),
+                                       actual_end=TimePoint(5000, ms), path=str(padded))
+            b2 = SimpleNamespace(member_cue_ids={"p": ("cue-1",)}, tts_documents=(SimpleNamespace(artifacts=(artifact,)),))
+            timed = worker._voice_timed([worker.TextCue("cue-1", 900, 5000, "你好", "Xin chào các bạn")], b2)
+            self.assertEqual((timed[0].start_ms, timed[0].end_ms), (1000, 2700))
 
 
 class VoiceTimedFallbackTests(unittest.TestCase):
