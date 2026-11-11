@@ -44,6 +44,14 @@
       "tuned_on": false,
       "inspected": "evaluated once at 0a633a9 (2026-11-11T06:20:25Z, docs/mastering/gate-s/holdout5-0a633a9.md); afterwards only the rows of the units with stolen key shots and of the sentence without footage were read for the report; nothing tuned on it",
       "gate": "S (Phase 4 readiness): >=90 % duration coverage on sentences with footage, 0 silent misses"
+    },
+    "holdout6.json": {
+      "sha256": "84ef6ca8a5fab994bf9ddd6cbdaf994233d4fdbb6ef881ff7913b65becf3e4fb",
+      "first_commit": "#732 PR (written on main 9368e52, after holdout5 failed check A, before any check-A change)",
+      "locked_at": "2026-11-11T06:26:52Z (commit 0e3823c)",
+      "tuned_on": false,
+      "inspected": "never; not run before the check-A change is merged, then evaluated once",
+      "gate": "S (Phase 4 readiness): >=90 % duration coverage on sentences with footage, 0 silent misses, check A (no stolen key footage unflagged)"
     }
   }
 }
