@@ -216,6 +216,9 @@ class RealMediaProgrammeTest(unittest.TestCase):
             self.assertIn("chiếc xe đạp", (out / "captions.srt").read_text(encoding="utf-8"))
             programme = json.loads((work / "program.json").read_text(encoding="utf-8"))
             self.assertEqual([p["id"] for p in programme["parts"]], ["hook", "intro", "i1", "i2", "i3", "i4", "i5", "outro"])
+            starts = [p["start_ms"] for p in programme["parts"]]
+            self.assertEqual(starts[0], 0)
+            self.assertEqual(starts[1:], [p["start_ms"] + p["duration_ms"] for p in programme["parts"][:-1]], "parts follow each other")
             renders = [c for c in commands if "-filter_complex" in c and "concat=n=" in " ".join(c) and str(c[-1]).endswith(".mp4")]
             self.assertEqual(len(renders), 8)  # one encode per part; the join copies them
             self.assertEqual(programme["joined"], "copy")

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import {
-  coverageText, isLevel, levelText, masteringOf, needsExportConfirm, parseReview, reviewSummary, seconds, unitBadge,
+  coverageText, isLevel, unitNumber, levelText, masteringOf, needsExportConfirm, parseReview, reviewSummary, seconds, unitBadge,
 } from "../src/features/mastering/model.ts";
 import { buildRequest } from "../src/features/product/model.ts";
 
@@ -145,3 +145,7 @@ console.log("export gate ok");
   assert.match(lowered.find((row) => row.label === "Âm lượng").text, /Thấp hơn mục tiêu vì đỉnh/);
 }
 console.log("rc2 findings ok");
+
+assert.equal(unitNumber("s3"), "3");
+assert.equal(unitNumber("i2.u14"), "14");
+assert.equal(unitNumber("hook.u1"), "1");

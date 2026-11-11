@@ -1825,7 +1825,20 @@ const compilation = mountCompilation(invoke, claudeKey, {
   jobs: () => queue.getSnapshot().jobs, outputRoot, cpuOnly, roots: outputRoots, mediaUrl: playableUrl,
   edit: (video) => void editVideo({ id: video.outputPath, kind: "compilation", outputPath: video.outputPath, displayName: video.displayName }, "compilation"),
   fromQueue: () => void pickForCompilation(),
+  fromQueueRaw: () => void pickRawSources(),
 });
+/** Hàng đợi → Tổng hợp từ video gốc: any downloaded or added video, no dubbing needed. */
+async function pickRawSources(): Promise<void> {
+  const chosen = await pickFromMedia({
+    title: "Chọn video gốc để tổng hợp", hint: "Video gốc thành nguồn của các mục; không cần lồng tiếng trước. Mỗi video thành một mục.",
+    confirmLabel: "Thêm làm nguồn", entries: media?.entries() ?? [], thumb: mediaThumb, max: 30,
+    empty: "Hàng đợi chưa có video. Dán link ở ô trên cùng của Hàng đợi hoặc thêm video từ máy trước.", openQueue: () => void navigate("media"),
+  });
+  if (!chosen.length) return;
+  const text = compilation.addSources(chosen.map((entry) => entry.path));
+  void navigate("compilation");
+  if (!text.startsWith("Đã thêm") || text.includes("Chưa hỗ trợ")) showError(text);
+}
 
 // Hàng đợi: the list every page picks its videos from.
 async function pickForProduct(): Promise<void> {

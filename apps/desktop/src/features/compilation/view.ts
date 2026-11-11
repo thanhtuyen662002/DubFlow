@@ -9,6 +9,7 @@ import { closeDrawerOutside } from "../../shell/drawer.ts";
 import { confirmDialog } from "../../shell/confirm.ts";
 import { confirmDeleteProject, deleteProjectButton } from "../../shell/project_delete.ts";
 import { fileName, shortDate } from "../product/model.ts";
+import { mountRawCompilation } from "./raw_view.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 type ExportEntry = { path: string; created: number; duration: number };
@@ -45,7 +46,9 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
   edit?(video: CompilationVideo): void;
   /** "Chọn từ Hàng đợi": the page asks the app to open the picker. */
   fromQueue?(): void;
-}): { show(): void; pick(jobIds: readonly string[]): number } {
+  /** "Chọn từ Hàng đợi" for raw source videos (Tổng hợp từ video gốc). */
+  fromQueueRaw?(): void;
+}): { show(): void; pick(jobIds: readonly string[]): number; addSources(paths: readonly string[]): string } {
   const root = document.querySelector<HTMLElement>("#compilation-view")!;
   root.innerHTML = `
     <div id="compilation-screen" class="queue-screen compilation-screen">
@@ -95,6 +98,11 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
         </div>
         <div id="compilation-tab-setup" class="tab-panel" role="tabpanel" aria-labelledby="compilation-tab-setup-btn">
           <div class="tab-scroll">
+            <div id="compilation-mode" class="compilation-mode segmented" role="radiogroup" aria-label="Ghép từ">
+              <button id="compilation-mode-dubbed" type="button" role="radio" data-mode="dubbed" aria-checked="true">Video đã lồng tiếng</button>
+              <button id="compilation-mode-raw" type="button" role="radio" data-mode="raw" aria-checked="false">Video gốc (nhiều nguồn)</button>
+            </div>
+            <div id="compilation-raw-setup" hidden></div>
             <div id="compilation-setup-past" class="compilation-past" hidden>
               <p id="compilation-past-note" class="tab-note boxed"></p>
               <dl id="compilation-past-facts" class="compilation-facts"></dl>
@@ -146,6 +154,7 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
         <div id="compilation-tab-result" class="tab-panel" role="tabpanel" aria-labelledby="compilation-tab-result-btn" hidden>
           <div class="tab-scroll">
             <p id="compilation-result-note" class="tab-note"></p>
+            <div id="compilation-raw-result" class="compilation-raw-result" hidden></div>
             <section id="compilation-result-card" class="result-card" hidden>
               <div class="result-head">
                 <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
@@ -184,6 +193,44 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
   const posters = new Map<string, string | null>();
   const wide = new Set<string>();
   const message = (error: unknown) => String(error).slice(0, 250);
+  /** "Ghép video mới" from finished dubbing exports (v1) or from raw sources (v2). */
+  let mode: "dubbed" | "raw" = "dubbed";
+  let rawShown = "";
+  const raw = mountRawCompilation(invoke, session, {
+    setup: $("raw-setup"), result: $("raw-result"), outputRoot: settings.outputRoot, cpuOnly: settings.cpuOnly,
+    mediaUrl: settings.mediaUrl, fromQueue: settings.fromQueueRaw,
+    started: (dir, title, parts) => {
+      runs = [{ dir, title, layout: "toan-man-hinh", created: Math.floor(Date.now() / 1000), parts, version: 2,
+        status: { state: "RUNNING", message: "Đang bắt đầu dựng…", done: 0, total: 0, path: null }, video: null,
+        spec: { schema_version: 2, title } }, ...runs.filter((run) => run.dir !== dir)];
+      output = dir;
+      current = dir;
+      tab = "result";
+      rawShown = "";
+      renderRuns();
+      renderSelected();
+      timer = timer || window.setInterval(() => void poll(), POLL_MS);
+      void poll();
+    },
+    rerendered: (dir) => {
+      const run = runOf(dir);
+      if (run) run.status = { state: "RUNNING", message: "Đang dựng lại…", done: 0, total: 0, path: null };
+      current = dir;
+      tab = "result";
+      rawShown = "";
+      renderRuns();
+      renderSelected();
+      timer = timer || window.setInterval(() => void poll(), POLL_MS);
+    },
+    seek: (path, ms) => {
+      void play(path).then(() => {
+        const go = () => { video.currentTime = ms / 1000; void video.play().catch(() => undefined); };
+        if (video.readyState >= 1) go(); else video.addEventListener("loadedmetadata", go, { once: true });
+      });
+    },
+    edit: (path, title) => settings.edit?.({ outputPath: path, displayName: title }),
+    openSetup: () => { tab = "setup"; renderSelected(); },
+  });
   function showProvider(): void {
     $("provider").textContent = `Khi bấm AI, chủ đề và tối đa 60 dòng phụ đề tiếng Việt mỗi video được gửi tới ${PROVIDERS[session.provider()].company}. Dùng nhà cung cấp và khóa đã lưu trong Cài đặt › Tài khoản.`;
   }
@@ -551,6 +598,7 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
     $("placeholder").hidden = true;
     $("busy").hidden = state !== "RUNNING";
     $("failed").hidden = !run || !(state === "FAILED" || state === "CANCELLED" || !run.status);
+    $("failed-reuse").hidden = !!run && run.version !== 1;
     if (run && state === "RUNNING") {
       const fraction = runFraction(run.status);
       $("busy-title").textContent = fraction === null ? "Đang ghép video" : `Đang ghép video · ${Math.floor(fraction * 100)}%`;
@@ -565,15 +613,39 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
     void play(done ? run!.video : null);
     $("meta").textContent = run ? [`${run.parts} phần`, LAYOUT_NAMES[run.layout], shortDate(run.created)].filter(Boolean).join(" · ") : "";
     if (!run) renderPreview();
-    // Thiết lập: the draft for "Ghép video mới", an earlier run's request read-only.
-    $("setup-past").hidden = !run;
-    $("fields").hidden = !!run;
-    $("render").hidden = !!run;
-    if (run) renderPast(run);
+    // Thiết lập: the draft for "Ghép video mới", an earlier run's request read-only (a raw run can be edited in place).
+    const editingRaw = !!run && run.version === 2 && raw.editingDir() === run.dir;
+    const rawForm = (!run && mode === "raw") || editingRaw;
+    $("mode").hidden = !!run;
+    for (const choice of root.querySelectorAll<HTMLButtonElement>("#compilation-mode [data-mode]")) {
+      choice.setAttribute("aria-checked", String(choice.dataset.mode === mode));
+    }
+    $("raw-setup").hidden = !rawForm;
+    $("setup-past").hidden = !run || editingRaw;
+    $("fields").hidden = !!run || mode === "raw";
+    $("render").hidden = !!run || mode === "raw";
+    $("state").hidden = mode === "raw" && !run;
+    if (run && !editingRaw) renderPast(run);
     renderResult(run);
   }
 
   function renderPast(run: CompilationRun): void {
+    if (run.version !== 1) {
+      const spec = (run.spec ?? {}) as Record<string, unknown>;
+      $("past-note").textContent = run.version === 2
+        ? "Tổng hợp từ video gốc. Ở thẻ Kết quả: duyệt cảnh từng phần, “Sửa chương trình…” để đổi lời bình, thứ hạng hoặc nguồn (chỉ phần đổi được dựng lại), rồi xuất bản cuối."
+        : `Dự án này được tạo bằng phiên bản DubFlow mới hơn (định dạng ${run.version || "không rõ"}); hãy cập nhật DubFlow để mở.`;
+      $("past-facts").replaceChildren();
+      $("past-parts").replaceChildren(...(Array.isArray(spec.items) ? spec.items : []).slice(0, 30).map((item, index) => {
+        const value = (item ?? {}) as Record<string, unknown>;
+        return Object.assign(document.createElement("li"), {
+          textContent: `${typeof value.rank === "number" ? `#${value.rank} · ` : `Mục ${index + 1}: `}${typeof value.title === "string" ? value.title : ""}`,
+        });
+      }));
+      $("reuse").hidden = true;
+      return;
+    }
+    $("reuse").hidden = false;
     const form = specToForm(run.spec);
     $("past-note").textContent = "Thiết lập của video ghép này. Muốn đổi, hãy dùng lại thiết lập cho một bản mới.";
     const facts: Array<[string, string]> = form ? [
@@ -595,6 +667,24 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
   }
 
   function renderResult(run: CompilationRun | null): void {
+    const rawRun = !!run && run.version === 2;
+    $("raw-result").hidden = !rawRun;
+    if (rawRun) {
+      $("result-card").hidden = true;
+      $("exports").hidden = true;
+      $("result-note").hidden = true;
+      // read the run again when it is another run or its state changed (a render finished, a review was saved)
+      const key = `${run!.dir}|${run!.status?.state ?? ""}|${run!.status?.message ?? ""}`;
+      if (key !== rawShown) { rawShown = key; void raw.showRun(run!.dir); }
+      return;
+    }
+    if (run && run.version !== 1) {
+      $("result-card").hidden = true;
+      $("exports").hidden = true;
+      $("result-note").hidden = false;
+      $("result-note").textContent = `Dự án này được tạo bằng phiên bản DubFlow mới hơn (định dạng ${run.version || "không rõ"}); hãy cập nhật DubFlow để mở.`;
+      return;
+    }
     const done = !!run && run.status?.state === "COMPLETED" && !!run.video;
     $("result-card").hidden = !done;
     $("results").hidden = !done;
@@ -700,7 +790,7 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
     try {
       output = await invoke<string>("compilation_render", { request });
       $("cancel").hidden = false;
-      runs = [{ dir: output, title: request.title, layout: request.layout, created: Math.floor(Date.now() / 1000), parts: request.items.length,
+      runs = [{ dir: output, title: request.title, layout: request.layout, created: Math.floor(Date.now() / 1000), parts: request.items.length, version: 1,
         status: { state: "RUNNING", message: "Đang bắt đầu ghép…", done: 0, total: 0, path: null }, video: null,
         spec: { schema_version: 1, title: request.title, layout: request.layout, voice_id: request.voiceId, speed: request.speed, music: request.music,
           music_volume: request.musicVolume, intro: request.intro, outro: request.outro,
@@ -741,6 +831,7 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
 
   function editSelected(): void {
     const run = runOf(current);
+    if (run?.version === 2) { tab = "result"; renderTabs(); void raw.exportThenEdit(run.dir); return; }
     if (run?.video && settings.edit) settings.edit({ outputPath: run.video, displayName: run.title });
   }
 
@@ -817,9 +908,24 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
     try { await navigator.clipboard.writeText(await invoke<string>("compilation_description", { outputDir: current === NEW ? output : current })); $("state").textContent = "Đã sao chép mô tả và nguồn."; }
     catch (error) { $("state").textContent = message(error); }
   });
-  $("from-queue").addEventListener("click", () => settings.fromQueue?.());
+  $("from-queue").addEventListener("click", () => (mode === "raw" && current === NEW ? settings.fromQueueRaw : settings.fromQueue)?.());
+  for (const choice of root.querySelectorAll<HTMLButtonElement>("#compilation-mode [data-mode]")) {
+    choice.addEventListener("click", () => {
+      mode = choice.dataset.mode === "raw" ? "raw" : "dubbed";
+      if (mode === "raw") raw.showDraft();
+      renderSelected();
+    });
+  }
   $("from-queue").hidden = !settings.fromQueue;
-  return { pick: (jobIds) => {
+  return { addSources: (paths) => {
+    // From Hàng đợi: raw source videos join the raw-footage draft.
+    if (current !== NEW) select(NEW, "setup");
+    mode = "raw";
+    raw.showDraft();
+    const text = raw.addPaths(paths);
+    renderSelected();
+    return text;
+  }, pick: (jobIds) => {
     // From Hàng đợi: the chosen dubbed videos join a new draft, in the order given.
     if (busy) return 0;
     if (current !== NEW) select(NEW, "setup");

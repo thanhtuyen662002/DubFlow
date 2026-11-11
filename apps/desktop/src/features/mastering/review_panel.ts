@@ -5,7 +5,7 @@
  * video again with the pins and exclusions, keeping its narration.
  */
 import {
-  coverageText, EVIDENCE_HELP, parseReview, seconds, STATE_LABELS, unitBadge, type ReviewUnit, type ReviewView, type Shot,
+  coverageText, EVIDENCE_HELP, parseReview, seconds, STATE_LABELS, unitBadge, unitNumber, type ReviewUnit, type ReviewView, type Shot,
 } from "./model.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
@@ -15,6 +15,22 @@ export type ReviewTarget = {
   mediaUrl(path: string): Promise<string | null>; cpuOnly(): boolean;
   /** Called after a re-render starts, so the page can follow its progress. */
   rerendered(): void;
+  /** Tổng hợp: one part of a programme, with its own commands and place in the video (absent: a Bán hàng video). */
+  part?: PartTarget;
+};
+
+/** A part (câu mở màn, mở đầu, a ranked item, kết thúc) of a Tổng hợp programme in the panel. */
+export type PartTarget = {
+  /** What the part is: "Mục #3 · Tiêu đề" and its narration, shown above the sentences. */
+  heading: string; lines: string[];
+  /** Where the part starts in the programme video, so ▶ plays the right moment. */
+  offsetMs: number;
+  review(args: Record<string, unknown>): Promise<unknown>;
+  keyframe(name: string): Promise<ArrayBuffer>;
+  rerender(): Promise<void>;
+  rerenderLabel: string;
+  /** The source a shot comes from, as the page names it ("Nguồn 2 của mục 1"). */
+  sourceLabel(sourceId: string): string;
 };
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className = "", text = ""): HTMLElementTagNameMap[K] {
@@ -43,6 +59,12 @@ export function openReviewPanel(invoke: Invoke, target: ReviewTarget): Promise<v
   const summary = el("p", "hint mreview-summary");
   const close = button("Đóng", "btn");
   head.append(title, summary, close);
+  const context = el("div", "mreview-context");
+  if (target.part) {
+    context.append(el("b", "", target.part.heading), ...target.part.lines.filter(Boolean).map((line) => el("p", "hint", line)));
+  } else {
+    context.hidden = true;
+  }
   const player = el("video", "mreview-player");
   player.controls = true;
   player.preload = "metadata";
@@ -57,13 +79,15 @@ export function openReviewPanel(invoke: Invoke, target: ReviewTarget): Promise<v
   const acceptBox = el("input");
   acceptBox.type = "checkbox";
   accept.append(acceptBox, document.createTextNode(" Tôi chấp nhận xuất video với các câu chưa duyệt"));
-  const rerender = button("Render lại video này", "btn primary", "Dựng lại video với các cảnh bạn đã chọn hoặc loại; giữ giọng đọc");
+  const rerender = target.part
+    ? button(target.part.rerenderLabel, "btn primary", "Dựng lại các phần có thay đổi với các cảnh bạn đã chọn hoặc loại; phần không đổi được dùng lại")
+    : button("Render lại video này", "btn primary", "Dựng lại video với các cảnh bạn đã chọn hoặc loại; giữ giọng đọc");
   foot.append(status, accept, undo, rerender);
   const side = el("div", "mreview-side");
   side.append(player, playerNote, warnings);
   const body = el("div", "mreview-body");
   body.append(side, list);
-  dialog.append(head, body, foot);
+  dialog.append(head, context, body, foot);
   backdrop.append(dialog);
   document.body.append(backdrop);
 
@@ -76,7 +100,8 @@ export function openReviewPanel(invoke: Invoke, target: ReviewTarget): Promise<v
   function thumb(name: string | null): Promise<string | null> {
     if (!name) return Promise.resolve(null);
     if (!thumbs.has(name)) {
-      thumbs.set(name, invoke<ArrayBuffer>("mastering_keyframe", { outputDir: target.outputDir, name })
+      const read = target.part ? target.part.keyframe(name) : invoke<ArrayBuffer>("mastering_keyframe", { outputDir: target.outputDir, name });
+      thumbs.set(name, read
         .then((bytes) => {
           const url = URL.createObjectURL(new Blob([bytes], { type: "image/jpeg" }));
           urls.push(url);
@@ -93,7 +118,8 @@ export function openReviewPanel(invoke: Invoke, target: ReviewTarget): Promise<v
     image.loading = "lazy";
     void thumb(shot.keyframe).then((url) => { if (url) image.src = url; else image.replaceWith(el("span", "mreview-noimage", "Không có ảnh")); });
     const caption = el("figcaption");
-    caption.append(el("b", "", label), el("span", "hint", ` Clip ${shot.source_id.slice(1)} · ${seconds(shot.start_ms)}–${seconds(shot.end_ms)}`));
+    const source = target.part ? target.part.sourceLabel(shot.source_id) : `Clip ${shot.source_id.slice(1)}`;
+    caption.append(el("b", "", label), el("span", "hint", ` ${source} · ${seconds(shot.start_ms)}–${seconds(shot.end_ms)}`));
     if (shot.summary) caption.append(el("span", "mreview-summary-text", shot.summary));
     if (shot.problems.length) caption.append(el("span", "mreview-bad", `Ảnh kém: ${shot.problems.join(", ")}`));
     if (shot.reasons?.length) caption.append(el("span", "hint", shot.reasons.slice(0, 2).join("; ")));
@@ -108,7 +134,9 @@ export function openReviewPanel(invoke: Invoke, target: ReviewTarget): Promise<v
     busy = true;
     status.textContent = "Đang lưu…";
     try {
-      const next = parseReview(await invoke<unknown>("mastering_review", { outputDir: target.outputDir, video: target.video, ...args }));
+      const raw = target.part ? await target.part.review(args)
+        : await invoke<unknown>("mastering_review", { outputDir: target.outputDir, video: target.video, ...args });
+      const next = parseReview(raw);
       if (!next) throw new Error("Dữ liệu duyệt không hợp lệ");
       if (args.action !== "view") changed = true;
       view = next;
@@ -127,10 +155,10 @@ export function openReviewPanel(invoke: Invoke, target: ReviewTarget): Promise<v
       if (!url) { playerNote.textContent = "Không phát được video này trong ứng dụng."; return; }
       player.src = url;
     }
-    const start = (unit.pieces[0]?.timeline_start ?? unit.start_ms) / 1000;
+    const start = ((target.part?.offsetMs ?? 0) + (unit.pieces[0]?.timeline_start ?? unit.start_ms)) / 1000;
     const seek = () => { player.currentTime = start; void player.play().catch(() => undefined); };
     if (player.readyState >= 1) seek(); else player.addEventListener("loadedmetadata", seek, { once: true });
-    playerNote.textContent = `Câu ${unit.unit_id.slice(1)}: ${unit.text}`;
+    playerNote.textContent = `Câu ${unitNumber(unit.unit_id)}: ${unit.text}`;
   }
 
   function unitItem(unit: ReviewUnit): HTMLElement {
@@ -138,7 +166,7 @@ export function openReviewPanel(invoke: Invoke, target: ReviewTarget): Promise<v
     item.id = `mreview-${unit.unit_id}`;
     const top = el("div", "mreview-unit-head");
     const badge = unitBadge(unit);
-    top.append(el("span", `mreview-badge ${badge.tone}`, badge.text), el("b", "", `Câu ${unit.unit_id.slice(1)}`),
+    top.append(el("span", `mreview-badge ${badge.tone}`, badge.text), el("b", "", `Câu ${unitNumber(unit.unit_id)}`),
       el("span", "hint", ` ${seconds(unit.start_ms)}–${seconds(unit.end_ms)} · ${coverageText(unit)}`));
     const text = el("p", "mreview-text", unit.text);
     const help = EVIDENCE_HELP[unit.evidence];
@@ -225,7 +253,8 @@ export function openReviewPanel(invoke: Invoke, target: ReviewTarget): Promise<v
       if (busy) return;
       busy = true;
       status.textContent = "Đang bắt đầu render lại…";
-      invoke("product_rerender", { outputDir: target.outputDir, video: target.video, cpuOnly: target.cpuOnly() })
+      (target.part ? target.part.rerender()
+        : invoke("product_rerender", { outputDir: target.outputDir, video: target.video, cpuOnly: target.cpuOnly() }))
         .then(() => { target.rerendered(); finish(); })
         .catch((error) => { status.textContent = String(error).slice(0, 300); busy = false; });
     });
