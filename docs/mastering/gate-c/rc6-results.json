@@ -1,0 +1,258 @@
+{
+ "build": {
+  "version": "1.1.96-rc6",
+  "commit": "85b9d8173ec9c366703510e733ae0c25d503b059",
+  "run": 43019112717,
+  "exe_sha256": "83aa539a3709876084cb8305b68cdc8c7b3e7629ba7f7b9a8a839940a9e64f46",
+  "zip_sha256": "e53a5f3dd26f7f0a1ea60666d788f7531e0d734fa4680f4dc4c667c90d71a9bf"
+ },
+ "desktop_smoke": {
+  "verdict": "PASS",
+  "draft_s": 330,
+  "review_states": {
+   "READY": 1,
+   "NEEDS_REVIEW": 13,
+   "MATCH_NOT_FOUND": 0,
+   "SOURCE_INSUFFICIENT": 0
+  },
+  "intro_needs_review": true,
+  "final_export_confirmation": true,
+  "final_sha256": "0bd50e74bd525ede3bedf666228d9479c28bc1b4f873bf6bc8589a0cf7429dd8"
+ },
+ "key_scan": {
+  "files": 5447,
+  "hits": 0,
+  "unreadable": 0
+ },
+ "media_unchanged": "10/10",
+ "semantic": {
+  "P1": {
+   "rc6_fresh": {
+    "coverage_pct": 72.4,
+    "units_ok": "4/6",
+    "silent_misses": 0,
+    "false_alarms": 3,
+    "contra_ms": 0,
+    "stolen_flagged_ms": 1523,
+    "stolen_unflagged_ms": 0,
+    "repeats": 0,
+    "av_ms": -3.3,
+    "review_flags": null
+   },
+   "rc6_code_on_rc5_evidence": {
+    "coverage_pct": 78.4,
+    "units_ok": "3/6",
+    "silent_misses": 0,
+    "false_alarms": 2,
+    "contra_ms": 0,
+    "stolen_flagged_ms": 1000,
+    "stolen_unflagged_ms": 0,
+    "repeats": 0,
+    "av_ms": -3.3,
+    "review_flags": null
+   },
+   "rc5_code_on_rc5_evidence_control": {
+    "coverage_pct": 62.3,
+    "units_ok": "3/6",
+    "silent_misses": 0,
+    "false_alarms": 2,
+    "contra_ms": 0,
+    "stolen_flagged_ms": 1000,
+    "stolen_unflagged_ms": 0,
+    "repeats": 0,
+    "av_ms": -3.3,
+    "review_flags": null
+   }
+  },
+  "P2": {
+   "rc6_fresh": {
+    "coverage_pct": 59.6,
+    "units_ok": "2/6",
+    "silent_misses": 0,
+    "false_alarms": 2,
+    "contra_ms": 600,
+    "stolen_flagged_ms": 0,
+    "stolen_unflagged_ms": 0,
+    "repeats": 0,
+    "av_ms": -3.3,
+    "review_flags": null
+   },
+   "rc6_code_on_rc5_evidence": {
+    "coverage_pct": 38.4,
+    "units_ok": "0/6",
+    "silent_misses": 0,
+    "false_alarms": 0,
+    "contra_ms": 624,
+    "stolen_flagged_ms": 2449,
+    "stolen_unflagged_ms": 0,
+    "repeats": 0,
+    "av_ms": -3.3,
+    "review_flags": null
+   },
+   "rc5_code_on_rc5_evidence_control": {
+    "coverage_pct": 38.4,
+    "units_ok": "0/6",
+    "silent_misses": 0,
+    "false_alarms": 0,
+    "contra_ms": 624,
+    "stolen_flagged_ms": 2449,
+    "stolen_unflagged_ms": 0,
+    "repeats": 0,
+    "av_ms": -3.3,
+    "review_flags": null
+   }
+  },
+  "P3": {
+   "rc6_fresh": {
+    "coverage_pct": 50.7,
+    "units_ok": "1/6",
+    "silent_misses": 0,
+    "false_alarms": 1,
+    "contra_ms": 1000,
+    "stolen_flagged_ms": 1000,
+    "stolen_unflagged_ms": 0,
+    "repeats": 0,
+    "av_ms": 10.0,
+    "review_flags": null
+   },
+   "rc6_code_on_rc5_evidence": {
+    "coverage_pct": 48.8,
+    "units_ok": "0/6",
+    "silent_misses": 0,
+    "false_alarms": 0,
+    "contra_ms": 0,
+    "stolen_flagged_ms": 1467,
+    "stolen_unflagged_ms": 0,
+    "repeats": 0,
+    "av_ms": 10.0,
+    "review_flags": null
+   },
+   "rc5_code_on_rc5_evidence_control": {
+    "coverage_pct": 48.8,
+    "units_ok": "0/6",
+    "silent_misses": 0,
+    "false_alarms": 0,
+    "contra_ms": 0,
+    "stolen_flagged_ms": 1467,
+    "stolen_unflagged_ms": 0,
+    "repeats": 0,
+    "av_ms": 10.0,
+    "review_flags": null
+   }
+  },
+  "B1": {
+   "rc6_fresh": {
+    "coverage_pct": 99.2,
+    "units_ok": "11/11",
+    "silent_misses": 0,
+    "false_alarms": 8,
+    "contra_ms": 0,
+    "stolen_flagged_ms": 4105,
+    "stolen_unflagged_ms": 0,
+    "repeats": 1,
+    "av_ms": -11.3,
+    "review_flags": 23
+   },
+   "rc6_code_on_rc5_evidence": {
+    "coverage_pct": 100.0,
+    "units_ok": "11/11",
+    "silent_misses": 0,
+    "false_alarms": 9,
+    "contra_ms": 0,
+    "stolen_flagged_ms": 9578,
+    "stolen_unflagged_ms": 0,
+    "repeats": 2,
+    "av_ms": -11.3,
+    "review_flags": 25
+   },
+   "rc5_code_on_rc5_evidence_control": {
+    "coverage_pct": 100.0,
+    "units_ok": "11/11",
+    "silent_misses": 0,
+    "false_alarms": 8,
+    "contra_ms": 0,
+    "stolen_flagged_ms": 3618,
+    "stolen_unflagged_ms": 4200,
+    "repeats": 2,
+    "av_ms": -11.3,
+    "review_flags": 22
+   }
+  },
+  "B5": {
+   "rc6_fresh": {
+    "coverage_pct": 96.6,
+    "units_ok": "12/13",
+    "silent_misses": 0,
+    "false_alarms": 11,
+    "contra_ms": 0,
+    "stolen_flagged_ms": 6216,
+    "stolen_unflagged_ms": 0,
+    "repeats": 3,
+    "av_ms": -11.3,
+    "review_flags": 31
+   },
+   "rc6_code_on_rc5_evidence": {
+    "coverage_pct": 100.0,
+    "units_ok": "13/13",
+    "silent_misses": 0,
+    "false_alarms": 12,
+    "contra_ms": 0,
+    "stolen_flagged_ms": 3025,
+    "stolen_unflagged_ms": 0,
+    "repeats": 4,
+    "av_ms": -11.3,
+    "review_flags": 31
+   },
+   "rc5_code_on_rc5_evidence_control": {
+    "coverage_pct": 100.0,
+    "units_ok": "13/13",
+    "silent_misses": 0,
+    "false_alarms": 12,
+    "contra_ms": 0,
+    "stolen_flagged_ms": 2943,
+    "stolen_unflagged_ms": 0,
+    "repeats": 2,
+    "av_ms": -11.3,
+    "review_flags": 27
+   }
+  },
+  "D1": {
+   "rc6_fresh": {
+    "coverage_pct": 48.0,
+    "units_ok": "2/4",
+    "silent_misses": 0,
+    "false_alarms": 2,
+    "contra_ms": 0,
+    "stolen_flagged_ms": 0,
+    "stolen_unflagged_ms": 0,
+    "repeats": 3,
+    "av_ms": -41.3,
+    "review_flags": 16
+   },
+   "rc6_code_on_rc5_evidence": {
+    "coverage_pct": 43.0,
+    "units_ok": "2/4",
+    "silent_misses": 0,
+    "false_alarms": 2,
+    "contra_ms": 0,
+    "stolen_flagged_ms": 0,
+    "stolen_unflagged_ms": 0,
+    "repeats": 0,
+    "av_ms": -8.0,
+    "review_flags": 7
+   },
+   "rc5_code_on_rc5_evidence_control": {
+    "coverage_pct": 43.0,
+    "units_ok": "2/4",
+    "silent_misses": 0,
+    "false_alarms": 2,
+    "contra_ms": 0,
+    "stolen_flagged_ms": 0,
+    "stolen_unflagged_ms": 0,
+    "repeats": 0,
+    "av_ms": -8.0,
+    "review_flags": 7
+   }
+  }
+ }
+}

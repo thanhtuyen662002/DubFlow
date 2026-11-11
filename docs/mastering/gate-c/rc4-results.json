@@ -1,0 +1,124 @@
+{
+ "build": {
+  "version": "1.1.96-rc4",
+  "run": 42974952007,
+  "commit": "7c4fb1fcbca42134294a18279130a03aeb889c0b",
+  "channel": "candidate",
+  "production_qualified": false,
+  "zip_sha256": "30e39375680519385f50a84cb205f7ee22bc16b53de6f8a76e77a134d67fa518",
+  "dubflow_exe_sha256": "9bd55b1fff70b9e71440cd010ae56a09ed5b33eb2768d62371c10c3b7dea846a",
+  "ffmpeg": "LGPL (version3, no gpl, no nonfree)",
+  "pyc_in_bundle": 0,
+  "windows": "Windows 11 Home 10.0.26300",
+  "cpu": "12th Gen Intel Core i7-12700H",
+  "ram_gb": 39.7,
+  "gpu": "not used (CPU only)"
+ },
+ "cdp_proof": {
+  "dubflow_pid": 21844,
+  "webview_browser_pid": 13536,
+  "browser_parent": 21844,
+  "page": "http://tauri.localhost/",
+  "user_data_dir": "rc4/app/control/webview2/312e312e39362d726334/EBWebView",
+  "reopen_pids": [
+   5684,
+   5296
+  ]
+ },
+ "scenarios": {
+  "C1": "FAIL (all steps ran; P1-1, P1-2 needed workarounds)",
+  "C2": "FAIL (partial re-render correct; P1-3 workaround, P1-4 export gate bypass)",
+  "C3": "PASS",
+  "C4": "PASS with exceptions (unreadable file not passable through the Windows dialog; P2 messages)"
+ },
+ "C1": {
+  "render_s": 327,
+  "parts": 8,
+  "duration_s": 76.43,
+  "loudness_lufs": -18.4,
+  "true_peak_dbfs": -1.5,
+  "order": [
+   "hook",
+   "intro",
+   "#5",
+   "#4",
+   "#3",
+   "#2",
+   "#1",
+   "outro"
+  ],
+  "vision": {
+   "frames": 80,
+   "asked": 75,
+   "multi_frame": 32
+  },
+  "review_units": 13,
+  "needs_review": 12,
+  "source_insufficient": 1,
+  "decision_rerender": {
+   "rendered": [
+    "i1",
+    "outro"
+   ],
+   "reused": 6
+  },
+  "final_sha256": "0375255acf18f559"
+ },
+ "C2": {
+  "wall_s": 33.5,
+  "rendered": [
+   "i1",
+   "i2",
+   "outro"
+  ],
+  "reused": [
+   "hook",
+   "intro",
+   "i3",
+   "i4",
+   "i5"
+  ],
+  "encodes": 3,
+  "vision_asked": 0,
+  "tts_changed": [
+   "i2.wav"
+  ],
+  "peak_mb": {
+   "tree": 2854,
+   "python": 1367,
+   "ffmpeg": 1210
+  },
+  "pin_kept": "i5.u1 -> i5-s1c1",
+  "invalidated": "i1.u1 (source trimmed)",
+  "subtitle_lead_ms": 77
+ },
+ "C3": {
+  "v1_ui_render_s": 42,
+  "rc3_headless_s": 44.6,
+  "rc4_headless_s": 36.3,
+  "ffmpeg_argv_identical": "24/24",
+  "video_sha256_all_three": "9afa62bcfb3ae463",
+  "unknown_version": "clear message, files unchanged"
+ },
+ "C4": {
+  "missing_narration": "blocked with message",
+  "missing_source": "blocked with message",
+  "unsupported": "reported, not added",
+  "corrupt_mp4": "run FAILED with message",
+  "unreadable": "Windows dialog refuses; not testable via UI",
+  "symlink": "refused",
+  "junction_source_dir": "accepted (file itself not a link), read only",
+  "output_junction": "refused, nothing written",
+  "output_unwritable": "refused",
+  "ai_no_key": "AI options disabled with note",
+  "ai_invalid_key": "COMPLETED with 9 warnings (401), user order kept, fake key in 0 files",
+  "cancel": "stopped, no child processes, state FAILED 'cancelled'",
+  "resume": "1st FAILED (WinError 5 on status write), 2nd COMPLETED"
+ },
+ "media_sha256_unchanged": "6/6 test copies + 6/6 originals + 2/2 dub originals",
+ "keyscan": {
+  "files": 11810,
+  "gib": 6.13,
+  "hits": 0
+ }
+}
