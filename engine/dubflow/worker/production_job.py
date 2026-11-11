@@ -849,6 +849,15 @@ def _mastering_options(config: WorkerConfig) -> MasteringOptions:
         raise ProductionJobError("MASTERING_OPTIONS_INVALID", f"{path.name}: {error}") from error
 
 
+def _output_loudness(config: WorkerConfig, video: Path) -> dict[str, Any] | None:
+    """What the viewer hears: the final MP4's audio after AAC, measured once for QC (mastering on only)."""
+    try:
+        measured = mastering_measure.loudness(config.ffmpeg_path, video)
+    except mastering_measure.MeasureError:
+        return None
+    return measured.to_dict() if measured else None
+
+
 def _wav_rate(path: Path, default: int = 48_000) -> int:
     try:
         with wave.open(str(path), "rb") as reader:
@@ -2461,10 +2470,12 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
             # the dubbed mix is not in the output: what mastering said about it no longer holds
             notes = [note for note in notes if not note.startswith(("Âm lượng:", "Phụ đề:"))]
             notes.append("Đã quay về âm thanh gốc (B1): không chuẩn hóa âm lượng bản lồng tiếng, phụ đề giữ thời gian nguồn.")
+        loudness_applied = bool(mastering_document["audio_filter"]) and b2_audio is not None
         qc["mastering"] = {"level": mastering_options.level, "recipe": dubbing_master.RECIPE, "notes": notes,
-                           "loudness": bool(mastering_document["audio_filter"]) and b2_audio is not None,
+                           "loudness": loudness_applied,
                            "video_filters": mastering_document["video_filters"], "climax": mastering_document["climax"],
-                           "measured": mastering_document["measured"]}
+                           "measured": mastering_document["measured"],
+                           "output_loudness": _output_loudness(config, final_path) if loudness_applied else None}
     if speaker_summary is not None:
         qc["speakers"] = speaker_summary
     qc["background"] = background_summary
