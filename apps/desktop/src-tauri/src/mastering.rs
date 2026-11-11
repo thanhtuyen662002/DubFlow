@@ -217,18 +217,46 @@ fn climax_file(dir: &Path) -> PathBuf {
     dir.join(".dubflow-work").join("mastering").join("climax-decision.json")
 }
 
-/// What the Hậu kỳ card shows of a finished Lồng tiếng video: the export's own QC, nothing recomputed. Null when
-/// the video was made with mastering off (or before it existed).
-fn qc_view(dir: &Path) -> Result<Value, String> {
-    let path = dir.join("qc_report.json");
-    if !path.is_file() {
-        return Ok(Value::Null);
+/// A small JSON file read only when it is a plain file (never a link), checked again on the opened handle.
+/// Absent is `None`; a link, a folder or an oversized file is an error.
+fn read_plain_json(path: &Path, limit: u64) -> Result<Option<Value>, String> {
+    use std::io::Read;
+    let bad = || fail(format!("{} không hợp lệ", path.display()));
+    let before = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(fail(format!("{}: {error}", path.display()))),
+    };
+    if crate::edit::is_link(&before) || !before.is_file() || before.len() > limit {
+        return Err(bad());
     }
-    let qc = crate::read_json(&path, QC_LIMIT)?;
+    let mut file = open_no_follow(path).map_err(|_| bad())?;
+    let opened = file.metadata().map_err(|_| bad())?;
+    if crate::edit::is_link(&opened) || !opened.is_file() || opened.len() > limit {
+        return Err(bad());
+    }
+    let mut text = String::new();
+    file.by_ref().take(limit + 1).read_to_string(&mut text).map_err(|_| bad())?;
+    if text.len() as u64 > limit {
+        return Err(bad());
+    }
+    serde_json::from_str(&text).map(Some).map_err(|error| fail(format!("{}: {error}", path.display())))
+}
+
+/// What the Hậu kỳ card shows of a finished Lồng tiếng video: the export's own QC, nothing recomputed. Null when
+/// the video was made with mastering off (or before it existed). Only plain folders and files are read.
+fn qc_view(dir: &Path) -> Result<Value, String> {
+    if !crate::product::plain_dir(dir) {
+        return Err(fail("Thư mục video không hợp lệ"));
+    }
+    let Some(qc) = read_plain_json(&dir.join("qc_report.json"), QC_LIMIT)? else { return Ok(Value::Null) };
     let Some(mastering) = qc.get("mastering").filter(|value| value.is_object()) else { return Ok(Value::Null) };
     let fallback = qc["warnings"].as_array().is_some_and(|warnings| warnings.iter()
         .any(|warning| warning.as_str().is_some_and(|text| text.starts_with("B2_AUDIO_FALLBACK_TO_B1"))));
-    let decision = crate::read_json(&climax_file(dir), 64 * 1024).ok()
+    let decision_file = climax_file(dir);
+    let plain = |path: &Path| crate::product::plain_dir(path);
+    let decision = (plain(&dir.join(".dubflow-work")) && plain(decision_file.parent().expect("mastering folder")))
+        .then(|| read_plain_json(&decision_file, 64 * 1024).ok().flatten()).flatten()
         .and_then(|value| value["climax"].as_str().filter(|choice| ["keep", "drop"].contains(choice)).map(str::to_owned));
     Ok(json!({
         "level": mastering["level"], "notes": mastering["notes"], "loudness": mastering["loudness"],
@@ -244,6 +272,46 @@ pub fn dubbing_qc(output_path: String) -> Result<Value, String> {
     qc_view(&crate::review_dir(&output_path)?)
 }
 
+/// Records Giữ / Bỏ in the video's own plain `.dubflow-work\mastering` folder: nothing is created or written
+/// through a link, and an existing link at the record or its temp file is refused or replaced, never followed.
+fn write_climax_decision(dir: &Path, record: &Value) -> Result<(), String> {
+    use std::io::Write;
+    let bad = || fail("Thư mục làm việc của video không hợp lệ");
+    let work = dir.join(".dubflow-work");
+    if !crate::product::plain_dir(dir) || !crate::product::plain_dir(&work) {
+        return Err(bad());
+    }
+    let folder = work.join("mastering");
+    match fs::create_dir(&folder) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(fail(error.to_string())),
+    }
+    if !crate::product::plain_dir(&folder) {
+        return Err(bad());
+    }
+    let path = climax_file(dir);
+    if let Ok(metadata) = fs::symlink_metadata(&path) {
+        if crate::edit::is_link(&metadata) || !metadata.is_file() {
+            return Err(bad());
+        }
+    }
+    let temp = path.with_extension("json.tmp");
+    match fs::remove_file(&temp) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(fail(error.to_string())),
+    }
+    let bytes = serde_json::to_vec(record).map_err(|error| fail(error.to_string()))?;
+    fs::OpenOptions::new().write(true).create_new(true).open(&temp)
+        .and_then(|mut file| file.write_all(&bytes).and_then(|()| file.sync_all()))
+        .and_then(|()| fs::rename(&temp, &path))
+        .map_err(|error| {
+            let _ = fs::remove_file(&temp);
+            fail(format!("Không lưu được lựa chọn: {error}"))
+        })
+}
+
 /// Giữ / Bỏ on the climax suggestion: only recorded (the suggestion is never put into the video by itself).
 #[tauri::command]
 pub fn dubbing_qc_climax(output_path: String, keep: bool) -> Result<Value, String> {
@@ -253,14 +321,9 @@ pub fn dubbing_qc_climax(output_path: String, keep: bool) -> Result<Value, Strin
     if !climax.is_object() {
         return Err(fail("Video này không có gợi ý cao trào"));
     }
-    let path = climax_file(&dir);
-    fs::create_dir_all(path.parent().expect("mastering folder")).map_err(|error| fail(error.to_string()))?;
     let record = json!({"schema_version": 1, "climax": if keep { "keep" } else { "drop" },
                         "start_ms": climax["start_ms"], "end_ms": climax["end_ms"]});
-    let temp = path.with_extension("json.tmp");
-    fs::write(&temp, serde_json::to_vec(&record).map_err(|error| fail(error.to_string()))?)
-        .and_then(|()| fs::rename(&temp, &path))
-        .map_err(|error| fail(format!("Không lưu được lựa chọn: {error}")))?;
+    write_climax_decision(&dir, &record)?;
     qc_view(&dir)
 }
 
@@ -372,6 +435,44 @@ mod tests {
         assert_eq!(qc_view(&dir).unwrap()["climax_decision"], "keep");
         fs::write(climax_file(&dir), r#"{"climax":"apply-now"}"#).unwrap();
         assert_eq!(qc_view(&dir).unwrap()["climax_decision"], Value::Null);
+        write_climax_decision(&dir, &json!({"climax": "drop"})).unwrap();
+        assert_eq!(qc_view(&dir).unwrap()["climax_decision"], "drop");
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_qc_card_neither_reads_nor_writes_through_a_link() {
+        let base = std::env::temp_dir().join(format!("dubflow-qc-link-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let outside = base.join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        let qc = serde_json::to_vec(&json!({"mastering": {"level": "light", "climax": {"start_ms": 0, "end_ms": 5000}}})).unwrap();
+        fs::write(outside.join("qc_report.json"), &qc).unwrap();
+        // a linked mastering folder: the record is refused and nothing lands outside
+        let dir = base.join("video");
+        fs::create_dir_all(dir.join(".dubflow-work")).unwrap();
+        fs::write(dir.join("qc_report.json"), &qc).unwrap();
+        if crate::product::tests::link_dir(&outside, &dir.join(".dubflow-work").join("mastering")) {
+            assert!(write_climax_decision(&dir, &json!({"climax": "keep"})).is_err());
+            assert!(!outside.join("climax-decision.json").exists());
+            fs::write(outside.join("climax-decision.json"), r#"{"climax":"keep"}"#).unwrap();
+            assert_eq!(qc_view(&dir).unwrap()["climax_decision"], Value::Null, "a decision behind a link is not read");
+        } else {
+            assert!(cfg!(not(windows)), "junctions need no privilege on Windows");
+        }
+        // a linked output folder is not read at all
+        let linked = base.join("linked");
+        if crate::product::tests::link_dir(&outside, &linked) {
+            assert!(qc_view(&linked).is_err());
+        }
+        // a qc report that is itself a link is not read
+        #[cfg(unix)]
+        {
+            let plain = base.join("plain");
+            fs::create_dir_all(&plain).unwrap();
+            std::os::unix::fs::symlink(outside.join("qc_report.json"), plain.join("qc_report.json")).unwrap();
+            assert!(qc_view(&plain).is_err());
+        }
+        let _ = fs::remove_dir_all(&base);
     }
 }
