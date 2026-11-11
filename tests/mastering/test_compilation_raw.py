@@ -264,6 +264,42 @@ class MomentTest(unittest.TestCase):
         self.assertTrue(all(s.source.end <= last.source.start for s in narration))  # the source still plays forward
 
 
+    def test_a_long_source_keeps_its_late_footage_for_the_narration(self):
+        """Why We Fight (run 9): the moment was chosen first, early, and the narration only played what came before
+        it; the map the narration names, 8 minutes in, was out of reach."""
+        from engine.dubflow.mastering import candidates as shots
+        from engine.dubflow.mastering.planners import compilation as planner
+        length = 600_000
+        cuts = tuple(range(6000, length, 6000))
+        found = scene.Analysis(length, cuts, tuple(scene.Shot(a, a + 6000, 50) for a in range(0, length, 6000)), (), True, "y" * 64)
+        source = planner.Footage("i1-s1", Path("war.mp4"), found, 640, 360, (25, 1),
+                                 cues=((60_000, 63_000, "trời ơi nhìn kìa"), (480_500, 485_000, "bản đồ dãy núi Kavkaz")))
+        quality = shots.Quality(120, 50, 300)
+        pool = [shots.Candidate(f"i1-s1c{n + 1}", "i1-s1", n * 6000, n * 6000 + 6000, n, 50, quality, n * 2**20 + 1)
+                for n in range(length // 6000)]
+        evidence = planner.evidence_for([source], {"i1-s1": pool}, {})
+        spoken = [("Bản đồ dãy núi Kavkaz.", 2500), ("Nơi hai bên giao tranh.", 2500)]
+        made = planner.plan_part("i1", "item", spoken, 5600, m.Options("balanced", "entertainment"), lead_ms=200, gap_ms=300,
+                                 footage=[source], candidates={"i1-s1": pool}, evidence=evidence, title="Kavkaz",
+                                 inputs={"part": "0" * 64})
+        narration = [s for s in made.plan.segments if s.audio_mode != "source"]
+        self.assertTrue(any(s.source.start < 486_000 and s.source.end > 480_000 for s in narration),
+                        [(s.source.start, s.source.end) for s in narration])
+        last = made.plan.segments[-1]
+        self.assertEqual(last.role, "reaction")
+        self.assertTrue(all(s.source.end <= last.source.start for s in narration))  # still forward
+
+    def test_candidates_of_a_long_source_cover_all_of_it(self):
+        from engine.dubflow.mastering import candidates as shots
+        length = 2_400_000  # 40 minutes of 3-second shots: 800 windows
+        found = scene.Analysis(length, tuple(range(3000, length, 3000)),
+                               tuple(scene.Shot(a, a + 3000, 50) for a in range(0, length, 3000)), (), True, "z" * 64)
+        windows = shots.windows(found)
+        self.assertEqual(len(windows), shots.MAX_CANDIDATES)
+        self.assertGreater(windows[-1][0], length * 9 // 10)
+        self.assertEqual(windows, sorted(windows))
+
+
 class MontageArgvTest(unittest.TestCase):
     def test_audio_modes_and_still(self):
         info = scene.StreamInfo(9000, 640, 360, 25, True)
