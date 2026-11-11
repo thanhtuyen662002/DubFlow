@@ -47,12 +47,12 @@ fn is_unit(value: &str) -> bool {
     (1..=3).contains(&letters) && (1..=4).contains(&(value.len() - letters)) && value.bytes().skip(letters).all(|b| b.is_ascii_digit())
 }
 
-fn digits(value: &str, most: usize) -> bool {
+pub(crate) fn digits(value: &str, most: usize) -> bool {
     (1..=most).contains(&value.len()) && value.bytes().all(|b| b.is_ascii_digit())
 }
 
 /// `<n>` or `<n>f<n>`: a shot number, or a part of a long shot split by its extra frames.
-fn shot_number(value: &str) -> bool {
+pub(crate) fn shot_number(value: &str) -> bool {
     match value.split_once('f') {
         Some((number, part)) => digits(number, 4) && digits(part, 1),
         None => digits(value, 4),
@@ -67,7 +67,7 @@ fn is_shot(value: &str) -> bool {
     digits(source, 2) && shot_number(number)
 }
 
-fn is_warning(value: &str) -> bool {
+pub(crate) fn is_warning(value: &str) -> bool {
     value.len() == 16 && value.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
 
@@ -84,6 +84,13 @@ fn video_number(video: u32) -> Result<String, String> {
 
 /// The arguments after `--work … --video N` for one panel action, every value checked.
 fn action_args(action: &str, unit: Option<&str>, what: Option<&str>, ids: &[String], warning: Option<&str>, value: Option<bool>) -> Result<Vec<String>, String> {
+    checked_args(action, unit, what, ids, warning, value, is_unit, is_shot)
+}
+
+/// One panel action's arguments, with the unit and shot id shapes of the workflow (Bán hàng or Tổng hợp).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn checked_args(action: &str, unit: Option<&str>, what: Option<&str>, ids: &[String], warning: Option<&str>,
+                           value: Option<bool>, is_unit: fn(&str) -> bool, is_shot: fn(&str) -> bool) -> Result<Vec<String>, String> {
     match action {
         "view" | "undo" => Ok(vec![action.to_owned()]),
         "decide" => {
@@ -105,12 +112,14 @@ fn action_args(action: &str, unit: Option<&str>, what: Option<&str>, ids: &[Stri
     }
 }
 
-fn run_review(run: &Path, video: &str, args: &[String]) -> Result<Value, String> {
+/// `python -m engine.dubflow.mastering.review --work <run>\.dubflow-work <scope> <args>`; `scope` is
+/// `["--video", n]` (Bán hàng) or `["--part", id]` (Tổng hợp), already checked.
+pub(crate) fn run_review(run: &Path, scope: [&str; 2], args: &[String]) -> Result<Value, String> {
     let root = version_root()?;
     let mut command = Command::new(root.join("runtime").join("python.exe"));
     command.current_dir(root.join("app"))
         .args(["-B", "-m", "engine.dubflow.mastering.review", "--work"]).arg(run.join(".dubflow-work"))
-        .args(["--video", video]).args(args)
+        .args(scope).args(args)
         .env("PYTHONUTF8", "1").env("PYTHONNOUSERSITE", "1")
         .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
     #[cfg(windows)]
@@ -136,7 +145,7 @@ pub async fn mastering_review(output_dir: String, video: u32, action: String, un
         return Err(fail("Tệp duyệt cảnh của video này không an toàn (là liên kết)"));
     }
     let args = action_args(&action, unit.as_deref(), what.as_deref(), ids.as_deref().unwrap_or_default(), warning.as_deref(), value)?;
-    tauri::async_runtime::spawn_blocking(move || run_review(&run, &video, &args))
+    tauri::async_runtime::spawn_blocking(move || run_review(&run, ["--video", &video], &args))
         .await.map_err(|error| fail(error.to_string()))?
 }
 
@@ -148,7 +157,7 @@ fn keyframe_path(run: &Path, name: &str) -> Result<PathBuf, String> {
 }
 
 /// Opens a file without following a link at its last step (the folders above it are checked plain by the caller).
-fn open_no_follow(path: &Path) -> std::io::Result<fs::File> {
+pub(crate) fn open_no_follow(path: &Path) -> std::io::Result<fs::File> {
     let mut options = fs::OpenOptions::new();
     options.read(true);
     #[cfg(windows)]
@@ -172,7 +181,7 @@ fn open_no_follow(path: &Path) -> std::io::Result<fs::File> {
 
 /// The keyframe's bytes: only a plain file in the run's own plain mastering folder, checked on the opened handle
 /// (a link put there between the check and the read is not followed).
-fn read_keyframe(run: &Path, name: &str) -> Result<Vec<u8>, String> {
+pub(crate) fn read_keyframe(run: &Path, name: &str) -> Result<Vec<u8>, String> {
     use std::io::Read;
     let path = keyframe_path(run, name)?;
     let missing = || fail("Không có ảnh của cảnh này");
@@ -236,7 +245,7 @@ fn climax_file(dir: &Path) -> PathBuf {
 
 /// A small JSON file read only when it is a plain file (never a link), checked again on the opened handle.
 /// Absent is `None`; a link, a folder or an oversized file is an error.
-fn read_plain_json(path: &Path, limit: u64) -> Result<Option<Value>, String> {
+pub(crate) fn read_plain_json(path: &Path, limit: u64) -> Result<Option<Value>, String> {
     use std::io::Read;
     let bad = || fail(format!("{} không hợp lệ", path.display()));
     let before = match fs::symlink_metadata(path) {

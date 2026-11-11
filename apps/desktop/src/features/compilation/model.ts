@@ -83,6 +83,8 @@ export function parseStatus(value: unknown): CompilationStatus | null {
 /** A compilation found by `compilation_runs`: its folder, request, status and finished video. */
 export type CompilationRun = {
   dir: string; title: string; layout: string; created: number; parts: number; status: CompilationStatus | null; video: string | null; spec: unknown;
+  /** 1: from finished dubbing exports; 2: from raw sources (Issue #728); anything else needs a newer DubFlow. */
+  version: number;
 };
 
 export function parseRuns(value: unknown): CompilationRun[] {
@@ -95,6 +97,7 @@ export function parseRuns(value: unknown): CompilationRun[] {
       layout: spec.layout === "toan-man-hinh" ? "toan-man-hinh" : "bang-thong-tin", created: Number.isFinite(item.created) ? Number(item.created) : 0,
       parts: Array.isArray(spec.items) ? spec.items.length : 0, status,
       video: typeof item.video === "string" && item.video ? item.video : status?.state === "COMPLETED" ? status.path : null, spec: item.spec,
+      version: Number.isInteger(item.schema_version) ? Number(item.schema_version) : Number.isInteger(spec.schema_version) ? Number(spec.schema_version) : 1,
     };
   });
 }

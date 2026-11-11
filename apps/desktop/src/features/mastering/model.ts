@@ -24,11 +24,12 @@ const LEVEL_TEXT: Record<Workflow, Record<Level, string>> = {
     balanced: "Như Nhẹ, được đổi thứ tự cảnh để câu nào cũng có hình hợp, cảnh mở đầu nổi bật.",
     dynamic: "Như Cân bằng, nhịp cắt nhanh hơn trong giới hạn an toàn.",
   },
+  // Tổng hợp từ video gốc (spec v2): only what engine/dubflow/compilation/raw.py and its planner do at each level.
   compilation: {
-    off: "Ghép như cũ.",
-    light: "Chọn đoạn theo lời dẫn, giữ thứ tự và thứ hạng chương trình.",
-    balanced: "Như Nhẹ, thêm đoạn mở đầu gợi tò mò lấy từ chính các nguồn.",
-    dynamic: "Như Cân bằng, nhịp cắt nhanh hơn trong giới hạn an toàn; không đổi thứ hạng.",
+    off: "Video gốc luôn cần chọn cảnh theo lời bình, nên Tắt được dựng như Nhẹ.",
+    light: "Chọn cảnh theo từng câu lời bình, cắt trong ranh giới cảnh, giữ thứ tự trong mỗi nguồn và thứ hạng của bạn; chuẩn hóa âm lượng. Nhịp cắt chậm, không mờ dần giữa các phần.",
+    balanced: "Như Nhẹ, nhịp cắt vừa và mờ dần ở đầu và cuối mỗi phần; câu mở màn (nếu bạn viết) có thể dùng một cảnh nổi bật tới 6 giây lấy từ phần sau, luôn cần bạn duyệt.",
+    dynamic: "Như Cân bằng, nhịp cắt nhanh hơn; cảnh mở màn được dài tới 8 giây. Không đổi thứ hạng.",
   },
 };
 
@@ -150,6 +151,11 @@ export function unitBadge(unit: ReviewUnit): { text: string; tone: string } {
   if (unit.user_state === "USER_APPROVED") return STATE_LABELS.USER_APPROVED;
   if (unit.decision?.pin.length) return { text: "Bạn đã chọn cảnh", tone: "info" };
   return STATE_LABELS[unit.state] ?? { text: unit.state, tone: "warn" };
+}
+
+/** A sentence's number as the panel says it: the trailing number of its id (`s3` → 3, `i2.u4` → 4). */
+export function unitNumber(unitId: string): string {
+  return /(\d+)$/.exec(unitId)?.[1] ?? unitId;
 }
 
 export function coverageText(unit: ReviewUnit): string {

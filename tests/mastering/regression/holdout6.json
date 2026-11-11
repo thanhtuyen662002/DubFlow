@@ -1,0 +1,1623 @@
+[
+ {
+  "schema_version": 1,
+  "name": "holdout6-coffee-grinder",
+  "split": "holdout",
+  "group": "kitchen",
+  "forward_only": false,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "g1c1",
+    "source": "g1",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Máy xay cà phê bằng thép đặt cạnh túi hạt",
+    "motion": 50,
+    "hook": 500,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "g1c2",
+    "source": "g1",
+    "start_ms": 3000,
+    "end_ms": 7000,
+    "text": "Đổ hạt cà phê rang vào phễu máy xay",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "g2c1",
+    "source": "g2",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Bột cà phê mịn rơi xuống cốc hứng",
+    "motion": 90,
+    "hook": 700,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "g2c2",
+    "source": "g2",
+    "start_ms": 4000,
+    "end_ms": 7000,
+    "text": "Xoay núm chỉnh độ mịn từ 1 đến 30",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "g3c1",
+    "source": "g3",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Ly cà phê pha máy có lớp crema vàng",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "g3c2",
+    "source": "g3",
+    "start_ms": 4000,
+    "end_ms": 7000,
+    "text": "Tháo lưỡi xay ra rửa dưới vòi nước",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Bột cà phê mịn như ngoài quán, ngay tại nhà.",
+    "ms": 3000
+   },
+   {
+    "id": "u2",
+    "text": "Đổ hạt vào phễu, bấm một nút là xay.",
+    "ms": 3000
+   },
+   {
+    "id": "u3",
+    "text": "Ba mươi mức chỉnh độ mịn cho mọi kiểu pha.",
+    "ms": 3000
+   },
+   {
+    "id": "u4",
+    "text": "Bột xay mịn đều rơi thẳng vào cốc.",
+    "ms": 3500
+   },
+   {
+    "id": "u5",
+    "text": "Lưỡi xay tháo ra rửa được.",
+    "ms": 3000
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "holdout6-coffee-grinder",
+   "split": "holdout",
+   "forward_only": false,
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "g1",
+       "start_ms": 0,
+       "end_ms": 3000
+      },
+      {
+       "source": "g3",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ],
+     "note": "the opening may show the machine or a finished cup; the falling powder is u4's key"
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "g1",
+       "start_ms": 3000,
+       "end_ms": 7000
+      }
+     ],
+     "key": [
+      {
+       "source": "g1",
+       "start_ms": 3000,
+       "end_ms": 7000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "g2",
+       "start_ms": 4000,
+       "end_ms": 7000
+      }
+     ],
+     "key": [
+      {
+       "source": "g2",
+       "start_ms": 4000,
+       "end_ms": 7000
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "g2",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ],
+     "key": [
+      {
+       "source": "g2",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    },
+    "u5": {
+     "accept": [
+      {
+       "source": "g3",
+       "start_ms": 4000,
+       "end_ms": 7000
+      }
+     ],
+     "key": [
+      {
+       "source": "g3",
+       "start_ms": 4000,
+       "end_ms": 7000
+      }
+     ]
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "holdout6-rice-noodle-pot",
+  "split": "holdout",
+  "group": "kitchen",
+  "forward_only": false,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "p1c1",
+    "source": "p1",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Nồi lẩu điện mini màu hồng trên bàn ăn",
+    "motion": 50,
+    "hook": 400,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "p1c2",
+    "source": "p1",
+    "start_ms": 3000,
+    "end_ms": 7000,
+    "text": "Nước lẩu sôi sùng sục trong nồi",
+    "motion": 100,
+    "hook": 650,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "p2c1",
+    "source": "p2",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Vặn núm chỉnh nhiệt bốn mức",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "p2c2",
+    "source": "p2",
+    "start_ms": 4000,
+    "end_ms": 8000,
+    "text": "Gắp mì từ nồi ra bát",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "p3c1",
+    "source": "p3",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Màn hình chữ: miễn phí giao hàng",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "p3c2",
+    "source": "p3",
+    "start_ms": 3000,
+    "end_ms": 7000,
+    "text": "Lòng nồi chống dính được lau sạch bằng khăn giấy",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Nồi lẩu mini cho bữa tối một mình.",
+    "ms": 3000
+   },
+   {
+    "id": "u2",
+    "text": "Nước sôi chỉ sau ba phút.",
+    "ms": 3000
+   },
+   {
+    "id": "u3",
+    "text": "Bốn mức nhiệt, nấu mì hay lẩu đều được.",
+    "ms": 3500
+   },
+   {
+    "id": "u4",
+    "text": "Lòng nồi chống dính, lau một cái là sạch.",
+    "ms": 3500
+   },
+   {
+    "id": "u5",
+    "text": "Miễn phí giao hàng hôm nay.",
+    "ms": 2500
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "holdout6-rice-noodle-pot",
+   "split": "holdout",
+   "forward_only": false,
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "p1",
+       "start_ms": 0,
+       "end_ms": 3000
+      },
+      {
+       "source": "p2",
+       "start_ms": 4000,
+       "end_ms": 8000
+      }
+     ]
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "p1",
+       "start_ms": 3000,
+       "end_ms": 7000
+      }
+     ],
+     "key": [
+      {
+       "source": "p1",
+       "start_ms": 3000,
+       "end_ms": 7000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "p2",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ],
+     "key": [
+      {
+       "source": "p2",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "p3",
+       "start_ms": 3000,
+       "end_ms": 7000
+      }
+     ],
+     "key": [
+      {
+       "source": "p3",
+       "start_ms": 3000,
+       "end_ms": 7000
+      }
+     ]
+    },
+    "u5": {
+     "accept": [
+      {
+       "source": "p3",
+       "start_ms": 0,
+       "end_ms": 3000
+      },
+      {
+       "source": "p1",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ]
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "holdout6-hair-straightener",
+  "split": "holdout",
+  "group": "beauty",
+  "forward_only": false,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "h1c1",
+    "source": "h1",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Máy duỗi tóc màu trắng trong hộp quà",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "h1c2",
+    "source": "h1",
+    "start_ms": 3000,
+    "end_ms": 7000,
+    "text": "Tóc xoăn rối được kẹp duỗi thẳng mượt chỉ một lượt",
+    "motion": 80,
+    "hook": 750,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "h2c1",
+    "source": "h2",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Màn hình nhiệt độ hiển thị 180 độ",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "h2c2",
+    "source": "h2",
+    "start_ms": 4000,
+    "end_ms": 7000,
+    "text": "Bản kẹp gốm phủ ion cận cảnh",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "h3c1",
+    "source": "h3",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Cô gái hất mái tóc thẳng óng ả trước gương",
+    "motion": 50,
+    "hook": 600,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Tóc xoăn rối thành thẳng mượt chỉ một lượt kẹp.",
+    "ms": 3500
+   },
+   {
+    "id": "u2",
+    "text": "Chỉnh nhiệt từ 140 đến 220 độ.",
+    "ms": 3000
+   },
+   {
+    "id": "u3",
+    "text": "Bản kẹp gốm ion giữ tóc không khô xơ.",
+    "ms": 3000
+   },
+   {
+    "id": "u4",
+    "text": "Tóc thẳng óng ả cả ngày dài.",
+    "ms": 3500
+   },
+   {
+    "id": "u5",
+    "text": "Đóng hộp sang trọng, làm quà rất hợp.",
+    "ms": 3000
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "holdout6-hair-straightener",
+   "split": "holdout",
+   "forward_only": false,
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "h1",
+       "start_ms": 3000,
+       "end_ms": 7000
+      }
+     ],
+     "key": [
+      {
+       "source": "h1",
+       "start_ms": 3000,
+       "end_ms": 7000
+      }
+     ],
+     "note": "the opening itself names the straightening: its own key"
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "h2",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ],
+     "key": [
+      {
+       "source": "h2",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "h2",
+       "start_ms": 4000,
+       "end_ms": 7000
+      }
+     ],
+     "key": [
+      {
+       "source": "h2",
+       "start_ms": 4000,
+       "end_ms": 7000
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "h3",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ],
+     "key": [
+      {
+       "source": "h3",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    },
+    "u5": {
+     "accept": [
+      {
+       "source": "h1",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ],
+     "key": [
+      {
+       "source": "h1",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ]
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "holdout6-sunscreen",
+  "split": "holdout",
+  "group": "beauty",
+  "forward_only": false,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "k1c1",
+    "source": "k1",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Tuýp kem chống nắng màu vàng trên cát biển",
+    "motion": 50,
+    "hook": 600,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "k1c2",
+    "source": "k1",
+    "start_ms": 3000,
+    "end_ms": 7000,
+    "text": "Bóp kem ra mu bàn tay, kem trắng mỏng",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "k2c1",
+    "source": "k2",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Thoa kem lên mặt, kem thấm nhanh không vệt trắng",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "k2c2",
+    "source": "k2",
+    "start_ms": 4000,
+    "end_ms": 8000,
+    "text": "Giọt nước lăn trên da đã thoa kem",
+    "motion": 70,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "k3c1",
+    "source": "k3",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Nhãn SPF50+ PA++++ trên vỏ tuýp",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Đi biển cả ngày không lo cháy nắng.",
+    "ms": 3000
+   },
+   {
+    "id": "u2",
+    "text": "Chỉ số SPF50+ bảo vệ tối đa.",
+    "ms": 3000
+   },
+   {
+    "id": "u3",
+    "text": "Kem mỏng nhẹ, thấm nhanh, không vệt trắng.",
+    "ms": 3500
+   },
+   {
+    "id": "u4",
+    "text": "Chống nước, bơi xong vẫn bám trên da.",
+    "ms": 3500
+   },
+   {
+    "id": "u5",
+    "text": "Một lượng nhỏ là đủ cho cả khuôn mặt.",
+    "ms": 3000
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "holdout6-sunscreen",
+   "split": "holdout",
+   "forward_only": false,
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "k1",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ]
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "k3",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ],
+     "key": [
+      {
+       "source": "k3",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "k2",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ],
+     "key": [
+      {
+       "source": "k2",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "k2",
+       "start_ms": 4000,
+       "end_ms": 8000
+      }
+     ],
+     "key": [
+      {
+       "source": "k2",
+       "start_ms": 4000,
+       "end_ms": 8000
+      }
+     ]
+    },
+    "u5": {
+     "accept": [
+      {
+       "source": "k1",
+       "start_ms": 3000,
+       "end_ms": 7000
+      }
+     ],
+     "key": [
+      {
+       "source": "k1",
+       "start_ms": 3000,
+       "end_ms": 7000
+      }
+     ]
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "holdout6-camping-lantern",
+  "split": "holdout",
+  "group": "outdoor",
+  "forward_only": false,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "l1c1",
+    "source": "l1",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Đèn cắm trại treo trong lều phát sáng vàng ấm",
+    "motion": 50,
+    "hook": 650,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "l1c2",
+    "source": "l1",
+    "start_ms": 4000,
+    "end_ms": 8000,
+    "text": "Nhấn nút đổi ba chế độ sáng",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "l2c1",
+    "source": "l2",
+    "start_ms": 0,
+    "end_ms": 9000,
+    "text": "Đèn đặt trên bàn gỗ ban ngày",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false,
+    "frames": [
+     {
+      "at_ms": 1500,
+      "text": "Đèn đặt trên bàn gỗ ban ngày",
+      "usable": true
+     },
+     {
+      "at_ms": 7500,
+      "text": "Cắm cáp sạc đèn vào sạc dự phòng",
+      "usable": true
+     }
+    ]
+   },
+   {
+    "id": "l2c2",
+    "source": "l2",
+    "start_ms": 9000,
+    "end_ms": 13000,
+    "text": "Đèn rơi xuống đất đá vẫn sáng",
+    "motion": 110,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "l3c1",
+    "source": "l3",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Bên ngoài lều trời tối, đèn chiếu sáng cả khu cắm trại",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Cả khu cắm trại sáng bừng với một chiếc đèn.",
+    "ms": 3500
+   },
+   {
+    "id": "u2",
+    "text": "Ba chế độ sáng, chỉ một nút bấm.",
+    "ms": 3000
+   },
+   {
+    "id": "u3",
+    "text": "Sạc lại bằng sạc dự phòng khi ở ngoài trời.",
+    "ms": 3000
+   },
+   {
+    "id": "u4",
+    "text": "Rơi xuống đá vẫn sáng bình thường.",
+    "ms": 3500
+   },
+   {
+    "id": "u5",
+    "text": "Ánh sáng vàng ấm trong lều về đêm.",
+    "ms": 3000
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "holdout6-camping-lantern",
+   "split": "holdout",
+   "forward_only": false,
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "l3",
+       "start_ms": 0,
+       "end_ms": 4000
+      },
+      {
+       "source": "l1",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ],
+     "note": "the inside-tent light is u5's key; the campsite shot is u1's own"
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "l1",
+       "start_ms": 4000,
+       "end_ms": 8000
+      }
+     ],
+     "key": [
+      {
+       "source": "l1",
+       "start_ms": 4000,
+       "end_ms": 8000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "l2",
+       "start_ms": 6000,
+       "end_ms": 9000
+      }
+     ],
+     "key": [
+      {
+       "source": "l2",
+       "start_ms": 6000,
+       "end_ms": 9000
+      }
+     ],
+     "note": "only the end of the long take shows the charging"
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "l2",
+       "start_ms": 9000,
+       "end_ms": 13000
+      }
+     ],
+     "key": [
+      {
+       "source": "l2",
+       "start_ms": 9000,
+       "end_ms": 13000
+      }
+     ]
+    },
+    "u5": {
+     "accept": [
+      {
+       "source": "l1",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ],
+     "key": [
+      {
+       "source": "l1",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "holdout6-jump-rope",
+  "split": "holdout",
+  "group": "outdoor",
+  "forward_only": false,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "r1c1",
+    "source": "r1",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Dây nhảy có bộ đếm điện tử ở tay cầm",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "r1c2",
+    "source": "r1",
+    "start_ms": 3000,
+    "end_ms": 8000,
+    "text": "Người tập nhảy dây nhanh trong công viên",
+    "motion": 140,
+    "hook": 700,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "r2c1",
+    "source": "r2",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Màn hình tay cầm hiển thị 520 lần nhảy và 85 kcal",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "r2c2",
+    "source": "r2",
+    "start_ms": 3000,
+    "end_ms": 7000,
+    "text": "Kéo dài dây bằng nút xoay ở đầu tay cầm",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Mười phút mỗi ngày, đốt mỡ hiệu quả.",
+    "ms": 3000
+   },
+   {
+    "id": "u2",
+    "text": "Bộ đếm ghi số lần nhảy và calo.",
+    "ms": 3000
+   },
+   {
+    "id": "u3",
+    "text": "Chỉnh độ dài dây hợp với chiều cao.",
+    "ms": 3000
+   },
+   {
+    "id": "u4",
+    "text": "Tập ở công viên hay trong nhà đều được.",
+    "ms": 3500
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "holdout6-jump-rope",
+   "split": "holdout",
+   "forward_only": false,
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "r1",
+       "start_ms": 3000,
+       "end_ms": 8000
+      }
+     ]
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "r2",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ],
+     "key": [
+      {
+       "source": "r2",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "r2",
+       "start_ms": 3000,
+       "end_ms": 7000
+      }
+     ],
+     "key": [
+      {
+       "source": "r2",
+       "start_ms": 3000,
+       "end_ms": 7000
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "r1",
+       "start_ms": 3000,
+       "end_ms": 8000
+      }
+     ],
+     "key": [
+      {
+       "source": "r1",
+       "start_ms": 3000,
+       "end_ms": 8000
+      }
+     ]
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "holdout6-top5-fails",
+  "split": "holdout",
+  "group": "entertainment",
+  "forward_only": true,
+  "pacing": "entertainment",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "f1c1",
+    "source": "f1",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Màn hình chữ: TOP 5 PHA TÉ NGÃ HÀI HƯỚC",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "f1c2",
+    "source": "f1",
+    "start_ms": 3000,
+    "end_ms": 7000,
+    "text": "Người đi xe đạp ngã xuống vũng bùn",
+    "motion": 150,
+    "hook": 800,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "f1c3",
+    "source": "f1",
+    "start_ms": 7000,
+    "end_ms": 10000,
+    "text": "Người đi xe đạp đứng dậy cười, người dính bùn",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "f2c1",
+    "source": "f2",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Chú chó giật mất chiếc bánh mì trên tay em bé",
+    "motion": 120,
+    "hook": 700,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "f3c1",
+    "source": "f3",
+    "start_ms": 0,
+    "end_ms": 5000,
+    "text": "Người trượt ván trượt ngã khỏi lan can",
+    "motion": 150,
+    "hook": 750,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "f4c1",
+    "source": "f4",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Chiếc ghế gãy khi người đàn ông ngồi xuống",
+    "motion": 110,
+    "hook": 650,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Năm pha té ngã khiến bạn cười không ngừng.",
+    "ms": 3000
+   },
+   {
+    "id": "u2",
+    "text": "Hạng năm: cú ngã xuống vũng bùn.",
+    "ms": 4000
+   },
+   {
+    "id": "u3",
+    "text": "Hạng bốn: chú chó cướp bánh mì.",
+    "ms": 4000
+   },
+   {
+    "id": "u4",
+    "text": "Hạng ba: pha trượt ván thất bại.",
+    "ms": 4500
+   },
+   {
+    "id": "u5",
+    "text": "Hạng hai: chiếc ghế phản chủ.",
+    "ms": 4000
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "holdout6-top5-fails",
+   "split": "holdout",
+   "forward_only": true,
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "f1",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ],
+     "note": "the title card is the intro's own; the mud fall is u2's key"
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "f1",
+       "start_ms": 3000,
+       "end_ms": 10000
+      }
+     ],
+     "key": [
+      {
+       "source": "f1",
+       "start_ms": 3000,
+       "end_ms": 7000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "f2",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ],
+     "key": [
+      {
+       "source": "f2",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "f3",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ],
+     "key": [
+      {
+       "source": "f3",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ]
+    },
+    "u5": {
+     "accept": [
+      {
+       "source": "f4",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ],
+     "key": [
+      {
+       "source": "f4",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "holdout6-japan-trip",
+  "split": "holdout",
+  "group": "travel-names",
+  "forward_only": false,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "j1c1",
+    "source": "j1",
+    "start_ms": 0,
+    "end_ms": 5000,
+    "text": "Núi tuyết hình nón phía sau hồ nước",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false,
+    "transcript": "Mount Fuji seen from Lake Kawaguchi"
+   },
+   {
+    "id": "j1c2",
+    "source": "j1",
+    "start_ms": 5000,
+    "end_ms": 9000,
+    "text": "Cổng đền màu đỏ cam nối tiếp nhau trên sườn đồi",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false,
+    "transcript": "Fushimi Inari shrine in Kyoto"
+   },
+   {
+    "id": "j2c1",
+    "source": "j2",
+    "start_ms": 0,
+    "end_ms": 5000,
+    "text": "Ngã tư đông người qua đường dưới các bảng quảng cáo",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false,
+    "transcript": "Shibuya crossing, Tokyo"
+   },
+   {
+    "id": "j2c2",
+    "source": "j2",
+    "start_ms": 5000,
+    "end_ms": 9000,
+    "text": "Tàu cao tốc màu trắng lướt qua sân ga",
+    "motion": 130,
+    "hook": 0,
+    "usable": true,
+    "still": false,
+    "transcript": "The Shinkansen bullet train"
+   },
+   {
+    "id": "j3c1",
+    "source": "j3",
+    "start_ms": 0,
+    "end_ms": 5000,
+    "text": "Hươu đi lại giữa khách du lịch trong công viên",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false,
+    "transcript": "Deer in Nara Park"
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Núi Phú Sĩ hiện lên sau hồ Kawaguchi.",
+    "ms": 3500
+   },
+   {
+    "id": "u2",
+    "text": "Ở Kyoto, hàng nghìn cổng torii đỏ dẫn lên núi.",
+    "ms": 4000
+   },
+   {
+    "id": "u3",
+    "text": "Ngã tư Shibuya ở Tokyo đông nhất thế giới.",
+    "ms": 3500
+   },
+   {
+    "id": "u4",
+    "text": "Tàu Shinkansen nối các thành phố trong vài giờ.",
+    "ms": 3500
+   },
+   {
+    "id": "u5",
+    "text": "Ở Nara, hươu đi lại tự do giữa du khách.",
+    "ms": 3500
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "holdout6-japan-trip",
+   "split": "holdout",
+   "forward_only": false,
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "j1",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ],
+     "key": [
+      {
+       "source": "j1",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ]
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "j1",
+       "start_ms": 5000,
+       "end_ms": 9000
+      }
+     ],
+     "key": [
+      {
+       "source": "j1",
+       "start_ms": 5000,
+       "end_ms": 9000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "j2",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ],
+     "key": [
+      {
+       "source": "j2",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "j2",
+       "start_ms": 5000,
+       "end_ms": 9000
+      }
+     ],
+     "key": [
+      {
+       "source": "j2",
+       "start_ms": 5000,
+       "end_ms": 9000
+      }
+     ]
+    },
+    "u5": {
+     "accept": [
+      {
+       "source": "j3",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ],
+     "key": [
+      {
+       "source": "j3",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ]
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "holdout6-solar-system",
+  "split": "holdout",
+  "group": "education",
+  "forward_only": false,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "e1c1",
+    "source": "e1",
+    "start_ms": 0,
+    "end_ms": 5000,
+    "text": "Mô phỏng Mặt Trời và các hành tinh quay quanh",
+    "motion": 50,
+    "hook": 500,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "e1c2",
+    "source": "e1",
+    "start_ms": 5000,
+    "end_ms": 9000,
+    "text": "Hành tinh màu đỏ với bề mặt đá bụi",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "e2c1",
+    "source": "e2",
+    "start_ms": 0,
+    "end_ms": 5000,
+    "text": "Hành tinh khí khổng lồ có vết bão lớn màu đỏ",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "e2c2",
+    "source": "e2",
+    "start_ms": 5000,
+    "end_ms": 9000,
+    "text": "Hành tinh có vành đai băng đá rộng",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "e3c1",
+    "source": "e3",
+    "start_ms": 0,
+    "end_ms": 5000,
+    "text": "Hành tinh xanh lục lam nghiêng, mờ nhạt",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Hệ Mặt Trời có tám hành tinh.",
+    "ms": 3000
+   },
+   {
+    "id": "u2",
+    "text": "Sao Hỏa được gọi là hành tinh đỏ.",
+    "ms": 3500
+   },
+   {
+    "id": "u3",
+    "text": "Sao Mộc có cơn bão lớn hơn cả Trái Đất.",
+    "ms": 4000
+   },
+   {
+    "id": "u4",
+    "text": "Sao Thổ nổi bật với vành đai băng đá.",
+    "ms": 3500
+   },
+   {
+    "id": "u5",
+    "text": "Có một hành tinh không ai nhìn thấy bằng mắt thường: sao Diêm Vương đã bị loại khỏi danh sách.",
+    "ms": 4500
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "holdout6-solar-system",
+   "split": "holdout",
+   "forward_only": false,
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "e1",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ],
+     "key": [
+      {
+       "source": "e1",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ]
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "e1",
+       "start_ms": 5000,
+       "end_ms": 9000
+      }
+     ],
+     "key": [
+      {
+       "source": "e1",
+       "start_ms": 5000,
+       "end_ms": 9000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "e2",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ],
+     "key": [
+      {
+       "source": "e2",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "e2",
+       "start_ms": 5000,
+       "end_ms": 9000
+      }
+     ],
+     "key": [
+      {
+       "source": "e2",
+       "start_ms": 5000,
+       "end_ms": 9000
+      }
+     ]
+    },
+    "u5": {
+     "accept": [],
+     "footage_exists": false,
+     "note": "no Pluto in the footage; e3 is Uranus: the right answer is a warning"
+    }
+   }
+  }
+ }
+]

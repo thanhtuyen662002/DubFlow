@@ -140,7 +140,7 @@ def main(argv: list[str]) -> int:
     results = [run(s) for s in load(split)]
     for result in results:
         print(line(result))
-    for name in ("dev-", "dev2-", "dev3-", "dev4-", "holdout-", "holdout2-", "holdout4-", "holdout5-"):
+    for name in ("dev-", "dev2-", "dev3-", "dev4-", "holdout-", "holdout2-", "holdout4-", "holdout5-", "holdout6-"):
         mine = [r["alignment"] for r in results if r["name"].startswith(name)]
         if mine:
             need = sum(u["need_ms"] for a in mine for u in a["units"] if u["footage_exists"])

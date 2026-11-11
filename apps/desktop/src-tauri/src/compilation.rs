@@ -38,7 +38,7 @@ pub struct CompilationRequest {
     cpu_only: bool,
 }
 
-fn text(value: &str, limit: usize, required: bool, spoken: bool) -> bool {
+pub(crate) fn text(value: &str, limit: usize, required: bool, spoken: bool) -> bool {
     value.chars().count() <= limit
         && !value.chars().any(|c| c.is_control() && !['\n', '\r', '\t'].contains(&c))
         && (!required || !value.trim().is_empty())
@@ -84,7 +84,7 @@ fn validate(request: &CompilationRequest, catalog: &VoiceCatalog) -> Result<Vec<
     }).collect()
 }
 
-fn compilation_output(base: &Path, title: &str, seed: &str) -> PathBuf {
+pub(crate) fn compilation_output(base: &Path, title: &str, seed: &str) -> PathBuf {
     let digest = Sha256::digest(seed.as_bytes());
     let run: String = digest.iter().take(6).map(|byte| format!("{byte:02x}")).collect();
     base.join("DubFlow Output").join(format!("Tong hop - {}", crate::product::folder_title(title))).join(format!("run-{run}"))
@@ -191,15 +191,20 @@ pub fn compilation_description(output_dir: String) -> Result<String, String> {
 }
 
 /// Past and running compilations found below the given folders (Issue #426),
-/// newest first: each run's folder, request, status and finished video.
+/// newest first: each run's folder, request, status and finished video. Both
+/// kinds are listed (v1: finished dubbing exports; v2: raw sources, Issue #728)
+/// with their `schema_version`; a run of an unknown version is listed too, so
+/// the page can say it needs a newer DubFlow instead of hiding it.
 #[tauri::command]
 pub fn compilation_runs(roots: Vec<String>) -> Vec<Value> {
     crate::product::find_runs(&roots, "Tong hop - ", 60).into_iter().filter_map(|dir| {
         let dir = compilation_dir(&display_path(&dir)).ok()?;
         let work = dir.join(".dubflow-work");
-        let spec = crate::product::read_small_json(&work.join("spec.json"), 256 * 1024).filter(|spec| spec["schema_version"] == 1)?;
+        let spec = crate::product::read_small_json(&work.join("spec.json"), 256 * 1024)?;
+        let version = spec["schema_version"].as_u64().unwrap_or(0);
+        let spec = if version == 1 || version == 2 { spec } else { json!({"title": spec["title"].as_str().unwrap_or_default()}) };
         let video = dir.join("compilation.mp4");
-        Some(json!({"dir": display_path(&dir), "created": crate::product::created_seconds(&dir), "spec": spec,
+        Some(json!({"dir": display_path(&dir), "created": crate::product::created_seconds(&dir), "spec": spec, "schema_version": version,
             "status": crate::product::read_small_json(&work.join("status.json"), 64 * 1024),
             "video": video.is_file().then(|| display_path(&video))}))
     }).collect()
@@ -230,6 +235,20 @@ mod tests {
         let runs = compilation_runs(vec![display_path(&base.join("DubFlow Output").join("job")), "relative".into()]);
         let found: Vec<_> = runs.iter().filter(|run| run["dir"].as_str().is_some_and(|dir| dir.starts_with(&display_path(&base.canonicalize().unwrap())))).collect();
         assert_eq!(found.iter().map(|run| run["spec"]["title"].as_str().unwrap()).collect::<Vec<_>>(), ["Mới", "Cũ"]);
+        assert!(found.iter().all(|run| run["schema_version"] == 1));
+        // raw-source runs (v2) and runs of a newer DubFlow are listed with their version
+        let raw = base.join("DubFlow Output/Tong hop - Gốc/run-000000000005");
+        let newer_version = base.join("DubFlow Output/Tong hop - Sau/run-000000000006");
+        for (dir, spec) in [(&raw, json!({"schema_version": 2, "title": "Gốc", "items": []})),
+                            (&newer_version, json!({"schema_version": 9, "title": "Sau", "secret": "x"}))] {
+            fs::create_dir_all(dir.join(".dubflow-work")).unwrap();
+            fs::write(dir.join(".dubflow-work/spec.json"), spec.to_string()).unwrap();
+        }
+        let runs = compilation_runs(vec![display_path(&base.join("DubFlow Output"))]);
+        let version = |title: &str| runs.iter().find(|run| run["spec"]["title"] == title).map(|run| run["schema_version"].clone());
+        assert_eq!(version("Gốc"), Some(json!(2)));
+        assert_eq!(version("Sau"), Some(json!(9)));
+        assert!(runs.iter().all(|run| run["spec"].get("secret").is_none()), "an unknown spec is not passed on");
         assert_eq!(found[0]["status"]["state"], "RUNNING");
         assert!(found[0]["video"].is_null());
         assert!(found[1]["video"].as_str().unwrap().ends_with("compilation.mp4"));

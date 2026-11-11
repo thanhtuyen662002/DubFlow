@@ -2584,3 +2584,23 @@ body.settings-open .rail-item.active:not(#nav-settings)::before { display: none;
 .mqc-warn { color: var(--warn, inherit); font-weight: 500; }
 .mqc-climax { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 13px; }
 .mqc-actions { display: flex; gap: 8px; margin-top: 8px; }
+
+/* Tổng hợp từ video gốc (Issue #728) */
+.compilation-mode { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 3px; margin-bottom: 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--canvas); }
+.compilation-mode button { padding: 7px 8px; border: 0; border-radius: calc(var(--radius) - 3px); background: transparent; color: var(--text-2); font: inherit; font-size: 13px; cursor: pointer; }
+.compilation-mode button[aria-checked="true"] { background: var(--surface-2); color: inherit; font-weight: 600; box-shadow: inset 0 0 0 1px var(--line-strong); }
+.compilation-raw { display: grid; gap: 14px; min-width: 0; }
+.compilation-raw-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.compilation-raw-items, .compilation-raw-parts { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.compilation-raw-item, .compilation-raw-part { display: grid; gap: 6px; min-width: 0; padding: 10px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--canvas); }
+.compilation-raw-item-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.compilation-raw-rank { width: 64px; }
+.compilation-raw-sources { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; font-size: 13px; }
+.compilation-raw-sources li { display: flex; flex-wrap: wrap; align-items: end; gap: 6px; padding-top: 6px; border-top: 1px dashed var(--line); }
+.compilation-raw-sources li.unsupported { color: var(--warn); }
+.compilation-raw-sources input { width: 84px; }
+.compilation-raw-source-name { flex: 1 1 100%; min-width: 0; overflow-wrap: anywhere; }
+.compilation-raw-narration { margin: 0; color: var(--text-2); font-size: 13px; }
+.compilation-raw-result { display: grid; gap: 10px; }
+.mreview-context { display: grid; gap: 2px; padding: 8px 20px; border-bottom: 1px solid var(--line); }
+.mreview-context p { margin: 0; }
