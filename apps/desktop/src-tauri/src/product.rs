@@ -107,6 +107,12 @@ pub struct ProductRequest {
     reuse_audio_from: Option<String>,
     cpu_only: bool,
     output_root: Option<String>,
+    /// Tối ưu hậu kỳ tự động: "off" (or absent) keeps the old render exactly.
+    #[serde(default)]
+    mastering: Option<String>,
+    /// The AI route that may look at keyframes when mastering is on; its key goes in the job's environment.
+    #[serde(default)]
+    vision_ai: Option<crate::AiTranslation>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -200,34 +206,94 @@ pub fn product_render(request: ProductRequest) -> Result<String, String> {
     let work = output.join(".dubflow-work");
     fs::create_dir_all(&work).map_err(|error| fail(format!("Không tạo được thư mục kết quả: {error}")))?;
     crate::edit::record_run("product", &output);
-    let spec = json!({
+    let mastering = crate::mastering::options(request.mastering.as_deref())?;
+    let mut spec = json!({
         "schema_version": 1, "name": request.name, "price": request.price, "voice_id": request.voice_id,
         "variants": request.variants, "visuals": visuals, "music": music, "music_volume": request.music_volume, "background": background,
         "template": template, "speed": speed, "features": request.features, "focus": {"x": focus.0, "y": focus.1},
         "reuse_audio_from": reuse.as_deref().map(display_path),
     });
+    // Mastering off sends nothing new: the spec is the one the old render read.
+    let mut key = None;
+    if let Some(options) = mastering {
+        spec["mastering"] = options;
+        if let Some(ai) = &request.vision_ai {
+            spec["editorial"] = json!({"ai": crate::mastering::vision_route(ai)?});
+            key = crate::ai_keys::job_key(&ai.provider)?.filter(|key| !key.trim().is_empty());
+        }
+    }
     let spec_path = work.join("spec.json");
     fs::write(&spec_path, serde_json::to_vec(&spec).map_err(|error| fail(error.to_string()))?)
         .map_err(|error| fail(format!("Không ghi được yêu cầu render: {error}")))?;
     fs::write(work.join("status.json"), r#"{"schema_version":1,"state":"RUNNING","done":0,"total":0,"message":"Đang khởi động…","videos":[]}"#)
         .map_err(|error| fail(format!("Không ghi được trạng thái: {error}")))?;
+    spawn_product(&root, &spec_path, &output, request.cpu_only, key)?;
+    Ok(display_path(&output))
+}
+
+/// `python -m engine.dubflow.product` on a written spec; the AI key (if any) only in its environment.
+fn spawn_product(root: &Path, spec_path: &Path, output: &Path, cpu_only: bool, key: Option<String>) -> Result<(), String> {
     let media = root.join("runtime").join("media");
     let mut command = Command::new(root.join("runtime").join("python.exe"));
     command.current_dir(root.join("app"))
-        .args(["-B", "-m", "engine.dubflow.product", "--spec"]).arg(&spec_path)
-        .arg("--output-dir").arg(&output)
+        .args(["-B", "-m", "engine.dubflow.product", "--spec"]).arg(spec_path)
+        .arg("--output-dir").arg(output)
         .arg("--app-root").arg(root.join("app"))
         .arg("--model-root").arg(control_root()?.join("models"))
         .arg("--ffmpeg").arg(media.join("ffmpeg.exe"))
         .arg("--ffprobe").arg(media.join("ffprobe.exe"))
         .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-    if request.cpu_only {
+    if cpu_only {
         command.arg("--cpu-only");
+    }
+    if let Some(key) = key {
+        command.env(crate::ai_keys::JOB_KEY_ENV, key);
     }
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
     command.spawn().map_err(|error| fail(format!("Không chạy được bộ tạo video: {error}")))?;
-    Ok(display_path(&output))
+    Ok(())
+}
+
+/// Render one video of a mastered run again, in place, with the review's pins and exclusions: the narration and
+/// the other videos are kept (`only`), the analysis and the AI's look at the footage are reused.
+#[tauri::command]
+pub fn product_rerender(output_dir: String, video: u32, cpu_only: bool) -> Result<(), String> {
+    let dir = product_dir(&output_dir)?;
+    let work = dir.join(".dubflow-work");
+    let status = read_small_json(&work.join("status.json"), SPEC_LIMIT).unwrap_or_default();
+    if status["state"] == "RUNNING" {
+        return Err(fail("Video này đang được tạo; hãy chờ xong rồi render lại"));
+    }
+    let spec_path = work.join("spec.json");
+    let mut spec = read_small_json(&spec_path, SPEC_LIMIT).filter(|spec| spec["schema_version"] == 1)
+        .ok_or_else(|| fail("Không đọc được yêu cầu render của video này"))?;
+    let count = spec["variants"].as_array().map_or(0, Vec::len);
+    if video == 0 || video as usize > count {
+        return Err(fail("Số video không hợp lệ"));
+    }
+    if spec.get("mastering").map_or(true, Value::is_null) {
+        return Err(fail("Video này không dùng tối ưu hậu kỳ; hãy tạo lại từ đầu"));
+    }
+    spec["only"] = json!([video]);
+    spec["reuse_audio_from"] = json!(display_path(&dir));
+    let key = match spec["editorial"]["ai"]["provider"].as_str() {
+        Some(provider) => crate::ai_keys::job_key(provider)?.filter(|key| !key.trim().is_empty()),
+        None => None,
+    };
+    fs::write(&spec_path, serde_json::to_vec(&spec).map_err(|error| fail(error.to_string()))?)
+        .map_err(|error| fail(format!("Không ghi được yêu cầu render: {error}")))?;
+    let videos = status.get("videos").cloned().unwrap_or_else(|| json!([]));
+    let running = json!({"schema_version": 1, "state": "RUNNING", "done": 0, "total": count, "message": "Đang render lại…", "videos": videos});
+    fs::write(work.join("status.json"), serde_json::to_vec(&running).map_err(|error| fail(error.to_string()))?)
+        .map_err(|error| fail(format!("Không ghi được trạng thái: {error}")))?;
+    let _ = fs::remove_file(work.join("cancel"));
+    spawn_product(&version_root()?, &spec_path, &dir, cpu_only, key)
+}
+
+/// A product run's folder, for the review panel (`mastering.rs`).
+pub(crate) fn run_dir(value: &str) -> Result<PathBuf, String> {
+    product_dir(value)
 }
 
 /// The run's progress, as `engine.dubflow.product` last wrote it.

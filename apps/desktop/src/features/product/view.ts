@@ -16,11 +16,13 @@ import { confirmDialog } from "../../shell/confirm.ts";
 import { confirmDeleteProject, deleteProjectButton } from "../../shell/project_delete.ts";
 import { closeDrawerOutside } from "../../shell/drawer.ts";
 import { mountPlayerBar } from "../media/player_bar.ts";
+import { isLevel, levelText, masteringOf, needsExportConfirm, parseReview } from "../mastering/model.ts";
+import { openReviewPanel } from "../mastering/review_panel.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 type Script = { text: string; use: boolean };
 /** A finished product video the editor can open. */
-export type ProductVideo = { outputPath: string; displayName: string };
+export type ProductVideo = { outputPath: string; displayName: string; review?: { outputDir: string; video: number } };
 
 const $ = <T extends HTMLElement>(selector: string): T => {
   const node = document.querySelector<T>(selector);
@@ -92,6 +94,14 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
   const source = $<HTMLTextAreaElement>("#product-source");
   const field = (id: string) => $<HTMLInputElement | HTMLTextAreaElement>(id);
   const voiceSelect = $<HTMLSelectElement>("#product-voice");
+  const masteringSelect = $<HTMLSelectElement>("#product-mastering");
+  const showMastering = () => {
+    const level = isLevel(masteringSelect.value) ? masteringSelect.value : "off";
+    $("#product-mastering-hint").textContent = levelText("product", level)
+      + (level !== "off" ? " Sau khi tạo, bấm “Duyệt cảnh” để xem và sửa cảnh từng câu." : "");
+  };
+  masteringSelect.addEventListener("change", showMastering);
+  showMastering();
   const player = $<HTMLVideoElement>("#product-player");
   mountPlayerBar(player, player.parentElement as HTMLElement);
   let playStarted = performance.now();
@@ -546,8 +556,31 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
     edit.className = "btn";
     edit.textContent = "Chỉnh sửa";
     edit.title = "Mở trong trình chỉnh sửa: cắt ghép, chèn, âm thanh, chữ và đổi mẫu";
-    edit.addEventListener("click", () => settings.edit(video));
+    edit.addEventListener("click", () => void openEditor(video));
     return [watch, edit];
+  }
+
+  /** The editor is where a video is exported for real: a mastered video with unreviewed sentences asks first. */
+  async function openEditor(video: ProductVideo): Promise<void> {
+    const found = video.review;
+    if (found) {
+      try {
+        const view = parseReview(await invoke<unknown>("mastering_review", { outputDir: found.outputDir, video: found.video, action: "view" }));
+        if (needsExportConfirm(view)) {
+          const go = await confirmDialog({
+            title: "Còn câu chưa duyệt cảnh",
+            message: `${view!.unreviewed.length} câu có cảnh AI chưa chắc chắn và bạn chưa duyệt. Bạn có thể bấm “Duyệt cảnh” để xem trước. `
+              + "Vẫn mở để chỉnh sửa và xuất video với các điểm chưa kiểm chứng?",
+            confirmLabel: "Vẫn mở", cancelLabel: "Để tôi duyệt trước",
+          });
+          if (!go) return;
+          await invoke<unknown>("mastering_review", { outputDir: found.outputDir, video: found.video, action: "accept", value: true });
+        }
+      } catch {
+        // no review to read (an older run): the editor opens as before
+      }
+    }
+    settings.edit(video);
   }
 
   /** Earlier runs found below the output folders, newest first. */
@@ -669,6 +702,9 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
     const video = run ? runRow(run).videos[0] : undefined;
     if (video) void play(video);
     else if (!$("#product-player-wrap").hidden) closePlayer();
+    // An earlier run lists its videos with their review ("Duyệt cảnh") as a new one does.
+    if (run?.status && dir !== running) renderResults(run.status, dir);
+    else if (!dir && !running) $("#product-results").replaceChildren();
     renderRuns();
   }
 
@@ -703,14 +739,36 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
       item.append(label);
       if (video.ok && video.path) {
         const path = video.path;
-        const name = `${info().name || "Video bán hàng"} · video ${video.index}`;
+        const name = `${runs.find((item) => item.dir === outputDir)?.name || info().name || "Video bán hàng"} · video ${video.index}`;
         const open = document.createElement("button");
         open.type = "button";
         open.className = "btn";
         open.textContent = "Mở";
         open.title = "Mở bằng trình phát của máy";
         open.addEventListener("click", () => void invoke("open_path", { path }).catch(() => undefined));
-        item.append(...videoActions({ outputPath: path, displayName: name }), open);
+        const report = masteringOf(video);
+        const review = report && !report.fallback ? { outputDir, video: video.index } : undefined;
+        item.append(...videoActions({ outputPath: path, displayName: name, review }), open);
+        if (report) {
+          const note = document.createElement("span");
+          note.className = report.fallback ? "product-mastering-note bad" : report.unreviewed ? "product-mastering-note warn" : "product-mastering-note";
+          note.textContent = report.fallback
+            ? report.fallback
+            : report.unreviewed ? `${report.unreviewed} câu cần xem lại cảnh` : "Cảnh đã đạt kiểm tra tự động";
+          if (review && status.state !== "RUNNING") {
+            const check = document.createElement("button");
+            check.type = "button";
+            check.className = report.unreviewed ? "btn primary" : "btn";
+            check.textContent = "Duyệt cảnh";
+            check.title = "Xem cảnh AI chọn cho từng câu, lý do, cảnh thay thế; ghim, loại và render lại";
+            check.addEventListener("click", () => void openReviewPanel(invoke, {
+              outputDir, video: video.index, videoPath: path, title: name, mediaUrl: settings.mediaUrl, cpuOnly: settings.cpuOnly,
+              rerendered: () => follow(outputDir),
+            }));
+            item.append(check);
+          }
+          item.append(note);
+        }
       }
       return item;
     }));
@@ -768,6 +826,17 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
     }
   }
 
+  /** Follow a run that has just started (a new render or a re-render of one video). */
+  function follow(outputDir: string): void {
+    running = outputDir;
+    $<HTMLButtonElement>("#product-render").disabled = true;
+    $("#product-cancel").hidden = false;
+    $("#product-render-state").textContent = "Đang khởi động…";
+    void loadRuns();
+    window.clearInterval(polling);
+    polling = window.setInterval(() => void poll(outputDir), 1500);
+  }
+
   async function render(): Promise<void> {
     const state = $("#product-render-state");
     const chosen = selectedBackground();
@@ -776,6 +845,7 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
       background: chosen?.path ?? null, focus: chosen ? focusOf(chosen) : CENTER,
       template, speed: Number($<HTMLSelectElement>("#product-speed").value),
       volumePercent: Number($<HTMLInputElement>("#product-volume").value), cpuOnly: settings.cpuOnly(), outputRoot: settings.outputRoot(),
+      mastering: masteringSelect.value, visionProvider: apiKey.provider(),
     });
     if (typeof request === "string") {
       state.textContent = request;
@@ -786,12 +856,7 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
     $("#product-results").replaceChildren();
     state.textContent = "Đang khởi động…";
     try {
-      const outputDir = await invoke<string>("product_render", { request });
-      running = outputDir;
-      $("#product-cancel").hidden = false;
-      void loadRuns();
-      window.clearInterval(polling);
-      polling = window.setInterval(() => void poll(outputDir), 1500);
+      follow(await invoke<string>("product_render", { request }));
     } catch (error) {
       state.textContent = String(error).slice(0, 300);
       button.disabled = false;

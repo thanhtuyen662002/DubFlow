@@ -917,6 +917,26 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
       return { ...previewSpec(run), variant, run, duration_ms: 31_400, narration: true } as T;
     }
     case "product_runs": return previewProductRuns() as T;
+    case "product_rerender": { const run = productRuns.get(String(args.outputDir)); if (run) { run.started = Date.now(); run.cancelled = 0; } return null as T; }
+    case "mastering_keyframe": throw new Error("preview has no keyframes");
+    case "mastering_review": {
+      const view = previewReview(String(args.outputDir), Number(args.video));
+      const unit = view.units.find((item) => item.unit_id === args.unit);
+      if (args.action === "decide" && unit) {
+        const ids = (args.ids as string[] | undefined) ?? [];
+        const decision = unit.decision ?? { pin: [], exclude: [] };
+        if (args.what === "approve") { unit.decision = { ...decision, approved: unit.chosen.map((shot) => shot.id) }; unit.user_state = "USER_APPROVED"; }
+        if (args.what === "unapprove" || args.what === "reset") { unit.decision = args.what === "reset" ? null : { pin: decision.pin, exclude: decision.exclude }; unit.user_state = null; }
+        if (args.what === "pin") { unit.decision = { pin: ids, exclude: decision.exclude.filter((id) => !ids.includes(id)) }; unit.user_state = null; }
+        if (args.what === "exclude") { unit.decision = { pin: decision.pin, exclude: [...decision.exclude, ...ids] }; unit.user_state = null; }
+        unit.unreviewed = unit.state !== "READY" && !(unit.decision && (unit.decision.approved || unit.decision.pin.length));
+        view.revision += 1; view.can_undo = true;
+      }
+      if (args.action === "ack") for (const warning of view.warnings) if (warning.id === args.warning) warning.acknowledged = true;
+      if (args.action === "accept") view.accept_unreviewed = args.value === true;
+      view.unreviewed = view.units.filter((item) => item.unreviewed).map((item) => item.unit_id);
+      return JSON.parse(JSON.stringify(view)) as T;
+    }
     default: throw new Error(`preview host does not implement ${command}`);
   }
 }
@@ -995,13 +1015,45 @@ const productRuns = new Map<string, PreviewProductRun>([[PREVIEW_PRODUCT_RUN, {
   variants: ["Nồi chiên không dầu 5 lít, chiên giòn mà không cần dầu. Hẹn giờ tới 60 phút, dễ rửa. Giá chỉ 299 nghìn, đặt ngay hôm nay!",
     "Bạn muốn món chiên giòn mà ít dầu mỡ? Nồi chiên 5 lít này là lựa chọn cho cả nhà."],
 }]]);
+type PreviewShot = { id: string; source_id: string; start_ms: number; end_ms: number; keyframe: string | null; summary: string; usable: boolean; problems: string[]; score?: number; reasons?: string[] };
+type PreviewUnit = { unit_id: string; text: string; function: string; start_ms: number; end_ms: number; coverage: Record<string, unknown>; notes: string[];
+  evidence: string; state: string; user_state: string | null; decision: { pin: string[]; exclude: string[]; approved?: string[] } | null;
+  chosen: PreviewShot[]; pieces: unknown[]; alternatives: PreviewShot[]; unreviewed: boolean };
+const reviews = new Map<string, { kind: string; plan_id: string; mode: string; revision: number; can_undo: boolean; units: PreviewUnit[];
+  warnings: { id: string; text: string; acknowledged: boolean }[]; unreviewed: string[]; accept_unreviewed: boolean; summary: Record<string, number> }>();
+/** A mastered product video's review in the browser preview: one sentence of each verdict. */
+function previewReview(dir: string, video: number) {
+  const key = `${dir}#${video}`;
+  if (!reviews.has(key)) {
+    const shot = (id: string, start: number, summary: string, score?: number): PreviewShot => ({ id, source_id: id.split("c")[0], start_ms: start, end_ms: start + 2400,
+      keyframe: null, summary, usable: true, problems: [], ...(score ? { score, reasons: ["khớp: nồi chiên, lòng nồi"] } : {}) });
+    const unit = (n: number, text: string, state: string, evidence: string, milli: number, chosen: PreviewShot[], alternatives: PreviewShot[], fn = "feature"): PreviewUnit => ({
+      unit_id: `s${n}`, text, function: fn, start_ms: (n - 1) * 5200, end_ms: n * 5200, coverage: { milli, status: milli >= 900 ? "full" : milli ? "partial" : "none" },
+      notes: [], evidence, state, user_state: null, decision: null, chosen,
+      pieces: [{ segment_id: `p${n}`, source_id: chosen[0]?.source_id ?? "v1", role: n === 1 ? "hook" : "primary", source_start: chosen[0]?.start_ms ?? 0,
+        source_end: (chosen[0]?.start_ms ?? 0) + 2400, timeline_start: (n - 1) * 5200, timeline_end: n * 5200, confidence: 700, needs_review: state !== "READY", reasons: [] }],
+      alternatives, unreviewed: state !== "READY" });
+    const units = [
+      unit(1, "Nồi chiên không dầu 5 lít, nấu cho cả nhà chỉ trong vài phút.", "READY", "NOT_NEEDED", 0, [shot("v2c1", 0, "Toàn cảnh nồi chiên trên bàn bếp")], [shot("v2c3", 6000, "Mở nắp nồi chiên", 410)], "hook"),
+      unit(2, "Lòng nồi chống dính, rửa nhanh dưới vòi nước.", "NEEDS_REVIEW", "MATCH_AVAILABLE", 560, [shot("v2c4", 9100, "Rửa lòng nồi dưới vòi nước")], [shot("v1c2", 2400, "Cận lòng nồi chống dính", 520), shot("v2c6", 15000, "Lau khô lòng nồi", 330)]),
+      unit(3, "Hẹn giờ đến 60 phút, tự ngắt khi xong.", "MATCH_NOT_FOUND", "MATCH_NOT_FOUND", 0, [shot("v2c2", 3000, "Bàn tay vặn núm nồi chiên")], [shot("v2c5", 12000, "Màn hình hiển thị số phút", 280)]),
+      unit(4, "Mua ngay hôm nay để nhận quà tặng.", "READY", "NOT_NEEDED", 0, [shot("v2c7", 18000, "Món gà chiên vàng trên đĩa")], [], "cta"),
+    ];
+    reviews.set(key, { kind: "editorial_review_view", plan_id: `product-${video}`, mode: "content", revision: 0, can_undo: false, units,
+      warnings: [{ id: "0123456789abcdef", text: "Câu 3 nêu 60 phút nhưng thông tin sản phẩm không có: hãy kiểm tra trước khi đăng.", acknowledged: false }],
+      unreviewed: units.filter((item) => item.unreviewed).map((item) => item.unit_id), accept_unreviewed: false, summary: { READY: 2, NEEDS_REVIEW: 1, MATCH_NOT_FOUND: 1 } });
+  }
+  return reviews.get(key)!;
+}
+
 function previewProductStatus(dir: string) {
   const run = productRuns.get(dir);
   if (!run) return null;
   const step = run.reused ? 1500 : 3000;
   const now = run.cancelled || Date.now();
   const done = Math.min(run.count, Math.floor((now - run.started) / step));
-  const videos = Array.from({ length: done }, (_, index) => ({ index: index + 1, ok: true, path: `${dir}\\video-${index + 1}.mp4`, duration_ms: run.durationMs, reused_voice: run.reused }));
+  const videos = Array.from({ length: done }, (_, index) => ({ index: index + 1, ok: true, path: `${dir}\\video-${index + 1}.mp4`, duration_ms: run.durationMs, reused_voice: run.reused,
+    mastering: { level: "balanced", unreviewed: previewReview(dir, index + 1).unreviewed.length, warnings: [] } }));
   if (run.cancelled && done < run.count) return { schema_version: 1, state: "CANCELLED", done, total: run.count, message: done ? `Đã hủy. Giữ lại ${done} video đã xong.` : "Đã hủy.", videos };
   return done < run.count
     ? { schema_version: 1, state: "RUNNING", done, total: run.count, message: run.reused ? `Dùng lại giọng đọc cũ, đang render video ${done + 1}/${run.count}…` : `Đang render video ${done + 1}/${run.count}…`, videos }

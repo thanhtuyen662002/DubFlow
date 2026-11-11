@@ -1,4 +1,5 @@
 import { MAX_SCRIPT_CHARS, type ProductInfo } from "./ai.ts";
+import { isLevel } from "../mastering/model.ts";
 
 /** What `product_render` takes; the host and the engine check it again. */
 export type ProductRequest = {
@@ -18,6 +19,10 @@ export type ProductRequest = {
   speed: number;
   cpuOnly: boolean;
   outputRoot: string | null;
+  /** Tối ưu hậu kỳ tự động: absent is off. */
+  mastering?: "light" | "balanced" | "dynamic";
+  /** The AI that may look at the footage when mastering is on (its saved key, never sent from here). */
+  visionAi?: { provider: string };
 };
 
 /** `.dubflow-work/status.json`, written by `engine.dubflow.product`. */
@@ -26,7 +31,7 @@ export type ProductStatus = {
   done: number;
   total: number;
   message: string;
-  videos: Array<{ index: number; ok: boolean; path?: string; message?: string; duration_ms?: number }>;
+  videos: Array<{ index: number; ok: boolean; path?: string; message?: string; duration_ms?: number; mastering?: unknown }>;
 };
 
 export type Template = "ban-tin" | "toan-man-hinh" | "chi-chu";
@@ -118,6 +123,8 @@ export function buildRequest(input: {
   info: ProductInfo; voiceId: string | null; scripts: readonly { text: string; use: boolean }[];
   visuals: readonly string[]; music: string | null; volumePercent: number; cpuOnly: boolean; outputRoot: string | null;
   background?: string | null; template?: string; speed?: number; focus?: Focus | null;
+  /** Tối ưu hậu kỳ tự động; "off" (the default) sends nothing new. */
+  mastering?: string; visionProvider?: string | null;
 }): ProductRequest | string {
   const template: Template = isTemplate(input.template) ? input.template : "ban-tin";
   const textOnly = template === "chi-chu";
@@ -138,6 +145,9 @@ export function buildRequest(input: {
     focus: clampFocus(input.focus),
     speed: SPEEDS.find((speed) => speed === input.speed) ?? 1,
     cpuOnly: input.cpuOnly, outputRoot: input.outputRoot,
+    // Mastering picks footage by content, so "Chỉ chữ" (no footage) never asks for it.
+    ...(isLevel(input.mastering) && input.mastering !== "off" && !textOnly
+      ? { mastering: input.mastering, ...(input.visionProvider ? { visionAi: { provider: input.visionProvider } } : {}) } : {}),
   };
 }
 
