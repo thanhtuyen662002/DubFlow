@@ -100,3 +100,28 @@ console.log("mastering tests passed");
   assert.equal(readJobDefaults(JSON.stringify({ ...JSON.parse(saved), mastering: "max" }), null).mastering, undefined);
 }
 console.log("mastering qc ok");
+
+// Export gate (lead review of #704): fails closed on an unreadable or malformed review or a failed save.
+{
+  const { exportGate } = await import("../src/features/mastering/model.ts");
+  const review = { outputDir: "D:/DubFlow Output/Ban hang - A/run-1", video: 1 };
+  const view = (unreviewed, accepted = false) => ({ ...raw, unreviewed, accept_unreviewed: accepted });
+  const calls = [];
+  const invoker = (answers) => async (command, args) => { calls.push(args.action); const next = answers[args.action]; if (next instanceof Error) throw next; return next; };
+  const yes = async () => true, no = async () => false;
+  assert.deepEqual(await exportGate(invoker({ view: view([]) }), review, yes), { open: true });
+  assert.equal((await exportGate(invoker({ view: new Error("io") }), review, yes)).open, false);
+  assert.match((await exportGate(invoker({ view: new Error("io") }), review, yes)).error, /Không đọc được/);
+  assert.equal((await exportGate(invoker({ view: { kind: "nonsense" } }), review, yes)).open, false);
+  assert.equal((await exportGate(invoker({ view: null }), review, yes)).open, false);
+  const unreviewedView = view(raw.units.map((unit) => unit.unit_id));
+  assert.deepEqual(await exportGate(invoker({ view: unreviewedView }), review, no), { open: false });
+  const failedSave = await exportGate(invoker({ view: unreviewedView, accept: new Error("disk") }), review, yes);
+  assert.equal(failedSave.open, false);
+  assert.match(failedSave.error, /Không lưu được/);
+  calls.length = 0;
+  assert.deepEqual(await exportGate(invoker({ view: unreviewedView, accept: unreviewedView }), review, yes), { open: true });
+  assert.deepEqual(calls, ["view", "accept"]);
+  assert.deepEqual(await exportGate(invoker({ view: view(["s1"], true) }), review, no), { open: true }, "accepted before: no second ask");
+}
+console.log("export gate ok");

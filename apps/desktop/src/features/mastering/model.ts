@@ -179,6 +179,33 @@ export function needsExportConfirm(view: ReviewView | null): boolean {
   return Boolean(view && view.unreviewed.length && !view.accept_unreviewed);
 }
 
+type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
+
+/**
+ * Whether a mastered video may open in the editor (where it is exported). Fails closed: the review must be read and
+ * understood, and when sentences are unreviewed the user's acceptance must be saved; otherwise the editor stays shut
+ * and `error` says why. Videos without mastering never come here.
+ */
+export async function exportGate(invoke: Invoke, review: { outputDir: string; video: number },
+  ask: (unreviewed: number) => Promise<boolean>): Promise<{ open: boolean; error?: string }> {
+  let raw: unknown;
+  try {
+    raw = await invoke<unknown>("mastering_review", { outputDir: review.outputDir, video: review.video, action: "view" });
+  } catch (error) {
+    return { open: false, error: `Không đọc được bản duyệt cảnh của video này: ${String(error).slice(0, 160)}` };
+  }
+  const view = parseReview(raw);
+  if (!view) return { open: false, error: "Bản duyệt cảnh của video này không đọc được. Hãy bấm “Render lại video này” hoặc tạo lại video." };
+  if (!needsExportConfirm(view)) return { open: true };
+  if (!await ask(view.unreviewed.length)) return { open: false };
+  try {
+    await invoke<unknown>("mastering_review", { outputDir: review.outputDir, video: review.video, action: "accept", value: true });
+  } catch (error) {
+    return { open: false, error: `Không lưu được xác nhận xuất các câu chưa duyệt: ${String(error).slice(0, 160)}` };
+  }
+  return { open: true };
+}
+
 /** The report the product job writes per video: whether it has a review to open, and its counts. */
 export function masteringOf(video: unknown): { unreviewed: number; warnings: string[]; fallback: string | null; level: string } | null {
   const report = ((video ?? {}) as Record<string, unknown>).mastering as Record<string, unknown> | undefined;

@@ -49,7 +49,7 @@ TRUST = {"user": 950, "metadata": 550, "transcript": 800, "vision": 800, "signal
 _STOP = frozenset("""
 va voi cua la khong mot nhung cac nay thi ma se dang duoc bi rat cung
 khi neu vi nhu nhat nhieu minh chung no ay kia
-nao gi sao thoi nhe nha oi roi luon hay hoac
+nao gi sao thoi nhe nha oi roi luon hay hoac ra vao tren
 mp4 mov mkv webm avi m4v jpg jpeg png webp clip video img vid dsc
 the an of and to in on with for is are this that it be at by from
 """.split())
@@ -68,10 +68,43 @@ def words(text: str) -> list[str]:
     return [w for w in fold(text).split() if w not in _STOP and (len(w) > 1 or w.isdigit())]
 
 
+_THOUSANDS = re.compile(r"(?<![\d.,])(\d{1,3})(?:[.,](\d{3}))+(?![\d.,]*\d)")
+_SCALED = re.compile(r"(?<![\w.,])(\d+)(?:[.,](\d{1,2}))?\s*(k|nghìn|ngàn|nghin|ngan|tr|triệu|trieu)(?![^\W\d_])", re.IGNORECASE)
+_CURRENCY = re.compile(r"(\d)\s*(?:vnđ|vnd|đồng|đ)(?![^\W\d_])", re.IGNORECASE)
+_SCALE = {"k": 1000, "nghìn": 1000, "ngàn": 1000, "nghin": 1000, "ngan": 1000, "tr": 1_000_000, "triệu": 1_000_000, "trieu": 1_000_000}
+
+
+def numbers(text: str) -> str:
+    """Amounts written one way: "89K", "89 nghìn", "89.000" and "89,000đ" all read 89000; "1,5 triệu" reads 1500000."""
+    text = _THOUSANDS.sub(lambda m: m.group(0).replace(".", "").replace(",", ""), text)
+    text = _CURRENCY.sub(r"\1", text)
+
+    def scaled(match: re.Match[str]) -> str:
+        whole, part, unit = match.group(1), match.group(2) or "", match.group(3).casefold()
+        factor = _SCALE[unit]
+        return str(int(whole) * factor + (int(part.ljust(len(str(factor)) - 1, "0")[: len(str(factor)) - 1]) if part else 0))
+    return _SCALED.sub(scaled, text)
+
+
+def _kept_pairs(tokens: Sequence[str], stop: frozenset[str]) -> tuple[list[str], list[tuple[str, str]]]:
+    """The content words of ``tokens`` and the pairs of content words that stand next to each other: a function word
+    between two words breaks the pair ("phản ứng dây chuyền với dòng chữ" has no pair "chuyền dòng")."""
+    kept, pairs, previous = [], [], None
+    for token in tokens:
+        if token in stop or not (len(token) > 1 or token.isdigit()):
+            previous = None
+            continue
+        kept.append(token)
+        if previous is not None:
+            pairs.append((previous, token))
+        previous = token
+    return kept, pairs
+
+
 _STOP_MARKED = frozenset("""
 và với của cho là không một những các này thì mà nên sẽ đang được bị rất cũng lại
 khi nếu vì để như hơn nhất mỗi nhiều mình chúng họ nó ấy kia đây
-nào gì sao thôi nhé nha ơi rồi luôn hay hoặc cả
+nào gì sao thôi nhé nha ơi rồi luôn hay hoặc cả ra vào bên trong trên dưới có từ ở
 mp4 mov mkv webm avi m4v jpg jpeg png webp clip video img vid dsc
 the an of and to in on with for is are this that it be at by from
 """.split())  # the same function words, written with their marks (so "hồ" is not "họ")
@@ -100,13 +133,14 @@ def terms(text: str) -> frozenset[str]:
     unaccented note) gives loose terms (``~`` + the folded words), which match a
     word whatever its marks (see ``match``).
     """
+    text = numbers(text)
     if _written_with_marks(text):
-        found = [w for w in _LETTERS.findall(unicodedata.normalize("NFC", text.casefold()))
-                 if w not in _STOP_MARKED and (len(w) > 1 or w.isdigit())]
+        found, pairs = _kept_pairs(_LETTERS.findall(unicodedata.normalize("NFC", text.casefold())), _STOP_MARKED)
         prefix = ""
     else:
-        found, prefix = words(text), LOOSE
-    return frozenset(prefix + w for w in found) | frozenset(f"{prefix}{a} {b}" for a, b in zip(found, found[1:]))
+        found, pairs = _kept_pairs(fold(text).split(), _STOP)
+        prefix = LOOSE
+    return frozenset(prefix + w for w in found) | frozenset(f"{prefix}{a} {b}" for a, b in pairs)
 
 
 def loose(found: Mapping[str, int]) -> dict[str, int]:
