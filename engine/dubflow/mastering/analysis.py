@@ -101,6 +101,7 @@ class StreamInfo:
     height: int
     fps: Fraction
     has_audio: bool
+    picture_ms: int | None = None  # how long the video stream itself lasts, when ffprobe says (may end before the audio)
 
 
 def probe(ffprobe: Path, video: Path) -> StreamInfo:
@@ -108,7 +109,7 @@ def probe(ffprobe: Path, video: Path) -> StreamInfo:
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
         result = subprocess.run([str(ffprobe), "-v", "error", "-show_entries",
-                                 "format=duration:stream=codec_type,width,height,avg_frame_rate:stream_side_data=rotation",
+                                 "format=duration:stream=codec_type,width,height,avg_frame_rate,duration:stream_tags=DURATION:stream_side_data=rotation",
                                  "-of", "json", str(video)], capture_output=True, timeout=60, creationflags=flags)
         value = json.loads(result.stdout.decode("utf-8", "replace"))
     except (OSError, subprocess.TimeoutExpired, ValueError) as error:
@@ -126,7 +127,22 @@ def probe(ffprobe: Path, video: Path) -> StreamInfo:
         width, height = height, width
     if duration_ms <= 0 or width <= 0 or height <= 0:
         raise AnalysisError(f"{video.name} không có hình để phân tích")
-    return StreamInfo(duration_ms, width, height, rate, any(s.get("codec_type") == "audio" for s in streams))
+    return StreamInfo(duration_ms, width, height, rate, any(s.get("codec_type") == "audio" for s in streams),
+                      _stream_ms(picture))
+
+
+def _stream_ms(stream: dict[str, Any]) -> int | None:
+    """A stream's own length: ``duration`` (MP4, MOV) or the ``DURATION`` tag (Matroska, WebM, ``HH:MM:SS.fff``)."""
+    try:
+        if stream.get("duration") not in (None, "N/A"):
+            value = round(float(stream["duration"]) * 1000)
+        else:
+            tag = str((stream.get("tags") or {}).get("DURATION") or "")
+            hours, minutes, rest = tag.split(":")
+            value = round((int(hours) * 3600 + int(minutes) * 60 + float(rest)) * 1000)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
 
 
 def silences(text: str, duration_ms: int) -> list[tuple[int, int]]:

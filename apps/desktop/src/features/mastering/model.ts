@@ -58,6 +58,14 @@ export const EVIDENCE_HELP: Record<string, string> = {
   NOT_NEEDED: "Câu mở đầu/kêu gọi: không cần cảnh riêng.",
 };
 
+/** The evidence line of a sentence; a match the planner could not place is said so, never "has a match… 0 %". */
+export function evidenceHelp(unit: Pick<ReviewUnit, "evidence" | "coverage" | "decision">): string {
+  if (unit.evidence === "MATCH_AVAILABLE" && unit.coverage.illustrated_ms === 0 && !unit.decision?.pin.length) {
+    return "Có cảnh khớp lời câu này nhưng chưa đặt được vào câu (cảnh quá ngắn hoặc cần cho câu sau), nên câu đang dùng cảnh chung: hãy xem các cảnh khác hoặc chọn tay.";
+  }
+  return EVIDENCE_HELP[unit.evidence] ?? "";
+}
+
 export type Shot = {
   id: string; source_id: string; start_ms: number; end_ms: number; keyframe: string | null; summary: string; usable: boolean;
   problems: string[]; score?: number; reasons?: string[];
