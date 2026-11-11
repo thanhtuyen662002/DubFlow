@@ -64,7 +64,7 @@
       "first_commit": "#736 PR (written on main 01f8f4d, after holdout6's single run, before any change for it)",
       "locked_at": "2026-11-11T06:41:16Z (this PR)",
       "tuned_on": false,
-      "inspected": "never; not run before the card-CTA change is merged, then evaluated once",
+      "inspected": "evaluated once at 7c4fb1f (2026-11-11T06:46:41Z, docs/mastering/gate-s/holdout7-7c4fb1f.md); nothing tuned on it",
       "gate": "S (Phase 4 readiness): >=90 % duration coverage on sentences with footage, 0 silent misses, no unflagged stolen key footage"
     },
     "dev5.json": {
