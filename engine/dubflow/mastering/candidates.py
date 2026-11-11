@@ -3,7 +3,8 @@
 A candidate is a stretch of one shot that a planner may cut a piece from. Short
 and medium shots are one candidate each; a long take is split into windows so a
 planner can tell its beginning from its end. For every candidate one FFmpeg call
-grabs its middle frame twice: a JPEG (for the optional vision adapter and the
+(three when the middle frame is unusable: a quarter and three quarters in are
+tried, and the first usable frame becomes the keyframe) grabs its middle frame twice: a JPEG (for the optional vision adapter and the
 desktop) and a 160×90 grey frame from which pure Python measures brightness,
 contrast and sharpness and computes a 64-bit difference hash. A frame that is
 too dark, blank or blurred makes the candidate unusable, with the reason; two
@@ -37,7 +38,11 @@ DARK, BRIGHT = 28, 235          # mean grey level
 FLAT = 10                       # grey standard deviation of a blank or black frame
 BLUR = 18                       # Laplacian variance below this: no detail at 160×90
 DUPLICATE_BITS = 6
-RECIPE = f"mastering-candidates-v1+grey{GREY_W}x{GREY_H}+split{SPLIT_MS}+win{WINDOW_MS}+spread{MAX_CANDIDATES}"
+# When the middle frame is unusable (a fade, motion blur), these frames (‰ of the shot) are tried before the shot is
+# called unusable: the first usable one becomes the keyframe (Gate S, multi-frame evidence step 1).
+FALLBACK_POSITIONS = (250, 750)
+RECIPE = (f"mastering-candidates-v2+grey{GREY_W}x{GREY_H}+split{SPLIT_MS}+win{WINDOW_MS}+spread{MAX_CANDIDATES}"
+          f"+fallback{'-'.join(map(str, FALLBACK_POSITIONS))}")
 Runner = Callable[[list[str], Path, Callable[[], bool]], None]
 
 
@@ -197,6 +202,11 @@ def grab_argv(ffmpeg: Path, video: Path, at_ms: int, jpeg: str, grey: str) -> li
             "-map", "[jpg]", "-frames:v", "1", "-q:v", "4", jpeg, "-map", "[grey]", "-frames:v", "1", "-f", "rawvideo", grey]
 
 
+def fallback_times(start_ms: int, end_ms: int) -> list[int]:
+    """Where to look when the middle frame of ``[start_ms, end_ms)`` is unusable (source ms)."""
+    return [start_ms + (end_ms - start_ms) * p // 1000 for p in FALLBACK_POSITIONS]
+
+
 def extract(video: Path, source_id: str, found: scene.Analysis, folder: Path, *, ffmpeg: Path, run: Runner,
             cancelled: Callable[[], bool] = lambda: False) -> list[Candidate]:
     """The candidates of ``video`` (analysed as ``found``), from the cache in ``folder`` when the file is unchanged."""
@@ -216,15 +226,24 @@ def extract(video: Path, source_id: str, found: scene.Analysis, folder: Path, *,
             raise scene.AnalysisError("cancelled")
         jpeg, grey = f"{tag}-c{number}.jpg", f"{tag}-c{number}.grey"
         middle = (start + end) // 2
-        try:
-            run(grab_argv(ffmpeg, video, middle, jpeg, grey), folder, cancelled)
-            quality, hashed = measure((folder / grey).read_bytes())
-        except Exception as error:  # noqa: BLE001 - a frame we cannot read is not usable
-            if cancelled():
-                raise  # the workflow's own cancel, not a bad frame
-            quality, hashed, jpeg = Quality(0, 0, 0, ("không đọc được khung hình",)), 0, None
-        finally:
-            (folder / grey).unlink(missing_ok=True)
+        quality, hashed, picked = Quality(0, 0, 0, ("không đọc được khung hình",)), 0, None
+        for at in [middle, *fallback_times(start, end)]:
+            try:
+                run(grab_argv(ffmpeg, video, at, jpeg, grey), folder, cancelled)
+                found_quality, found_hash = measure((folder / grey).read_bytes())
+            except Exception:  # noqa: BLE001 - a frame we cannot read is not usable
+                if cancelled():
+                    raise  # the workflow's own cancel, not a bad frame
+                continue
+            finally:
+                (folder / grey).unlink(missing_ok=True)
+            if picked is None or found_quality.usable:
+                # the middle frame's measurements stand unless a later frame is usable (its jpeg is the keyframe)
+                quality, hashed, picked = found_quality, found_hash, at
+            if found_quality.usable:
+                break
+        if picked is None:
+            jpeg = None
         made.append(Candidate(f"{source_id}c{number}", source_id, start, end, shot, motion, quality, hashed,
                               jpeg if jpeg and (folder / jpeg).is_file() else None))
     partial = cache.with_name(cache.name + ".partial")

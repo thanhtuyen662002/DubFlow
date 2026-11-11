@@ -228,15 +228,20 @@ class Describer:
         return seen
 
 
+def item_of(seen: Seen, detail: str) -> ev.Item:
+    """A validated answer as one evidence item (an unclear frame counts half)."""
+    confidence = seen.confidence if seen.clarity == "clear" else seen.confidence // 2
+    text = " ".join(part for part in (seen.description, ", ".join(seen.objects), ", ".join(seen.actions), seen.visible_text) if part)
+    return ev.Item("vision", confidence, text, seen.labels, detail)
+
+
 def apply(found: Mapping[str, Seen], evidence: Mapping[str, ev.Evidence], detail: str) -> None:
     """Turn validated answers into evidence items (and boxes, hook scores, product groups)."""
     for candidate_id, seen in found.items():
         item = evidence.get(candidate_id)
         if item is None:
             continue
-        confidence = seen.confidence if seen.clarity == "clear" else seen.confidence // 2
-        text = " ".join(part for part in (seen.description, ", ".join(seen.objects), ", ".join(seen.actions), seen.visible_text) if part)
-        item.add(ev.Item("vision", confidence, text, seen.labels, detail))
+        item.add(item_of(seen, detail))
         item.product_box = ev.box_from(seen.product_box)
         item.hook = seen.hook
         item.product_visible = seen.product_box is not None or any(label.startswith("product_") for label in seen.labels)
@@ -364,5 +369,5 @@ def targets(units: Sequence[Mapping[str, Any]], pool: Sequence[Candidate], evide
     return picked
 
 
-__all__ = ["Describer", "PROMPT_VERSION", "Seen", "apply", "broad", "factory", "frames_for", "route_ask", "schema", "targets",
+__all__ = ["Describer", "PROMPT_VERSION", "Seen", "apply", "broad", "item_of", "factory", "frames_for", "route_ask", "schema", "targets",
            "text_asker", "validate"]
