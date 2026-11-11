@@ -1,0 +1,2484 @@
+[
+ {
+  "schema_version": 1,
+  "name": "holdout5-smartwatch",
+  "split": "holdout",
+  "group": "electronics",
+  "forward_only": false,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "w1c1",
+    "source": "w1",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Hộp đồng hồ thông minh màu đen trên bàn",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "w1c2",
+    "source": "w1",
+    "start_ms": 3000,
+    "end_ms": 7000,
+    "text": "Tay người đeo đồng hồ thông minh dây silicon, màn hình sáng",
+    "motion": 50,
+    "hook": 700,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "w2c1",
+    "source": "w2",
+    "start_ms": 0,
+    "end_ms": 3500,
+    "text": "Màn hình đồng hồ hiển thị nhịp tim 72 BPM",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "w2c2",
+    "source": "w2",
+    "start_ms": 3500,
+    "end_ms": 7000,
+    "text": "Màn hình đồng hồ hiển thị số bước chân 8.000 bước",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "w2c3",
+    "source": "w2",
+    "start_ms": 7000,
+    "end_ms": 10000,
+    "text": "Ngón tay vuốt chọn mặt đồng hồ khác nhau",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "w3c1",
+    "source": "w3",
+    "start_ms": 0,
+    "end_ms": 8000,
+    "text": "Mặt nước hồ bơi gợn sóng",
+    "motion": 120,
+    "hook": 0,
+    "usable": true,
+    "still": false,
+    "frames": [
+     {
+      "at_ms": 1000,
+      "text": "Người bơi đeo đồng hồ thông minh lao xuống hồ bơi",
+      "usable": true
+     },
+     {
+      "at_ms": 7000,
+      "text": "Đồng hồ trên cổ tay ướt nước, màn hình vẫn sáng",
+      "usable": true
+     }
+    ]
+   },
+   {
+    "id": "w3c2",
+    "source": "w3",
+    "start_ms": 8000,
+    "end_ms": 11000,
+    "text": "Đồng hồ đặt trên đế sạc nam châm",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Chiếc đồng hồ thông minh này làm được gì?",
+    "ms": 2500
+   },
+   {
+    "id": "u2",
+    "text": "Đo nhịp tim liên tục cả ngày.",
+    "ms": 3000
+   },
+   {
+    "id": "u3",
+    "text": "Đếm bước chân chính xác.",
+    "ms": 2500
+   },
+   {
+    "id": "u4",
+    "text": "Đổi mặt đồng hồ chỉ với một lần vuốt.",
+    "ms": 3000
+   },
+   {
+    "id": "u5",
+    "text": "Chống nước, đeo đi bơi thoải mái.",
+    "ms": 4000
+   },
+   {
+    "id": "u6",
+    "text": "Sạc nam châm, đầy pin trong hai giờ.",
+    "ms": 3000
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "holdout5-smartwatch",
+   "split": "holdout",
+   "forward_only": false,
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "w1",
+       "start_ms": 3000,
+       "end_ms": 7000
+      },
+      {
+       "source": "w2",
+       "start_ms": 0,
+       "end_ms": 10000
+      },
+      {
+       "source": "w3",
+       "start_ms": 0,
+       "end_ms": 11000
+      }
+     ]
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "w2",
+       "start_ms": 0,
+       "end_ms": 3500
+      }
+     ],
+     "key": [
+      {
+       "source": "w2",
+       "start_ms": 0,
+       "end_ms": 3500
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "w2",
+       "start_ms": 3500,
+       "end_ms": 7000
+      }
+     ],
+     "key": [
+      {
+       "source": "w2",
+       "start_ms": 3500,
+       "end_ms": 7000
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "w2",
+       "start_ms": 7000,
+       "end_ms": 10000
+      }
+     ],
+     "key": [
+      {
+       "source": "w2",
+       "start_ms": 7000,
+       "end_ms": 10000
+      }
+     ]
+    },
+    "u5": {
+     "accept": [
+      {
+       "source": "w3",
+       "start_ms": 0,
+       "end_ms": 8000
+      }
+     ],
+     "key": [
+      {
+       "source": "w3",
+       "start_ms": 0,
+       "end_ms": 8000
+      }
+     ]
+    },
+    "u6": {
+     "accept": [
+      {
+       "source": "w3",
+       "start_ms": 8000,
+       "end_ms": 11000
+      }
+     ],
+     "key": [
+      {
+       "source": "w3",
+       "start_ms": 8000,
+       "end_ms": 11000
+      }
+     ]
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "holdout5-speaker",
+  "split": "holdout",
+  "group": "electronics",
+  "forward_only": false,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "s1c1",
+    "source": "s1",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Loa bluetooth hình trụ màu xanh trên bàn",
+    "motion": 50,
+    "hook": 500,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s1c2",
+    "source": "s1",
+    "start_ms": 3000,
+    "end_ms": 6000,
+    "text": "Đèn LED quanh loa nhấp nháy theo nhạc",
+    "motion": 90,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s2c1",
+    "source": "s2",
+    "start_ms": 0,
+    "end_ms": 9000,
+    "text": "Hộp giấy của loa trên bàn",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false,
+    "frames": [
+     {
+      "at_ms": 1500,
+      "text": "Tay mở hộp lấy loa ra",
+      "usable": true
+     },
+     {
+      "at_ms": 7500,
+      "text": "Loa bị xịt nước dưới vòi sen vẫn phát nhạc",
+      "usable": true
+     }
+    ]
+   },
+   {
+    "id": "s2c2",
+    "source": "s2",
+    "start_ms": 9000,
+    "end_ms": 12000,
+    "text": "Cổng sạc USB-C ở đáy loa",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s3c1",
+    "source": "s3",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Hai người ngồi picnic, loa đặt trên thảm cỏ",
+    "motion": 50,
+    "hook": 600,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Loa nhỏ mà tiếng rất lớn.",
+    "ms": 2500
+   },
+   {
+    "id": "u2",
+    "text": "Đèn LED nháy theo điệu nhạc.",
+    "ms": 3000
+   },
+   {
+    "id": "u3",
+    "text": "Chống nước, xịt nước thoải mái vẫn hát.",
+    "ms": 3000
+   },
+   {
+    "id": "u4",
+    "text": "Sạc bằng cổng USB-C tiện lợi.",
+    "ms": 2500
+   },
+   {
+    "id": "u5",
+    "text": "Mang theo đi dã ngoại cùng bạn bè.",
+    "ms": 3500
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "holdout5-speaker",
+   "split": "holdout",
+   "forward_only": false,
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "s1",
+       "start_ms": 0,
+       "end_ms": 6000
+      },
+      {
+       "source": "s3",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "s1",
+       "start_ms": 3000,
+       "end_ms": 6000
+      }
+     ],
+     "key": [
+      {
+       "source": "s1",
+       "start_ms": 3000,
+       "end_ms": 6000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "s2",
+       "start_ms": 6000,
+       "end_ms": 9000
+      }
+     ],
+     "key": [
+      {
+       "source": "s2",
+       "start_ms": 6000,
+       "end_ms": 9000
+      }
+     ],
+     "note": "only the end of the long take shows the water test"
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "s2",
+       "start_ms": 9000,
+       "end_ms": 12000
+      }
+     ],
+     "key": [
+      {
+       "source": "s2",
+       "start_ms": 9000,
+       "end_ms": 12000
+      }
+     ]
+    },
+    "u5": {
+     "accept": [
+      {
+       "source": "s3",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ],
+     "key": [
+      {
+       "source": "s3",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "holdout5-steam-mop",
+  "split": "holdout",
+  "group": "household",
+  "forward_only": false,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "m1c1",
+    "source": "m1",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Cây lau nhà hơi nước dựng cạnh tường",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "m1c2",
+    "source": "m1",
+    "start_ms": 4000,
+    "end_ms": 8000,
+    "text": "Đổ nước vào bình chứa của cây lau",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "m2c1",
+    "source": "m2",
+    "start_ms": 0,
+    "end_ms": 5000,
+    "text": "Hơi nước phun ra từ đầu lau trên sàn gạch",
+    "motion": 50,
+    "hook": 650,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "m2c2",
+    "source": "m2",
+    "start_ms": 5000,
+    "end_ms": 9000,
+    "text": "Khung hình tối",
+    "motion": 50,
+    "hook": 0,
+    "usable": false,
+    "still": false,
+    "frames": [
+     {
+      "at_ms": 5800,
+      "text": "Vết dầu mỡ trên sàn bếp được lau sạch",
+      "usable": true
+     },
+     {
+      "at_ms": 8200,
+      "text": "Sàn bếp sáng bóng sau khi lau",
+      "usable": true
+     }
+    ]
+   },
+   {
+    "id": "m3c1",
+    "source": "m3",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Màn hình chữ: giảm 40% hôm nay",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "m3c2",
+    "source": "m3",
+    "start_ms": 3000,
+    "end_ms": 6000,
+    "text": "Thay miếng lau microfiber bằng tay",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Lau nhà bằng hơi nước, sạch và diệt khuẩn.",
+    "ms": 3000
+   },
+   {
+    "id": "u2",
+    "text": "Đổ nước vào bình là dùng được ngay.",
+    "ms": 2500
+   },
+   {
+    "id": "u3",
+    "text": "Vết dầu mỡ trên sàn bếp sạch bong.",
+    "ms": 3000
+   },
+   {
+    "id": "u4",
+    "text": "Miếng lau tháo ra giặt lại dễ dàng.",
+    "ms": 3000
+   },
+   {
+    "id": "u5",
+    "text": "Hôm nay giảm 40%, đặt ngay.",
+    "ms": 2500
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "holdout5-steam-mop",
+   "split": "holdout",
+   "forward_only": false,
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "m2",
+       "start_ms": 0,
+       "end_ms": 5000
+      },
+      {
+       "source": "m1",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "m1",
+       "start_ms": 4000,
+       "end_ms": 8000
+      }
+     ],
+     "key": [
+      {
+       "source": "m1",
+       "start_ms": 4000,
+       "end_ms": 8000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "m2",
+       "start_ms": 5000,
+       "end_ms": 9000
+      }
+     ],
+     "key": [
+      {
+       "source": "m2",
+       "start_ms": 5000,
+       "end_ms": 9000
+      }
+     ],
+     "note": "the middle frame is a dark fade; the shot is fine"
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "m3",
+       "start_ms": 3000,
+       "end_ms": 6000
+      }
+     ],
+     "key": [
+      {
+       "source": "m3",
+       "start_ms": 3000,
+       "end_ms": 6000
+      }
+     ]
+    },
+    "u5": {
+     "accept": [
+      {
+       "source": "m3",
+       "start_ms": 0,
+       "end_ms": 3000
+      },
+      {
+       "source": "m1",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "holdout5-lunchbox",
+  "split": "holdout",
+  "group": "household",
+  "forward_only": false,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "l1c1",
+    "source": "l1",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Hộp cơm điện hai tầng màu hồng",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "l1c2",
+    "source": "l1",
+    "start_ms": 4000,
+    "end_ms": 8000,
+    "text": "Tháo khay inox bên trong hộp cơm",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "l2c1",
+    "source": "l2",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Cắm dây điện vào hộp cơm ở bàn làm việc văn phòng",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "l2c2",
+    "source": "l2",
+    "start_ms": 4000,
+    "end_ms": 8000,
+    "text": "Hơi nóng bốc lên khi mở nắp, cơm và thức ăn nóng",
+    "motion": 50,
+    "hook": 750,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "l3c1",
+    "source": "l3",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Rửa khay inox dưới vòi nước",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Đi làm vẫn có cơm nóng mỗi trưa.",
+    "ms": 3000
+   },
+   {
+    "id": "u2",
+    "text": "Khay inox tháo rời, an toàn.",
+    "ms": 3000
+   },
+   {
+    "id": "u3",
+    "text": "Cắm điện ngay tại bàn làm việc.",
+    "ms": 2500
+   },
+   {
+    "id": "u4",
+    "text": "Hai mươi phút là cơm nóng hổi.",
+    "ms": 3000
+   },
+   {
+    "id": "u5",
+    "text": "Rửa sạch nhanh sau bữa ăn.",
+    "ms": 2500
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "holdout5-lunchbox",
+   "split": "holdout",
+   "forward_only": false,
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "l2",
+       "start_ms": 0,
+       "end_ms": 8000
+      },
+      {
+       "source": "l1",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "l1",
+       "start_ms": 4000,
+       "end_ms": 8000
+      }
+     ],
+     "key": [
+      {
+       "source": "l1",
+       "start_ms": 4000,
+       "end_ms": 8000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "l2",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ],
+     "key": [
+      {
+       "source": "l2",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "l2",
+       "start_ms": 4000,
+       "end_ms": 8000
+      }
+     ],
+     "key": [
+      {
+       "source": "l2",
+       "start_ms": 4000,
+       "end_ms": 8000
+      }
+     ]
+    },
+    "u5": {
+     "accept": [
+      {
+       "source": "l3",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ],
+     "key": [
+      {
+       "source": "l3",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ]
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "holdout5-cordless-drill",
+  "split": "holdout",
+  "group": "tools",
+  "forward_only": false,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "d1c1",
+    "source": "d1",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Máy khoan pin màu vàng trong vali nhựa",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "d1c2",
+    "source": "d1",
+    "start_ms": 3000,
+    "end_ms": 6000,
+    "text": "Lắp pin vào tay cầm máy khoan",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "d2c1",
+    "source": "d2",
+    "start_ms": 0,
+    "end_ms": 10000,
+    "text": "Mũi khoan xuyên qua tấm gỗ, mùn cưa bay",
+    "motion": 110,
+    "hook": 600,
+    "usable": true,
+    "still": false,
+    "frames": [
+     {
+      "at_ms": 1500,
+      "text": "Tay xoay đầu kẹp thay mũi khoan",
+      "usable": true
+     },
+     {
+      "at_ms": 8500,
+      "text": "Máy khoan bắt vít vào tường bê tông",
+      "usable": true
+     }
+    ]
+   },
+   {
+    "id": "d2c2",
+    "source": "d2",
+    "start_ms": 10000,
+    "end_ms": 13000,
+    "text": "Đèn LED dưới đầu máy khoan chiếu sáng góc tối",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "d3c1",
+    "source": "d3",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Thợ mộc dùng máy khoan bắt vít vào kệ gỗ",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Máy khoan pin cho mọi việc trong nhà.",
+    "ms": 3000
+   },
+   {
+    "id": "u2",
+    "text": "Lắp pin chỉ một giây.",
+    "ms": 2500
+   },
+   {
+    "id": "u3",
+    "text": "Thay mũi khoan không cần dụng cụ.",
+    "ms": 2500
+   },
+   {
+    "id": "u4",
+    "text": "Khoan xuyên gỗ cứng dễ dàng.",
+    "ms": 3000
+   },
+   {
+    "id": "u5",
+    "text": "Bắt vít vào tường bê tông chắc chắn.",
+    "ms": 3000
+   },
+   {
+    "id": "u6",
+    "text": "Đèn LED giúp làm việc ở góc tối.",
+    "ms": 2500
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "holdout5-cordless-drill",
+   "split": "holdout",
+   "forward_only": false,
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "d1",
+       "start_ms": 0,
+       "end_ms": 6000
+      },
+      {
+       "source": "d2",
+       "start_ms": 0,
+       "end_ms": 13000
+      },
+      {
+       "source": "d3",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "d1",
+       "start_ms": 3000,
+       "end_ms": 6000
+      }
+     ],
+     "key": [
+      {
+       "source": "d1",
+       "start_ms": 3000,
+       "end_ms": 6000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "d2",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ],
+     "key": [
+      {
+       "source": "d2",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "d2",
+       "start_ms": 3000,
+       "end_ms": 7000
+      }
+     ],
+     "key": [
+      {
+       "source": "d2",
+       "start_ms": 3000,
+       "end_ms": 7000
+      }
+     ]
+    },
+    "u5": {
+     "accept": [
+      {
+       "source": "d2",
+       "start_ms": 7000,
+       "end_ms": 10000
+      }
+     ],
+     "key": [
+      {
+       "source": "d2",
+       "start_ms": 7000,
+       "end_ms": 10000
+      }
+     ],
+     "note": "d3 screws into wood shelving, not concrete"
+    },
+    "u6": {
+     "accept": [
+      {
+       "source": "d2",
+       "start_ms": 10000,
+       "end_ms": 13000
+      }
+     ],
+     "key": [
+      {
+       "source": "d2",
+       "start_ms": 10000,
+       "end_ms": 13000
+      }
+     ]
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "holdout5-top5-pets",
+  "split": "holdout",
+  "group": "entertainment",
+  "forward_only": true,
+  "pacing": "entertainment",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "ac1",
+    "source": "a",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Màn hình chữ: TOP 5 thú cưng thông minh",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "ac2",
+    "source": "a",
+    "start_ms": 4000,
+    "end_ms": 8000,
+    "text": "Chú chó tự mở cửa tủ lạnh lấy chai nước",
+    "motion": 50,
+    "hook": 800,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "ac3",
+    "source": "a",
+    "start_ms": 8000,
+    "end_ms": 12000,
+    "text": "Chú chó mang chai nước cho chủ",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "bc1",
+    "source": "b",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Con mèo bật công tắc đèn bằng chân",
+    "motion": 50,
+    "hook": 700,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "bc2",
+    "source": "b",
+    "start_ms": 4000,
+    "end_ms": 8000,
+    "text": "Phòng sáng đèn, con mèo ngồi nhìn",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "cc1",
+    "source": "c",
+    "start_ms": 0,
+    "end_ms": 5000,
+    "text": "Chú vẹt nói xin chào với khách",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "cc2",
+    "source": "c",
+    "start_ms": 5000,
+    "end_ms": 9000,
+    "text": "Khách bật cười",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "dc1",
+    "source": "d",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Con heo nhỏ đẩy bóng vào khung thành mini",
+    "motion": 50,
+    "hook": 650,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "dc2",
+    "source": "d",
+    "start_ms": 4000,
+    "end_ms": 8000,
+    "text": "Con heo nhận phần thưởng là táo",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "ec1",
+    "source": "e",
+    "start_ms": 0,
+    "end_ms": 6000,
+    "text": "Chú chó chăn cừu lùa đàn cừu vào chuồng",
+    "motion": 50,
+    "hook": 600,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "ec2",
+    "source": "e",
+    "start_ms": 6000,
+    "end_ms": 9000,
+    "text": "Đàn cừu vào chuồng gọn gàng",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Đây là năm thú cưng thông minh nhất bạn từng thấy.",
+    "ms": 3000
+   },
+   {
+    "id": "u2",
+    "text": "Số năm: chú chó biết tự lấy nước trong tủ lạnh.",
+    "ms": 4000
+   },
+   {
+    "id": "u3",
+    "text": "Số bốn: con mèo tự bật đèn.",
+    "ms": 3000
+   },
+   {
+    "id": "u4",
+    "text": "Số ba: chú vẹt biết chào khách.",
+    "ms": 3500
+   },
+   {
+    "id": "u5",
+    "text": "Số hai: chú heo biết chơi bóng đá.",
+    "ms": 3500
+   },
+   {
+    "id": "u6",
+    "text": "Số một: chú chó chăn cả đàn cừu.",
+    "ms": 4000
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "holdout5-top5-pets",
+   "split": "holdout",
+   "forward_only": true,
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "a",
+       "start_ms": 4000,
+       "end_ms": 12000
+      },
+      {
+       "source": "b",
+       "start_ms": 0,
+       "end_ms": 8000
+      },
+      {
+       "source": "c",
+       "start_ms": 0,
+       "end_ms": 9000
+      },
+      {
+       "source": "d",
+       "start_ms": 0,
+       "end_ms": 8000
+      },
+      {
+       "source": "e",
+       "start_ms": 0,
+       "end_ms": 9000
+      }
+     ],
+     "note": "a real moment, not the title card"
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "a",
+       "start_ms": 4000,
+       "end_ms": 12000
+      }
+     ],
+     "key": [
+      {
+       "source": "a",
+       "start_ms": 4000,
+       "end_ms": 8000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "b",
+       "start_ms": 0,
+       "end_ms": 8000
+      }
+     ],
+     "key": [
+      {
+       "source": "b",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "c",
+       "start_ms": 0,
+       "end_ms": 9000
+      }
+     ],
+     "key": [
+      {
+       "source": "c",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ]
+    },
+    "u5": {
+     "accept": [
+      {
+       "source": "d",
+       "start_ms": 0,
+       "end_ms": 8000
+      }
+     ],
+     "key": [
+      {
+       "source": "d",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    },
+    "u6": {
+     "accept": [
+      {
+       "source": "e",
+       "start_ms": 0,
+       "end_ms": 9000
+      }
+     ],
+     "key": [
+      {
+       "source": "e",
+       "start_ms": 0,
+       "end_ms": 6000
+      }
+     ]
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "holdout5-water-cycle",
+  "split": "holdout",
+  "group": "education",
+  "forward_only": false,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "v1c1",
+    "source": "v1",
+    "start_ms": 0,
+    "end_ms": 5000,
+    "text": "Mặt biển lấp lánh dưới nắng, hơi nước bốc lên",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v1c2",
+    "source": "v1",
+    "start_ms": 5000,
+    "end_ms": 10000,
+    "text": "Mây trắng dày đặc trên bầu trời",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v2c1",
+    "source": "v2",
+    "start_ms": 0,
+    "end_ms": 5000,
+    "text": "Mưa rơi xuống mái nhà",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v2c2",
+    "source": "v2",
+    "start_ms": 5000,
+    "end_ms": 10000,
+    "text": "Dòng suối chảy qua khe đá",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v3c1",
+    "source": "v3",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Sơ đồ vòng tuần hoàn của nước với các mũi tên",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v3c2",
+    "source": "v3",
+    "start_ms": 4000,
+    "end_ms": 8000,
+    "text": "Băng tuyết tan chảy trên đỉnh núi",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Nước trên Trái Đất luôn chuyển động theo một vòng tuần hoàn.",
+    "ms": 4000
+   },
+   {
+    "id": "u2",
+    "text": "Mặt trời làm nước biển bốc hơi.",
+    "ms": 3000
+   },
+   {
+    "id": "u3",
+    "text": "Hơi nước ngưng tụ thành mây.",
+    "ms": 3000
+   },
+   {
+    "id": "u4",
+    "text": "Mây nặng hạt thì rơi xuống thành mưa.",
+    "ms": 3000
+   },
+   {
+    "id": "u5",
+    "text": "Nước mưa chảy thành suối rồi về lại biển.",
+    "ms": 3500
+   },
+   {
+    "id": "u6",
+    "text": "Ở vùng lạnh, nước được giữ lại dưới dạng băng tuyết.",
+    "ms": 3000
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "holdout5-water-cycle",
+   "split": "holdout",
+   "forward_only": false,
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "v3",
+       "start_ms": 0,
+       "end_ms": 4000
+      },
+      {
+       "source": "v1",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ]
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "v1",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ],
+     "key": [
+      {
+       "source": "v1",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "v1",
+       "start_ms": 5000,
+       "end_ms": 10000
+      }
+     ],
+     "key": [
+      {
+       "source": "v1",
+       "start_ms": 5000,
+       "end_ms": 10000
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "v2",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ],
+     "key": [
+      {
+       "source": "v2",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ]
+    },
+    "u5": {
+     "accept": [
+      {
+       "source": "v2",
+       "start_ms": 5000,
+       "end_ms": 10000
+      }
+     ],
+     "key": [
+      {
+       "source": "v2",
+       "start_ms": 5000,
+       "end_ms": 10000
+      }
+     ]
+    },
+    "u6": {
+     "accept": [
+      {
+       "source": "v3",
+       "start_ms": 4000,
+       "end_ms": 8000
+      }
+     ],
+     "key": [
+      {
+       "source": "v3",
+       "start_ms": 4000,
+       "end_ms": 8000
+      }
+     ]
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "holdout5-bike-gears",
+  "split": "holdout",
+  "group": "technical",
+  "forward_only": false,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "g1c1",
+    "source": "g1",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Cận cảnh bộ líp nhiều tầng ở bánh sau xe đạp",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "g1c2",
+    "source": "g1",
+    "start_ms": 4000,
+    "end_ms": 8000,
+    "text": "Ngón tay bấm cần đề trên ghi đông",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "g1c3",
+    "source": "g1",
+    "start_ms": 8000,
+    "end_ms": 12000,
+    "text": "Xích chuyển động mờ nhòe",
+    "motion": 50,
+    "hook": 0,
+    "usable": false,
+    "still": false,
+    "frames": [
+     {
+      "at_ms": 8600,
+      "text": "Xích nhảy từ đĩa líp nhỏ sang đĩa líp lớn",
+      "usable": true
+     },
+     {
+      "at_ms": 11400,
+      "text": "Xích nằm trên đĩa líp lớn nhất",
+      "usable": true
+     }
+    ]
+   },
+   {
+    "id": "g2c1",
+    "source": "g2",
+    "start_ms": 0,
+    "end_ms": 5000,
+    "text": "Người đạp xe lên dốc nhẹ nhàng",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "g2c2",
+    "source": "g2",
+    "start_ms": 5000,
+    "end_ms": 9000,
+    "text": "Người đạp xe tăng tốc trên đường bằng",
+    "motion": 120,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "g2c3",
+    "source": "g2",
+    "start_ms": 9000,
+    "end_ms": 12000,
+    "text": "Tra dầu vào sên xe đạp",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Bộ đề giúp xe đạp đổi tỉ số truyền.",
+    "ms": 3000
+   },
+   {
+    "id": "u2",
+    "text": "Bấm cần đề trên tay lái.",
+    "ms": 2500
+   },
+   {
+    "id": "u3",
+    "text": "Xích sẽ nhảy sang đĩa líp lớn hơn.",
+    "ms": 3000
+   },
+   {
+    "id": "u4",
+    "text": "Líp lớn giúp leo dốc nhẹ chân.",
+    "ms": 3000
+   },
+   {
+    "id": "u5",
+    "text": "Líp nhỏ giúp chạy nhanh trên đường bằng.",
+    "ms": 3000
+   },
+   {
+    "id": "u6",
+    "text": "Nhớ tra dầu xích thường xuyên.",
+    "ms": 2500
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "holdout5-bike-gears",
+   "split": "holdout",
+   "forward_only": false,
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "g1",
+       "start_ms": 0,
+       "end_ms": 12000
+      }
+     ]
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "g1",
+       "start_ms": 4000,
+       "end_ms": 8000
+      }
+     ],
+     "key": [
+      {
+       "source": "g1",
+       "start_ms": 4000,
+       "end_ms": 8000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "g1",
+       "start_ms": 8000,
+       "end_ms": 12000
+      }
+     ],
+     "key": [
+      {
+       "source": "g1",
+       "start_ms": 8000,
+       "end_ms": 12000
+      }
+     ],
+     "note": "middle frame blurred by motion"
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "g2",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ],
+     "key": [
+      {
+       "source": "g2",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ]
+    },
+    "u5": {
+     "accept": [
+      {
+       "source": "g2",
+       "start_ms": 5000,
+       "end_ms": 9000
+      }
+     ],
+     "key": [
+      {
+       "source": "g2",
+       "start_ms": 5000,
+       "end_ms": 9000
+      }
+     ]
+    },
+    "u6": {
+     "accept": [
+      {
+       "source": "g2",
+       "start_ms": 9000,
+       "end_ms": 12000
+      }
+     ],
+     "key": [
+      {
+       "source": "g2",
+       "start_ms": 9000,
+       "end_ms": 12000
+      }
+     ],
+     "note": "sên is the southern word for xích"
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "holdout5-caucasus-front",
+  "split": "holdout",
+  "group": "multilingual",
+  "forward_only": true,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "h1c1",
+    "source": "h1",
+    "start_ms": 0,
+    "end_ms": 6000,
+    "text": "Đoàn xe tăng di chuyển trên đồng cỏ",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false,
+    "transcript": "German tanks roll across the steppe toward the Caucasus"
+   },
+   {
+    "id": "h1c2",
+    "source": "h1",
+    "start_ms": 6000,
+    "end_ms": 12000,
+    "text": "Dãy núi phủ tuyết, mây bao quanh đỉnh",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false,
+    "transcript": "The Caucasus mountains guard the oil fields of Baku"
+   },
+   {
+    "id": "h2c1",
+    "source": "h2",
+    "start_ms": 0,
+    "end_ms": 6000,
+    "text": "Thành phố đổ nát, khói bốc lên từ các tòa nhà",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false,
+    "transcript": "Stalingrad lies in ruins"
+   },
+   {
+    "id": "h2c2",
+    "source": "h2",
+    "start_ms": 6000,
+    "end_ms": 12000,
+    "text": "Binh lính băng qua sông bằng thuyền nhỏ",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false,
+    "transcript": "Soldiers cross the Volga under fire"
+   },
+   {
+    "id": "h3c1",
+    "source": "h3",
+    "start_ms": 0,
+    "end_ms": 6000,
+    "text": "Tháp chuông và tường thành màu đỏ, quảng trường phủ tuyết",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false,
+    "transcript": "In Moscow, the Kremlin prepares its defence"
+   },
+   {
+    "id": "h3c2",
+    "source": "h3",
+    "start_ms": 6000,
+    "end_ms": 12000,
+    "text": "Giàn khoan dầu và bể chứa bên bờ biển",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false,
+    "transcript": "Oil derricks at Baku on the Caspian Sea"
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Mùa hè 1942, quân Đức tiến về Kavkaz.",
+    "ms": 4000
+   },
+   {
+    "id": "u2",
+    "text": "Dãy núi Kavkaz che chắn những mỏ dầu của Baku.",
+    "ms": 4000
+   },
+   {
+    "id": "u3",
+    "text": "Ở Stalingrad, thành phố gần như bị san phẳng.",
+    "ms": 4000
+   },
+   {
+    "id": "u4",
+    "text": "Binh lính vượt sông Volga dưới làn đạn.",
+    "ms": 4000
+   },
+   {
+    "id": "u5",
+    "text": "Tại Mátxcơva, Điện Kremli chuẩn bị phòng thủ.",
+    "ms": 4000
+   },
+   {
+    "id": "u6",
+    "text": "Dầu mỏ Baku bên bờ biển Caspi là mục tiêu cuối cùng.",
+    "ms": 4000
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "holdout5-caucasus-front",
+   "split": "holdout",
+   "forward_only": true,
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "h1",
+       "start_ms": 0,
+       "end_ms": 6000
+      }
+     ],
+     "key": [
+      {
+       "source": "h1",
+       "start_ms": 0,
+       "end_ms": 6000
+      }
+     ]
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "h1",
+       "start_ms": 6000,
+       "end_ms": 12000
+      },
+      {
+       "source": "h3",
+       "start_ms": 6000,
+       "end_ms": 12000
+      }
+     ],
+     "key": [
+      {
+       "source": "h1",
+       "start_ms": 6000,
+       "end_ms": 12000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "h2",
+       "start_ms": 0,
+       "end_ms": 6000
+      }
+     ],
+     "key": [
+      {
+       "source": "h2",
+       "start_ms": 0,
+       "end_ms": 6000
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "h2",
+       "start_ms": 6000,
+       "end_ms": 12000
+      }
+     ],
+     "key": [
+      {
+       "source": "h2",
+       "start_ms": 6000,
+       "end_ms": 12000
+      }
+     ]
+    },
+    "u5": {
+     "accept": [
+      {
+       "source": "h3",
+       "start_ms": 0,
+       "end_ms": 6000
+      }
+     ],
+     "key": [
+      {
+       "source": "h3",
+       "start_ms": 0,
+       "end_ms": 6000
+      }
+     ]
+    },
+    "u6": {
+     "accept": [
+      {
+       "source": "h3",
+       "start_ms": 6000,
+       "end_ms": 12000
+      }
+     ],
+     "key": [
+      {
+       "source": "h3",
+       "start_ms": 6000,
+       "end_ms": 12000
+      }
+     ]
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "holdout5-georgia-austria",
+  "split": "holdout",
+  "group": "multilingual",
+  "forward_only": false,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "t1c1",
+    "source": "t1",
+    "start_ms": 0,
+    "end_ms": 5000,
+    "text": "Nhà thờ cổ trên đồi nhìn xuống thành phố",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false,
+    "transcript": "Tbilisi, the capital of Georgia"
+   },
+   {
+    "id": "t1c2",
+    "source": "t1",
+    "start_ms": 5000,
+    "end_ms": 10000,
+    "text": "Tòa nhà chọc trời và đường cao tốc",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false,
+    "transcript": "Downtown Atlanta, Georgia"
+   },
+   {
+    "id": "t2c1",
+    "source": "t2",
+    "start_ms": 0,
+    "end_ms": 5000,
+    "text": "Cung điện màu vàng nhạt với vườn hoa",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false,
+    "transcript": "Schönbrunn Palace in Vienna, Austria"
+   },
+   {
+    "id": "t2c2",
+    "source": "t2",
+    "start_ms": 5000,
+    "end_ms": 10000,
+    "text": "Chuột túi nhảy trên đồng cỏ khô",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false,
+    "transcript": "Kangaroos in the Australian outback"
+   },
+   {
+    "id": "t3c1",
+    "source": "t3",
+    "start_ms": 0,
+    "end_ms": 5000,
+    "text": "Nhà hát có mái hình cánh buồm bên vịnh",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false,
+    "transcript": "The Sydney Opera House"
+   },
+   {
+    "id": "t3c2",
+    "source": "t3",
+    "start_ms": 5000,
+    "end_ms": 9000,
+    "text": "Phố cổ lát đá với quán cà phê",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false,
+    "transcript": "Old town of Vienna"
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Tbilisi, thủ đô của Gruzia, nằm giữa những ngọn đồi.",
+    "ms": 4000
+   },
+   {
+    "id": "u2",
+    "text": "Ở Áo, cung điện Schönbrunn là điểm đến nổi tiếng.",
+    "ms": 4000
+   },
+   {
+    "id": "u3",
+    "text": "Phố cổ Viên có những quán cà phê lâu đời.",
+    "ms": 3500
+   },
+   {
+    "id": "u4",
+    "text": "Còn ở Úc, chuột túi sống khắp vùng đồng cỏ.",
+    "ms": 3500
+   },
+   {
+    "id": "u5",
+    "text": "Nhà hát Opera Sydney là biểu tượng của nước Úc.",
+    "ms": 3500
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "holdout5-georgia-austria",
+   "split": "holdout",
+   "forward_only": false,
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "t1",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ],
+     "key": [
+      {
+       "source": "t1",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ],
+     "contra": [
+      {
+       "source": "t1",
+       "start_ms": 5000,
+       "end_ms": 10000
+      }
+     ],
+     "note": "Georgia the US state is not Gruzia"
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "t2",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ],
+     "key": [
+      {
+       "source": "t2",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ],
+     "contra": [
+      {
+       "source": "t2",
+       "start_ms": 5000,
+       "end_ms": 10000
+      },
+      {
+       "source": "t3",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ],
+     "note": "Áo is Austria, not Australia"
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "t3",
+       "start_ms": 5000,
+       "end_ms": 9000
+      }
+     ],
+     "key": [
+      {
+       "source": "t3",
+       "start_ms": 5000,
+       "end_ms": 9000
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "t2",
+       "start_ms": 5000,
+       "end_ms": 10000
+      }
+     ],
+     "key": [
+      {
+       "source": "t2",
+       "start_ms": 5000,
+       "end_ms": 10000
+      }
+     ],
+     "contra": [
+      {
+       "source": "t2",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ]
+    },
+    "u5": {
+     "accept": [
+      {
+       "source": "t3",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ],
+     "key": [
+      {
+       "source": "t3",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ]
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "holdout5-night-market-long",
+  "split": "holdout",
+  "group": "long-multi-source",
+  "forward_only": true,
+  "pacing": "entertainment",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "n1c1",
+    "source": "n1",
+    "start_ms": 0,
+    "end_ms": 6000,
+    "text": "Cổng chợ đêm treo đèn lồng đỏ, rất đông người",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "n1c2",
+    "source": "n1",
+    "start_ms": 6000,
+    "end_ms": 12000,
+    "text": "Người bán nướng mực trên bếp than",
+    "motion": 50,
+    "hook": 600,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "n1c3",
+    "source": "n1",
+    "start_ms": 12000,
+    "end_ms": 18000,
+    "text": "Khói bốc lên từ quầy mực nướng",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "n1c4",
+    "source": "n1",
+    "start_ms": 18000,
+    "end_ms": 24000,
+    "text": "Khách đứng xếp hàng trước quầy",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "n1c5",
+    "source": "n1",
+    "start_ms": 24000,
+    "end_ms": 30000,
+    "text": "Người bán đếm tiền",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "n2c1",
+    "source": "n2",
+    "start_ms": 0,
+    "end_ms": 6000,
+    "text": "Quầy chè nhiều màu trong ly nhựa",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "n2c2",
+    "source": "n2",
+    "start_ms": 6000,
+    "end_ms": 12000,
+    "text": "Múc đá bào vào ly chè",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "n2c3",
+    "source": "n2",
+    "start_ms": 12000,
+    "end_ms": 18000,
+    "text": "Cô gái nếm thử chè và cười",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "n3c1",
+    "source": "n3",
+    "start_ms": 0,
+    "end_ms": 6000,
+    "text": "Nghệ nhân nặn tò he bằng bột màu",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "n3c2",
+    "source": "n3",
+    "start_ms": 6000,
+    "end_ms": 12000,
+    "text": "Những con tò he hình con giáp xếp trên kệ",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "n3c3",
+    "source": "n3",
+    "start_ms": 12000,
+    "end_ms": 18000,
+    "text": "Em bé cầm tò he hình con rồng",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "n4c1",
+    "source": "n4",
+    "start_ms": 0,
+    "end_ms": 8000,
+    "text": "Ban nhạc đường phố chơi đàn guitar",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "n4c2",
+    "source": "n4",
+    "start_ms": 8000,
+    "end_ms": 16000,
+    "text": "Đám đông vỗ tay theo nhạc",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Chợ đêm mở cửa từ lúc hoàng hôn.",
+    "ms": 4000
+   },
+   {
+    "id": "u2",
+    "text": "Món đầu tiên phải thử là mực nướng than.",
+    "ms": 5000
+   },
+   {
+    "id": "u3",
+    "text": "Ăn xong làm một ly chè đá bào cho mát.",
+    "ms": 5000
+   },
+   {
+    "id": "u4",
+    "text": "Nghệ nhân nặn tò he chỉ trong vài phút.",
+    "ms": 5000
+   },
+   {
+    "id": "u5",
+    "text": "Cuối đêm, có pháo hoa rực rỡ trên bầu trời.",
+    "ms": 4000
+   },
+   {
+    "id": "u6",
+    "text": "Ban nhạc đường phố giữ chân du khách đến khuya.",
+    "ms": 5000
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "holdout5-night-market-long",
+   "split": "holdout",
+   "forward_only": true,
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "n1",
+       "start_ms": 0,
+       "end_ms": 6000
+      }
+     ],
+     "key": [
+      {
+       "source": "n1",
+       "start_ms": 0,
+       "end_ms": 6000
+      }
+     ]
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "n1",
+       "start_ms": 6000,
+       "end_ms": 18000
+      }
+     ],
+     "key": [
+      {
+       "source": "n1",
+       "start_ms": 6000,
+       "end_ms": 12000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "n2",
+       "start_ms": 0,
+       "end_ms": 18000
+      }
+     ],
+     "key": [
+      {
+       "source": "n2",
+       "start_ms": 6000,
+       "end_ms": 12000
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "n3",
+       "start_ms": 0,
+       "end_ms": 12000
+      }
+     ],
+     "key": [
+      {
+       "source": "n3",
+       "start_ms": 0,
+       "end_ms": 6000
+      }
+     ]
+    },
+    "u5": {
+     "accept": [],
+     "footage_exists": false,
+     "note": "no fireworks in any source: the right answer is a warning"
+    },
+    "u6": {
+     "accept": [
+      {
+       "source": "n4",
+       "start_ms": 0,
+       "end_ms": 16000
+      }
+     ],
+     "key": [
+      {
+       "source": "n4",
+       "start_ms": 0,
+       "end_ms": 8000
+      }
+     ]
+    }
+   }
+  }
+ }
+]
