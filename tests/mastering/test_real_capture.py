@@ -85,6 +85,17 @@ class CaptureTests(unittest.TestCase):
         self.assertEqual(total["ready_precision"], {"num": 1, "den": 1, "milli": 1000})
         self.assertIn("thresholds", total)
 
+    def test_the_real_labels_are_the_frozen_ones(self):
+        import hashlib
+        from tests.mastering.real import evaluate
+        folder = Path(capture.HERE)
+        for line in (folder / "HASHES.txt").read_text(encoding="utf-8").splitlines():
+            digest, name = line.split()
+            self.assertEqual(hashlib.sha256((folder / name).read_bytes()).hexdigest(), digest, f"{name} changed after it was frozen")
+        for name in ("real-dev.json", "real-holdout.json"):
+            labels = evaluate.load_labels(folder / name)
+            self.assertTrue(labels["labeller"].startswith("agent"))
+
 
 if __name__ == "__main__":
     unittest.main()

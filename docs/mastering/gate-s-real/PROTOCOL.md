@@ -66,3 +66,13 @@ The **reliability bins** show piece confidence (0–299, 300–449, 450–599, 6
 - Light methods only: score mapping, threshold calibration, per-provider analysis. No new model. Do not simply lower REVIEW_BELOW.
 - Each change needs a repro, a test that fails before and passes after, the regression comparison on every existing set, and its effect on REAL-DEV.
 - One controlled round. If REAL-HOLDOUT still fails, the result is FAIL, and "Assisted Editorial Review" is proposed as a product option, not as a pass.
+
+## 6. Frozen labels
+
+Written on the owner's PC on 2026-11-11 from timestamped contact sheets, then pushed as `agent/gate-s-real-labels` (4eb29b8, 1e52263) before any planner or Vision run on these sources. This PR adds them unchanged. sha256 (LF bytes, `tests/mastering/real/HASHES.txt`):
+
+- real-dev.json `c15f57d9328cfb1f4f942cadde5aef94d13b7601e24e294adfe08d73d5dd2ba4`: 41 sentences, 6 videos
+- real-holdout.json `3dd97b3b2467a7988fdca1b039b51e094ad5f8b4738150a92e4af814c57cc3f9`: 42 sentences, 6 videos
+- sources.json `1041b7d1a1df1b19f30ce8b2945f00fa6b126ae469f8e8341cd446651f3a974d`
+
+Types: footage_present 31, synonym_or_indirect 12, near_match 12, partial 12, footage_insufficient 12, generic 4. Labelled states: 43 MATCH_AVAILABLE, 36 SOURCE_INSUFFICIENT (near-match, partial and absent lines), 4 NOT_NEEDED. Groups: REAL-DEV household 7, entertainment 14, educational/technical 13, long-form 7; REAL-HOLDOUT household 7, entertainment 21, educational/technical 7, long-form 7. Not human-verified.
