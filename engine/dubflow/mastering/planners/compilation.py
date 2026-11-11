@@ -24,7 +24,7 @@ from ..candidates import Candidate
 
 PLANNER = "dubflow.mastering.compilation"
 VERSION = "7"
-RECIPE = "compilation-program-v10"  # v10: every piece inside its shot, no flash, sentences covered exactly
+RECIPE = "compilation-program-v11"  # v11: semantic root-cause fixes (#705); v10: every piece inside its shot
 WORKFLOW = "compilation_entertainment"
 MOMENT_MIN_MS, MOMENT_TARGET_MS, MOMENT_MAX_MS = 2000, 3500, 6000
 PART_FUNCTION = {"hook": "hook", "intro": "intro", "item": "narration", "outro": "outro"}

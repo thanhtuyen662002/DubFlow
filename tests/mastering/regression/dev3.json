@@ -1,0 +1,908 @@
+[
+ {
+  "schema_version": 1,
+  "name": "dev3-vacuum",
+  "split": "dev",
+  "forward_only": false,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "v1c1",
+    "source": "v1",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Máy hút bụi cầm tay mini màu trắng đặt trên bàn",
+    "motion": 50,
+    "hook": 600,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v1c2",
+    "source": "v1",
+    "start_ms": 3000,
+    "end_ms": 6000,
+    "text": "Tay bấm nút nguồn trên thân máy, đèn xanh sáng lên",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v1c3",
+    "source": "v1",
+    "start_ms": 6000,
+    "end_ms": 9500,
+    "text": "Hút vụn bánh trên ghế sofa, vụn bánh bị hút vào bên trong",
+    "motion": 140,
+    "hook": 700,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v2c1",
+    "source": "v2",
+    "start_ms": 0,
+    "end_ms": 2600,
+    "text": "Tháo hộp chứa bụi ra khỏi thân máy, đổ bụi bên trong ra thùng rác",
+    "motion": 110,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v2c2",
+    "source": "v2",
+    "start_ms": 2600,
+    "end_ms": 6000,
+    "text": "Rửa lõi lọc dưới vòi nước rồi phơi khô",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v3c1",
+    "source": "v3",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Hút bụi trên thảm xe ô tô, bụi bay vào trong máy",
+    "motion": 150,
+    "hook": 800,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v3c2",
+    "source": "v3",
+    "start_ms": 4000,
+    "end_ms": 7000,
+    "text": "Cổng sạc USB-C ở đáy máy đang cắm dây sạc",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v4c1",
+    "source": "v4",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Màn hình chữ: giá 599K giảm còn 249K, freeship",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Máy hút bụi cầm tay mini, nhỏ gọn mà lực hút cực mạnh.",
+    "ms": 3500
+   },
+   {
+    "id": "u2",
+    "text": "Hút sạch vụn bánh trên ghế sofa chỉ trong vài giây.",
+    "ms": 3500
+   },
+   {
+    "id": "u3",
+    "text": "Hộp chứa bụi tháo ra đổ bỏ dễ dàng.",
+    "ms": 3000
+   },
+   {
+    "id": "u4",
+    "text": "Lõi lọc rửa được bằng nước, dùng lại nhiều lần.",
+    "ms": 3000
+   },
+   {
+    "id": "u5",
+    "text": "Dùng cho cả thảm xe ô tô.",
+    "ms": 3000
+   },
+   {
+    "id": "u6",
+    "text": "Sạc nhanh bằng cổng USB-C.",
+    "ms": 2500
+   },
+   {
+    "id": "u7",
+    "text": "Giá chỉ còn 249K, đặt ngay hôm nay.",
+    "ms": 3000
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "dev3-vacuum",
+   "split": "dev",
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "v1",
+       "start_ms": 0,
+       "end_ms": 9500
+      },
+      {
+       "source": "v3",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "v1",
+       "start_ms": 6000,
+       "end_ms": 9500
+      }
+     ],
+     "key": [
+      {
+       "source": "v1",
+       "start_ms": 6000,
+       "end_ms": 9500
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "v2",
+       "start_ms": 0,
+       "end_ms": 2600
+      }
+     ],
+     "key": [
+      {
+       "source": "v2",
+       "start_ms": 0,
+       "end_ms": 2600
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "v2",
+       "start_ms": 2600,
+       "end_ms": 6000
+      }
+     ],
+     "key": [
+      {
+       "source": "v2",
+       "start_ms": 2600,
+       "end_ms": 6000
+      }
+     ]
+    },
+    "u5": {
+     "accept": [
+      {
+       "source": "v3",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ],
+     "key": [
+      {
+       "source": "v3",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    },
+    "u6": {
+     "accept": [
+      {
+       "source": "v3",
+       "start_ms": 4000,
+       "end_ms": 7000
+      }
+     ],
+     "key": [
+      {
+       "source": "v3",
+       "start_ms": 4000,
+       "end_ms": 7000
+      }
+     ]
+    },
+    "u7": {
+     "accept": [
+      {
+       "source": "v4",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ],
+     "key": [
+      {
+       "source": "v4",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ]
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "dev3-kettle",
+  "split": "dev",
+  "forward_only": false,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "v1c1",
+    "source": "v1",
+    "start_ms": 0,
+    "end_ms": 3500,
+    "text": "Toàn cảnh ấm siêu tốc thủy tinh trên bàn bếp, nước bên trong",
+    "motion": 50,
+    "hook": 750,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v1c2",
+    "source": "v1",
+    "start_ms": 3500,
+    "end_ms": 6000,
+    "text": "Rót nước vào ấm đến vạch 1,7 lít",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v1c3",
+    "source": "v1",
+    "start_ms": 6000,
+    "end_ms": 9000,
+    "text": "Nước sôi sủi bọt, đèn LED xanh trong ấm",
+    "motion": 130,
+    "hook": 850,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v1c4",
+    "source": "v1",
+    "start_ms": 9000,
+    "end_ms": 11000,
+    "text": "Đèn công tắc tắt, ấm tự ngắt khi nước sôi",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v2c1",
+    "source": "v2",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Rót nước sôi ra cốc pha trà",
+    "motion": 100,
+    "hook": 600,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v2c2",
+    "source": "v2",
+    "start_ms": 3000,
+    "end_ms": 6000,
+    "text": "Đáy ấm bằng thép không gỉ, đế xoay 360 độ",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v3c1",
+    "source": "v3",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Cận cảnh hộp sản phẩm và tem bảo hành",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Ấm siêu tốc thủy tinh, đun sôi nước chỉ trong 3 phút.",
+    "ms": 3500
+   },
+   {
+    "id": "u2",
+    "text": "Dung tích 1,7 lít, đủ pha trà cho cả nhà.",
+    "ms": 3500
+   },
+   {
+    "id": "u3",
+    "text": "Đèn LED xanh sáng lên khi nước đang sôi.",
+    "ms": 3000
+   },
+   {
+    "id": "u4",
+    "text": "Tự ngắt khi nước sôi, an toàn tuyệt đối.",
+    "ms": 2500
+   },
+   {
+    "id": "u5",
+    "text": "Đế xoay 360 độ tiện lợi.",
+    "ms": 2500
+   },
+   {
+    "id": "u6",
+    "text": "Bảo hành 12 tháng, mua ngay.",
+    "ms": 2500
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "dev3-kettle",
+   "split": "dev",
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "v1",
+       "start_ms": 0,
+       "end_ms": 3500
+      },
+      {
+       "source": "v1",
+       "start_ms": 6000,
+       "end_ms": 9000
+      }
+     ]
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "v1",
+       "start_ms": 3500,
+       "end_ms": 6000
+      },
+      {
+       "source": "v2",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ],
+     "key": [
+      {
+       "source": "v1",
+       "start_ms": 3500,
+       "end_ms": 6000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "v1",
+       "start_ms": 6000,
+       "end_ms": 9000
+      }
+     ],
+     "key": [
+      {
+       "source": "v1",
+       "start_ms": 6000,
+       "end_ms": 9000
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "v1",
+       "start_ms": 9000,
+       "end_ms": 11000
+      }
+     ],
+     "key": [
+      {
+       "source": "v1",
+       "start_ms": 9000,
+       "end_ms": 11000
+      }
+     ]
+    },
+    "u5": {
+     "accept": [
+      {
+       "source": "v2",
+       "start_ms": 3000,
+       "end_ms": 6000
+      }
+     ],
+     "key": [
+      {
+       "source": "v2",
+       "start_ms": 3000,
+       "end_ms": 6000
+      }
+     ]
+    },
+    "u6": {
+     "accept": [
+      {
+       "source": "v3",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ]
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "dev3-serum",
+  "split": "dev",
+  "forward_only": false,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "v1c1",
+    "source": "v1",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Chai serum vitamin C mau cam xoay tren nen trang",
+    "motion": 50,
+    "hook": 500,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v2c1",
+    "source": "v2",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Nho vai giot serum len mu ban tay",
+    "motion": 80,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v2c2",
+    "source": "v2",
+    "start_ms": 3000,
+    "end_ms": 7000,
+    "text": "Thoa serum len mat, da sang bong",
+    "motion": 90,
+    "hook": 650,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v3c1",
+    "source": "v3",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Bang thanh phan in tren hop: vitamin C 15%, niacinamide",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v4c1",
+    "source": "v4",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "So sanh da truoc va sau 4 tuan su dung",
+    "motion": 50,
+    "hook": 800,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v5c1",
+    "source": "v5",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Hop qua tang kem bong tay trang",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Serum vitamin C giúp da sáng mịn sau 4 tuần.",
+    "ms": 3500
+   },
+   {
+    "id": "u2",
+    "text": "Chỉ cần vài giọt mỗi sáng.",
+    "ms": 2500
+   },
+   {
+    "id": "u3",
+    "text": "Thành phần 15% vitamin C kết hợp niacinamide.",
+    "ms": 3500
+   },
+   {
+    "id": "u4",
+    "text": "Da sáng rõ sau 4 tuần sử dụng.",
+    "ms": 3500
+   },
+   {
+    "id": "u5",
+    "text": "Tặng kèm bông tẩy trang khi đặt hôm nay.",
+    "ms": 3000
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "dev3-serum",
+   "split": "dev",
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "v1",
+       "start_ms": 0,
+       "end_ms": 3000
+      },
+      {
+       "source": "v2",
+       "start_ms": 3000,
+       "end_ms": 7000
+      },
+      {
+       "source": "v4",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "v2",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ],
+     "key": [
+      {
+       "source": "v2",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "v3",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ],
+     "key": [
+      {
+       "source": "v3",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "v4",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ],
+     "key": [
+      {
+       "source": "v4",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    },
+    "u5": {
+     "accept": [
+      {
+       "source": "v5",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ],
+     "key": [
+      {
+       "source": "v5",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ]
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "dev3-street-food",
+  "split": "dev",
+  "forward_only": true,
+  "pacing": "entertainment",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "s1c1",
+    "source": "s1",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Màn hình chữ tiêu đề: TOP MÓN ĂN ĐƯỜNG PHỐ, chữ chuyển động",
+    "motion": 160,
+    "hook": 750,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s1c2",
+    "source": "s1",
+    "start_ms": 3000,
+    "end_ms": 7000,
+    "text": "Người bán đảo bánh xèo trong chảo dầu nóng xèo xèo",
+    "motion": 150,
+    "hook": 850,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s1c3",
+    "source": "s1",
+    "start_ms": 7000,
+    "end_ms": 11000,
+    "text": "Bánh xèo vàng giòn cuốn rau sống",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s2c1",
+    "source": "s2",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Nồi nước dùng bún bò bốc khói ở quán vỉa hè",
+    "motion": 90,
+    "hook": 600,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s2c2",
+    "source": "s2",
+    "start_ms": 4000,
+    "end_ms": 8000,
+    "text": "Tô bún bò Huế với giò heo và chả cua",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s3c1",
+    "source": "s3",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Bánh mì nướng than, bơ chảy, vỏ giòn",
+    "motion": 100,
+    "hook": 700,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s3c2",
+    "source": "s3",
+    "start_ms": 4000,
+    "end_ms": 8000,
+    "text": "Người bán kẹp pate và chả lụa vào ổ bánh mì",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s4c1",
+    "source": "s4",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Ly chè thập cẩm nhiều màu với đá bào",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s4c2",
+    "source": "s4",
+    "start_ms": 4000,
+    "end_ms": 7000,
+    "text": "Màn hình chữ kết: CẢM ƠN ĐÃ XEM, ĐĂNG KÝ KÊNH",
+    "motion": 140,
+    "hook": 700,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Bốn món ăn đường phố khiến bạn muốn ăn ngay lập tức.",
+    "ms": 4000
+   },
+   {
+    "id": "u2",
+    "text": "Bánh xèo giòn rụm đổ trong chảo nóng.",
+    "ms": 5000
+   },
+   {
+    "id": "u3",
+    "text": "Bún bò Huế nước dùng đậm đà.",
+    "ms": 5000
+   },
+   {
+    "id": "u4",
+    "text": "Bánh mì nướng than giòn rụm.",
+    "ms": 5000
+   },
+   {
+    "id": "u5",
+    "text": "Ly chè thập cẩm mát lạnh để kết thúc.",
+    "ms": 4000
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "dev3-street-food",
+   "split": "dev",
+   "forward_only": true,
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "s1",
+       "start_ms": 3000,
+       "end_ms": 7000
+      },
+      {
+       "source": "s2",
+       "start_ms": 0,
+       "end_ms": 4000
+      },
+      {
+       "source": "s3",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ],
+     "contra": [
+      {
+       "source": "s1",
+       "start_ms": 0,
+       "end_ms": 3000
+      },
+      {
+       "source": "s4",
+       "start_ms": 4000,
+       "end_ms": 7000
+      }
+     ]
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "s1",
+       "start_ms": 3000,
+       "end_ms": 11000
+      }
+     ],
+     "key": [
+      {
+       "source": "s1",
+       "start_ms": 3000,
+       "end_ms": 7000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "s2",
+       "start_ms": 0,
+       "end_ms": 8000
+      }
+     ],
+     "key": [
+      {
+       "source": "s2",
+       "start_ms": 4000,
+       "end_ms": 8000
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "s3",
+       "start_ms": 0,
+       "end_ms": 8000
+      }
+     ],
+     "key": [
+      {
+       "source": "s3",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    },
+    "u5": {
+     "accept": [
+      {
+       "source": "s4",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ],
+     "key": [
+      {
+       "source": "s4",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    }
+   }
+  }
+ }
+]

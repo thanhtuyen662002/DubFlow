@@ -27,6 +27,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import math
+import re
 from typing import Any, Iterable, Mapping, Sequence
 
 from . import evidence as ev
@@ -178,6 +179,10 @@ class Decision:
 
 
 MIN_RELEVANCE = 60  # below this the best match is noise (one common word): no rescaling
+OPENING_CLOSING = ("hook", "intro", "cta", "outro")
+CARD_PENALTY = 300  # a title or end screen for a sentence that does not speak of what is written
+COMMON_SHARE = 500  # ‰ of the described shots a word is in before it tells no shot from another
+COMMON_MIN_SHOTS = 4  # with fewer described shots every word is "common": the rule needs a few
 
 
 class Scorer:
@@ -195,6 +200,13 @@ class Scorer:
                 frequency[term] = frequency.get(term, 0) + 1
         count = max(1, len(self.candidates))
         self.idf = {term: math.log(1 + count / (1 + seen)) for term, seen in frequency.items()}
+        # Words most of the footage is described with (the product's name, the film's style) tell no shot from
+        # another: a sentence made of them alone matches nothing in particular, they still count in its length.
+        # Title, end and subscribe screens: they show words, not the thing a sentence speaks of
+        self.card = {c.candidate_id: _text_card(evidence.get(c.candidate_id)) for c in self.candidates}
+        described = sum(1 for found in self.terms.values() if found)
+        self.common = frozenset(term for term, seen in frequency.items()
+                                if described >= COMMON_MIN_SHOTS and seen * 1000 > COMMON_SHARE * described)
         self.default_idf = math.log(1 + count)
         self.content = any(evidence[c.candidate_id].content for c in self.candidates if c.candidate_id in evidence)
 
@@ -208,7 +220,7 @@ class Scorer:
         for term in wanted:
             weight = self.idf.get(term, self.default_idf) * (2 if " " in term else 1)
             total += weight
-            value = ev.match(term, found, loose)
+            value = 0 if self._common(term) else ev.match(term, found, loose)
             if value:
                 matched += weight * value / 1000
                 words.append(term.removeprefix(ev.LOOSE))
@@ -218,6 +230,12 @@ class Scorer:
         words.sort(key=lambda w: (-(" " in w), -self.idf.get(w, 0), w))
         return round(value * 1000), words[:4]
 
+    def _common(self, term: str) -> bool:
+        if term in self.common:
+            return True
+        folded = term if term.startswith(ev.LOOSE) else ev.LOOSE + ev.fold(term)
+        return folded in self.common
+
     def fit(self, unit: Unit, candidate: Candidate) -> tuple[int, str | None]:
         table = FIT.get(unit.function, {})
         best, label = 0, None
@@ -226,6 +244,26 @@ class Scorer:
             if value > best:
                 best, label = value, name
         return best, label
+
+
+_CARD_CUES = ("man hinh chu", "dong chu", "the tieu de", "man hinh tieu de", "chu chay", "chu ket", "chu tieu de", "credit",
+              "dang ky kenh", "cam on da xem", "end card", "title card", "subscribe")
+_TEXT_TOPIC = re.compile(r"\d|\b(gia|chu|tieu de|ten|khuyen mai|giam|ma giam|freeship|dong chu)\b")
+
+
+def _text_card(found: ev.Evidence | None) -> bool:
+    """Whether what is known of a shot says it is a screen of text (a title, an end or a subscribe card)."""
+    if found is None:
+        return False
+    if found.labels().get("text_on_screen", 0) >= 400 and not found.product_visible:
+        return True
+    text = " ".join(ev.fold(item.text) for item in found.items if item.origin != "signal")
+    return any(f" {cue} " in f" {text} " for cue in _CARD_CUES)
+
+
+def about_text(unit: Unit) -> bool:
+    """Whether a sentence speaks of something written (a price, a code, a title): a text card can show it."""
+    return bool(_TEXT_TOPIC.search(ev.fold(ev.numbers(unit.text))))
 
 
 def _length_fit(candidate_ms: int, wanted_ms: int) -> int:
@@ -285,6 +323,16 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
     resume: dict[str, int] = {}
     source_end: dict[str, int] = {}
     relevance_of = {(u.unit_id, c.candidate_id): scorer.relevance(u, c) for u in found_units for c in usable}
+    # a text card illustrates only a sentence about what is written; while the source has any other usable footage
+    # the words printed on a card (a title that repeats the opening: dev2-title-card-opening) are no match for a
+    # sentence that is not about them, so it is filled from real footage and flagged when nothing else matches.
+    # A source of nothing but cards keeps them (dev2-hook-text-card).
+    if any(not scorer.card[c.candidate_id] for c in usable):
+        for u in found_units:
+            if not about_text(u):
+                for c in usable:
+                    if scorer.card[c.candidate_id]:
+                        relevance_of[(u.unit_id, c.candidate_id)] = (0, [])
     best_of = {u.unit_id: max((relevance_of[(u.unit_id, c.candidate_id)][0] for c in usable), default=0) for u in found_units}
     accepts: dict[str, set[str]] = {}
     for u in found_units:
@@ -294,11 +342,19 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
     # a shot belongs to the sentence it is clearly about: one that another sentence matches at twice the score
     # (and as one of its own) does not illustrate this one ("nhạc" in an opening does not make the shot of the
     # earbud touch that stops the music an opening shot)
+    # ... and is not taken from a sentence for which it is as good a match as that sentence has: a sentence made of
+    # strong words (an opening naming the product) outscores a plain one on every shot, so the claim also needs the
+    # shot to be relatively closer to the other sentence's best than to this one's (dev2-blower-name-claim).
+    def strength(unit_id: str, cid: str) -> int:
+        return relevance_of[(unit_id, cid)][0] * 1000 // max(1, best_of[unit_id])
+
     for u in found_units:
         mine = relevance_of
         accepts[u.unit_id] = {cid for cid in accepts[u.unit_id]
                               if not any(cid in accepts[v.unit_id] and mine[(v.unit_id, cid)][0] >= 2 * mine[(u.unit_id, cid)][0]
+                                         and strength(v.unit_id, cid) > strength(u.unit_id, cid)
                                          for v in found_units if v.unit_id != u.unit_id)}
+    units_by_id = {u.unit_id: u for u in found_units}
     accepted_by: dict[str, set[str]] = {}
     for unit_id, ids in accepts.items():
         for candidate_id in ids:
@@ -351,6 +407,18 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
             total += max(0, before - min(later_unit.length_ms, kept))
         return total
 
+    def starved(unit: Unit, candidate: Candidate, length: int) -> int:
+        """Reordering: ms of their own footage the sentences not filled yet lose if ``unit`` plays ``length`` of
+        ``candidate`` now."""
+        total = 0
+        for other_id in accepted_by.get(candidate.candidate_id, ()):
+            if other_id == unit.unit_id or other_id in decisions:
+                continue
+            other = units_by_id[other_id]
+            have = supply(other_id)
+            total += max(0, min(other.length_ms, have) - min(other.length_ms, have - length))
+        return total
+
     def confidence_of(unit: Unit, candidate: Candidate, relevance: int, fit: int) -> int:
         info = evidence.get(candidate.candidate_id)
         if mode != "content":
@@ -373,7 +441,10 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
         strength = relevance * 1000 // best if best >= MIN_RELEVANCE else relevance
         total = (450 * strength + 250 * fit + 150 * quality + 50 * _length_fit(left, min(wanted, pacing.target))) // 1000
         info = evidence.get(candidate.candidate_id)
-        if unit.function == "hook":
+        card = scorer.card[candidate.candidate_id] and not about_text(unit)
+        if card:
+            total -= CARD_PENALTY  # moving letters are not an opening, and not what the sentence shows
+        if unit.function == "hook" and not card:
             total += min(60, candidate.motion // 4) + (info.hook // 10 if info else 0)
         elif unit.function == "narration":
             total += min(30, candidate.motion // 8)
@@ -397,6 +468,9 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
         if forward_only and later and candidate.candidate_id not in still_ids:
             # taking this shot puts footage behind: what the sentences still to come lose of their own footage
             total -= LOSS_PENALTY * min(2 * wanted, lost(candidate, min(left, wanted), later)) // max(1, wanted)
+        elif not forward_only and candidate.candidate_id not in still_ids:
+            # reordering: what the sentences still to fill lose of their own footage if this one takes it
+            total -= LOSS_PENALTY * min(2 * wanted, starved(unit, candidate, min(left, wanted))) // max(1, wanted)
         reasons = []
         if matched:
             origins = info.origins() if info else []
@@ -415,7 +489,11 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
         def scarcity(u: Unit) -> tuple:
             pinned_first = 0 if edits.pin.get(u.unit_id) else 1
             has = bool(accepts[u.unit_id])
-            return (pinned_first, 0 if has else 1, supply(u.unit_id) * 1000 // max(1, u.length_ms) if has else 0, positions[u.unit_id])
+            # an opening or a call to action chooses after the sentences that describe something: it can do with
+            # any good shot, they need theirs (dev2-blower-name-claim, dev2-toothpick-function-words)
+            framing = 1 if u.function in OPENING_CLOSING else 0
+            return (pinned_first, 0 if has else 1, framing, supply(u.unit_id) * 1000 // max(1, u.length_ms) if has else 0,
+                    positions[u.unit_id])
         order = sorted(found_units, key=scarcity)
     by_unit: dict[str, list[Choice]] = {}
     decisions: dict[str, Decision] = {}
@@ -500,6 +578,10 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
                                           "reasons": list(score(unit, c, wanted, best, later, "match")[2])} for t, c in others[:3]]
             return ranked
 
+        def tail(candidate: Candidate) -> bool:
+            """The rest of a shot another sentence it illustrates has already shown."""
+            return bool(uses.get(candidate.candidate_id) and accepted_by.get(candidate.candidate_id, set()) - {unit.unit_id})
+
         def safe(candidate: Candidate, later_need: int, wanted: int) -> bool:
             """Forward only: what stays ahead after it still covers the sentences to come."""
             return (not forward_only or not later_need or candidate.candidate_id in still_ids
@@ -518,6 +600,8 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
                     and safe(c, later_need, wanted)
                     # forward only: not when the sentences to come lose more of their own footage than this one gains
                     and lost(c, min(remaining(c)[1], wanted), later) <= min(remaining(c)[1], wanted)]
+            if not forward_only:  # nor a short leftover of a shot another sentence already showed, while others remain
+                pool = [c for c in pool if not (tail(c) and remaining(c)[1] < pacing.minimum)] or pool
             if not pool:
                 break
             ranked = rank(pool, "match", wanted)
@@ -549,6 +633,23 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
                     and not (c.candidate_id in accept and lost(c, min(remaining(c)[1], wanted), later) > min(remaining(c)[1], wanted))]
             pool = [c for c in fits if safe(c, later_need, wanted)] or fits \
                 or [c for c in usable if allowed(c) and remaining(c)[1] >= SHORT_FLOOR]
+            # another sentence's own footage is not filler: rather than show what a sentence says elsewhere (the
+            # keyboard shot behind the price), the sentence shows its own shot again, declared as a repeat
+            # ... nor is the rest of a shot another sentence about it already showed (the tail of its key shot)
+            own = [p["candidate"] for p in picks if p["tier"] in ("match", "pinned")]
+            free = [c for c in pool if not accepted_by.get(c.candidate_id, set()) - {unit.unit_id}]
+            if own and pool and not free and not forward_only:
+                again = max(own, key=lambda c: (c.length_ms, c.candidate_id))
+                if record(again, "repeat", max(wanted, pacing.minimum // 2), []):
+                    continue
+            if not forward_only and pool:
+                untouched = [c for c in pool if not tail(c)]
+                spare = [c for c in usable if allowed(c) and not accepted_by.get(c.candidate_id, set()) - {unit.unit_id}]
+                if not untouched and spare:  # every fresh shot left is such a tail: a neutral shot again, said so
+                    again = max(spare, key=lambda c: (c.length_ms, c.candidate_id))
+                    if record(again, "repeat", max(wanted, pacing.minimum // 2), []):
+                        continue
+                pool = untouched or pool
             if not pool and rest < SHORT_FLOOR and picks:
                 picks[-1]["length"] += rest  # a last few frames: the shot before plays on rather than a flash
                 covered += rest
@@ -596,7 +697,8 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
             if pick["tier"] in ("neutral", "repeat") and (accept or mode == "content"):
                 reasons.append("cảnh chung: không còn cảnh khớp lời câu này")
                 confidence = min(confidence, SIGNALS_ONLY_CAP)
-            if candidate.candidate_id in accept or pick["tier"] == "pinned":
+            # a shot shown again to fill the sentence says nothing new: it is not counted as illustrating it
+            if (candidate.candidate_id in accept or pick["tier"] == "pinned") and pick["tier"] != "repeat":
                 illustrated += pick["length"]
             needs_review = confidence < REVIEW_BELOW or not candidate.quality.usable
             mine.append(Choice(unit.unit_id, candidate, pick["offset"], pick["length"], pick["score"], confidence, needs_review,
@@ -605,8 +707,9 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
             consume(candidate, pick["offset"], pick["length"])
         milli = illustrated * 1000 // max(1, unit.length_ms)
         has_match = bool(accept) or bool(edits.pin.get(unit.unit_id))
-        # a generic sentence (an opening or a call to action without a match) needs no match of its own
-        generic = not has_match and unit.function in ("hook", "cta", "intro", "outro")
+        # a generic sentence (an opening or a call to action without a match) needs no match of its own, unless it
+        # names something written (a price, a code): then a frame showing it is what it needs (dev2 blower u6)
+        generic = not has_match and unit.function in ("hook", "cta", "intro", "outro") and not about_text(unit)
         review = mode != "content" or (not generic and milli < GOOD_COVERAGE)
         coverage = {"need_ms": unit.length_ms, "illustrated_ms": illustrated, "milli": milli,
                     "status": "generic" if generic else ("full" if milli >= GOOD_COVERAGE else ("partial" if milli else "none")),
@@ -617,11 +720,20 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
             decision.notes.append(note)
         # review: the evidence decides, not the render: a generic sentence on usable footage needs none, an
         # illustrated one needs it when its coverage or the match is weak
+        # even a generic sentence is looked at when its footage is choppy or shown before: a repeat, a piece too short
+        # to read, or more pieces than its length holds (dev2 blower u6: five pieces in 3.9 s, one a repeat)
+        choppy = generic and (any("nhắc lại cảnh" in r for c in mine for r in c.reasons)
+                              or len(mine) > max(2, unit.length_ms // max(1, pacing.minimum))
+                              or any(c.length_ms < pacing.minimum // 2 for c in mine))
+        if choppy:
+            decision.notes.append("câu mở đầu/kêu gọi dùng cảnh lặp hoặc cắt vụn: cần kiểm tra")
+            coverage["needs_review"] = True
+
         def flag(c: Choice) -> bool:
             if not c.candidate.quality.usable or mode != "content":
                 return True
             if generic:
-                return False
+                return choppy
             return review or c.confidence < REVIEW_BELOW
         mine[:] = [Choice(c.unit_id, c.candidate, c.offset_ms, c.length_ms, c.score, c.confidence, flag(c), c.reasons) for c in mine]
     choices = [c for u in found_units for c in by_unit.get(u.unit_id, [])]
