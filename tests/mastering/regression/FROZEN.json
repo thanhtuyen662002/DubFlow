@@ -58,6 +58,12 @@
       "tuned_on": false,
       "inspected": "never; not run before the check-A change is merged, then evaluated once",
       "gate": "S (Phase 4 readiness): >=90 % duration coverage on sentences with footage, 0 silent misses, check A (no stolen key footage unflagged)"
+    },
+    "dev5.json": {
+      "sha256": "36be1fa23f8a4158d762bbed81888110b9a21bb621a08f7482d999f6df1dceea",
+      "first_commit": "card-CTA PR (Phase 4 readiness, Gate S)",
+      "tuned_on": true,
+      "inspected": "development set written for the card-CTA change (a sentence whose words are only on a text card). Baseline on 01f8f4d: desk-lamp-card 100 % 0 false alarms; title-card-hook 68.4 % with 1 silent miss (the opening shown on its title card without a flag)"
     }
   }
 }

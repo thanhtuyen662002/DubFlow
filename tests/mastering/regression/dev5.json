@@ -1,0 +1,270 @@
+[
+ {
+  "schema_version": 1,
+  "name": "dev5-desk-lamp-card",
+  "split": "dev",
+  "group": "household",
+  "forward_only": false,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "a1c1",
+    "source": "a1",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Đèn bàn gấp gọn màu trắng trên bàn học",
+    "motion": 50,
+    "hook": 400,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "a1c2",
+    "source": "a1",
+    "start_ms": 4000,
+    "end_ms": 8000,
+    "text": "Chạm vào thân đèn để đổi ba màu ánh sáng",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "a2c1",
+    "source": "a2",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Gập đèn lại bỏ vào ngăn kéo",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "a2c2",
+    "source": "a2",
+    "start_ms": 4000,
+    "end_ms": 7000,
+    "text": "Màn hình chữ: tặng kèm bóng đèn dự phòng",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Đèn bàn gấp gọn cho góc học tập.",
+    "ms": 3000
+   },
+   {
+    "id": "u2",
+    "text": "Chạm nhẹ để đổi ba màu ánh sáng.",
+    "ms": 3500
+   },
+   {
+    "id": "u3",
+    "text": "Gập lại, cất vào ngăn kéo.",
+    "ms": 3000
+   },
+   {
+    "id": "u4",
+    "text": "Tặng kèm bóng đèn dự phòng cho đơn hôm nay.",
+    "ms": 3000
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "dev5-desk-lamp-card",
+   "split": "dev",
+   "forward_only": false,
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "a1",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ],
+     "key": [
+      {
+       "source": "a1",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "a1",
+       "start_ms": 4000,
+       "end_ms": 8000
+      }
+     ],
+     "key": [
+      {
+       "source": "a1",
+       "start_ms": 4000,
+       "end_ms": 8000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "a2",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ],
+     "key": [
+      {
+       "source": "a2",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "a2",
+       "start_ms": 4000,
+       "end_ms": 7000
+      }
+     ],
+     "key": [
+      {
+       "source": "a2",
+       "start_ms": 4000,
+       "end_ms": 7000
+      }
+     ],
+     "note": "the offer is written on the card"
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "dev5-title-card-hook",
+  "split": "dev",
+  "group": "electronics",
+  "forward_only": false,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "b1c1",
+    "source": "b1",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Màn hình chữ: loa mini chống nước",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "b1c2",
+    "source": "b1",
+    "start_ms": 3000,
+    "end_ms": 8000,
+    "text": "Loa mini thả vào bể nước vẫn phát nhạc",
+    "motion": 80,
+    "hook": 700,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "b2c1",
+    "source": "b2",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Treo loa lên ba lô bằng móc",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Loa mini chống nước cho mọi chuyến đi.",
+    "ms": 3000
+   },
+   {
+    "id": "u2",
+    "text": "Thả vào nước vẫn phát nhạc.",
+    "ms": 3500
+   },
+   {
+    "id": "u3",
+    "text": "Móc treo gắn ba lô.",
+    "ms": 3000
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "dev5-title-card-hook",
+   "split": "dev",
+   "forward_only": false,
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "b2",
+       "start_ms": 0,
+       "end_ms": 4000
+      },
+      {
+       "source": "b1",
+       "start_ms": 3000,
+       "end_ms": 8000
+      }
+     ],
+     "note": "an opening repeating the title card: real footage, the card is not a match"
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "b1",
+       "start_ms": 3000,
+       "end_ms": 8000
+      }
+     ],
+     "key": [
+      {
+       "source": "b1",
+       "start_ms": 3000,
+       "end_ms": 8000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "b2",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ],
+     "key": [
+      {
+       "source": "b2",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    }
+   }
+  }
+ }
+]
