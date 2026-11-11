@@ -1,0 +1,224 @@
+{
+ "build": {
+  "version": "1.1.96-rc5",
+  "commit": "35bb1153f99a1f4e27b2dabd1fd4609b5b89d14a",
+  "run": 42994644537,
+  "exe_sha256": "45ff21afaf22d9ab0ab01a5232d8db7d5f79691fd06a3be377614368dbaef8cc",
+  "zip_sha256": "472af1cab8b6bbdb67a2a96f3671799350bbfd7d65012ad4a879201946f22d68"
+ },
+ "scenarios": {
+  "C1": "PASS (workflow)",
+  "C2": "PASS",
+  "C3": "PASS (smoke)",
+  "C4": "PASS with exceptions",
+  "semantic": "regressions",
+  "gate_c": "FAIL (semantic P1s open; desktop P1-1..4 fixed)"
+ },
+ "c1": {
+  "draft_s": 291,
+  "vision": {
+   "frames": 70,
+   "asked": 67
+  },
+  "rerender_parts": "1/8",
+  "review_states": {
+   "NEEDS_REVIEW": 13,
+   "SOURCE_INSUFFICIENT": 1,
+   "READY": 0
+  },
+  "contradiction_match_0pct": 0,
+  "final_sha256": "5b11af471f5b82eacc19797b25d187aec8b6973fad0f46d00e752e6c9353514e",
+  "duration_s": 76.43
+ },
+ "c2": {
+  "wall_s": 40.4,
+  "rendered": [
+   "intro",
+   "i1",
+   "i2"
+  ],
+  "reused": [
+   "hook",
+   "i3",
+   "i4",
+   "i5",
+   "outro"
+  ],
+  "peak_tree_mb": 2885,
+  "reexport_confirm": true,
+  "final_sha256": "9b588566313e6063bcdfd7cdc2ee8c325ab6c66847329a64e14815bbd9069c28"
+ },
+ "c3": {
+  "video_sha256": "9afa62bcfb3ae46343d28f606b39a5d68db722c7285582c1112c7e9a1002c6d3",
+  "same_as_rc4": true,
+  "argv_identical": "24/24"
+ },
+ "c4": {
+  "key_hits": 0,
+  "files_scanned": 2727,
+  "new_defects": [],
+  "cancel_state": "CANCELLED",
+  "resume_first_try": true,
+  "withdrawn": [
+   "P2-13 (harness error)"
+  ]
+ },
+ "semantic": {
+  "P1": {
+   "rc4": {
+    "coverage_pct": 66.4,
+    "units_ok": "2/6",
+    "contra_ms": 2352,
+    "stolen_flagged_ms": 0,
+    "stolen_unflagged_ms": 0,
+    "silent_misses": 0,
+    "false_alarms": 1,
+    "repeats": 0,
+    "av_ms": -3.3,
+    "review_flags": null
+   },
+   "rc5": {
+    "coverage_pct": 62.3,
+    "units_ok": "3/6",
+    "contra_ms": 0,
+    "stolen_flagged_ms": 1000,
+    "stolen_unflagged_ms": 0,
+    "silent_misses": 0,
+    "false_alarms": 2,
+    "repeats": 0,
+    "av_ms": -3.3,
+    "review_flags": null
+   }
+  },
+  "P2": {
+   "rc4": {
+    "coverage_pct": 61.3,
+    "units_ok": "0/6",
+    "contra_ms": 1725,
+    "stolen_flagged_ms": 3564,
+    "stolen_unflagged_ms": 0,
+    "silent_misses": 0,
+    "false_alarms": 0,
+    "repeats": 0,
+    "av_ms": -3.3,
+    "review_flags": null
+   },
+   "rc5": {
+    "coverage_pct": 38.4,
+    "units_ok": "0/6",
+    "contra_ms": 624,
+    "stolen_flagged_ms": 2449,
+    "stolen_unflagged_ms": 0,
+    "silent_misses": 0,
+    "false_alarms": 0,
+    "repeats": 0,
+    "av_ms": -3.3,
+    "review_flags": null
+   }
+  },
+  "P3": {
+   "rc4": {
+    "coverage_pct": 50.9,
+    "units_ok": "1/6",
+    "contra_ms": 1648,
+    "stolen_flagged_ms": 2648,
+    "stolen_unflagged_ms": 0,
+    "silent_misses": 1,
+    "false_alarms": 1,
+    "repeats": 0,
+    "av_ms": 10.0,
+    "review_flags": null
+   },
+   "rc5": {
+    "coverage_pct": 42.1,
+    "units_ok": "0/6",
+    "contra_ms": 0,
+    "stolen_flagged_ms": 0,
+    "stolen_unflagged_ms": 0,
+    "silent_misses": 0,
+    "false_alarms": 0,
+    "repeats": 0,
+    "av_ms": 10.0,
+    "review_flags": null
+   }
+  },
+  "B1": {
+   "rc4": {
+    "coverage_pct": 88.8,
+    "units_ok": "9/11",
+    "contra_ms": 1169,
+    "stolen_flagged_ms": 4661,
+    "stolen_unflagged_ms": 0,
+    "silent_misses": 0,
+    "false_alarms": 7,
+    "repeats": 3,
+    "av_ms": -11.4,
+    "review_flags": 26
+   },
+   "rc5": {
+    "coverage_pct": 100.0,
+    "units_ok": "11/11",
+    "contra_ms": 0,
+    "stolen_flagged_ms": 3618,
+    "stolen_unflagged_ms": 4200,
+    "silent_misses": 0,
+    "false_alarms": 8,
+    "repeats": 2,
+    "av_ms": -11.3,
+    "review_flags": 22
+   }
+  },
+  "B5": {
+   "rc4": {
+    "coverage_pct": 100.0,
+    "units_ok": "13/13",
+    "contra_ms": 0,
+    "stolen_flagged_ms": 8596,
+    "stolen_unflagged_ms": 0,
+    "silent_misses": 0,
+    "false_alarms": 11,
+    "repeats": 3,
+    "av_ms": -11.4,
+    "review_flags": 22
+   },
+   "rc5": {
+    "coverage_pct": 100.0,
+    "units_ok": "13/13",
+    "contra_ms": 0,
+    "stolen_flagged_ms": 2943,
+    "stolen_unflagged_ms": 0,
+    "silent_misses": 0,
+    "false_alarms": 12,
+    "repeats": 2,
+    "av_ms": -11.3,
+    "review_flags": 27
+   }
+  },
+  "D1": {
+   "rc4": {
+    "coverage_pct": 43.0,
+    "units_ok": "2/4",
+    "contra_ms": 0,
+    "stolen_flagged_ms": 0,
+    "stolen_unflagged_ms": 0,
+    "silent_misses": 0,
+    "false_alarms": 2,
+    "repeats": 0,
+    "av_ms": -108.0,
+    "review_flags": 11
+   },
+   "rc5": {
+    "coverage_pct": 43.0,
+    "units_ok": "2/4",
+    "contra_ms": 0,
+    "stolen_flagged_ms": 0,
+    "stolen_unflagged_ms": 0,
+    "silent_misses": 0,
+    "false_alarms": 2,
+    "repeats": 0,
+    "av_ms": -8.0,
+    "review_flags": 7
+   }
+  }
+ }
+}
