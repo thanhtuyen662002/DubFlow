@@ -85,7 +85,24 @@ export type ReviewWarning = { id: string; text: string; acknowledged: boolean };
 export type ReviewView = {
   plan_id: string; mode: string; revision: number; can_undo: boolean; units: ReviewUnit[]; warnings: ReviewWarning[];
   unreviewed: string[]; accept_unreviewed: boolean; summary: Record<string, number>;
+  /** Provenance → shots with evidence of it (vision, transcript, user_note, ocr, filename_metadata, signal). */
+  provenance: Record<string, number>;
 };
+
+const PROVENANCE_NAMES: Array<[string, string]> = [
+  ["vision", "AI nhìn hình"], ["transcript", "phụ đề nguồn"], ["user_note", "ghi chú"], ["ocr", "chữ trên hình"],
+  ["filename_metadata", "tên file"],
+];
+
+/** Where the evidence came from, said plainly; a file name is named as not being content (P2-14). */
+export function provenanceText(view: Pick<ReviewView, "mode" | "provenance">): string {
+  const parts = PROVENANCE_NAMES.filter(([key]) => (view.provenance[key] ?? 0) > 0)
+    .map(([key, name]) => `${name} ${view.provenance[key]} cảnh`);
+  if (!parts.length) return view.mode === "signals_only" ? "Chưa có bằng chứng nội dung: cảnh chọn theo điểm cắt và độ nét." : "";
+  const named = (view.provenance.filename_metadata ?? 0) > 0;
+  return `Bằng chứng: ${parts.join(" · ")}` + (named ? " (tên file chỉ để xếp hạng, không tính là đã thấy nội dung)" : "")
+    + (view.mode === "signals_only" ? ". Chưa có bằng chứng nội dung: không câu nào được coi là sẵn sàng." : ".");
+}
 
 const isString = (value: unknown): value is string => typeof value === "string";
 const isNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
@@ -146,10 +163,12 @@ export function parseReview(value: unknown): ReviewView | null {
   });
   const summary: Record<string, number> = {};
   for (const [key, count] of Object.entries((object.summary ?? {}) as Record<string, unknown>)) if (isNumber(count)) summary[key] = count;
+  const provenance: Record<string, number> = {};
+  for (const [key, count] of Object.entries((object.provenance ?? {}) as Record<string, unknown>)) if (isNumber(count)) provenance[key] = count;
   return {
     plan_id: isString(object.plan_id) ? object.plan_id : "", mode: isString(object.mode) ? object.mode : "",
     revision: isNumber(object.revision) ? object.revision : 0, can_undo: object.can_undo === true, units, warnings,
-    unreviewed: strings(object.unreviewed, 500), accept_unreviewed: object.accept_unreviewed === true, summary,
+    unreviewed: strings(object.unreviewed, 500), accept_unreviewed: object.accept_unreviewed === true, summary, provenance,
   };
 }
 
