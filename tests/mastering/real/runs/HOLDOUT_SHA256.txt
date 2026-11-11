@@ -1,0 +1,24 @@
+# sha256 of the REAL-HOLDOUT recordings (fresh-claude/v7..v12), as listed on the owner's PC right after the run,
+# before they were committed (969e456) or scored. Format: <sha256>  <path under runs/fresh-claude/>.
+f8209c1d8dd0ac0ffca87d7c42013f9dbac1483eb31b0c393289aa3b89e44cc0  v10/a.call.json
+b456efcf7468a87633903eb13ee9b0b1e9eb5ea0ef6eedb6b21f4590706d72ee  v10/a.result.json
+71d1416a21b7ba2d533518710c1563f81a24f5ad1c54900eb7980ba0fecfb415  v10/b.call.json
+6e477ed7eb5c0b1e30cb74661526d0293caa814f893ee101137fa309fd88eb54  v10/b.result.json
+5f3a6c224df0de0bbb4887f69905e3d53837a5ecba5f089f94f7e7e31c120bd2  v11/a.call.json
+8643edb11b2eaca6bb57414d23cc8f5561a40caa512da7e886af9ab39aebc100  v11/a.result.json
+b31f87c16e51a89f553bffb88332bdad9542d99b9f5a3cd12bbacb82be662e61  v11/b.call.json
+c754d9d21847eb163a7e0e0b68c8563544d4a2a2ecd716713a89d5e5ff87948d  v11/b.result.json
+a9274154e02698b18641e25b9e3b0c1e4ec0990d758b6f9fd292af1d6a10e221  v12/a.call.json
+16643827632ab9bf0dfacd47a8033a301526880830077276702655cafc7f161f  v12/a.result.json
+9b23a24b5411050e15004459e848ba89b0779ad7803a560baa98ec90eaae998e  v12/b.call.json
+0aa4c30910dd36bfb0327c04a8094f754579faf9ae5aafca9c1bdddedfd2f80d  v12/b.result.json
+fe63598588b192b7281d9bf5e6cb6654f32f799a16e05dde6edb80a027674d95  v7/product-1.call.json
+b6551469bd8cafaa85d85f755834730d2140b5c8ef4386c71f85d3b4b7c379fe  v7/product-1.result.json
+e317962d5bed99ea6574a38554378b64378b1280a0808e66688b4e9843bd2469  v8/a.call.json
+1cbba797244fef1fe71bacfa35fa3cc4a99fd536ccf05a7495d886c364910ac6  v8/a.result.json
+77f74dff80b4fa92d6e3e6a872b65ee1d45e893ce56e39c69899d21b932200bc  v8/b.call.json
+e901d52fac3a580122cfd4dc85a36aa860bce2fc80fe6ba24c9e832fb714d3e7  v8/b.result.json
+58865dfcfd346fd2c906cd3aeed62c7d21a9726aec1aac63490a4d6b72a5e00c  v9/a.call.json
+b0070f25983ec4f5d305d3424bf18672ad7afb8335e9a07f25c6266ee3a24e9c  v9/a.result.json
+509d56aefe6535bfd87370ed6a8dadafc9091998dfaa0f8ec622a670081948b0  v9/b.call.json
+9a7a68a535131a60073ba2ac2f3d9d575c115f38983b5ff153f31aa95e51ef04  v9/b.result.json

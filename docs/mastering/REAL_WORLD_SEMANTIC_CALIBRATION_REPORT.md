@@ -97,8 +97,8 @@ Loại câu: footage_present 16, synonym_or_indirect 6, near_match 6, partial 6,
 - **Bản ghi:**
   - Mỗi lời gọi planner được lưu thành `*.call.json` gồm ứng viên, mọi mục bằng chứng đúng như mô hình trả lời, và lời bình kèm độ dài đọc. Kết quả được lưu thành `*.result.json` gồm plan và decision log.
   - Tất cả nằm ở nhánh `agent/gate-s-real-runs` (REAL-DEV: 245f6cd; REAL-HOLDOUT: 969e456) và được đưa vào repo cùng báo cáo này.
-  - 22 file holdout có sha256 khớp 22/22 với danh sách ghi lại ngay sau lần chạy.
-- **Quét bảo mật:** khoá AI 0 lần trùng, e-mail 0, tên người dùng Windows 0.
+  - 22 file holdout có sha256 khớp 22/22 với danh sách ghi lại ngay sau lần chạy, trước khi commit hay chấm. Danh sách được commit ở `tests/mastering/real/runs/HOLDOUT_SHA256.txt` và được `test_gate_s_result` kiểm tra.
+- **Quét bảo mật:** khoá AI 0 lần trùng, e-mail 0, không có tên hồ sơ Windows cụ thể nào. Đường dẫn trong nhãn chỉ dùng placeholder `%USERPROFILE%` hoặc thư mục dự án chung `D:\Projects\DubFlow`.
 
 ## 7. Phương pháp hiệu chỉnh
 

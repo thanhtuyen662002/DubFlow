@@ -58,5 +58,5 @@ Totals (Claude, REAL-DEV v1–v6): fresh-claude 575 frames sent,
   key as UTF-16 (the desktop app stores UTF-8). Script fixed; that attempt is discarded (not committed).
 - REAL-HOLDOUT (v7–v12): one Claude run (`fresh-claude/v7`–`v12`, same engine clone and settings as REAL-DEV), kept
   off the repository and unscored until the calibration round (#763) was merged, then committed (969e456; sha256 22/22
-  equal to the list taken right after the run) and scored once (REAL_WORLD_SEMANTIC_CALIBRATION_REPORT.md).
+  equal to the list taken right after the run, committed as `HOLDOUT_SHA256.txt` and checked by `test_gate_s_result`) and scored once (REAL_WORLD_SEMANTIC_CALIBRATION_REPORT.md).
   Frames sent: v7 40, v8 105, v9 195, v10 188, v11 105, v12 99 (732), 0 vision errors.
