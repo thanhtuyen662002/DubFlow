@@ -774,7 +774,7 @@ fn file_target(path: &str, store: &Path) -> Result<Target, String> {
 }
 
 /// A symlink, junction or any other reparse point.
-fn is_link(metadata: &fs::Metadata) -> bool {
+pub(crate) fn is_link(metadata: &fs::Metadata) -> bool {
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;

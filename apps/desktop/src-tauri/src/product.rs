@@ -137,12 +137,29 @@ fn product_output(base: &Path, name: &str, seed: &str) -> PathBuf {
     base.join("DubFlow Output").join(format!("Ban hang - {}", folder_title(name))).join(format!("run-{run}"))
 }
 
-/// A product run's folder: below "DubFlow Output", with a status file.
+/// A plain folder: there, a folder, and not a symlink, junction or other reparse point.
+pub(crate) fn plain_dir(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_dir() && !crate::edit::is_link(&metadata))
+}
+
+/// A product run's folder: below "DubFlow Output", with a work folder. Every folder from "DubFlow Output" down to
+/// the run, and the work folder, is a plain folder (never a link that could lead outside), and the run resolves to a
+/// place inside "DubFlow Output".
 fn product_dir(value: &str) -> Result<PathBuf, String> {
+    use std::path::Component;
+    let bad = || fail("Thư mục video bán hàng không hợp lệ");
     let dir = PathBuf::from(value);
-    let inside = dir.is_absolute() && dir.ancestors().skip(1).any(|part| part.file_name().is_some_and(|name| name == "DubFlow Output"));
-    if !inside || value.contains("..") || !dir.join(".dubflow-work").is_dir() {
-        return Err(fail("Thư mục video bán hàng không hợp lệ"));
+    if !dir.is_absolute() || dir.components().any(|part| matches!(part, Component::ParentDir | Component::CurDir)) {
+        return Err(bad());
+    }
+    let root = dir.ancestors().skip(1).find(|part| part.file_name().is_some_and(|name| name == "DubFlow Output")).ok_or_else(bad)?;
+    let chain = dir.ancestors().take_while(|part| *part != root).chain([root]);
+    if !chain.into_iter().all(plain_dir) || !plain_dir(&dir.join(".dubflow-work")) {
+        return Err(bad());
+    }
+    let (real_root, real_dir) = (root.canonicalize().map_err(|_| bad())?, dir.canonicalize().map_err(|_| bad())?);
+    if real_dir == real_root || !real_dir.starts_with(&real_root) {
+        return Err(bad());
     }
     Ok(dir)
 }
@@ -261,12 +278,28 @@ fn spawn_product(root: &Path, spec_path: &Path, output: &Path, cpu_only: bool, k
 pub fn product_rerender(output_dir: String, video: u32, cpu_only: bool) -> Result<(), String> {
     let dir = product_dir(&output_dir)?;
     let work = dir.join(".dubflow-work");
-    let status = read_small_json(&work.join("status.json"), SPEC_LIMIT).unwrap_or_default();
+    rerender_in(&dir, &work, video, |spec_path, key| spawn_product(&version_root()?, spec_path, &dir, cpu_only, key))
+}
+
+/// The terminal states a run can be rendered again from; anything else (running, unreadable) is refused.
+const FINISHED: [&str; 3] = ["COMPLETED", "FAILED", "CANCELLED"];
+const RERENDER_SPEC: &str = "spec-rerender.json";
+
+/// `product_rerender` without the process: the run's own request (`spec.json`) is never changed, the attempt's
+/// request goes to `spec-rerender.json`, and the status is put back as it was when the job cannot start.
+fn rerender_in(dir: &Path, work: &Path, video: u32, start: impl FnOnce(&Path, Option<String>) -> Result<(), String>) -> Result<(), String> {
+    let status_path = work.join("status.json");
+    let before = fs::read(&status_path).ok().filter(|bytes| bytes.len() as u64 <= SPEC_LIMIT)
+        .ok_or_else(|| fail("Không đọc được trạng thái của lần tạo này; không render lại được"))?;
+    let status = serde_json::from_slice::<Value>(&before).ok().filter(Value::is_object)
+        .ok_or_else(|| fail("Trạng thái của lần tạo này bị hỏng; không render lại được"))?;
     if status["state"] == "RUNNING" {
         return Err(fail("Video này đang được tạo; hãy chờ xong rồi render lại"));
     }
-    let spec_path = work.join("spec.json");
-    let mut spec = read_small_json(&spec_path, SPEC_LIMIT).filter(|spec| spec["schema_version"] == 1)
+    if !status["state"].as_str().is_some_and(|state| FINISHED.contains(&state)) || !status["videos"].is_array() {
+        return Err(fail("Trạng thái của lần tạo này không rõ; không render lại được"));
+    }
+    let mut spec = read_small_json(&work.join("spec.json"), SPEC_LIMIT).filter(|spec| spec["schema_version"] == 1)
         .ok_or_else(|| fail("Không đọc được yêu cầu render của video này"))?;
     let count = spec["variants"].as_array().map_or(0, Vec::len);
     if video == 0 || video as usize > count {
@@ -276,19 +309,32 @@ pub fn product_rerender(output_dir: String, video: u32, cpu_only: bool) -> Resul
         return Err(fail("Video này không dùng tối ưu hậu kỳ; hãy tạo lại từ đầu"));
     }
     spec["only"] = json!([video]);
-    spec["reuse_audio_from"] = json!(display_path(&dir));
+    spec["reuse_audio_from"] = json!(display_path(dir));
     let key = match spec["editorial"]["ai"]["provider"].as_str() {
         Some(provider) => crate::ai_keys::job_key(provider)?.filter(|key| !key.trim().is_empty()),
         None => None,
     };
-    fs::write(&spec_path, serde_json::to_vec(&spec).map_err(|error| fail(error.to_string()))?)
+    let attempt = work.join(RERENDER_SPEC);
+    write_replace(&attempt, &serde_json::to_vec(&spec).map_err(|error| fail(error.to_string()))?)
         .map_err(|error| fail(format!("Không ghi được yêu cầu render: {error}")))?;
-    let videos = status.get("videos").cloned().unwrap_or_else(|| json!([]));
-    let running = json!({"schema_version": 1, "state": "RUNNING", "done": 0, "total": count, "message": "Đang render lại…", "videos": videos});
-    fs::write(work.join("status.json"), serde_json::to_vec(&running).map_err(|error| fail(error.to_string()))?)
+    let running = json!({"schema_version": 1, "state": "RUNNING", "done": 0, "total": count, "message": "Đang render lại…",
+                         "videos": status["videos"]});
+    write_replace(&status_path, &serde_json::to_vec(&running).map_err(|error| fail(error.to_string()))?)
         .map_err(|error| fail(format!("Không ghi được trạng thái: {error}")))?;
     let _ = fs::remove_file(work.join("cancel"));
-    spawn_product(&version_root()?, &spec_path, &dir, cpu_only, key)
+    if let Err(error) = start(&attempt, key) {
+        // nothing started: the run is as it was before the click
+        let _ = write_replace(&status_path, &before);
+        return Err(error);
+    }
+    Ok(())
+}
+
+/// Writes through a temporary file in the same folder, so a reader never sees half a file.
+fn write_replace(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let temp = path.with_extension("json.tmp");
+    fs::write(&temp, bytes)?;
+    fs::rename(&temp, path)
 }
 
 /// A product run's folder, for the review panel (`mastering.rs`).
@@ -551,7 +597,7 @@ pub fn product_background_delete(id: String) -> Result<(), String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -581,6 +627,93 @@ mod tests {
         assert!(remove_from_library(&library, "../index").is_err());
         remove_from_library(&library, &"0".repeat(64)).unwrap();
         fs::remove_dir_all(&base).unwrap();
+    }
+
+    fn mastered_run(name: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let base = std::env::temp_dir().join(format!("dubflow-rerender-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let run = base.join("DubFlow Output").join("Ban hang - Nồi").join("run-0123456789ab");
+        let work = run.join(".dubflow-work");
+        fs::create_dir_all(&work).unwrap();
+        fs::write(work.join("spec.json"), json!({"schema_version": 1, "name": "Nồi", "variants": ["A.", "B."],
+                                                 "mastering": {"schema_version": 1, "level": "balanced"}}).to_string()).unwrap();
+        fs::write(work.join("status.json"), json!({"schema_version": 1, "state": "COMPLETED",
+                                                   "videos": [{"index": 1, "ok": true}, {"index": 2, "ok": true}]}).to_string()).unwrap();
+        (base, run, work)
+    }
+
+    #[test]
+    fn rerender_writes_its_own_request_and_puts_the_status_back_when_nothing_starts() {
+        let (base, run, work) = mastered_run("spawn");
+        let (spec, status) = (fs::read(work.join("spec.json")).unwrap(), fs::read(work.join("status.json")).unwrap());
+        let failed = rerender_in(&run, &work, 2, |_, _| Err(fail("không chạy được")));
+        assert!(failed.is_err());
+        assert_eq!(fs::read(work.join("spec.json")).unwrap(), spec, "the run's own request is never narrowed");
+        assert_eq!(fs::read(work.join("status.json")).unwrap(), status, "nothing started: the status is as before");
+        let mut seen = None;
+        rerender_in(&run, &work, 2, |path, _| { seen = Some(path.to_path_buf()); Ok(()) }).unwrap();
+        let attempt: Value = serde_json::from_slice(&fs::read(seen.unwrap()).unwrap()).unwrap();
+        assert_eq!(attempt["only"], json!([2]));
+        assert_eq!(fs::read(work.join("spec.json")).unwrap(), spec);
+        let running: Value = serde_json::from_slice(&fs::read(work.join("status.json")).unwrap()).unwrap();
+        assert_eq!(running["state"], "RUNNING");
+        assert_eq!(running["videos"].as_array().unwrap().len(), 2, "the other videos stay listed");
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn rerender_refuses_an_unknown_running_or_unreadable_status() {
+        let (base, run, work) = mastered_run("status");
+        for bad in [None, Some("not json"), Some(r#"{"state":"RUNNING","videos":[]}"#), Some(r#"{"state":"COMPLETED"}"#),
+                    Some(r#"{"state":"PAUSED","videos":[]}"#)] {
+            match bad {
+                None => { let _ = fs::remove_file(work.join("status.json")); }
+                Some(text) => fs::write(work.join("status.json"), text).unwrap(),
+            }
+            let before = fs::read(work.join("status.json")).ok();
+            assert!(rerender_in(&run, &work, 1, |_, _| panic!("must not start")).is_err(), "{bad:?}");
+            assert_eq!(fs::read(work.join("status.json")).ok(), before);
+            assert!(!work.join(RERENDER_SPEC).exists());
+        }
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_run_reached_through_a_link_is_refused() {
+        let (base, run, _) = mastered_run("link");
+        assert_eq!(product_dir(&run.to_string_lossy()).unwrap(), run);
+        assert!(product_dir(&format!("{}\\..\\run-0123456789ab", run.display())).is_err());
+        let outside = base.join("outside");
+        fs::create_dir_all(outside.join(".dubflow-work")).unwrap();
+        fs::write(outside.join(".dubflow-work/status.json"), "marker").unwrap();
+        let alias = run.parent().unwrap().join("run-alias");
+        let linked = link_dir(&outside, &alias);
+        let work_alias = run.parent().unwrap().join("run-work-alias");
+        fs::create_dir_all(&work_alias).unwrap();
+        let work_linked = link_dir(&outside.join(".dubflow-work"), &work_alias.join(".dubflow-work"));
+        #[cfg(windows)]
+        assert!(linked && work_linked, "junctions need no privilege on Windows");
+        if linked {
+            assert!(product_dir(&alias.to_string_lossy()).is_err(), "a run that is a link");
+        }
+        if work_linked {
+            assert!(product_dir(&work_alias.to_string_lossy()).is_err(), "a work folder that is a link");
+        }
+        assert_eq!(fs::read(outside.join(".dubflow-work/status.json")).unwrap(), b"marker");
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// A directory link: a junction on Windows (no privilege needed), a symlink elsewhere. False when the system refuses.
+    pub(crate) fn link_dir(target: &Path, link: &Path) -> bool {
+        #[cfg(windows)]
+        {
+            Command::new("cmd").args(["/C", "mklink", "/J"]).arg(link).arg(target).stdout(Stdio::null()).stderr(Stdio::null())
+                .status().is_ok_and(|status| status.success())
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(target, link).is_ok()
+        }
     }
 
     #[test]
