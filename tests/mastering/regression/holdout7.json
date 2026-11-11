@@ -1,0 +1,1529 @@
+[
+ {
+  "schema_version": 1,
+  "name": "holdout7-power-bank",
+  "split": "holdout",
+  "group": "electronics",
+  "forward_only": false,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "k1c1",
+    "source": "k1",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Sạc dự phòng màu đen mỏng đặt trên bàn làm việc",
+    "motion": 50,
+    "hook": 500,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "k1c2",
+    "source": "k1",
+    "start_ms": 3000,
+    "end_ms": 7000,
+    "text": "Cắm cáp sạc vào điện thoại, màn hình hiện đang sạc nhanh",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "k2c1",
+    "source": "k2",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Đặt sạc dự phòng cạnh thẻ ATM để so độ mỏng",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "k2c2",
+    "source": "k2",
+    "start_ms": 4000,
+    "end_ms": 8000,
+    "text": "Sạc cùng lúc hai điện thoại và tai nghe",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "k3c1",
+    "source": "k3",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Thẻ chữ: giá chỉ 299.000đ",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Pin mười nghìn mAh mà mỏng như thẻ ATM.",
+    "ms": 3500
+   },
+   {
+    "id": "u2",
+    "text": "Sạc nhanh, nửa tiếng đầy năm mươi phần trăm.",
+    "ms": 3500
+   },
+   {
+    "id": "u3",
+    "text": "Ba thiết bị sạc cùng lúc.",
+    "ms": 3000
+   },
+   {
+    "id": "u4",
+    "text": "Giá chỉ 299 nghìn đồng.",
+    "ms": 2500
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "holdout7-power-bank",
+   "split": "holdout",
+   "forward_only": false,
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "k2",
+       "start_ms": 0,
+       "end_ms": 4000
+      },
+      {
+       "source": "k1",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ],
+     "key": [
+      {
+       "source": "k2",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "k1",
+       "start_ms": 3000,
+       "end_ms": 7000
+      }
+     ],
+     "key": [
+      {
+       "source": "k1",
+       "start_ms": 3000,
+       "end_ms": 7000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "k2",
+       "start_ms": 4000,
+       "end_ms": 8000
+      }
+     ],
+     "key": [
+      {
+       "source": "k2",
+       "start_ms": 4000,
+       "end_ms": 8000
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "k3",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ],
+     "key": [
+      {
+       "source": "k3",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ],
+     "note": "a price: the card that shows it is the match"
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "holdout7-robot-mop",
+  "split": "holdout",
+  "group": "household",
+  "forward_only": false,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "m1c1",
+    "source": "m1",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Robot lau nhà hình tròn trong phòng khách",
+    "motion": 50,
+    "hook": 450,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "m1c2",
+    "source": "m1",
+    "start_ms": 4000,
+    "end_ms": 9000,
+    "text": "Robot đi vòng qua chân ghế và né dây điện",
+    "motion": 80,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "m2c1",
+    "source": "m2",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Sàn gỗ bóng sạch sau khi lau, ánh nắng phản chiếu",
+    "motion": 50,
+    "hook": 650,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "m2c2",
+    "source": "m2",
+    "start_ms": 4000,
+    "end_ms": 8000,
+    "text": "Ứng dụng điện thoại vẽ bản đồ các phòng",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "m3c1",
+    "source": "m3",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Đổ nước bẩn khỏi hộp chứa của trạm sạc",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Về nhà là sàn đã sạch bóng.",
+    "ms": 3000
+   },
+   {
+    "id": "u2",
+    "text": "Robot tự né chân ghế và dây điện.",
+    "ms": 3500
+   },
+   {
+    "id": "u3",
+    "text": "Bản đồ từng phòng ngay trên điện thoại.",
+    "ms": 3500
+   },
+   {
+    "id": "u4",
+    "text": "Sàn gỗ sạch bóng không vệt nước.",
+    "ms": 3500
+   },
+   {
+    "id": "u5",
+    "text": "Trạm sạc tự chứa nước bẩn, chỉ cần đổ đi.",
+    "ms": 3500
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "holdout7-robot-mop",
+   "split": "holdout",
+   "forward_only": false,
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "m1",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ],
+     "note": "the opening: the robot; the clean floor is u4's key"
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "m1",
+       "start_ms": 4000,
+       "end_ms": 9000
+      }
+     ],
+     "key": [
+      {
+       "source": "m1",
+       "start_ms": 4000,
+       "end_ms": 9000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "m2",
+       "start_ms": 4000,
+       "end_ms": 8000
+      }
+     ],
+     "key": [
+      {
+       "source": "m2",
+       "start_ms": 4000,
+       "end_ms": 8000
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "m2",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ],
+     "key": [
+      {
+       "source": "m2",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    },
+    "u5": {
+     "accept": [
+      {
+       "source": "m3",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ],
+     "key": [
+      {
+       "source": "m3",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "holdout7-banh-xeo",
+  "split": "holdout",
+  "group": "food",
+  "forward_only": false,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "x1c1",
+    "source": "x1",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Đổ bột vàng vào chảo gang nóng, xèo xèo",
+    "motion": 90,
+    "hook": 600,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "x1c2",
+    "source": "x1",
+    "start_ms": 4000,
+    "end_ms": 9000,
+    "text": "Hơi nước mờ trắng",
+    "motion": 50,
+    "hook": 0,
+    "usable": false,
+    "still": false,
+    "frames": [
+     {
+      "at_ms": 5000,
+      "text": "Thêm tôm và giá đỗ lên mặt bánh",
+      "usable": true
+     },
+     {
+      "at_ms": 8000,
+      "text": "Gập đôi bánh xèo vàng giòn",
+      "usable": true
+     }
+    ]
+   },
+   {
+    "id": "x2c1",
+    "source": "x2",
+    "start_ms": 0,
+    "end_ms": 5000,
+    "text": "Cuốn bánh với rau sống trong bánh tráng",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "x2c2",
+    "source": "x2",
+    "start_ms": 5000,
+    "end_ms": 9000,
+    "text": "Chấm vào bát nước mắm chua ngọt",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "x3c1",
+    "source": "x3",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Biển hiệu quán: Bánh xèo Bà Tư, hẻm 12",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Tiếng xèo xèo khi bột chạm chảo nóng.",
+    "ms": 3000
+   },
+   {
+    "id": "u2",
+    "text": "Thêm tôm, giá đỗ rồi gập đôi bánh.",
+    "ms": 4000
+   },
+   {
+    "id": "u3",
+    "text": "Cuốn với rau sống và bánh tráng.",
+    "ms": 3500
+   },
+   {
+    "id": "u4",
+    "text": "Chấm nước mắm chua ngọt.",
+    "ms": 3000
+   },
+   {
+    "id": "u5",
+    "text": "Quán ở hẻm 12, tên Bà Tư.",
+    "ms": 3000
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "holdout7-banh-xeo",
+   "split": "holdout",
+   "forward_only": false,
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "x1",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ],
+     "key": [
+      {
+       "source": "x1",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "x1",
+       "start_ms": 4000,
+       "end_ms": 9000
+      }
+     ],
+     "key": [
+      {
+       "source": "x1",
+       "start_ms": 4000,
+       "end_ms": 9000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "x2",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ],
+     "key": [
+      {
+       "source": "x2",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "x2",
+       "start_ms": 5000,
+       "end_ms": 9000
+      }
+     ],
+     "key": [
+      {
+       "source": "x2",
+       "start_ms": 5000,
+       "end_ms": 9000
+      }
+     ]
+    },
+    "u5": {
+     "accept": [
+      {
+       "source": "x3",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ],
+     "key": [
+      {
+       "source": "x3",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ],
+     "note": "names what the sign shows"
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "holdout7-resistance-band",
+  "split": "holdout",
+  "group": "fitness",
+  "forward_only": false,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "f1c1",
+    "source": "f1",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Bộ năm dây kháng lực nhiều màu xếp trên thảm",
+    "motion": 50,
+    "hook": 300,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "f1c2",
+    "source": "f1",
+    "start_ms": 3000,
+    "end_ms": 12000,
+    "text": "Người tập squat với dây kháng lực quanh đùi rồi đẩy hông",
+    "motion": 90,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "f2c1",
+    "source": "f2",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Túi vải đựng dây kháng lực bỏ vào ba lô",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Năm mức kháng lực từ nhẹ đến nặng.",
+    "ms": 3000
+   },
+   {
+    "id": "u2",
+    "text": "Squat với dây quanh đùi cho cơ mông.",
+    "ms": 4000
+   },
+   {
+    "id": "u3",
+    "text": "Đẩy hông giữ dây căng để siết cơ.",
+    "ms": 4000
+   },
+   {
+    "id": "u4",
+    "text": "Gọn trong túi, mang đi đâu cũng được.",
+    "ms": 3000
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "holdout7-resistance-band",
+   "split": "holdout",
+   "forward_only": false,
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "f1",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ],
+     "key": [
+      {
+       "source": "f1",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ]
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "f1",
+       "start_ms": 3000,
+       "end_ms": 12000
+      }
+     ],
+     "key": [
+      {
+       "source": "f1",
+       "start_ms": 3000,
+       "end_ms": 7500
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "f1",
+       "start_ms": 3000,
+       "end_ms": 12000
+      }
+     ],
+     "key": [
+      {
+       "source": "f1",
+       "start_ms": 7500,
+       "end_ms": 12000
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "f2",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ],
+     "key": [
+      {
+       "source": "f2",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "holdout7-top4-goals",
+  "split": "holdout",
+  "group": "entertainment",
+  "forward_only": true,
+  "pacing": "entertainment",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "t1c1",
+    "source": "t1",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Chữ TOP 4 bàn thắng đẹp nhất mùa",
+    "motion": 50,
+    "hook": 300,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "t1c2",
+    "source": "t1",
+    "start_ms": 3000,
+    "end_ms": 7000,
+    "text": "Cầu thủ áo vàng sút xa vào góc cao khung thành",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "t1c3",
+    "source": "t1",
+    "start_ms": 7000,
+    "end_ms": 11000,
+    "text": "Cầu thủ áo trắng đánh đầu ghi bàn từ quả phạt góc",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "t1c4",
+    "source": "t1",
+    "start_ms": 11000,
+    "end_ms": 15000,
+    "text": "Cầu thủ áo xanh sút phạt cong qua hàng rào",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "t1c5",
+    "source": "t1",
+    "start_ms": 15000,
+    "end_ms": 20000,
+    "text": "Cầu thủ áo đỏ xe đạp chổng ngược ghi bàn, cả sân vỡ òa",
+    "motion": 120,
+    "hook": 950,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Bàn số một là cú xe đạp chổng ngược không tưởng.",
+    "ms": 3000
+   },
+   {
+    "id": "u2",
+    "text": "Số bốn: cú sút xa vào góc cao.",
+    "ms": 3500
+   },
+   {
+    "id": "u3",
+    "text": "Số ba: đánh đầu từ phạt góc.",
+    "ms": 3500
+   },
+   {
+    "id": "u4",
+    "text": "Số hai: sút phạt cong qua hàng rào.",
+    "ms": 3500
+   },
+   {
+    "id": "u5",
+    "text": "Số một: xe đạp chổng ngược.",
+    "ms": 4500
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "holdout7-top4-goals",
+   "split": "holdout",
+   "forward_only": true,
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "t1",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ],
+     "note": "the title; the bicycle kick is u5's"
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "t1",
+       "start_ms": 3000,
+       "end_ms": 7000
+      }
+     ],
+     "key": [
+      {
+       "source": "t1",
+       "start_ms": 3000,
+       "end_ms": 7000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "t1",
+       "start_ms": 7000,
+       "end_ms": 11000
+      }
+     ],
+     "key": [
+      {
+       "source": "t1",
+       "start_ms": 7000,
+       "end_ms": 11000
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "t1",
+       "start_ms": 11000,
+       "end_ms": 15000
+      }
+     ],
+     "key": [
+      {
+       "source": "t1",
+       "start_ms": 11000,
+       "end_ms": 15000
+      }
+     ]
+    },
+    "u5": {
+     "accept": [
+      {
+       "source": "t1",
+       "start_ms": 15000,
+       "end_ms": 20000
+      }
+     ],
+     "key": [
+      {
+       "source": "t1",
+       "start_ms": 15000,
+       "end_ms": 20000
+      }
+     ]
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "holdout7-korea-places",
+  "split": "holdout",
+  "group": "travel-names",
+  "forward_only": false,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "g1c1",
+    "source": "g1",
+    "start_ms": 0,
+    "end_ms": 5000,
+    "text": "Cung điện mái ngói cong trước núi",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false,
+    "transcript": "Gyeongbokgung Palace in Seoul"
+   },
+   {
+    "id": "g1c2",
+    "source": "g1",
+    "start_ms": 5000,
+    "end_ms": 9000,
+    "text": "Tháp truyền hình trên đỉnh đồi ban đêm",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false,
+    "transcript": "N Seoul Tower at night"
+   },
+   {
+    "id": "g2c1",
+    "source": "g2",
+    "start_ms": 0,
+    "end_ms": 5000,
+    "text": "Bãi biển cong dài với nhà cao tầng",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false,
+    "transcript": "Haeundae Beach, Busan"
+   },
+   {
+    "id": "g2c2",
+    "source": "g2",
+    "start_ms": 5000,
+    "end_ms": 9000,
+    "text": "Miệng núi lửa phủ cỏ xanh bên biển",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false,
+    "transcript": "Seongsan Ilchulbong on Jeju Island"
+   },
+   {
+    "id": "g3c1",
+    "source": "g3",
+    "start_ms": 0,
+    "end_ms": 5000,
+    "text": "Phố đi bộ đông người với biển hiệu mỹ phẩm",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false,
+    "transcript": "Myeongdong shopping street"
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Bắt đầu ở cung Gyeongbok giữa lòng Seoul.",
+    "ms": 4000
+   },
+   {
+    "id": "u2",
+    "text": "Buổi tối lên tháp Namsan ngắm thành phố.",
+    "ms": 4000
+   },
+   {
+    "id": "u3",
+    "text": "Xuống Busan tắm biển Haeundae.",
+    "ms": 3500
+   },
+   {
+    "id": "u4",
+    "text": "Đảo Jeju có núi Seongsan nhìn ra biển.",
+    "ms": 4000
+   },
+   {
+    "id": "u5",
+    "text": "Mua sắm ở phố Myeongdong.",
+    "ms": 3500
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "holdout7-korea-places",
+   "split": "holdout",
+   "forward_only": false,
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "g1",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ],
+     "key": [
+      {
+       "source": "g1",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ]
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "g1",
+       "start_ms": 5000,
+       "end_ms": 9000
+      }
+     ],
+     "key": [
+      {
+       "source": "g1",
+       "start_ms": 5000,
+       "end_ms": 9000
+      }
+     ],
+     "note": "N Seoul Tower is on Namsan"
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "g2",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ],
+     "key": [
+      {
+       "source": "g2",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "g2",
+       "start_ms": 5000,
+       "end_ms": 9000
+      }
+     ],
+     "key": [
+      {
+       "source": "g2",
+       "start_ms": 5000,
+       "end_ms": 9000
+      }
+     ]
+    },
+    "u5": {
+     "accept": [
+      {
+       "source": "g3",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ],
+     "key": [
+      {
+       "source": "g3",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ]
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "holdout7-printing-press",
+  "split": "holdout",
+  "group": "education",
+  "forward_only": false,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "h1c1",
+    "source": "h1",
+    "start_ms": 0,
+    "end_ms": 5000,
+    "text": "Máy in gỗ cổ với tay quay lớn trong bảo tàng",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "h1c2",
+    "source": "h1",
+    "start_ms": 5000,
+    "end_ms": 9000,
+    "text": "Các con chữ kim loại xếp ngược trong khay",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "h2c1",
+    "source": "h2",
+    "start_ms": 0,
+    "end_ms": 5000,
+    "text": "Trang sách in chữ Latin hai cột với chữ cái đầu tô màu",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "h2c2",
+    "source": "h2",
+    "start_ms": 5000,
+    "end_ms": 9000,
+    "text": "Thư viện với kệ sách cao kín tường",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Máy in ra đời ở châu Âu thế kỷ mười lăm.",
+    "ms": 4000
+   },
+   {
+    "id": "u2",
+    "text": "Từng con chữ kim loại được xếp ngược bằng tay.",
+    "ms": 4000
+   },
+   {
+    "id": "u3",
+    "text": "Những trang sách đầu tiên in hai cột chữ Latin.",
+    "ms": 4000
+   },
+   {
+    "id": "u4",
+    "text": "Sách rẻ đi, thư viện mọc lên khắp nơi.",
+    "ms": 4000
+   },
+   {
+    "id": "u5",
+    "text": "Chân dung người phát minh vẫn chưa ai biết chắc.",
+    "ms": 3500
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "holdout7-printing-press",
+   "split": "holdout",
+   "forward_only": false,
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "h1",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ],
+     "key": [
+      {
+       "source": "h1",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ]
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "h1",
+       "start_ms": 5000,
+       "end_ms": 9000
+      }
+     ],
+     "key": [
+      {
+       "source": "h1",
+       "start_ms": 5000,
+       "end_ms": 9000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "h2",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ],
+     "key": [
+      {
+       "source": "h2",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "h2",
+       "start_ms": 5000,
+       "end_ms": 9000
+      }
+     ],
+     "key": [
+      {
+       "source": "h2",
+       "start_ms": 5000,
+       "end_ms": 9000
+      }
+     ]
+    },
+    "u5": {
+     "accept": [],
+     "footage_exists": false,
+     "note": "no portrait in the footage: must be flagged"
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "holdout7-pet-feeder",
+  "split": "holdout",
+  "group": "pets",
+  "forward_only": false,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "e1c1",
+    "source": "e1",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Mèo cam ngồi chờ cạnh máy cho ăn tự động",
+    "motion": 50,
+    "hook": 600,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "e1c2",
+    "source": "e1",
+    "start_ms": 4000,
+    "end_ms": 8000,
+    "text": "Hạt rơi xuống khay đúng giờ, mèo chạy lại ăn",
+    "motion": 80,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "e2c1",
+    "source": "e2",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Đặt lịch bốn bữa trên ứng dụng điện thoại",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "e2c2",
+    "source": "e2",
+    "start_ms": 4000,
+    "end_ms": 8000,
+    "text": "Camera của máy cho ăn quay cảnh mèo, xem trên điện thoại",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "e3c1",
+    "source": "e3",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Màn hình chữ: nhập mã MEO10 giảm 10%",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Đi làm cả ngày, mèo vẫn ăn đúng bữa.",
+    "ms": 3000
+   },
+   {
+    "id": "u2",
+    "text": "Hẹn giờ bốn bữa ngay trên điện thoại.",
+    "ms": 3500
+   },
+   {
+    "id": "u3",
+    "text": "Đến giờ, hạt tự rơi xuống khay.",
+    "ms": 3000
+   },
+   {
+    "id": "u4",
+    "text": "Camera cho bạn xem mèo ăn từ xa.",
+    "ms": 3500
+   },
+   {
+    "id": "u5",
+    "text": "Nhập mã MEO10 để giảm mười phần trăm.",
+    "ms": 3000
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "holdout7-pet-feeder",
+   "split": "holdout",
+   "forward_only": false,
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "e1",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ],
+     "note": "the opening: the cat waiting; the falling food is u3's key"
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "e2",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ],
+     "key": [
+      {
+       "source": "e2",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "e1",
+       "start_ms": 4000,
+       "end_ms": 8000
+      }
+     ],
+     "key": [
+      {
+       "source": "e1",
+       "start_ms": 4000,
+       "end_ms": 8000
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "e2",
+       "start_ms": 4000,
+       "end_ms": 8000
+      }
+     ],
+     "key": [
+      {
+       "source": "e2",
+       "start_ms": 4000,
+       "end_ms": 8000
+      }
+     ]
+    },
+    "u5": {
+     "accept": [
+      {
+       "source": "e3",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ],
+     "key": [
+      {
+       "source": "e3",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ],
+     "note": "a code: the card that shows it is the match"
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "holdout7-lipstick",
+  "split": "holdout",
+  "group": "beauty",
+  "forward_only": false,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "l1c1",
+    "source": "l1",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Thỏi son đỏ mở nắp xoay lên",
+    "motion": 50,
+    "hook": 550,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "l1c2",
+    "source": "l1",
+    "start_ms": 3000,
+    "end_ms": 7000,
+    "text": "Tô son lên môi một lượt, màu đỏ lì",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "l2c1",
+    "source": "l2",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Uống cà phê, cốc không dính son",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "l2c2",
+    "source": "l2",
+    "start_ms": 4000,
+    "end_ms": 8000,
+    "text": "Quẹt thử bốn màu son trên cổ tay",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Một lượt là lên màu đỏ lì.",
+    "ms": 3000
+   },
+   {
+    "id": "u2",
+    "text": "Uống cà phê không lem, không dính cốc.",
+    "ms": 3500
+   },
+   {
+    "id": "u3",
+    "text": "Bốn màu cho mọi tông da.",
+    "ms": 3000
+   },
+   {
+    "id": "u4",
+    "text": "Chọn màu của bạn ngay hôm nay.",
+    "ms": 2500
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "holdout7-lipstick",
+   "split": "holdout",
+   "forward_only": false,
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "l1",
+       "start_ms": 3000,
+       "end_ms": 7000
+      }
+     ],
+     "key": [
+      {
+       "source": "l1",
+       "start_ms": 3000,
+       "end_ms": 7000
+      }
+     ]
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "l2",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ],
+     "key": [
+      {
+       "source": "l2",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "l2",
+       "start_ms": 4000,
+       "end_ms": 8000
+      }
+     ],
+     "key": [
+      {
+       "source": "l2",
+       "start_ms": 4000,
+       "end_ms": 8000
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "l1",
+       "start_ms": 0,
+       "end_ms": 3000
+      },
+      {
+       "source": "l2",
+       "start_ms": 4000,
+       "end_ms": 8000
+      }
+     ],
+     "note": "a generic call to action: the product or the colours"
+    }
+   }
+  }
+ }
+]

@@ -56,8 +56,16 @@
       "first_commit": "#732 PR (written on main 9368e52, after holdout5 failed check A, before any check-A change)",
       "locked_at": "2026-11-11T06:26:52Z (commit 0e3823c)",
       "tuned_on": false,
-      "inspected": "never; not run before the check-A change is merged, then evaluated once",
+      "inspected": "evaluated once at 01f8f4d (2026-11-11T06:38:55Z, docs/mastering/gate-s/holdout6-01f8f4d.md); afterwards only the rows of rice-noodle-pot (silent miss) and jump-rope (stolen, flagged) were read for the report; nothing tuned on it",
       "gate": "S (Phase 4 readiness): >=90 % duration coverage on sentences with footage, 0 silent misses, check A (no stolen key footage unflagged)"
+    },
+    "holdout7.json": {
+      "sha256": "7f15177ebf6115571f565417d2576d6992501406377b4618eb67bac7a8994a51",
+      "first_commit": "#736 PR (written on main 01f8f4d, after holdout6's single run, before any change for it)",
+      "locked_at": "2026-11-11T06:41:16Z (this PR)",
+      "tuned_on": false,
+      "inspected": "never; not run before the card-CTA change is merged, then evaluated once",
+      "gate": "S (Phase 4 readiness): >=90 % duration coverage on sentences with footage, 0 silent misses, no unflagged stolen key footage"
     }
   }
 }
