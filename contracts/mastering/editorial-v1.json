@@ -51,7 +51,9 @@
           "properties": {"need_ms": {"type": "integer", "minimum": 0}, "illustrated_ms": {"type": "integer", "minimum": 0},
                          "milli": {"type": "integer", "minimum": 0, "maximum": 1000},
                          "status": {"enum": ["full", "partial", "none", "generic"]},
-                         "needs_review": {"type": "boolean"}, "matched_footage": {"type": "integer", "minimum": 0}}}
+                         "needs_review": {"type": "boolean"}, "matched_footage": {"type": "integer", "minimum": 0},
+                         "best_relevance": {"description": "The sentence's best relevance (0-1000) over the usable footage; a near miss (> 0) is never SOURCE_INSUFFICIENT. Absent in older logs.",
+                                            "type": "integer", "minimum": 0, "maximum": 1000}}}
       }
     },
     "candidate": {
