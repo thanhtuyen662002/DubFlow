@@ -292,6 +292,7 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
         rendered_parts: list[str] = []
         reused_parts: list[str] = []
         cursor = 0
+        placed: dict[str, tuple[int, int]] = {}
         for index, (part_id, kind, text, title, rank, source_ids, keep) in enumerate(parts, 1):
             check()
             context = f"{title}: " if kind == "item" else ""
@@ -447,6 +448,7 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
             chapter = {"hook": "", "intro": "Mở đầu", "outro": "Kết thúc"}.get(kind, f"#{rank} {title}" if resolved.kind == "top_n" else title)
             timeline.append((chapter, part_ms))
             all_captions += [script.Caption(c.start_ms + cursor, c.end_ms + cursor, c.text) for c in captions]
+            placed[part_id] = (cursor, part_ms)  # where the part sits in the programme (the review panel's player)
             cursor += part_ms
             status.write(done=index, message=f"Đã dựng {index}/{len(parts)} đoạn…")
         context = ""
@@ -478,7 +480,8 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
         _atomic_text(work / "program.json", json.dumps({
             "schema_version": 1, "kind": "compilation_program", "title": resolved.title, "program": resolved.kind,
             "ranking": record, "parts": [{"id": p[0], "kind": p[1], "title": p[3], "rank": p[4], "sources": p[5],
-                                          "narration": p[2], "mode": modes.get(p[0])} for p in parts],
+                                          "narration": p[2], "mode": modes.get(p[0]),
+                                          "start_ms": placed[p[0]][0], "duration_ms": placed[p[0]][1]} for p in parts],
             "verify": {i.item_id: list(i.verify) for i in resolved.items if i.verify}, "credits": credits,
             "warnings": warnings, "vision": vision_report, "joined": joined, "review": review_parts,
             "rendered_parts": rendered_parts, "reused_parts": reused_parts}, ensure_ascii=False, indent=1))
