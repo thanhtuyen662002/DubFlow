@@ -45,6 +45,12 @@
       "inspected": "evaluated once at 0a633a9 (2026-11-11T06:20:25Z, docs/mastering/gate-s/holdout5-0a633a9.md); afterwards only the rows of the units with stolen key shots and of the sentence without footage were read for the report; nothing tuned on it",
       "gate": "S (Phase 4 readiness): >=90 % duration coverage on sentences with footage, 0 silent misses"
     },
+    "dev4.json": {
+      "sha256": "9318243262008e9287b3196ba30977755d2f00c39158b2da2e6cac1130442ca2",
+      "first_commit": "check-A PR (Phase 4 readiness, Gate S)",
+      "tuned_on": true,
+      "inspected": "development set written for the check-A change (an opening about what a later sentence shows); the rules were made on it. Baseline on 9368e52: blender-result 90.3 % with 1500 ms stolen by the opening, earbuds-noise 77.7 % with 1500 ms stolen, top3-dunks 100 %"
+    },
     "holdout6.json": {
       "sha256": "84ef6ca8a5fab994bf9ddd6cbdaf994233d4fdbb6ef881ff7913b65becf3e4fb",
       "first_commit": "#732 PR (written on main 9368e52, after holdout5 failed check A, before any check-A change)",

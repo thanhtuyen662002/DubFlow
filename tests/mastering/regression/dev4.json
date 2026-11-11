@@ -1,0 +1,469 @@
+[
+ {
+  "schema_version": 1,
+  "name": "dev4-blender-result",
+  "split": "dev",
+  "group": "kitchen",
+  "forward_only": false,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "a1c1",
+    "source": "a1",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Máy xay sinh tố đặt trên bàn bếp cạnh trái cây",
+    "motion": 50,
+    "hook": 400,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "a1c2",
+    "source": "a1",
+    "start_ms": 4000,
+    "end_ms": 8000,
+    "text": "Cho dâu và chuối vào cối máy xay",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "a2c1",
+    "source": "a2",
+    "start_ms": 0,
+    "end_ms": 5000,
+    "text": "Sinh tố mịn sánh rót ra ly thủy tinh",
+    "motion": 85,
+    "hook": 800,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "a2c2",
+    "source": "a2",
+    "start_ms": 5000,
+    "end_ms": 9000,
+    "text": "Bấm nút tốc độ trên thân máy xay",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "a3c1",
+    "source": "a3",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Rửa cối máy xay dưới vòi nước",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Sinh tố mịn sánh chỉ sau ba mươi giây.",
+    "ms": 3000
+   },
+   {
+    "id": "u2",
+    "text": "Cho dâu và chuối vào cối.",
+    "ms": 3000
+   },
+   {
+    "id": "u3",
+    "text": "Ba tốc độ xay trên thân máy.",
+    "ms": 3000
+   },
+   {
+    "id": "u4",
+    "text": "Sinh tố mịn rót ra ly, không còn hạt.",
+    "ms": 3500
+   },
+   {
+    "id": "u5",
+    "text": "Cối rửa nhanh dưới vòi nước.",
+    "ms": 3000
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "dev4-blender-result",
+   "split": "dev",
+   "forward_only": false,
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "a1",
+       "start_ms": 0,
+       "end_ms": 4000
+      },
+      {
+       "source": "a1",
+       "start_ms": 4000,
+       "end_ms": 8000
+      }
+     ],
+     "note": "an opening: the product; the smoothie shot is u4's"
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "a1",
+       "start_ms": 4000,
+       "end_ms": 8000
+      }
+     ],
+     "key": [
+      {
+       "source": "a1",
+       "start_ms": 4000,
+       "end_ms": 8000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "a2",
+       "start_ms": 5000,
+       "end_ms": 9000
+      }
+     ],
+     "key": [
+      {
+       "source": "a2",
+       "start_ms": 5000,
+       "end_ms": 9000
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "a2",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ],
+     "key": [
+      {
+       "source": "a2",
+       "start_ms": 0,
+       "end_ms": 5000
+      }
+     ]
+    },
+    "u5": {
+     "accept": [
+      {
+       "source": "a3",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ],
+     "key": [
+      {
+       "source": "a3",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "dev4-earbuds-noise",
+  "split": "dev",
+  "group": "electronics",
+  "forward_only": false,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "b1c1",
+    "source": "b1",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Hộp sạc tai nghe mở nắp, đèn sáng",
+    "motion": 50,
+    "hook": 600,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "b1c2",
+    "source": "b1",
+    "start_ms": 4000,
+    "end_ms": 10000,
+    "text": "Người đeo tai nghe trên tàu điện ồn ào, chạm tai bật chống ồn",
+    "motion": 70,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "b2c1",
+    "source": "b2",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Đeo tai nghe vào tai, xoay nhẹ",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "b2c2",
+    "source": "b2",
+    "start_ms": 4000,
+    "end_ms": 8000,
+    "text": "Màn hình điện thoại hiển thị pin tai nghe 100%",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Chống ồn chủ động, tàu điện ồn cũng thành im lặng.",
+    "ms": 3000
+   },
+   {
+    "id": "u2",
+    "text": "Đeo vừa khít, xoay nhẹ là chắc.",
+    "ms": 3000
+   },
+   {
+    "id": "u3",
+    "text": "Trên tàu điện ồn ào, chạm tai một lần là bật chống ồn.",
+    "ms": 4500
+   },
+   {
+    "id": "u4",
+    "text": "Pin đầy trong hộp sạc.",
+    "ms": 3000
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "dev4-earbuds-noise",
+   "split": "dev",
+   "forward_only": false,
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "b1",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ],
+     "note": "an opening: the case; the train shot is u3's"
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "b2",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ],
+     "key": [
+      {
+       "source": "b2",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "b1",
+       "start_ms": 4000,
+       "end_ms": 10000
+      }
+     ],
+     "key": [
+      {
+       "source": "b1",
+       "start_ms": 4000,
+       "end_ms": 10000
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "b2",
+       "start_ms": 4000,
+       "end_ms": 8000
+      },
+      {
+       "source": "b1",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "dev4-top3-dunks",
+  "split": "dev",
+  "group": "entertainment",
+  "forward_only": true,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "d1c1",
+    "source": "d1",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Logo kênh và chữ TOP 3 cú úp rổ",
+    "motion": 50,
+    "hook": 300,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "d1c2",
+    "source": "d1",
+    "start_ms": 3000,
+    "end_ms": 7000,
+    "text": "Cầu thủ áo đỏ úp rổ bằng một tay",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "d1c3",
+    "source": "d1",
+    "start_ms": 7000,
+    "end_ms": 11000,
+    "text": "Cầu thủ áo trắng bật cao úp rổ qua người",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "d1c4",
+    "source": "d1",
+    "start_ms": 11000,
+    "end_ms": 16000,
+    "text": "Cầu thủ áo xanh nhảy từ vạch ném phạt úp rổ, khán giả đứng dậy",
+    "motion": 95,
+    "hook": 900,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Cú úp rổ số một sẽ khiến bạn đứng dậy.",
+    "ms": 3000
+   },
+   {
+    "id": "u2",
+    "text": "Số ba: úp rổ một tay của áo đỏ.",
+    "ms": 3500
+   },
+   {
+    "id": "u3",
+    "text": "Số hai: áo trắng bật qua người.",
+    "ms": 3500
+   },
+   {
+    "id": "u4",
+    "text": "Số một: nhảy từ vạch ném phạt.",
+    "ms": 4500
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "dev4-top3-dunks",
+   "split": "dev",
+   "forward_only": true,
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "d1",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ],
+     "note": "an opening: the title; the free-throw dunk is u4's"
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "d1",
+       "start_ms": 3000,
+       "end_ms": 7000
+      }
+     ],
+     "key": [
+      {
+       "source": "d1",
+       "start_ms": 3000,
+       "end_ms": 7000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "d1",
+       "start_ms": 7000,
+       "end_ms": 11000
+      }
+     ],
+     "key": [
+      {
+       "source": "d1",
+       "start_ms": 7000,
+       "end_ms": 11000
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "d1",
+       "start_ms": 11000,
+       "end_ms": 16000
+      }
+     ],
+     "key": [
+      {
+       "source": "d1",
+       "start_ms": 11000,
+       "end_ms": 16000
+      }
+     ]
+    }
+   }
+  }
+ }
+]

@@ -404,6 +404,17 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
                                          and strength(v.unit_id, cid) > strength(u.unit_id, cid)
                                          for v in found_units if v.unit_id != u.unit_id)}
     units_by_id = {u.unit_id: u for u in found_units}
+    positions = {u.unit_id: i for i, u in enumerate(found_units)}
+    # check A (hook stealing): the shot a later sentence is about is that sentence's, not the opening's: an opening
+    # that promises the result ("smooth in thirty seconds") would otherwise show the result shot before the sentence
+    # that presents it. An opening or closing keeps only what no later sentence describing something accepts.
+    def owners_after(unit: Unit, cid: str) -> set[str]:
+        return {v.unit_id for v in found_units if positions[v.unit_id] > positions[unit.unit_id]
+                and v.function not in OPENING_CLOSING and cid in accepts[v.unit_id]}
+
+    for u in found_units:
+        if u.function in OPENING_CLOSING and not edits.pin.get(u.unit_id):
+            accepts[u.unit_id] = {cid for cid in accepts[u.unit_id] if not owners_after(u, cid)}
     accepted_by: dict[str, set[str]] = {}
     for unit_id, ids in accepts.items():
         for candidate_id in ids:
@@ -504,7 +515,8 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
             total -= REUSE_PENALTY * uses.get(candidate.candidate_id, 0)
         total -= DUPLICATE_PENALTY * (group_uses.get(groups.get(candidate.candidate_id, candidate.candidate_id), 0)
                                       - uses.get(candidate.candidate_id, 0))
-        if tier == "neutral" and accepted_by.get(candidate.candidate_id, set()) - set(decisions):
+        if tier == "neutral" and (accepted_by.get(candidate.candidate_id, set()) - set(decisions)
+                                  or (unit.function in OPENING_CLOSING and owners_after(unit, candidate.candidate_id))):
             total -= 200  # another sentence's footage says something else: neutral footage first
         if forward_only and candidate.candidate_id not in still_ids:
             # passing over footage loses it for good: the nearest fitting footage first, more so when it says nothing
@@ -531,7 +543,6 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
         return total, max(0, min(1000, confidence_of(unit, candidate, relevance, fit))), reasons
 
     # order of filling: pinned first, then (reordering allowed) the scarcest illustrated sentences, generic ones last
-    positions = {u.unit_id: i for i, u in enumerate(found_units)}
     if forward_only:
         order = list(found_units)
     else:
@@ -777,9 +788,15 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
         if choppy:
             decision.notes.append("câu mở đầu/kêu gọi dùng cảnh lặp hoặc cắt vụn: cần kiểm tra")
             coverage["needs_review"] = True
+        # an opening or closing that still shows a later sentence's own shot (nothing else was left) is never silent
+        spoiler = unit.function in OPENING_CLOSING and not edits.pin.get(unit.unit_id) and any(
+            owners_after(unit, c.candidate.candidate_id) for c in mine)
+        if spoiler:
+            decision.notes.append("câu mở đầu/kết dùng cảnh của một câu phía sau (nguồn không còn cảnh khác): cần kiểm tra")
+            coverage["needs_review"] = True
 
         def flag(c: Choice) -> bool:
-            if not c.candidate.quality.usable or mode != "content":
+            if not c.candidate.quality.usable or mode != "content" or spoiler:
                 return True
             if generic:
                 return choppy
