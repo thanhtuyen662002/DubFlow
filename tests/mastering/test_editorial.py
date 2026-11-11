@@ -257,23 +257,13 @@ class AlignTests(unittest.TestCase):
                                   "Hộp đựng sản phẩm", "Người cầm hũ", "Bàn gỗ")):
             found[c.candidate_id].add(ev.Item("vision", 800, text))
         hook = unit("u1", "Chỉ cần ấn nhẹ lên nút trên đỉnh, một que tăm sẽ bật lên để bạn rút ra dùng ngay.", 0, 4000, "hook")
-        _, log, _ = align.assign([hook], pool, found, PACING, forward_only=False)
+        choices, log, _ = align.assign([hook], pool, found, PACING, forward_only=False)
         self.assertTrue(log[0].coverage["needs_review"], log[0].notes)
+        self.assertTrue(choices and all(c.needs_review for c in choices))  # the pieces too: checks read them (rc5)
         plain = unit("u1", "Buổi sáng tuyệt vời bắt đầu từ đây.", 0, 3000, "hook")
         _, log, _ = align.assign([plain], pool, found, PACING, forward_only=False)
         self.assertEqual(log[0].coverage["status"], "generic")
         self.assertFalse(log[0].coverage["needs_review"])
-
-    def test_a_single_word_met_only_without_marks_counts_less(self):
-        # rc4 Top 5: "Hạng ba… cỗ máy" met an unaccented AI answer's "hang" (hàng) and "co" (có)
-        pool = [candidate("v1c0", "v1", 0, 3000), candidate("v1c1", "v1", 3000, 6000)]
-        found = ev.gather(c.candidate_id for c in pool)
-        found["v1c0"].add(ev.Item("vision", 900, "nhieu hang domino mau sac"))
-        found["v1c1"].add(ev.Item("vision", 900, "nhiều hạng mục trên bảng"))
-        scorer = align.Scorer(pool, found)
-        sentence = unit("u1", "Hạng ba thuộc về một cỗ máy.", 0, 3000, "narration")
-        self.assertLess(scorer.relevance(sentence, pool[0])[0], scorer.relevance(sentence, pool[1])[0])
-        self.assertGreater(scorer.relevance(sentence, pool[0])[0], 0)
 
     def test_the_hook_leaves_a_later_sentences_shots_even_when_it_matches_them(self):
         # Real run 6: the hook (about the portafilter) matched the TAMP shot about as well as the tamping sentence did.

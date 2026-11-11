@@ -183,7 +183,6 @@ MIN_RELEVANCE = 60  # below this the best match is noise (one common word): no r
 OPENING_CLOSING = ("hook", "intro", "cta", "outro")
 CARD_PENALTY = 300  # a title or end screen for a sentence that does not speak of what is written
 COMMON_SHARE = 500  # ‰ of the described shots a word is in before it tells no shot from another
-LOOSE_WORD_SHARE = 2  # a single word matched only without its marks counts this many times less
 COMMON_MIN_SHOTS = 4  # with fewer described shots every word is "common": the rule needs a few
 
 
@@ -265,10 +264,6 @@ class Scorer:
             weight = self.idf.get(term, self.default_idf) * (2 if " " in term else 1)
             total += weight
             value = 0 if self._common(term) else ev.match(term, found, loose)
-            if value and " " not in term and not term.startswith(ev.LOOSE) and term not in found:
-                # one marked word met only once the footage's marks were dropped is a guess: "hạng" and "hàng",
-                # "cỗ" and "có" all read "hang", "co" (rc4 Top 5: "Hạng ba… cỗ máy" took a domino shot)
-                value //= LOOSE_WORD_SHARE
             if value:
                 matched += weight * value / 1000
                 words.append(term.removeprefix(ev.LOOSE))
@@ -815,7 +810,8 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
             coverage["needs_review"] = True
         # an opening that speaks of something the footage half-shows (some of its words, too few for a match) is not
         # a generic line: the shot it needs may be there under other words (rc4 Hũ tăm: "ấn" vs the AI's "nhấn")
-        if generic and mode == "content" and 0 < best < MIN_RELEVANCE and not edits.pin.get(unit.unit_id):
+        half_matched = generic and mode == "content" and 0 < best < MIN_RELEVANCE and not edits.pin.get(unit.unit_id)
+        if half_matched:
             decision.notes.append("câu mở đầu/kêu gọi nói tới nội dung cụ thể nhưng cảnh chỉ khớp một phần lời: cần kiểm tra")
             coverage["needs_review"] = True
         # an opening or closing that still shows a later sentence's own shot (nothing else was left) is never silent
@@ -829,7 +825,8 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
             if not c.candidate.quality.usable or mode != "content" or spoiler:
                 return True
             if generic:
-                return choppy
+                # its pieces carry the flag too: the plan and the checks read the pieces (rc5: still silent on rc4 data)
+                return choppy or half_matched
             return review or c.confidence < REVIEW_BELOW
         mine[:] = [Choice(c.unit_id, c.candidate, c.offset_ms, c.length_ms, c.score, c.confidence, flag(c), c.reasons) for c in mine]
     choices = [c for u in found_units for c in by_unit.get(u.unit_id, [])]

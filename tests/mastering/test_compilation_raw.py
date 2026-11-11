@@ -216,6 +216,9 @@ class RealMediaProgrammeTest(unittest.TestCase):
             self.assertIn("chiếc xe đạp", (out / "captions.srt").read_text(encoding="utf-8"))
             programme = json.loads((work / "program.json").read_text(encoding="utf-8"))
             self.assertEqual([p["id"] for p in programme["parts"]], ["hook", "intro", "i1", "i2", "i3", "i4", "i5", "outro"])
+            intro = m.load(work / "mastering" / "plan-intro.json")
+            # the introduction shows items' footage before them: always looked at (rc5 B1, an item's key shot READY)
+            self.assertTrue(intro.segments and all(s.needs_review for s in intro.segments))
             starts = [p["start_ms"] for p in programme["parts"]]
             self.assertEqual(starts[0], 0)
             self.assertEqual(starts[1:], [p["start_ms"] + p["duration_ms"] for p in programme["parts"][:-1]], "parts follow each other")
