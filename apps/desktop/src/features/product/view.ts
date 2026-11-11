@@ -16,7 +16,7 @@ import { confirmDialog } from "../../shell/confirm.ts";
 import { confirmDeleteProject, deleteProjectButton } from "../../shell/project_delete.ts";
 import { closeDrawerOutside } from "../../shell/drawer.ts";
 import { mountPlayerBar } from "../media/player_bar.ts";
-import { isLevel, levelText, masteringOf, needsExportConfirm, parseReview } from "../mastering/model.ts";
+import { exportGate, isLevel, levelText, masteringOf } from "../mastering/model.ts";
 import { openReviewPanel } from "../mastering/review_panel.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
@@ -560,24 +560,20 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
     return [watch, edit];
   }
 
-  /** The editor is where a video is exported for real: a mastered video with unreviewed sentences asks first. */
+  /** The editor is where a video is exported for real: a mastered video with unreviewed sentences asks first, and
+   * opens only once its review was read and the acceptance saved (fails closed). */
   async function openEditor(video: ProductVideo): Promise<void> {
     const found = video.review;
     if (found) {
-      try {
-        const view = parseReview(await invoke<unknown>("mastering_review", { outputDir: found.outputDir, video: found.video, action: "view" }));
-        if (needsExportConfirm(view)) {
-          const go = await confirmDialog({
-            title: "Còn câu chưa duyệt cảnh",
-            message: `${view!.unreviewed.length} câu có cảnh AI chưa chắc chắn và bạn chưa duyệt. Bạn có thể bấm “Duyệt cảnh” để xem trước. `
-              + "Vẫn mở để chỉnh sửa và xuất video với các điểm chưa kiểm chứng?",
-            confirmLabel: "Vẫn mở", cancelLabel: "Để tôi duyệt trước",
-          });
-          if (!go) return;
-          await invoke<unknown>("mastering_review", { outputDir: found.outputDir, video: found.video, action: "accept", value: true });
-        }
-      } catch {
-        // no review to read (an older run): the editor opens as before
+      const gate = await exportGate(invoke, found, (count) => confirmDialog({
+        title: "Còn câu chưa duyệt cảnh",
+        message: `${count} câu có cảnh AI chưa chắc chắn và bạn chưa duyệt. Bạn có thể bấm “Duyệt cảnh” để xem trước. `
+          + "Vẫn mở để chỉnh sửa và xuất video với các điểm chưa kiểm chứng?",
+        confirmLabel: "Vẫn mở", cancelLabel: "Để tôi duyệt trước",
+      }));
+      if (!gate.open) {
+        if (gate.error) $("#product-render-state").textContent = gate.error;
+        return;
       }
     }
     settings.edit(video);
