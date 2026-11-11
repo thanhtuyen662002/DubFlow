@@ -1,0 +1,780 @@
+[
+ {
+  "schema_version": 1,
+  "name": "holdout4-humidifier",
+  "split": "holdout",
+  "forward_only": false,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "v1c1",
+    "source": "v1",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Máy phun sương tạo ẩm hình giọt nước trên bàn làm việc",
+    "motion": 50,
+    "hook": 650,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v1c2",
+    "source": "v1",
+    "start_ms": 3000,
+    "end_ms": 6500,
+    "text": "Hơi sương trắng bay lên từ miệng máy",
+    "motion": 120,
+    "hook": 850,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v2c1",
+    "source": "v2",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Đổ nước vào bình chứa trong suốt của máy",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v2c2",
+    "source": "v2",
+    "start_ms": 3000,
+    "end_ms": 6000,
+    "text": "Đèn ngủ bảy màu đổi màu trong phòng tối",
+    "motion": 90,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v3c1",
+    "source": "v3",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Nhỏ vài giọt tinh dầu sả vào nước trong máy",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v3c2",
+    "source": "v3",
+    "start_ms": 3000,
+    "end_ms": 6000,
+    "text": "Màn hình chữ: giá 350K chỉ còn 159K",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Máy phun sương tạo ẩm nhỏ gọn cho phòng ngủ.",
+    "ms": 3000
+   },
+   {
+    "id": "u2",
+    "text": "Hơi sương mịn giúp không khí bớt khô.",
+    "ms": 3000
+   },
+   {
+    "id": "u3",
+    "text": "Đổ nước vào bình chứa rất dễ.",
+    "ms": 2500
+   },
+   {
+    "id": "u4",
+    "text": "Có đèn ngủ bảy màu cực xinh.",
+    "ms": 3000
+   },
+   {
+    "id": "u5",
+    "text": "Thêm tinh dầu để phòng luôn thơm.",
+    "ms": 2500
+   },
+   {
+    "id": "u6",
+    "text": "Giá chỉ còn 159K, đặt ngay.",
+    "ms": 2500
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "holdout4-humidifier",
+   "split": "holdout",
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "v1",
+       "start_ms": 0,
+       "end_ms": 6500
+      },
+      {
+       "source": "v2",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ],
+     "contra": [
+      {
+       "source": "v3",
+       "start_ms": 3000,
+       "end_ms": 6000
+      }
+     ]
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "v1",
+       "start_ms": 3000,
+       "end_ms": 6500
+      }
+     ],
+     "key": [
+      {
+       "source": "v1",
+       "start_ms": 3000,
+       "end_ms": 6500
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "v2",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ],
+     "key": [
+      {
+       "source": "v2",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "v2",
+       "start_ms": 3000,
+       "end_ms": 6000
+      }
+     ],
+     "key": [
+      {
+       "source": "v2",
+       "start_ms": 3000,
+       "end_ms": 6000
+      }
+     ]
+    },
+    "u5": {
+     "accept": [
+      {
+       "source": "v3",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ],
+     "key": [
+      {
+       "source": "v3",
+       "start_ms": 0,
+       "end_ms": 3000
+      }
+     ]
+    },
+    "u6": {
+     "accept": [
+      {
+       "source": "v3",
+       "start_ms": 3000,
+       "end_ms": 6000
+      }
+     ],
+     "key": [
+      {
+       "source": "v3",
+       "start_ms": 3000,
+       "end_ms": 6000
+      }
+     ]
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "holdout4-desk-lamp",
+  "split": "holdout",
+  "forward_only": false,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "v1c1",
+    "source": "v1",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Đèn bàn học LED màu trắng có cần gập ở trên bàn",
+    "motion": 50,
+    "hook": 600,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v1c2",
+    "source": "v1",
+    "start_ms": 3000,
+    "end_ms": 6000,
+    "text": "Ngón tay chạm vào nút cảm ứng trên đế đèn, đèn sáng lên",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v1c3",
+    "source": "v1",
+    "start_ms": 6000,
+    "end_ms": 9000,
+    "text": "Ánh sáng chuyển từ vàng ấm sang trắng trên trang sách",
+    "motion": 80,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v2c1",
+    "source": "v2",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Gập cần đèn lại gọn trong ba lô",
+    "motion": 90,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v2c2",
+    "source": "v2",
+    "start_ms": 4000,
+    "end_ms": 7000,
+    "text": "Cắm dây sạc vào cổng ở đế đèn",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "v3c1",
+    "source": "v3",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Học sinh ngồi đọc sách dưới đèn ban đêm",
+    "motion": 50,
+    "hook": 700,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Đèn bàn học chống cận cho con.",
+    "ms": 3000
+   },
+   {
+    "id": "u2",
+    "text": "Chạm nhẹ là đèn sáng.",
+    "ms": 2500
+   },
+   {
+    "id": "u3",
+    "text": "Ba chế độ ánh sáng vàng, trung tính và trắng.",
+    "ms": 3000
+   },
+   {
+    "id": "u4",
+    "text": "Gập gọn bỏ vào ba lô mang đi.",
+    "ms": 3000
+   },
+   {
+    "id": "u5",
+    "text": "Sạc một lần dùng cả tuần.",
+    "ms": 2500
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "holdout4-desk-lamp",
+   "split": "holdout",
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "v1",
+       "start_ms": 0,
+       "end_ms": 3000
+      },
+      {
+       "source": "v3",
+       "start_ms": 0,
+       "end_ms": 3000
+      },
+      {
+       "source": "v1",
+       "start_ms": 6000,
+       "end_ms": 9000
+      }
+     ]
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "v1",
+       "start_ms": 3000,
+       "end_ms": 6000
+      }
+     ],
+     "key": [
+      {
+       "source": "v1",
+       "start_ms": 3000,
+       "end_ms": 6000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "v1",
+       "start_ms": 6000,
+       "end_ms": 9000
+      }
+     ],
+     "key": [
+      {
+       "source": "v1",
+       "start_ms": 6000,
+       "end_ms": 9000
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "v2",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ],
+     "key": [
+      {
+       "source": "v2",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    },
+    "u5": {
+     "accept": [
+      {
+       "source": "v2",
+       "start_ms": 4000,
+       "end_ms": 7000
+      }
+     ],
+     "key": [
+      {
+       "source": "v2",
+       "start_ms": 4000,
+       "end_ms": 7000
+      }
+     ]
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "holdout4-bridges",
+  "split": "holdout",
+  "forward_only": true,
+  "pacing": "entertainment",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "s1c1",
+    "source": "s1",
+    "start_ms": 0,
+    "end_ms": 3000,
+    "text": "Màn hình chữ: NHỮNG CÂY CẦU ĐẸP NHẤT VIỆT NAM, chữ bay vào",
+    "motion": 150,
+    "hook": 600,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s1c2",
+    "source": "s1",
+    "start_ms": 3000,
+    "end_ms": 9000,
+    "text": "Cầu Vàng với đôi bàn tay đá khổng lồ trên núi",
+    "motion": 100,
+    "hook": 900,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s2c1",
+    "source": "s2",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Toàn cảnh thành phố Đà Nẵng ven sông lúc hoàng hôn",
+    "motion": 60,
+    "hook": 500,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s2c2",
+    "source": "s2",
+    "start_ms": 4000,
+    "end_ms": 9000,
+    "text": "Cầu Rồng phun lửa trên sông Hàn ban đêm",
+    "motion": 160,
+    "hook": 950,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s3c1",
+    "source": "s3",
+    "start_ms": 0,
+    "end_ms": 6000,
+    "text": "Cầu Long Biên cũ kỹ với đoàn tàu chạy qua",
+    "motion": 90,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s3c2",
+    "source": "s3",
+    "start_ms": 6000,
+    "end_ms": 9000,
+    "text": "Màn hình chữ: CẢM ƠN ĐÃ XEM",
+    "motion": 50,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Những cây cầu đẹp nhất Việt Nam.",
+    "ms": 3000
+   },
+   {
+    "id": "u2",
+    "text": "Cầu Vàng nằm trên đôi bàn tay khổng lồ.",
+    "ms": 5000
+   },
+   {
+    "id": "u3",
+    "text": "Cầu Rồng phun lửa mỗi tối cuối tuần.",
+    "ms": 4500
+   },
+   {
+    "id": "u4",
+    "text": "Và cầu Long Biên hơn một trăm năm tuổi.",
+    "ms": 5000
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "holdout4-bridges",
+   "split": "holdout",
+   "forward_only": true,
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "s1",
+       "start_ms": 3000,
+       "end_ms": 9000
+      },
+      {
+       "source": "s2",
+       "start_ms": 0,
+       "end_ms": 9000
+      },
+      {
+       "source": "s3",
+       "start_ms": 0,
+       "end_ms": 6000
+      }
+     ],
+     "contra": [
+      {
+       "source": "s1",
+       "start_ms": 0,
+       "end_ms": 3000
+      },
+      {
+       "source": "s3",
+       "start_ms": 6000,
+       "end_ms": 9000
+      }
+     ]
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "s1",
+       "start_ms": 3000,
+       "end_ms": 9000
+      }
+     ],
+     "key": [
+      {
+       "source": "s1",
+       "start_ms": 3000,
+       "end_ms": 9000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "s2",
+       "start_ms": 4000,
+       "end_ms": 9000
+      }
+     ],
+     "key": [
+      {
+       "source": "s2",
+       "start_ms": 4000,
+       "end_ms": 9000
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "s3",
+       "start_ms": 0,
+       "end_ms": 6000
+      }
+     ],
+     "key": [
+      {
+       "source": "s3",
+       "start_ms": 0,
+       "end_ms": 6000
+      }
+     ]
+    }
+   }
+  }
+ },
+ {
+  "schema_version": 1,
+  "name": "holdout4-milk-tea",
+  "split": "holdout",
+  "forward_only": true,
+  "pacing": "natural",
+  "lead_ms": 0,
+  "gap_ms": 0,
+  "candidates": [
+   {
+    "id": "s1c1",
+    "source": "s1",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Cho 20 gram trà đen vào ấm nước sôi",
+    "motion": 60,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s1c2",
+    "source": "s1",
+    "start_ms": 4000,
+    "end_ms": 8000,
+    "text": "Lọc bỏ bã trà qua rây",
+    "motion": 70,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s1c3",
+    "source": "s1",
+    "start_ms": 8000,
+    "end_ms": 12000,
+    "text": "Khuấy sữa đặc vào nước trà nóng",
+    "motion": 90,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s2c1",
+    "source": "s2",
+    "start_ms": 0,
+    "end_ms": 4000,
+    "text": "Luộc trân châu đen trong nồi nước sôi",
+    "motion": 110,
+    "hook": 0,
+    "usable": true,
+    "still": false
+   },
+   {
+    "id": "s2c2",
+    "source": "s2",
+    "start_ms": 4000,
+    "end_ms": 8000,
+    "text": "Đổ trà sữa vào ly đá có trân châu",
+    "motion": 120,
+    "hook": 850,
+    "usable": true,
+    "still": false
+   }
+  ],
+  "units": [
+   {
+    "id": "u1",
+    "text": "Pha 20g trà đen với nước sôi.",
+    "ms": 3500
+   },
+   {
+    "id": "u2",
+    "text": "Lọc bỏ bã trà.",
+    "ms": 3000
+   },
+   {
+    "id": "u3",
+    "text": "Thêm sữa đặc và khuấy đều.",
+    "ms": 3500
+   },
+   {
+    "id": "u4",
+    "text": "Luộc trân châu khoảng 15 phút.",
+    "ms": 3500
+   },
+   {
+    "id": "u5",
+    "text": "Cuối cùng đổ trà sữa vào ly đá.",
+    "ms": 3500
+   }
+  ],
+  "truth": {
+   "schema_version": 1,
+   "dataset": "holdout4-milk-tea",
+   "split": "holdout",
+   "forward_only": true,
+   "units": {
+    "u1": {
+     "accept": [
+      {
+       "source": "s1",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ],
+     "key": [
+      {
+       "source": "s1",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    },
+    "u2": {
+     "accept": [
+      {
+       "source": "s1",
+       "start_ms": 4000,
+       "end_ms": 8000
+      }
+     ],
+     "key": [
+      {
+       "source": "s1",
+       "start_ms": 4000,
+       "end_ms": 8000
+      }
+     ]
+    },
+    "u3": {
+     "accept": [
+      {
+       "source": "s1",
+       "start_ms": 8000,
+       "end_ms": 12000
+      }
+     ],
+     "key": [
+      {
+       "source": "s1",
+       "start_ms": 8000,
+       "end_ms": 12000
+      }
+     ]
+    },
+    "u4": {
+     "accept": [
+      {
+       "source": "s2",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ],
+     "key": [
+      {
+       "source": "s2",
+       "start_ms": 0,
+       "end_ms": 4000
+      }
+     ]
+    },
+    "u5": {
+     "accept": [
+      {
+       "source": "s2",
+       "start_ms": 4000,
+       "end_ms": 8000
+      }
+     ],
+     "key": [
+      {
+       "source": "s2",
+       "start_ms": 4000,
+       "end_ms": 8000
+      }
+     ]
+    }
+   }
+  }
+ }
+]
