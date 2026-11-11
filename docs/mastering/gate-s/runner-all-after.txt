@@ -1,0 +1,31 @@
+dev-espresso                 coverage  90.2 %  units ok 4/6  illustrated 4/6  contra 0 ms  stolen 0 ms  silent misses 0  false alarms 1  problems -
+dev-ricecooker-unaccented    coverage 100.0 %  units ok 4/4  illustrated 4/4  contra 0 ms  stolen 0 ms  silent misses 0  false alarms 0  problems -
+dev-long-forward             coverage  49.4 %  units ok 2/5  illustrated 2/5  contra 0 ms  stolen 7000 ms  silent misses 0  false alarms 1  problems -
+dev-late-map                 coverage  87.5 %  units ok 1/2  illustrated 0/1  contra 0 ms  stolen 0 ms  silent misses 0  false alarms 0  problems -
+dev2-blower-name-claim       coverage  72.9 %  units ok 3/6  illustrated 3/6  contra 0 ms  stolen 0 ms  silent misses 0  false alarms 1  problems -
+dev2-toothpick-function-words coverage 100.0 %  units ok 5/5  illustrated 5/5  contra 0 ms  stolen 0 ms  silent misses 0  false alarms 4  problems -
+dev2-espresso-hook-steal     coverage 100.0 %  units ok 4/4  illustrated 4/4  contra 0 ms  stolen 0 ms  silent misses 0  false alarms 2  problems -
+dev2-hook-text-card          coverage 100.0 %  units ok 4/4  illustrated 4/4  contra 0 ms  stolen 0 ms  silent misses 0  false alarms 3  problems -
+dev2-title-card-opening      coverage 100.0 %  units ok 4/4  illustrated 4/4  contra 0 ms  stolen 0 ms  silent misses 0  false alarms 1  problems -
+dev3-vacuum                  coverage  95.3 %  units ok 6/7  illustrated 6/7  contra 0 ms  stolen 0 ms  silent misses 0  false alarms 3  problems -
+dev3-kettle                  coverage 100.0 %  units ok 6/6  illustrated 6/6  contra 0 ms  stolen 0 ms  silent misses 0  false alarms 3  problems -
+dev3-serum                   coverage 100.0 %  units ok 5/5  illustrated 5/5  contra 0 ms  stolen 0 ms  silent misses 0  false alarms 2  problems -
+dev3-street-food             coverage  95.6 %  units ok 4/5  illustrated 4/5  contra 0 ms  stolen 1400 ms  silent misses 0  false alarms 3  problems -
+holdout-airfryer             coverage  73.1 %  units ok 5/7  illustrated 4/6  contra 0 ms  stolen 0 ms  silent misses 0  false alarms 2  problems -
+holdout-hairdryer            coverage  86.2 %  units ok 3/5  illustrated 3/5  contra 0 ms  stolen 0 ms  silent misses 0  false alarms 0  problems -
+holdout-earbuds              coverage  91.7 %  units ok 5/6  illustrated 5/6  contra 0 ms  stolen 0 ms  silent misses 0  false alarms 2  problems -
+holdout-five-sources         coverage  81.4 %  units ok 2/5  illustrated 2/5  contra 0 ms  stolen 0 ms  silent misses 0  false alarms 1  problems -
+holdout2-blender             coverage  72.3 %  units ok 4/6  illustrated 4/6  contra 0 ms  stolen 0 ms  silent misses 0  false alarms 1  problems -
+holdout2-powerbank           coverage  88.0 %  units ok 4/6  illustrated 4/6  contra 0 ms  stolen 0 ms  silent misses 0  false alarms 3  problems -
+holdout2-toothbrush          coverage  93.0 %  units ok 4/5  illustrated 4/5  contra 0 ms  stolen 0 ms  silent misses 0  false alarms 2  problems -
+holdout2-travel-five-sources coverage  70.9 %  units ok 2/6  illustrated 2/6  contra 0 ms  stolen 0 ms  silent misses 0  false alarms 2  problems -
+holdout4-humidifier          coverage 100.0 %  units ok 6/6  illustrated 6/6  contra 0 ms  stolen 0 ms  silent misses 0  false alarms 1  problems -
+holdout4-desk-lamp           coverage 100.0 %  units ok 5/5  illustrated 5/5  contra 0 ms  stolen 0 ms  silent misses 0  false alarms 3  problems -
+holdout4-bridges             coverage 100.0 %  units ok 4/4  illustrated 4/4  contra 0 ms  stolen 0 ms  silent misses 0  false alarms 1  problems -
+holdout4-milk-tea            coverage 100.0 %  units ok 5/5  illustrated 5/5  contra 0 ms  stolen 0 ms  silent misses 0  false alarms 0  problems -
+dev-: coverage 74.8 % of 84000 ms, units ok 11/17, silent misses 0, false alarms 2, stolen 7000 ms
+dev2-: coverage 93.9 % of 81500 ms, units ok 20/23, silent misses 0, false alarms 11, stolen 0 ms
+dev3-: coverage 97.4 % of 78000 ms, units ok 21/23, silent misses 0, false alarms 11, stolen 1400 ms
+holdout-: coverage 82.8 % of 76000 ms, units ok 15/23, silent misses 0, false alarms 5, stolen 0 ms
+holdout2-: coverage 78.4 % of 77000 ms, units ok 14/23, silent misses 0, false alarms 8, stolen 0 ms
+holdout4-: coverage 100.0 % of 65000 ms, units ok 20/20, silent misses 0, false alarms 5, stolen 0 ms
