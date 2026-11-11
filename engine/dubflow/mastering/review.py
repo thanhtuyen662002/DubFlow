@@ -28,7 +28,7 @@ from pathlib import Path
 import re
 from typing import Any, Iterable, Mapping
 
-from . import align
+from . import align, evidence as ev
 
 SCHEMA_VERSION = 1
 KIND = "editorial_review"
@@ -53,9 +53,31 @@ def _usable(candidate: Mapping[str, Any]) -> bool:
 
 
 def _has_content(candidate: Mapping[str, Any]) -> bool:
+    """Whether something says what the shot shows: vision, a transcript, a user's note; never only its file name."""
     found = candidate.get("evidence") or {}
-    return any(item.get("origin") != "signal" and (str(item.get("text") or "").strip() or item.get("labels"))
+    return any(item.get("origin") in ev.CONTENT_ORIGINS and (str(item.get("text") or "").strip() or item.get("labels"))
                for item in found.get("items") or ())
+
+
+def provenance_of(log: Mapping[str, Any]) -> dict[str, int]:
+    """Provenance → candidates with evidence of it, from the log's own candidates (for logs written before it)."""
+    out = {name: 0 for name in ev.PROVENANCES}
+    for c in log.get("candidates") or ():
+        kinds = {ev.provenance(str(i.get("origin")), str(i.get("detail") or ""))
+                 for i in (c.get("evidence") or {}).get("items") or ()
+                 if i.get("origin") == "signal" or str(i.get("text") or "").strip() or i.get("labels")}
+        for kind in kinds:
+            out[kind] = out.get(kind, 0) + 1
+    return out
+
+
+def content_mode(log: Mapping[str, Any]) -> str:
+    """The log's mode, read honestly: a log written before P2-14 may say ``content`` when its only evidence was
+    file names; such a log is ``signals_only`` (nothing it holds can be READY or say the footage lacks a line)."""
+    mode = log.get("mode")
+    if mode == "content" and not any(_has_content(c) for c in log.get("candidates") or ()):
+        return "signals_only"
+    return mode
 
 
 def evidence_state(unit: Mapping[str, Any], log: Mapping[str, Any]) -> str:
@@ -70,7 +92,7 @@ def evidence_state(unit: Mapping[str, Any], log: Mapping[str, Any]) -> str:
     # ... and only when none of them shares a word with it: a near miss (some of its words, under a match) is a shot
     # that may show it in other words, so it is not found, not absent (rc5: "hàng domino… đứng xem" at 37, "hai anh em
     # ngồi thử máy" at 57 were called absent while those shots showed them)
-    if log.get("mode") == "content" and usable and all(_has_content(c) for c in usable) \
+    if content_mode(log) == "content" and usable and all(_has_content(c) for c in usable) \
             and not coverage.get("best_relevance"):
         return SOURCE_INSUFFICIENT
     return MATCH_NOT_FOUND
@@ -82,7 +104,7 @@ def unit_state(unit: Mapping[str, Any], log: Mapping[str, Any], segments: Iterab
     if found in (MATCH_NOT_FOUND, SOURCE_INSUFFICIENT):
         return found
     coverage = unit.get("coverage") or {}
-    if log.get("mode") != "content" or coverage.get("needs_review"):
+    if content_mode(log) != "content" or coverage.get("needs_review"):
         return NEEDS_REVIEW
     if any(s.get("needs_review") for s in segments):
         return NEEDS_REVIEW
@@ -317,8 +339,9 @@ def user_state(decision: UnitDecision | None) -> str | None:
 def unreviewed(log: Mapping[str, Any], review: Review) -> list[str]:
     """Units the planner is not sure of and the user has neither approved nor replaced (pinned)."""
     out = []
+    honest = content_mode(log) == log.get("mode")
     for unit in log.get("units") or ():
-        state = (unit.get("review") or {}).get("state")
+        state = (unit.get("review") or {}).get("state") if honest else unit_state(unit, log)
         if state in (None, READY):
             continue
         decision = review.units.get(unit["unit_id"])
@@ -358,7 +381,8 @@ def view(log: Mapping[str, Any], plan: Mapping[str, Any] | None, review: Review,
     units = []
     for unit in log.get("units") or ():
         decision = review.units.get(unit["unit_id"])
-        verdict = unit.get("review") or {"evidence": evidence_state(unit, log), "state": unit_state(unit, log)}
+        stored = unit.get("review") if content_mode(log) == log.get("mode") else None  # an old file-name-only log
+        verdict = stored or {"evidence": evidence_state(unit, log), "state": unit_state(unit, log)}
         units.append({
             "unit_id": unit["unit_id"], "text": unit.get("text", ""), "function": unit.get("function"),
             "start_ms": unit.get("start_ms"), "end_ms": unit.get("end_ms"), "coverage": unit.get("coverage") or {},
@@ -373,7 +397,8 @@ def view(log: Mapping[str, Any], plan: Mapping[str, Any] | None, review: Review,
                              if (s := shot(a.get("candidate_id", "")))],
             "unreviewed": unit["unit_id"] in open_units})
     texts = list(dict.fromkeys([*warnings, *(log.get("warnings") or [])]))
-    return {"schema_version": 1, "kind": "editorial_review_view", "plan_id": log.get("plan_id"), "mode": log.get("mode"),
+    return {"schema_version": 1, "kind": "editorial_review_view", "plan_id": log.get("plan_id"), "mode": content_mode(log),
+            "provenance": log.get("provenance") or provenance_of(log),
             "revision": review.revision, "can_undo": bool(review.history), "units": units,
             "warnings": [{"id": warning_id(t), "text": t, "acknowledged": warning_id(t) in acknowledged} for t in texts],
             "unreviewed": [u for u in (x["unit_id"] for x in units) if u in open_units],

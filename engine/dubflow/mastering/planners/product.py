@@ -204,7 +204,7 @@ def plan_editorial(visuals: Sequence[Visual], spoken: Sequence[tuple[str, int]],
                                             forward_only=not policy.allows(rules.REORDER), edits=edits, groups=groups, stills=stills)
     warnings: list[str] = []
     if mode == "signals_only":
-        warnings.append("Chưa có bằng chứng nội dung (ghi chú clip, tên file có nghĩa hoặc AI nhìn hình): cảnh được chọn theo "
+        warnings.append("Chưa có bằng chứng nội dung (ghi chú clip hoặc AI nhìn hình; tên file không tính): cảnh được chọn theo "
                         "điểm cắt, độ nét và đa dạng, cần kiểm tra.")
     flagged: dict[str, list[str]] = {}
     for unit in found_units:
@@ -283,6 +283,8 @@ def plan_editorial(visuals: Sequence[Visual], spoken: Sequence[tuple[str, int]],
                         "evidence": evidence[c.candidate_id].to_dict() if c.candidate_id in evidence else None,
                         "summary": evidence[c.candidate_id].summary() if c.candidate_id in evidence else ""} for c in pool],
         "edits": (edits or align.Edits()).to_dict(), "warnings": warnings,
+        # what the evidence came from (P2-14): file names alone are never content
+        "provenance": ev.provenance_counts({c.candidate_id: evidence[c.candidate_id] for c in pool if c.candidate_id in evidence}),
     }
     return result, log
 

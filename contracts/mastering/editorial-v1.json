@@ -25,7 +25,17 @@
         "warnings": {"type": "array", "items": {"type": "string"}}
       }
     },
-    "part": {"type": "string", "maxLength": 128}
+    "part": {"type": "string", "maxLength": 128},
+    "provenance": {
+      "description": "Optional (added for P2-14, older logs lack it): provenance → how many candidates carry evidence of it. filename_metadata is never content: a log with only file names (and signals) is signals_only.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "vision": {"type": "integer", "minimum": 0}, "transcript": {"type": "integer", "minimum": 0},
+        "user_note": {"type": "integer", "minimum": 0}, "ocr": {"type": "integer", "minimum": 0},
+        "filename_metadata": {"type": "integer", "minimum": 0}, "signal": {"type": "integer", "minimum": 0}
+      }
+    }
   },
   "$defs": {
     "unit": {
