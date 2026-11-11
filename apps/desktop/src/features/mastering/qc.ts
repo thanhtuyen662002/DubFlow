@@ -69,7 +69,9 @@ export function qcRows(qc: DubbingQc): { label: string; text: string; tone: "ok"
     rows.push({
       label: "Âm lượng",
       text: `Trước ${before} → sau ${number(qc.after.integrated)} LUFS, đỉnh ${number(qc.after.true_peak)} dBTP sau AAC`
-        + (over ? ` (vượt trần ${number(TRUE_PEAK_CEILING)} dBTP)` : ` (trần ${number(TRUE_PEAK_CEILING)} dBTP: đạt)`),
+        + (over ? ` (vượt trần ${number(TRUE_PEAK_CEILING)} dBTP)` : ` (trần ${number(TRUE_PEAK_CEILING)} dBTP: đạt)`)
+        // rc2 Windows check (D5): why the result is quieter than the target, from the planner's own note
+        + (note("Âm lượng:")?.includes("thấp hơn mục tiêu") ? ". Thấp hơn mục tiêu vì đỉnh của bản trộn đã cao: chỉ tăng/giảm tuyến tính, không nén." : ""),
       tone: over ? "warn" : "ok",
     });
   } else if (qc.loudness) {

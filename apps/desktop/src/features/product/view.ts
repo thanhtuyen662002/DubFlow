@@ -2,7 +2,8 @@ import { readProduct, WORDS_PER_SECOND, writeScripts, type Photo } from "./ai.ts
 import { LAYOUT } from "./layout.ts";
 import {
   addMedia, buildRequest, CENTER, fileName, focusKey, formatFeatures, isImage, MAX_VARIANTS, MAX_VISUALS, moveItem,
-  parseBackgroundMemory, parseBackgrounds, parseRuns, parseStatus, photosToRead, readForm, runRow, TEMPLATES, toBase64,
+  parseBackgroundMemory, parseBackgrounds, parseRecentRuns, parseRuns, parseStatus, photosToRead, readForm, RECENT_RUNS_KEY, rememberRun,
+  runRow, TEMPLATES, toBase64,
   videoMedia, type BackgroundMemory, type Focus, type LibraryBackground, type MediaItem, type ProductStatus, type Template,
 } from "./model.ts";
 import type { PreviewState } from "./preview.ts";
@@ -583,7 +584,8 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
   async function loadRuns(): Promise<void> {
     const token = ++runsToken;
     try {
-      const found = parseRuns(await invoke<unknown>("product_runs", { roots: settings.roots() }));
+      const roots = [...settings.roots(), ...recentRuns()].slice(0, 64);
+      const found = parseRuns(await invoke<unknown>("product_runs", { roots }));
       if (token !== runsToken) return;
       runs = found;
     } catch {
@@ -823,8 +825,21 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
   }
 
   /** Follow a run that has just started (a new render or a re-render of one video). */
+  function recentRuns(): string[] {
+    try {
+      return parseRecentRuns(window.localStorage.getItem(RECENT_RUNS_KEY));
+    } catch {
+      return [];
+    }
+  }
+
   function follow(outputDir: string): void {
     running = outputDir;
+    try {
+      window.localStorage.setItem(RECENT_RUNS_KEY, rememberRun(window.localStorage.getItem(RECENT_RUNS_KEY), outputDir));
+    } catch {
+      // Without storage the run is still listed while its folder is a saving folder.
+    }
     $<HTMLButtonElement>("#product-render").disabled = true;
     $("#product-cancel").hidden = false;
     $("#product-render-state").textContent = "Đang khởi động…";

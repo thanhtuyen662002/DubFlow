@@ -344,8 +344,11 @@ def view(log: Mapping[str, Any], plan: Mapping[str, Any] | None, review: Review,
             "user_state": user_state(decision), "decision": decision.to_dict() if decision else None,
             "chosen": [s for s in (shot(i) for i in dict.fromkeys(unit.get("chosen") or [])) if s],
             "pieces": pieces.get(unit["unit_id"], []),
+            # a shot the sentence already uses is no alternative (rc2 Windows check, D4)
             "alternatives": [dict(s, score=a.get("score"), reasons=list(a.get("reasons") or [])[:4])
-                             for a in (unit.get("alternatives") or [])[:3] if (s := shot(a.get("candidate_id", "")))],
+                             for a in [a for a in (unit.get("alternatives") or [])
+                                       if a.get("candidate_id") not in set(unit.get("chosen") or [])][:3]
+                             if (s := shot(a.get("candidate_id", "")))],
             "unreviewed": unit["unit_id"] in open_units})
     texts = list(dict.fromkeys([*warnings, *(log.get("warnings") or [])]))
     return {"schema_version": 1, "kind": "editorial_review_view", "plan_id": log.get("plan_id"), "mode": log.get("mode"),
