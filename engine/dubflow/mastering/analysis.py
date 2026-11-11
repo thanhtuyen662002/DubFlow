@@ -119,7 +119,8 @@ def probe(ffprobe: Path, video: Path) -> StreamInfo:
     try:
         duration_ms = round(float(value["format"]["duration"]) * 1000)
         width, height = int(picture["width"]), int(picture["height"])
-        rate = Fraction(picture.get("avg_frame_rate") or "0/1")
+        # a variable-rate source reports an unreduced average (rc7 real set: 10294000/343133 ≈ 30): keep it a frame rate
+        rate = Fraction(picture.get("avg_frame_rate") or "0/1").limit_denominator(1001)
     except (KeyError, TypeError, ValueError, ZeroDivisionError) as error:
         raise AnalysisError(f"{video.name} không có hình để phân tích") from error
     rotation = next((int(side.get("rotation", 0)) for side in picture.get("side_data_list", []) if "rotation" in side), 0)
