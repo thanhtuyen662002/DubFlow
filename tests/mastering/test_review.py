@@ -130,6 +130,70 @@ class DecisionTests(unittest.TestCase):
         self.assertEqual(review.edits().pin, {})  # an invalid pin is not given to the planner
         self.assertIn("u1", rv.unreviewed(rv.annotate(again), review))
 
+    def test_an_approved_pin_stays_approved_after_the_render_that_applies_it(self):
+        # rc5 P2-5: Ghim → Duyệt cảnh này → Dựng lại invalidated the approval although nothing but the pin changed
+        review = rv.Review()
+        review.decide(self.log, "u1", "pin", ["c2"])
+        review.decide(self.log, "u1", "approve")  # the plan on screen still shows c1
+        self.assertEqual(review.units["u1"].approved, ["c2"])
+        again = json.loads(json.dumps(self.log))
+        again["units"][0]["chosen"] = ["c2"]  # the re-render applied the pin
+        self.assertEqual(review.reconcile(again), [])
+        reopened = rv.Review.from_dict(json.loads(json.dumps(review.to_dict())))  # close and open the app
+        self.assertEqual(rv.user_state(reopened.units["u1"]), rv.USER_APPROVED)
+        self.assertEqual(reopened.reconcile(again), [])  # and a second render with the same plan
+        self.assertEqual(rv.user_state(reopened.units["u1"]), rv.USER_APPROVED)
+        self.assertEqual(reopened.edits().pin, {"u1": ["c2"]})
+        self.assertNotIn("u1", rv.unreviewed(rv.annotate(again), reopened))
+
+    def test_an_approval_saved_before_the_fix_with_a_pin_is_kept_when_the_pin_is_applied(self):
+        saved = {"schema_version": 1, "kind": "editorial_review", "plan_id": "product-1", "revision": 2,
+                 "units": {"u1": {"approved": ["c1"], "pin": ["c2"], "exclude": []}}, "acknowledged": [], "history": []}
+        review = rv.Review.from_dict(saved)
+        again = json.loads(json.dumps(self.log))
+        again["units"][0]["chosen"] = ["c2"]
+        self.assertEqual(review.reconcile(again), [])
+        self.assertEqual(rv.user_state(review.units["u1"]), rv.USER_APPROVED)
+
+    def test_an_approved_pin_is_invalidated_only_for_a_real_reason(self):
+        def approved_pin():
+            review = rv.Review()
+            review.decide(self.log, "u1", "pin", ["c2"])
+            review.decide(self.log, "u1", "approve")
+            return review
+        # the source changed: the pinned shot is gone
+        review = approved_pin()
+        gone = json.loads(json.dumps(self.log))
+        gone["candidates"] = [c for c in gone["candidates"] if c["id"] != "c2"]
+        self.assertEqual(len(review.reconcile(gone)), 1)
+        self.assertEqual(rv.user_state(review.units["u1"]), rv.INVALIDATED)
+        # the plan could not honour the pin: the sentence shows something else
+        review = approved_pin()
+        other = json.loads(json.dumps(self.log))
+        other["units"][0]["chosen"] = ["c3"]
+        self.assertEqual(len(review.reconcile(other)), 1)
+        self.assertEqual(rv.user_state(review.units["u1"]), rv.INVALIDATED)
+        # the pin was shorter than the sentence and the planner filled the rest after it: still the pin, still approved
+        review = approved_pin()
+        padded = json.loads(json.dumps(self.log))
+        padded["units"][0]["chosen"] = ["c2", "c3"]
+        self.assertEqual(review.reconcile(padded), [])
+        self.assertEqual(rv.user_state(review.units["u1"]), rv.USER_APPROVED)
+        # ... but a later plan that drops the pinned shot from the front is a change
+        moved = json.loads(json.dumps(self.log))
+        moved["units"][0]["chosen"] = ["c3", "c2"]
+        self.assertEqual(len(review.reconcile(moved)), 1)
+        # the sentence is gone from the script
+        review = approved_pin()
+        removed = json.loads(json.dumps(self.log))
+        removed["units"] = removed["units"][1:]
+        self.assertEqual(len(review.reconcile(removed)), 1)
+        # the user changed the decision: a new pin drops the approval (not an invalidation)
+        review = approved_pin()
+        review.decide(self.log, "u1", "pin", ["c3"])
+        self.assertIsNone(review.units["u1"].approved)
+        self.assertIsNone(rv.user_state(review.units["u1"]))
+
     def test_round_trip_rejects_unknown_fields_and_keeps_acknowledged_warnings(self):
         review = rv.Review()
         review.acknowledge("Cảnh báo A")
@@ -206,6 +270,7 @@ class JobReviewTests(unittest.TestCase):
                 other = [c["id"] for c in data["candidates"] if c["id"] not in data["units"][0]["chosen"]][0]
                 review = rv.Review()
                 review.decide(data, data["units"][0]["unit_id"], "pin", [other])
+                review.decide(data, data["units"][0]["unit_id"], "approve")  # P2-5: approved before the render
                 rv.save(rv.path_for(work, 1), review)
                 renders = len([c for c in commands if str(c[-1]).endswith(".partial.mp4")])
                 again = render(replace(job.load_spec(spec_path), only=(1,)))
@@ -215,6 +280,9 @@ class JobReviewTests(unittest.TestCase):
                 data = json.loads((work / "editorial-1.json").read_text(encoding="utf-8"))
                 self.assertEqual(data["units"][0]["chosen"][0], other)
                 self.assertFalse(again["videos"][0]["mastering"]["reused"])  # planned again with the pin
+                kept = rv.load(rv.path_for(work, 1))  # as the app reads it when opened again
+                self.assertEqual(rv.user_state(kept.units[data["units"][0]["unit_id"]]), rv.USER_APPROVED)
+                self.assertFalse(any("đã đổi" in w for w in again["warnings"]) if "warnings" in again else False)
 
     def test_only_must_name_existing_videos(self):
         with TemporaryDirectory() as folder:
