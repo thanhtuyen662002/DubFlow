@@ -468,7 +468,9 @@ class ContractTests(unittest.TestCase):
         written_unit = set(decisions[0].to_dict())
         self.assertLessEqual(set(defs["unit"]["required"]), written_unit)
         self.assertEqual(set(defs["unit"]["properties"]), written_unit)
-        self.assertEqual(set(defs["unit"]["properties"]["coverage"]["required"]), set(decisions[0].coverage))
+        coverage = defs["unit"]["properties"]["coverage"]
+        self.assertLessEqual(set(coverage["required"]), set(decisions[0].coverage))
+        self.assertEqual(set(coverage["properties"]), set(decisions[0].coverage))
         written = {**pool[0].to_dict(), "group": "g", "evidence": found["v1c1"].to_dict(), "summary": ""}
         self.assertEqual(set(defs["candidate"]["required"]), set(written))
         self.assertEqual(set(defs["candidate"]["properties"]["evidence"]["required"]), set(found["v1c1"].to_dict()))
