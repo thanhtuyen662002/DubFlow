@@ -37,7 +37,7 @@ DARK, BRIGHT = 28, 235          # mean grey level
 FLAT = 10                       # grey standard deviation of a blank or black frame
 BLUR = 18                       # Laplacian variance below this: no detail at 160×90
 DUPLICATE_BITS = 6
-RECIPE = f"mastering-candidates-v1+grey{GREY_W}x{GREY_H}+split{SPLIT_MS}+win{WINDOW_MS}"
+RECIPE = f"mastering-candidates-v1+grey{GREY_W}x{GREY_H}+split{SPLIT_MS}+win{WINDOW_MS}+spread{MAX_CANDIDATES}"
 Runner = Callable[[list[str], Path, Callable[[], bool]], None]
 
 
@@ -116,7 +116,12 @@ def windows(found: scene.Analysis) -> list[tuple[int, int, int, int]]:
             stop = end if end - at < WINDOW_MS + WINDOW_MS // 2 else at + WINDOW_MS
             out.append((at, stop, index, shot.motion))
             at = stop
-    return out[:MAX_CANDIDATES]
+    if len(out) <= MAX_CANDIDATES:
+        return out
+    # a long source: windows spread over the whole of it, not the first MAX_CANDIDATES in source order (a
+    # 36-minute set lost everything after 20 minutes, Why We Fight)
+    step = len(out) / MAX_CANDIDATES
+    return [out[int(index * step)] for index in range(MAX_CANDIDATES)]
 
 
 def measure(grey: bytes, width: int = GREY_W, height: int = GREY_H) -> tuple[Quality, int]:

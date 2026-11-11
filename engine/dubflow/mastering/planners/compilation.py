@@ -24,7 +24,7 @@ from ..candidates import Candidate
 
 PLANNER = "dubflow.mastering.compilation"
 VERSION = "7"
-RECIPE = "compilation-program-v10"  # v10: every piece inside its shot, no flash, sentences covered exactly
+RECIPE = "compilation-program-v11"  # v11: on long sources the narration is planned before the moment is chosen
 WORKFLOW = "compilation_entertainment"
 MOMENT_MIN_MS, MOMENT_TARGET_MS, MOMENT_MAX_MS = 2000, 3500, 6000
 PART_FUNCTION = {"hook": "hook", "intro": "intro", "item": "narration", "outro": "outro"}
@@ -185,7 +185,21 @@ def plan_part(part_id: str, kind: str, spoken: Sequence[tuple[str, int]], narrat
     if not pool:
         raise ValueError(f"{part_id}: no usable footage in its sources")
     reserved = None
+    forward_only = not policy.allows(rules.REORDER)
+    planned = None
     if moment and kind == "item" and policy.keep_source_audio:
+        # The narration first, over all of the footage; the moment then comes from what plays after it. Only when
+        # nothing is left after the narration is the moment chosen first (a long source kept its narration to the
+        # minutes before an early moment, Why We Fight).
+        first = align.assign(found_units, pool, evidence, policy.pacing, forward_only=forward_only, edits=edits,
+                             groups=groups, shown=shown)
+        ends: dict[str, int] = {}
+        for choice in first[0]:
+            ends[choice.candidate.source_id] = max(ends.get(choice.candidate.source_id, 0), choice.offset_ms + choice.length_ms)
+        after = _moment(by_source, pool, evidence, title, ends, keep_audio)
+        if after is not None:
+            planned, reserved = first, after
+    if planned is None and moment and kind == "item" and policy.keep_source_audio:
         # Choose the ending first, with enough footage ahead of it for the narration; the narration then
         # plays only what comes before it (a source that ran out under the narration had nothing left).
         # forward-only selection skips ahead to the best match, so leave room: twice the narration if the sources allow
@@ -193,12 +207,14 @@ def plan_part(part_id: str, kind: str, spoken: Sequence[tuple[str, int]], narrat
             reserved = _moment(by_source, pool, evidence, title, {}, keep_audio, need_before_ms=need)
             if reserved is not None:
                 break
-    narration_pool = _before(pool, reserved[0].source_id, reserved[1]) if reserved else pool
-    if not narration_pool:
-        reserved, narration_pool = None, pool
-    choices, decisions, mode = align.assign(found_units, narration_pool, evidence, policy.pacing,
-                                            forward_only=not policy.allows(rules.REORDER), edits=edits, groups=groups,
-                                            shown=shown)
+    if planned is not None:
+        choices, decisions, mode = planned
+    else:
+        narration_pool = _before(pool, reserved[0].source_id, reserved[1]) if reserved else pool
+        if not narration_pool:
+            reserved, narration_pool = None, pool
+        choices, decisions, mode = align.assign(found_units, narration_pool, evidence, policy.pacing,
+                                                forward_only=forward_only, edits=edits, groups=groups, shown=shown)
     segments: list[m.Segment] = []
     audio: dict[str, str] = {}
     at = 0
