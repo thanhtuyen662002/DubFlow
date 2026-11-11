@@ -6,7 +6,7 @@
  * the host on fresh review files.
  */
 import {
-  addSources, applySuggestedOrder, buildRawRequest, durationNote, emptyDraft, fileName, MAX_ITEMS, MAX_NARRATION, moveItem, newItem,
+  addSources, applySuggestedOrder, buildRawRequest, durationNote, emptyDraft, fileName, finalText, MAX_ITEMS, MAX_NARRATION, moveItem, newItem,
   numberRanks, openForExport, parseRawRun, partName, removeItem, removeSource, renderStats, RIGHTS_NAMES, sourceName, sourcesOf,
   specToDraft, supported, type RawDraft, type RawPart, type RawRun, type Rights,
 } from "./raw_model.ts";
@@ -538,7 +538,7 @@ export function mountRawCompilation(invoke: Invoke, session: AiSession, host: Ra
     finalButton.addEventListener("click", () => void finalExport(run!, false));
     actions.append(edit, again, finalButton);
     const exportState = el("p", "hint compilation-raw-export-state",
-      run.final ? `Bản cuối: ${run.final}` : open.sentences ? `Còn ${open.sentences} câu ở ${open.parts.length} phần cần xem lại trước khi xuất bản cuối (hoặc bạn xác nhận chấp nhận).` : "Sẵn sàng xuất bản cuối.");
+      run.final ? finalText(run) : open.sentences ? `Còn ${open.sentences} câu ở ${open.parts.length} phần cần xem lại trước khi xuất bản cuối (hoặc bạn xác nhận chấp nhận).` : "Sẵn sàng xuất bản cuối.");
     exportState.setAttribute("role", "status");
     nodes.push(actions, exportState);
     if (run.credits.length) {
