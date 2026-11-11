@@ -376,11 +376,16 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
     # the words printed on a card (a title that repeats the opening: dev2-title-card-opening) are no match for a
     # sentence that is not about them, so it is filled from real footage and flagged when nothing else matches.
     # A source of nothing but cards keeps them (dev2-hook-text-card).
+    # A sentence whose words were found only on such a card is not generic: what it says is written somewhere, and
+    # the real footage it gets instead is looked at (a call to action naming an offer the card shows).
+    on_card: set[str] = set()
     if any(not scorer.card[c.candidate_id] for c in usable):
         for u in found_units:
             if not about_text(u):
                 for c in usable:
                     if scorer.card[c.candidate_id]:
+                        if relevance_of[(u.unit_id, c.candidate_id)][0] >= MIN_RELEVANCE:
+                            on_card.add(u.unit_id)
                         relevance_of[(u.unit_id, c.candidate_id)] = (0, [])
     best_of = {u.unit_id: max((relevance_of[(u.unit_id, c.candidate_id)][0] for c in usable), default=0) for u in found_units}
     accepts: dict[str, set[str]] = {}
@@ -769,13 +774,16 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
         has_match = bool(accept) or bool(edits.pin.get(unit.unit_id))
         # a generic sentence (an opening or a call to action without a match) needs no match of its own, unless it
         # names something written (a price, a code): then a frame showing it is what it needs (dev2 blower u6)
-        generic = not has_match and unit.function in ("hook", "cta", "intro", "outro") and not about_text(unit)
+        generic = not has_match and unit.function in ("hook", "cta", "intro", "outro") and not about_text(unit) \
+            and unit.unit_id not in on_card
         review = mode != "content" or (not generic and milli < GOOD_COVERAGE)
         coverage = {"need_ms": unit.length_ms, "illustrated_ms": illustrated, "milli": milli,
                     "status": "generic" if generic else ("full" if milli >= GOOD_COVERAGE else ("partial" if milli else "none")),
                     "needs_review": review, "matched_footage": len(accept)}
         decision.coverage = coverage
         note = "" if generic else _coverage_note(milli, has_match)
+        if not has_match and unit.unit_id in on_card:
+            note = "lời câu chỉ khớp một thẻ chữ (đã để dành cho câu nói về chữ): dùng cảnh thật, cần kiểm tra"
         if note:
             decision.notes.append(note)
         # review: the evidence decides, not the render: a generic sentence on usable footage needs none, an
