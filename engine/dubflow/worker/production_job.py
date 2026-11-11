@@ -916,8 +916,42 @@ def _dubbing_mastering(options: MasteringOptions, config: WorkerConfig, probe: M
         return audio_path, (), None
 
 
+VOICED_FRAME_MS = 20
+VOICED_TAIL_MS = 200  # the last syllable's decay is still heard; the caption stays this long after it
+VOICED_FLOOR = 100  # int16 RMS under which a frame is silence (about -50 dBFS) ...
+VOICED_RELATIVE = 0.03  # ... or under 3 % of the phrase's loudest frame (about -30 dB)
+
+
+def _voiced_end_ms(path: str | os.PathLike[str] | None, start_ms: int, end_ms: int) -> int:
+    """When the voice in a TTS piece stops, in the mix's ms: a short sentence is padded with silence to its source
+    slot, and its caption must leave with the voice, not with the padding (Phase 3 closure, rc1 Windows check).
+    The piece's own placed end when the file cannot be read or holds no sound."""
+    try:
+        with wave.open(str(path), "rb") as reader:
+            if reader.getsampwidth() != 2:
+                return end_ms
+            rate, channels = reader.getframerate(), reader.getnchannels()
+            frames = reader.readframes(reader.getnframes())
+    except (OSError, EOFError, TypeError, wave.Error):
+        return end_ms
+    import numpy as np
+
+    samples = np.frombuffer(frames, dtype="<i2").astype(np.float64)
+    size = max(1, rate * VOICED_FRAME_MS // 1000) * channels
+    count = samples.size // size
+    if count == 0:
+        return end_ms
+    rms = np.sqrt(np.mean(samples[:count * size].reshape(count, size) ** 2, axis=1))
+    loud = np.flatnonzero(rms >= max(VOICED_FLOOR, float(rms.max()) * VOICED_RELATIVE))
+    if loud.size == 0:
+        return end_ms
+    voiced = start_ms + (int(loud[-1]) + 1) * VOICED_FRAME_MS + VOICED_TAIL_MS
+    return max(start_ms + 1, min(end_ms, voiced))
+
+
 def _voice_timed(cues: Sequence[TextCue], b2_audio: Any, *, duration_ms: int | None = None) -> list[TextCue]:
-    """The captions on screen, timed by when their Vietnamese voice is heard in the final mix (ADR-0055)."""
+    """The captions on screen, timed by when their Vietnamese voice is heard in the final mix (ADR-0055): from the
+    piece's start to where its voice stops (trailing padding is not voice)."""
     members = getattr(b2_audio, "member_cue_ids", None) or {}
     spoken: dict[str, tuple[Sequence[str], int, int]] = {}
     for document in b2_audio.tts_documents:
@@ -926,6 +960,7 @@ def _voice_timed(cues: Sequence[TextCue], b2_audio: Any, *, duration_ms: int | N
             if any((point.time_base.numerator, point.time_base.denominator) != (BASE_TIME.numerator, BASE_TIME.denominator)
                    for point in (artifact.slot_start, artifact.actual_end)):
                 raise ValueError("TTS timing is not in milliseconds")
+            end = _voiced_end_ms(getattr(artifact, "path", None), start, end)
             spoken[artifact.segment_id] = (members.get(artifact.segment_id, (artifact.source_utterance_id,)), start, end)
     by_id = {cue.cue_id: cue for cue in cues}
     timed = mastering_captions.from_voice([(cue.cue_id, cue.start_ms, cue.end_ms, cue.translated_text or cue.source_text)
@@ -2332,15 +2367,41 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
     cover_args: dict[str, Any] = {"cover_style": cover_style} if blur_regions and cover_style is not None else {}
     if mastering_filters:  # passed only when mastering chose one, so off renders exactly as before
         cover_args["mastering_filters"] = mastering_filters
-    # A successful B2 run always re-renders against the newly verified mix.
-    # This prevents a changed voice-pack hash or regenerated mix from being
-    # hidden by a stale final-video checkpoint after a resumable restart.
+    # The render identity holds the exact audio by hash: a changed voice pack or a regenerated mix renders again.
     def render_identity() -> str:
         return sha256(json.dumps({"source": source_hash, "translation": translation_input, "subtitles": _sha256(ass_path), "burn_in": config.burn_in_subtitles, "audio": _sha256(audio_path) if audio_path is not None else "original", "recipe": "h264-aac-source-duration-v2", "duration": video_duration.to_dict() if video_duration else None, "adapter": _sha256(Path(__file__).parents[1] / "media" / "adapter.py"), **({"blur": [region.to_dict() for region in blur_regions]} if blur_regions else {}), **({"cover": cover_args["cover_style"].to_dict()} if "cover_style" in cover_args else {}), **({"mastering": mastering_document} if mastering_document is not None else {})}, sort_keys=True).encode()).hexdigest()
 
+    def drop_mastering_video(error: MediaAdapterError) -> bool:
+        """A mastering picture filter the media runtime refused: render without it (sound and captions unchanged)
+        and keep that in the plan, so a later run of the same job does not try the broken filter again."""
+        nonlocal mastering_document
+        if "mastering_filters" not in cover_args or mastering_document is None:
+            return False
+        cover_args.pop("mastering_filters")
+        notes = [note for note in mastering_document.get("notes", ()) if not note.startswith(("Màu:", "Khung hình:"))]
+        notes.append("Màu: bộ lọc hình hậu kỳ không render được, giữ nguyên hình gốc.")
+        mastering_document = {**mastering_document, "video_filters": [], "notes": notes}
+        _atomic_json(work_dir / "mastering" / "dubbing-plan.json", mastering_document)
+        warnings.append(f"MASTERING_VIDEO_SKIPPED: {error.code}: {str(error.condition)[:200]}")
+        return True
+
+    def render_with(**kwargs: Any) -> None:
+        try:
+            media.render(config.source_path, final_path, subtitle_path=ass_path, video_duration=video_duration, source_probe=probe,
+                         burn_in_subtitles=config.burn_in_subtitles, blur_regions=blur_regions, **cover_args, overwrite=True,
+                         progress=render_progress, **kwargs)
+        except MediaAdapterError as error:
+            if not drop_mastering_video(error):
+                raise
+            media.render(config.source_path, final_path, subtitle_path=ass_path, video_duration=video_duration, source_probe=probe,
+                         burn_in_subtitles=config.burn_in_subtitles, blur_regions=blur_regions, **cover_args, overwrite=True,
+                         progress=render_progress, **kwargs)
+
     render_input = render_identity()
     render_ready = False
-    if audio_path is None and checkpoint["stages"].get(render_stage, {}).get("input_hash") == render_input:
+    # An unchanged re-run reuses the finished video: the identity covers the source, the captions, the exact audio
+    # (dubbed mix or mastered mix by hash), blur, cover and the mastering plan, so any change renders again.
+    if checkpoint["stages"].get(render_stage, {}).get("input_hash") == render_input:
         for candidate in (final_path, config.output_dir.absolute() / "final_vi.mp4"):
             if _stage_ready(checkpoint, render_stage, (candidate,)):
                 if candidate != final_path:
@@ -2352,20 +2413,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
     if not render_ready:
         emitter.progress(0.86, render_detail)
         try:
-            media.render(
-                config.source_path,
-                final_path,
-                subtitle_path=ass_path,
-                audio_path=audio_path,
-                video_duration=video_duration,
-                source_probe=probe,
-                preserve_original_audio=audio_path is None,
-                burn_in_subtitles=config.burn_in_subtitles,
-                blur_regions=blur_regions,
-                **cover_args,
-                overwrite=True,
-                progress=render_progress,
-            )
+            render_with(audio_path=audio_path, preserve_original_audio=audio_path is None)
         except MediaAdapterError as error:
             if audio_path is None:
                 raise ProductionJobError(error.code, error.condition, retryable=error.retryable) from error
@@ -2377,20 +2425,8 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
             source_timed_captions()
             audio_metadata = {"mode": "original", "backend": "source-audio"}
             render_stage = "render"
-            render_input = render_identity()
-            media.render(
-                config.source_path,
-                final_path,
-                subtitle_path=ass_path,
-                preserve_original_audio=True,
-                video_duration=video_duration,
-                source_probe=probe,
-                burn_in_subtitles=config.burn_in_subtitles,
-                blur_regions=blur_regions,
-                **cover_args,
-                overwrite=True,
-                progress=render_progress,
-            )
+            render_with(preserve_original_audio=True)
+        render_input = render_identity()  # after a dropped mastering filter the plan (and so the identity) changed
         _write_stage(checkpoint, checkpoint_path, render_stage, {"path": str(final_path), "sha256": _sha256(final_path), "audio_mode": audio_metadata["mode"], "input_hash": render_input})
     emitter.checkpoint(render_stage, _sha256(final_path))
 
@@ -2418,19 +2454,7 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
         audio_path = None
         source_timed_captions()
         audio_metadata = {"mode": "original", "backend": "source-audio"}
-        media.render(
-            config.source_path,
-            final_path,
-            subtitle_path=ass_path,
-            preserve_original_audio=True,
-            video_duration=video_duration,
-            source_probe=probe,
-            burn_in_subtitles=config.burn_in_subtitles,
-            blur_regions=blur_regions,
-            **cover_args,
-            overwrite=True,
-            progress=render_progress,
-        )
+        render_with(preserve_original_audio=True)
         output_probe = MediaProbe(config.ffprobe_path, trusted_root=config.media_runtime_root).probe(final_path)
         validate_output(output_probe)
         _write_stage(checkpoint, checkpoint_path, "render", {"path": str(final_path), "sha256": _sha256(final_path), "audio_mode": "original", "input_hash": render_identity()})

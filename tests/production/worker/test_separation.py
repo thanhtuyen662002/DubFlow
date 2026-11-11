@@ -216,8 +216,11 @@ class SeparationWorkerTests(unittest.TestCase):
                 self.assertEqual(item["sha256"], worker._sha256(Path(item["path"])))
             self.assertNotEqual(manifest["artifacts"]["source_audio"]["sha256"], manifest["artifacts"]["background_stem"]["sha256"])
             first_identity = dub.call_args.kwargs["work_dir"].parent.name
+            renders = media.render.call_count
             worker.run_local_file(config, Mock())
             self.assertEqual(infer.call_count, 1)
+            # rc1 Windows check: an unchanged re-run of a dubbed job reuses the finished video (same mix by hash)
+            self.assertEqual(media.render.call_count, renders)
             result = worker.run_local_file(replace(config, separate_background=False), Mock())
             self.assertNotIn("background_path", dub.call_args.kwargs)
             self.assertNotEqual(first_identity, dub.call_args.kwargs["work_dir"].parent.name)
