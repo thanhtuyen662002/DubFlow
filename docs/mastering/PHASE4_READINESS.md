@@ -1,59 +1,70 @@
 # DubFlow — Sẵn sàng cho Phase 4 (Phim tài liệu): GO / NO-GO
 
-Epic #637 · 2026-11-11 · cập nhật sau chỉ thị "PHASE 4 READINESS GATE CLOSURE" · main sau #749 (bản kiểm cuối: 1.1.96-rc6 = `85b9d81`)
+Epic #637 · 2026-11-12 · cập nhật sau chỉ thị "DUBFLOW — GATE S FINAL CLOSURE" · main sau #763 (bản kiểm cuối: 1.1.96-rc7 = `7acd262`, candidate, `publish=false`)
 
 ## Quyết định: **NO-GO**
 
-Gate C (Tổng hợp từ video gốc trên desktop) **đạt**. Gate S (độ chính xác ngữ nghĩa) **không đạt**. Chỉ thị: "Nếu chỉ một Gate đạt, kết luận vẫn là NO-GO; phần đã đạt phải được nghiệm thu riêng và giữ lại."
+Hai cổng không đạt:
 
-Lý do Gate S không đạt:
+**Gate S (độ chính xác ngữ nghĩa): FAIL.** Kết quả trên REAL-HOLDOUT (42 câu từ 6 video thật mới, nhãn khoá hash trước khi chạy, chấm một lần):
+- Coverage chỉ đạt 26,8 % so với ngưỡng 90 %.
+- Không có câu nào READY.
+- Mọi câu đúng đều bị gắn cờ.
+- Phần an toàn đạt: 0 bỏ sót im lặng nghiêm trọng, phát hiện lỗi nghiêm trọng 22/22.
 
-- Bộ held-out độc lập holdout7 đạt 100 %, 0 bỏ sót im lặng.
-- Nhưng trên video thật, gần như mọi câu bị gắn cờ cần xem lại (Top 5 trên desktop: 13/14), vì độ tin cậy của khớp chỉ từ AI hiếm khi vượt ngưỡng (P1-5). Cờ không còn phân biệt câu tốt và câu xấu, trái với S5 và với quy tắc "không để `needs_review` trên mọi câu thành cách đạt".
-- Coverage của ba video bán hàng thật chỉ 50–72 % (P1-6). Bộ held-out tổng hợp không đại diện cho mô tả AI dài, nhiều từ chung của video thật.
-- Không ngưỡng nào được hạ và không P1 nào được dời sang Phase 4 để đổi kết luận.
+**Release Gate (desktop): FAIL.** Ba lỗi P2-5, P2-6, P2-14 đã được sửa và kiểm qua UI thật của rc7. Tuy vậy, D3 phát hiện một P1 mới: câu đầu của Bán hàng được READY trên cảnh không liên quan (#764).
+
+Vòng hiệu chỉnh có kiểm soát đã chạy một lần (#763) rồi dừng, theo §15 của chỉ thị. Không ngưỡng nào bị hạ, không nhãn nào bị sửa sau khi xem kết quả.
 
 ## Bảng cổng
 
-| Gate | Status | Evidence | Open Risks |
-|---|---|---|---|
-| Phase 3 Closure | **PASS** | [PHASE3_CLOSURE_REPORT.md](PHASE3_CLOSURE_REPORT.md) (rc1–rc3) | – |
-| Semantic Accuracy | **FAIL** | [SEMANTIC_GATE_CLOSURE_REPORT.md](SEMANTIC_GATE_CLOSURE_REPORT.md), [gate-s/](gate-s/), [gate-c/report-rc6.md](gate-c/report-rc6.md) §3 | P1-5 hiệu chỉnh độ tin cậy trên video thật; P1-6 coverage video bán hàng 50–72 %; cờ thừa cao; #749 chưa chạy trên Windows |
-| Compilation Desktop | **PASS** | [COMPILATION_DESKTOP_REPORT.md](COMPILATION_DESKTOP_REPORT.md), [gate-c/report-rc5.md](gate-c/report-rc5.md) | 11 lỗi P2 về hiển thị/thông báo (mục 19 của báo cáo) |
-| Timeline Regression | **PASS** | SEMANTIC_GATE_CLOSURE_REPORT §15; gate-c/report-rc6.md §3 | P2-9: Why We Fight lệch A/V −41 ms ở bước ghép phần (mỗi phần ≤ 20 ms) |
-| Windows E2E | **PASS** | gate-c/report-rc4.md, report-rc5.md, report-rc6.md: C1–C4 qua UI thật của DubFlow.exe bản rc (CDP + hộp thoại Win32), có chứng minh tiến trình; sáu video thật chạy lại trên runtime đóng gói | File không đọc được không thử được qua UI (hộp thoại Windows từ chối); RAM đỉnh bản nháp C1 không đo |
-| Security/Compatibility | **PASS** | COMPILATION_DESKTOP_REPORT §17–18 | v1: 24/24 argv giống, video giống từng byte; quét khóa 0 lần trùng (3 vòng); không ghi ngoài vùng cho phép |
+| Gate | Result | Evidence |
+|---|---|---|
+| Phase 3 Closure | **PASS** | [PHASE3_CLOSURE_REPORT.md](PHASE3_CLOSURE_REPORT.md). rc7 smoke lồng tiếng qua UI cho đầu ra hợp lệ ([rc7 §5](gate-s-real/rc7/report-rc7.md)) |
+| Semantic Gate S | **FAIL** | [REAL_WORLD_SEMANTIC_CALIBRATION_REPORT.md](REAL_WORLD_SEMANTIC_CALIBRATION_REPORT.md) §19. REAL-HOLDOUT: coverage 25168/93810, READY 0/20, cờ thừa 6/6. Ba bộ hồi quy thật kém hơn rc6 trên cùng bằng chứng (#765) |
+| Desktop Release Gate | **FAIL** | [DESKTOP_RELEASE_BLOCKERS_REPORT.md](DESKTOP_RELEASE_BLOCKERS_REPORT.md) §9. D1, D2 PASS; D3 nguồn gốc bằng chứng PASS nhưng cờ duyệt sai (P1-N1 #764); D4, D5 PASS |
+| Compilation Gate C | **PASS** | [COMPILATION_DESKTOP_REPORT.md](COMPILATION_DESKTOP_REPORT.md). rc7: Tổng hợp thô v2 qua UI (D1, D2), v1 trùng từng byte với rc4–rc6 |
+| Timeline Regression | **PASS** | Bộ hồi quy cố định giống từng byte trước/sau ([REAL_WORLD §14](REAL_WORLD_SEMANTIC_CALIBRATION_REPORT.md)). Lệch A/V trên sáu video như rc6; P2-9 (Why We Fight −41,3 ms ở bước ghép) vẫn mở |
+| Windows E2E | **FAIL** | [gate-s-real/rc7/report-rc7.md](gate-s-real/rc7/report-rc7.md). D1–D5 và sáu video đều đã chạy trên DubFlow.exe rc7, có chứng minh tiến trình CDP. D3 không đạt hoàn toàn (P1-N1) |
+| Security/Compatibility | **PASS** | rc7 D5: junction bị từ chối, nguồn không đổi, quét khoá/e-mail 8 759 file = 0 (bộ quét đã sửa). IPC chỉ kiểm trong CI. Đính chính: quét khoá Claude của rc5/rc6 không có giá trị (E-1) |
 
 ## Điều kiện GO (chỉ thị §20)
 
-| # | Điều kiện | Kết quả |
-|---|---|---|
-| 1 | Semantic Gate đạt | ✗ |
-| 2 | Held-out mới ≥ 40 câu đạt ≥ 90 % | ✓ holdout7 100 % (42 câu, 9 nhóm) |
-| 3 | 0 bỏ sót im lặng | ✓ held-out, hồi quy, sáu video thật |
-| 4 | Không có regression ngữ nghĩa nghiêm trọng chưa giải quyết | ✗ P1-5, P1-6 trên video thật |
-| 5 | Tổng hợp video gốc chạy qua desktop | ✓ |
-| 6 | Chọn mức tối ưu của Tổng hợp chạy được | ✓ |
-| 7 | Quyết định duyệt được lưu và dựng lại được | ✓ |
-| 8 | Spec v1 không bị phá | ✓ |
-| 9 | C1–C4 kiểm trên Windows | ✓ (C4 có ngoại lệ đã ghi) |
-| 10 | Timeline, bảo mật, cache đạt | ✓ |
-| 11 | Không còn P0 | ✓ |
-| 12 | Bằng chứng ghi rõ | ✓ |
+| Điều kiện | Kết quả |
+|---|---|
+| Gate S PASS | ✗ |
+| Release Gate PASS | ✗ (P1-N1) |
+| Compilation Gate C tiếp tục PASS | ✓ |
+| Phase 3 không regression | ✓ |
+| Windows E2E đạt | ✗ (D3) |
+| Bảo mật đạt | ✓ |
+| Không còn P0 | ✓ |
+| Bằng chứng nghiệm thu rõ ràng | ✓ |
+| Không đổi tiêu chí sau khi biết kết quả | ✓ |
 
-## Việc cần làm để chuyển sang GO
+## Hướng xử lý tiếp theo (chi phí/lợi ích)
 
-1. Tạo bộ held-out từ **video thật**: dùng mô tả AI đã lưu của các lần chạy (không gọi lại), khoá nhãn bằng hash trước khi chạy.
-2. Hiệu chỉnh độ tin cậy của khớp chỉ từ AI (P1-5) trên các bộ dev, không trên video E2E hay bộ held-out mới. Đo precision/recall của cờ, rồi đánh giá một lần trên bộ held-out thật.
-3. Bản candidate mới (gồm #749) chạy lại sáu video thật và desktop Top 5 trên Windows.
-4. Không chặn GO, nên làm: các P2 của desktop (Compilation report §19), P2-9 lệch ở bước ghép.
+1. **Assisted Editorial Review**, phương án sản phẩm, không phải đạt Gate S.
+   - Với Tổng hợp và Bán hàng, AI tạo bản nháp. Người dùng duyệt các câu bị gắn cờ trong bảng Duyệt cảnh, đã có sẵn ghim/bỏ/duyệt, cảnh thay thế và tín hiệu từng câu.
+   - Đo trên REAL-HOLDOUT: phải xem 42/42 câu, khoảng 6–7 câu mỗi video. Hệ thống không bỏ sót im lặng, ngoại trừ câu mở đầu của Bán hàng (P1-N1).
+   - Giới hạn: không câu nào được READY tự động.
+   - Điều kiện tiên quyết: sửa P1-N1 trước.
+2. **Sửa P1-N1 (#764)**, nhỏ: câu mở đầu nêu thông tin cụ thể mà không có khớp nội dung thì phải gắn cờ.
+3. **Xem lại #763 trên ba bộ hồi quy thật (#765)**, và sửa P2-N3 (#766: ghi `status.json` thử lại khi bị khoá, giữ stderr của engine).
+4. **Phân bổ toàn cục cho nguồn chỉ đi tới, và ngân sách vision thích ứng.** Là thay đổi thuật toán và chi phí, cần một vòng đánh giá mới với tập held-out mới.
+5. **Khớp ngữ nghĩa bằng mô hình** thay cho khớp từ ngữ. Cần chỉ thị riêng, vì chỉ thị hiện tại cấm thêm model.
 
 ## Phần đã đạt và được giữ lại
 
-- Tổng hợp từ video gốc trên desktop (spec v2): nhập nguồn, thiết lập chương trình, bốn mức tối ưu, bảng Duyệt cảnh có mục/thứ hạng/lời bình/khoảnh khắc nguồn, ghim/bỏ/duyệt/INVALIDATED, xem trước, bản nháp và cổng xuất bản cuối, lưu bền, dựng lại từng phần.
-- Đường Tổng hợp cũ (v1) không đổi.
-- Ghép tên riêng đa ngôn ngữ (#723), bằng chứng nhiều khung hình (#725), kiểm tra A–F, các sửa lỗi từ video thật (#745, #747, #749).
+- P2-5: ghim và duyệt bền sau khi dựng lại và mở lại app; chỉ bị huỷ khi có lý do thật.
+- P2-6: Bản cuối có revision và sha256, hiện "cũ" sau khi dựng lại.
+- P2-14: tên file không bao giờ là bằng chứng nội dung.
+- Lỗi VFR và lỗi vision thất bại im lặng (#761).
+- Bộ đánh giá footage thật: 83 câu khoá hash, bản ghi lời gọi planner, replay tất định.
+- 5 tín hiệu tách riêng trong log từng câu.
+- Gate C.
 
 ## Không làm
 
-Không có code Phase 4 nào. Không phát hành bản stable: rc4, rc5 và rc6 là bản candidate với `publish=false`.
+- Không có code Phase 4.
+- Không phát hành bản stable: rc7 là bản candidate với `publish=false`.

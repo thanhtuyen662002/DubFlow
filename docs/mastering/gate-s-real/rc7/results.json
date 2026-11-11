@@ -1,0 +1,514 @@
+{
+ "schema": "dubflow-rc7-evidence-v1",
+ "date": "2026-11-12",
+ "candidate": "1.1.96-rc7",
+ "channel": "candidate",
+ "published": false,
+ "build": {
+  "run": 43077136313,
+  "attempt_1": "failure: Smoke install and launch desktop host -> installed production pipeline smoke: invalid JSON at control\\jobs\\smoke-live-owner.json: [Errno 13] Permission denied",
+  "attempt_2": "success (rerun of the failed job only)",
+  "source_sha": "7acd262bf2bd14adb18d6990d6664183fe80314f",
+  "zip_sha256": "79ad547b301be3b0ac62c88b12f0f26e47ce06e9010c0b6356b6912dd2470b25",
+  "dubflow_exe_sha256": "e0d4985ba5d4127e5c59496482685e5b5a085c6d14e15c4e857b41ccb6eb130a",
+  "release_manifest_sha256": "b019135e9b10c7a2f7afa7b53e37c3fe7f86c09c30df9fd46ac1058fb28ce8a8",
+  "ffmpeg": "--enable-version3 only (LGPL)",
+  "pyc_files": 0,
+  "engine_vs_7acd262_worktree": "0 differing engine files",
+  "runtime_vs_rc6": "33 files differ: 20 console-script launcher .exe + 13 dist-info RECORD; no .py/.pyd/.dll"
+ },
+ "machine": {
+  "os": "Windows 11 Home 10.0.26300",
+  "cpu": "i7-12700H",
+  "ram_gb": 39.7,
+  "gpu": "not used (--cpu-only)"
+ },
+ "cdp_proof": [
+  "browser=21084 parent=2268 D:\\Projects\\DubFlow\\_sandbox\\gate-s-final\\rc7\\app\\versions\\1.1.96-rc7\\app\\bin\\DubFlow.exe",
+  "--user-data-dir=\"\\\\?\\D:\\Projects\\DubFlow\\_sandbox\\gate-s-final\\rc7\\app\\control\\webview2\\312e312e39362d726337\\EBWebView\"",
+  "--remote-debugging-port=9447",
+  "browser=21084 parent=2268 D:\\Projects\\DubFlow\\_sandbox\\gate-s-final\\rc7\\app\\versions\\1.1.96-rc7\\app\\bin\\DubFlow.exe",
+  "reopen: browser=8872 parent=512 D:\\Projects\\DubFlow\\_sandbox\\gate-s-final\\rc7\\app\\versions\\1.1.96-rc7\\app\\bin\\DubFlow.exe",
+  "reopen2: browser=9832 parent=392 D:\\Projects\\DubFlow\\_sandbox\\gate-s-final\\rc7\\app\\versions\\1.1.96-rc7\\app\\bin\\DubFlow.exe"
+ ],
+ "scenarios": {
+  "D1_pin_persistence": {
+   "verdict": "PASS",
+   "kind": "UI (CDP)",
+   "facts": {
+    "pin": "i1.u1 pin [i1-s1c1f3] (alternative 4.1-6.0 s), approved, review revision 2",
+    "rerender": "1 part rendered, 2 reused, 10 s; plan uses the pinned shot (coverage 100 %); panel: 'Bạn đã duyệt', 'Đang dùng (đã ghim)'",
+    "reopen": "after window X + relaunch (new pids): approval and pin kept",
+    "source_change": "item 1 start 7000 ms via 'Sửa chương trình…': review-i1.json invalidated='Cảnh đã chọn không còn trong nguồn (nguồn đã đổi); hãy chọn lại.', panel 'Cần chọn lại', run warning shown, plan starts at 7000"
+   },
+   "notes": [
+    "first 'Lưu và dựng lại' after the source change ended FAILED ('Bộ tổng hợp đã dừng'): caused by my status.json polling (sharing violation in the engine's status write); see defect P2-N3"
+   ]
+  },
+  "D2_final_freshness": {
+   "verdict": "PASS",
+   "kind": "UI (CDP)",
+   "facts": {
+    "export_1": "final.json revision 1, sha256 0b8c427c84bbee85fe02bb0fd6b06f9d5b1c1af06bfdec696a19ac337da753f5 = final.mp4 = compilation.mp4",
+    "after_edit_rerender": "'Bản cuối cũ: … (chương trình đã được dựng lại sau lần xuất này). Bản này không còn là bản hiện tại: hãy xuất bản cuối lại.'",
+    "after_reopen": "same stale message",
+    "export_2": "final.json revision 2, sha256 9f7f212c69499c56ddcae766dfd3c04b15a24f5c444231f09cfbe17e0666c681 = final.mp4 = compilation.mp4; label 'Bản cuối (lần xuất 2)'"
+   }
+  },
+  "D3_provenance": {
+   "verdict": "PASS for P2-14 provenance; new P1 found",
+   "kind": "engine runs = host integration (packaged rc7 engine, desktop argv/env); display = UI (CDP)",
+   "a_vision_failed": {
+    "raw_compilation": "modes signals_only x3; provenance vision 0, filename_metadata only; unit states MATCH_NOT_FOUND 5, NEEDS_REVIEW 1, READY 0; 4 warnings 401",
+    "product": "mode signals_only; provenance vision 0, filename_metadata 8; MATCH_NOT_FOUND 5, NEEDS_REVIEW 1, READY 0",
+    "ui": "'Chưa có bằng chứng nội dung: không câu nào được coi là sẵn sàng', '(tên file chỉ để xếp hạng, không tính là đã thấy nội dung)', 401 warning shown"
+   },
+   "b_misleading_filename": {
+    "setup": "m4 (3D domino simulation) copied as 'noi chien khong dau chong dinh.mp4'; product script about an air fryer; Claude vision working",
+    "result": "mode content; provenance vision 13 / filename_metadata 13; u2,u3 SOURCE_INSUFFICIENT (filename did not count); u1 READY as hook (NOT_NEEDED) on domino footage although the vision text says 'Không thấy sản phẩm'; u4 CTA READY (correct)"
+   }
+  },
+  "D4_legacy": {
+   "verdict": "PASS",
+   "kind": "UI (CDP) + host integration (argv)",
+   "facts": {
+    "v1_ui_render": "compilation.mp4 9afa62bcfb3ae46343d28f606b39a5d68db722c7285582c1112c7e9a1002c6d3 (= rc4/rc5/rc6)",
+    "argv_rc6_vs_rc7": "ffmpeg/ffprobe 24/24 identical (paths normalised), same output hash",
+    "unknown_version": "'Dự án này được tạo bằng phiên bản DubFlow mới hơn (định dạng 9); hãy cập nhật DubFlow để mở.' no reuse button; 34/34 files unchanged",
+    "product_smoke_balanced": "COMPLETED, h264 1080x1920 30fps + aac 48k, 8.233/8.220 s, mode content",
+    "product_mastering_off": "COMPLETED, spec without mastering, 8.233/8.220 s",
+    "dubbing_smoke": "first clip had no speech ('Không tìm thấy lời thoại', my input choice); zh drama 30 s: done in 1:30, h264 1024x576 + aac 30.000/29.99998 s, captions_vi.srt; mastering balanced"
+   }
+  },
+  "D5_security": {
+   "verdict": "PASS",
+   "kind": "UI (CDP) + scans",
+   "facts": {
+    "output_junction": "refused 'Hãy chọn lại thư mục lưu kết quả'; outside\\out stays empty",
+    "output_missing": "refused, folder not recreated",
+    "source_junction": "accepted read-only (user-chosen file), output inside the chosen output root, source copy unchanged",
+    "cancel_resume": "CANCELLED, no python/ffmpeg left, export disabled; resume 'Dựng lại các phần đã đổi' COMPLETED first try (3 parts, 40 s)",
+    "sources_unchanged": "7/7 media + outside copy unchanged; rc6 media vs rc7 copies 5/5 equal",
+    "key_email_scan": [
+     "needle groups: claude, gemini, email | key format ascii: True",
+     "self-test (canaries found and deleted): PASS",
+     "scanned 8759 files (3.93 GiB), unreadable 0; files with hits: claude 0, gemini 0, email 0"
+    ],
+    "ipc_validation": "not re-run here (Rust unit tests in CI only)"
+   }
+  }
+ },
+ "regression": {
+  "kind": "host integration: clone 7acd262 engine + packaged runtime via capture.py, Claude claude-opus-5-5; replays via capture.replay with 85b9d81 and 7acd262 code on identical recorded calls; all scored with the 7acd262 quality scorer and phase2 truth",
+  "runs": [
+   {
+    "set": "P1",
+    "run": "rc7 fresh",
+    "coverage_pct": 82.7,
+    "units_ok": "3/6",
+    "silent_misses": 0,
+    "false_alarms": 2,
+    "contra_ms": 380,
+    "stolen_key_ms": 0,
+    "problem_counts": {},
+    "flagged_units": 5
+   },
+   {
+    "set": "P1",
+    "run": "rc6 code replay",
+    "coverage_pct": 82.7,
+    "units_ok": "3/6",
+    "silent_misses": 0,
+    "false_alarms": 2,
+    "contra_ms": 380,
+    "stolen_key_ms": 0,
+    "problem_counts": {},
+    "flagged_units": 5
+   },
+   {
+    "set": "P1",
+    "run": "rc7 code replay",
+    "coverage_pct": 82.7,
+    "units_ok": "3/6",
+    "silent_misses": 0,
+    "false_alarms": 2,
+    "contra_ms": 380,
+    "stolen_key_ms": 0,
+    "problem_counts": {},
+    "flagged_units": 5
+   },
+   {
+    "set": "P2",
+    "run": "rc7 fresh",
+    "coverage_pct": 65.0,
+    "units_ok": "2/6",
+    "silent_misses": 0,
+    "false_alarms": 2,
+    "contra_ms": 935,
+    "stolen_key_ms": 2774,
+    "problem_counts": {},
+    "flagged_units": 6
+   },
+   {
+    "set": "P2",
+    "run": "rc6 code replay",
+    "coverage_pct": 77.6,
+    "units_ok": "3/6",
+    "silent_misses": 0,
+    "false_alarms": 3,
+    "contra_ms": 1917,
+    "stolen_key_ms": 1211,
+    "problem_counts": {},
+    "flagged_units": 6
+   },
+   {
+    "set": "P2",
+    "run": "rc7 code replay",
+    "coverage_pct": 65.0,
+    "units_ok": "2/6",
+    "silent_misses": 0,
+    "false_alarms": 2,
+    "contra_ms": 935,
+    "stolen_key_ms": 2774,
+    "problem_counts": {},
+    "flagged_units": 6
+   },
+   {
+    "set": "P3",
+    "run": "rc7 fresh",
+    "coverage_pct": 43.9,
+    "units_ok": "0/6",
+    "silent_misses": 0,
+    "false_alarms": 0,
+    "contra_ms": 1000,
+    "stolen_key_ms": 1000,
+    "problem_counts": {},
+    "flagged_units": 6
+   },
+   {
+    "set": "P3",
+    "run": "rc6 code replay",
+    "coverage_pct": 43.9,
+    "units_ok": "0/6",
+    "silent_misses": 0,
+    "false_alarms": 0,
+    "contra_ms": 1000,
+    "stolen_key_ms": 1000,
+    "problem_counts": {},
+    "flagged_units": 6
+   },
+   {
+    "set": "P3",
+    "run": "rc7 code replay",
+    "coverage_pct": 43.9,
+    "units_ok": "0/6",
+    "silent_misses": 0,
+    "false_alarms": 0,
+    "contra_ms": 1000,
+    "stolen_key_ms": 1000,
+    "problem_counts": {},
+    "flagged_units": 6
+   },
+   {
+    "set": "B1",
+    "run": "rc7 fresh",
+    "coverage_pct": 94.9,
+    "units_ok": "10/11",
+    "silent_misses": 0,
+    "false_alarms": 10,
+    "contra_ms": 0,
+    "stolen_key_ms": 3330,
+    "problem_counts": {
+     "REPEAT": 4
+    },
+    "flagged_units": 11
+   },
+   {
+    "set": "B1",
+    "run": "rc6 code replay",
+    "coverage_pct": 94.9,
+    "units_ok": "10/11",
+    "silent_misses": 0,
+    "false_alarms": 10,
+    "contra_ms": 0,
+    "stolen_key_ms": 1745,
+    "problem_counts": {
+     "REPEAT": 4
+    },
+    "flagged_units": 11
+   },
+   {
+    "set": "B1",
+    "run": "rc7 code replay",
+    "coverage_pct": 94.9,
+    "units_ok": "10/11",
+    "silent_misses": 0,
+    "false_alarms": 10,
+    "contra_ms": 0,
+    "stolen_key_ms": 3330,
+    "problem_counts": {
+     "REPEAT": 4
+    },
+    "flagged_units": 11
+   },
+   {
+    "set": "B5",
+    "run": "rc7 fresh",
+    "coverage_pct": 92.6,
+    "units_ok": "11/13",
+    "silent_misses": 0,
+    "false_alarms": 11,
+    "contra_ms": 1785,
+    "stolen_key_ms": 2585,
+    "problem_counts": {
+     "REPEAT": 4
+    },
+    "flagged_units": 13
+   },
+   {
+    "set": "B5",
+    "run": "rc6 code replay",
+    "coverage_pct": 95.7,
+    "units_ok": "12/13",
+    "silent_misses": 0,
+    "false_alarms": 12,
+    "contra_ms": 0,
+    "stolen_key_ms": 2585,
+    "problem_counts": {
+     "REPEAT": 3
+    },
+    "flagged_units": 13
+   },
+   {
+    "set": "B5",
+    "run": "rc7 code replay",
+    "coverage_pct": 92.6,
+    "units_ok": "11/13",
+    "silent_misses": 0,
+    "false_alarms": 11,
+    "contra_ms": 1785,
+    "stolen_key_ms": 2585,
+    "problem_counts": {
+     "REPEAT": 4
+    },
+    "flagged_units": 13
+   },
+   {
+    "set": "D1",
+    "run": "rc7 fresh",
+    "coverage_pct": 43.0,
+    "units_ok": "2/4",
+    "silent_misses": 0,
+    "false_alarms": 2,
+    "contra_ms": 0,
+    "stolen_key_ms": 0,
+    "problem_counts": {
+     "REPEAT": 2
+    },
+    "flagged_units": 4
+   },
+   {
+    "set": "D1",
+    "run": "rc6 code replay",
+    "coverage_pct": 43.0,
+    "units_ok": "2/4",
+    "silent_misses": 0,
+    "false_alarms": 2,
+    "contra_ms": 0,
+    "stolen_key_ms": 0,
+    "problem_counts": {
+     "REPEAT": 2
+    },
+    "flagged_units": 4
+   },
+   {
+    "set": "D1",
+    "run": "rc7 code replay",
+    "coverage_pct": 43.0,
+    "units_ok": "2/4",
+    "silent_misses": 0,
+    "false_alarms": 2,
+    "contra_ms": 0,
+    "stolen_key_ms": 0,
+    "problem_counts": {
+     "REPEAT": 2
+    },
+    "flagged_units": 4
+   }
+  ],
+  "av": [
+   {
+    "set": "P1",
+    "video_s": 25.766667,
+    "audio_s": 25.77,
+    "av_ms": -3.3
+   },
+   {
+    "set": "P2",
+    "video_s": 22.166667,
+    "audio_s": 22.17,
+    "av_ms": -3.3
+   },
+   {
+    "set": "P3",
+    "video_s": 22.5,
+    "audio_s": 22.49,
+    "av_ms": 10.0
+   },
+   {
+    "set": "B1",
+    "video_s": 80.660026,
+    "audio_s": 80.671333,
+    "av_ms": -11.3
+   },
+   {
+    "set": "B5",
+    "video_s": 76.410026,
+    "audio_s": 76.421333,
+    "av_ms": -11.3
+   },
+   {
+    "set": "D1",
+    "video_s": 31.380013,
+    "audio_s": 31.421333,
+    "av_ms": -41.3
+   }
+  ]
+ },
+ "performance": [
+  {
+   "run": "rc7fresh-P1",
+   "wall_s": 142.1,
+   "peak_rss_mb_tree": 3507,
+   "peak_rss_mb_python": 1335,
+   "ffprobe": 8,
+   "ffmpeg": 42,
+   "encodes": 1,
+   "scene_analysis_last_s": 18.3,
+   "keyframes_last_s": 108.7,
+   "first_encode_s": 135.6,
+   "vision_requests": 10,
+   "frames_sent": 36,
+   "frames_answered": 36,
+   "cache_hits": 0,
+   "unique_keyframes": 36,
+   "model": "claude-opus-5-5"
+  },
+  {
+   "run": "rc7fresh-P2",
+   "wall_s": 51.8,
+   "peak_rss_mb_tree": 2171,
+   "peak_rss_mb_python": 1261,
+   "ffprobe": 8,
+   "ffmpeg": 18,
+   "encodes": 1,
+   "scene_analysis_last_s": 13.8,
+   "keyframes_last_s": 37.7,
+   "first_encode_s": 46.3,
+   "vision_requests": 3,
+   "frames_sent": 12,
+   "frames_answered": 12,
+   "cache_hits": 0,
+   "unique_keyframes": 12,
+   "model": "claude-opus-5-5"
+  },
+  {
+   "run": "rc7fresh-P3",
+   "wall_s": 50.8,
+   "peak_rss_mb_tree": 2135,
+   "peak_rss_mb_python": 1258,
+   "ffprobe": 8,
+   "ffmpeg": 18,
+   "encodes": 1,
+   "scene_analysis_last_s": 14.0,
+   "keyframes_last_s": 40.7,
+   "first_encode_s": 45.7,
+   "vision_requests": 4,
+   "frames_sent": 13,
+   "frames_answered": 13,
+   "cache_hits": 0,
+   "unique_keyframes": 13,
+   "model": "claude-opus-5-5"
+  },
+  {
+   "run": "rc7fresh-B1",
+   "wall_s": 318.1,
+   "peak_rss_mb_tree": 2723,
+   "peak_rss_mb_python": 1453,
+   "ffprobe": 14,
+   "ffmpeg": 97,
+   "encodes": 8,
+   "scene_analysis_last_s": 5.4,
+   "keyframes_last_s": 275.4,
+   "first_encode_s": 182.4,
+   "vision_requests": 21,
+   "frames_sent": 76,
+   "frames_answered": 76,
+   "cache_hits": 4,
+   "unique_keyframes": 76,
+   "model": "claude-opus-5-5"
+  },
+  {
+   "run": "rc7fresh-B5",
+   "wall_s": 238.6,
+   "peak_rss_mb_tree": 2573,
+   "peak_rss_mb_python": 1316,
+   "ffprobe": 14,
+   "ffmpeg": 95,
+   "encodes": 8,
+   "scene_analysis_last_s": 4.8,
+   "keyframes_last_s": 222.5,
+   "first_encode_s": 128.9,
+   "vision_requests": 21,
+   "frames_sent": 73,
+   "frames_answered": 73,
+   "cache_hits": 6,
+   "unique_keyframes": 73,
+   "model": "claude-opus-5-5"
+  },
+  {
+   "run": "rc7fresh-D1",
+   "wall_s": 271.2,
+   "peak_rss_mb_tree": 2610,
+   "peak_rss_mb_python": 1464,
+   "ffprobe": 6,
+   "ffmpeg": 465,
+   "encodes": 3,
+   "scene_analysis_last_s": 52.6,
+   "keyframes_last_s": 253.8,
+   "first_encode_s": 225.4,
+   "vision_requests": 21,
+   "frames_sent": 80,
+   "frames_answered": 80,
+   "cache_hits": 0,
+   "unique_keyframes": 80,
+   "model": "claude-opus-5-5"
+  },
+  {
+   "run": "rc7warm-B1",
+   "wall_s": 7.1,
+   "peak_rss_mb_tree": 99,
+   "peak_rss_mb_python": 58,
+   "ffprobe": 6,
+   "ffmpeg": 30,
+   "encodes": 0,
+   "scene_analysis_last_s": null,
+   "keyframes_last_s": 5.2,
+   "first_encode_s": null,
+   "vision_requests": 0,
+   "frames_sent": 0,
+   "frames_answered": 0,
+   "cache_hits": 80,
+   "unique_keyframes": 76,
+   "model": "claude-opus-5-5"
+  }
+ ],
+ "ui_timings": {
+  "D1_draft_cold_3parts_s": 120,
+  "D1_rerender_pin_1part_s": 10,
+  "D2_rerender_edit_1part_s": 15,
+  "D5_resume_after_cancel_3parts_s": 40,
+  "product_smoke_balanced": "≈2-5 min (exact end not captured)",
+  "dubbing_30s_s": 90
+ }
+}
