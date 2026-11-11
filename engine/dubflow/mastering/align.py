@@ -194,6 +194,12 @@ class Scorer:
         self.evidence = evidence
         self.terms = {c.candidate_id: evidence[c.candidate_id].terms() if c.candidate_id in evidence else {} for c in self.candidates}
         self.loose = {key: ev.loose(found) for key, found in self.terms.items()}
+        # what the content evidence alone says (P2-14): a shot matched only through its file name is ranked by it,
+        # never trusted for it; only candidates that carry a file name need the second set
+        self.named = {c.candidate_id for c in self.candidates if c.candidate_id in evidence
+                      and any(i.origin not in ev.CONTENT_ORIGINS and i.origin != "signal" for i in evidence[c.candidate_id].items)}
+        self.content_terms = {key: evidence[key].terms(content_only=True) for key in self.named}
+        self.content_loose = {key: ev.loose(found) for key, found in self.content_terms.items()}
         self.labels = {c.candidate_id: evidence[c.candidate_id].labels() if c.candidate_id in evidence else {} for c in self.candidates}
         frequency: dict[str, int] = {}
         for key, found in self.terms.items():
@@ -231,6 +237,18 @@ class Scorer:
         self.entity_idf = {e: math.log(1 + count / (1 + n)) for e, n in seen_with.items()}
         self.common_entities = frozenset(e for e, n in seen_with.items()
                                          if described >= COMMON_MIN_SHOTS and n * 1000 > COMMON_SHARE * described)
+
+    def content_relevance(self, unit: Unit, candidate: Candidate, relevance: int) -> int:
+        """The relevance the content evidence alone gives (no file name), at most ``relevance``."""
+        if candidate.candidate_id not in self.named or relevance <= 0:
+            return relevance
+        terms, loose = self.terms, self.loose
+        self.terms, self.loose = {**terms, candidate.candidate_id: self.content_terms[candidate.candidate_id]}, \
+            {**loose, candidate.candidate_id: self.content_loose[candidate.candidate_id]}
+        try:
+            return min(relevance, self.relevance(unit, candidate)[0])
+        finally:
+            self.terms, self.loose = terms, loose
 
     def relevance(self, unit: Unit, candidate: Candidate) -> tuple[int, list[str]]:
         """0–1000 and the matched words (for the reason)."""
@@ -490,7 +508,9 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
         info = evidence.get(candidate.candidate_id)
         if mode != "content":
             return min(SIGNALS_ONLY_CAP, 250 + candidate.quality.score // 5)
-        trusted = max([i.confidence * ev.TRUST[i.origin] // 1000 for i in info.items if i.origin != "signal"] or [0]) if info else 0
+        trusted = max([i.confidence * ev.TRUST[i.origin] // 1000 for i in info.items if i.origin in ev.CONTENT_ORIGINS] or [0]) \
+            if info else 0
+        relevance = scorer.content_relevance(unit, candidate, relevance)
         if relevance <= 0:  # no word of the sentence in what is known of the shot: role fit at most
             return min(SIGNALS_ONLY_CAP, 250 + fit // 4)
         match = min(1000, relevance * 1000 // MATCH_FULL)

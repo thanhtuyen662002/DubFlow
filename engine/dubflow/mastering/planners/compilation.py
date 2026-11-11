@@ -255,7 +255,7 @@ def plan_part(part_id: str, kind: str, spoken: Sequence[tuple[str, int]], narrat
     moment_ms = 0
     warnings: list[str] = []
     if mode == "signals_only":
-        warnings.append(f"{part_id}: chưa có bằng chứng nội dung (phụ đề nguồn, ghi chú, AI nhìn hình); cảnh chọn theo điểm cắt và chất lượng.")
+        warnings.append(f"{part_id}: chưa có bằng chứng nội dung (phụ đề nguồn, ghi chú, AI nhìn hình; tên file không tính); cảnh chọn theo điểm cắt và chất lượng.")
     if moment and kind == "item" and policy.keep_source_audio:
         picked = reserved
         if picked is not None and picked[1] < used_end.get(picked[0].source_id, 0):
@@ -284,7 +284,9 @@ def plan_part(part_id: str, kind: str, spoken: Sequence[tuple[str, int]], narrat
            "candidates": [{**c.to_dict(), "group": (groups or {}).get(c.candidate_id, c.candidate_id),
                            "evidence": evidence[c.candidate_id].to_dict() if c.candidate_id in evidence else None,
                            "summary": evidence[c.candidate_id].summary() if c.candidate_id in evidence else ""} for c in pool],
-           "edits": (edits or align.Edits()).to_dict(), "warnings": warnings}
+           "edits": (edits or align.Edits()).to_dict(), "warnings": warnings,
+           # what the evidence came from (P2-14): file names alone are never content
+           "provenance": ev.provenance_counts({c.candidate_id: evidence[c.candidate_id] for c in pool if c.candidate_id in evidence})}
     return PartPlan(result, log, narration_ms, moment_ms, audio)
 
 
