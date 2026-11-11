@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import {
-  coverageText, evidenceHelp, isLevel, unitNumber, levelText, masteringOf, needsExportConfirm, parseReview, reviewSummary, seconds, unitBadge,
+  coverageText, evidenceHelp, provenanceText, isLevel, unitNumber, levelText, masteringOf, needsExportConfirm, parseReview, reviewSummary, seconds, unitBadge,
 } from "../src/features/mastering/model.ts";
 import { buildRequest } from "../src/features/product/model.ts";
 
@@ -156,3 +156,16 @@ console.log("rc2 findings ok");
 assert.equal(unitNumber("s3"), "3");
 assert.equal(unitNumber("i2.u14"), "14");
 assert.equal(unitNumber("hook.u1"), "1");
+
+// P2-14: a file name is evidence of provenance "filename_metadata", never content
+{
+  const named = parseReview({ kind: "editorial_review_view", mode: "signals_only", provenance: { filename_metadata: 3, vision: 0, bogus: "x" }, units: [], warnings: [] });
+  assert.deepEqual(named.provenance, { filename_metadata: 3, vision: 0 });
+  assert.match(provenanceText(named), /tên file 3 cảnh/);
+  assert.match(provenanceText(named), /không tính là đã thấy nội dung/);
+  assert.match(provenanceText(named), /không câu nào được coi là sẵn sàng/);
+  const seen = parseReview({ kind: "editorial_review_view", mode: "content", provenance: { vision: 5 }, units: [], warnings: [] });
+  assert.equal(provenanceText(seen), "Bằng chứng: AI nhìn hình 5 cảnh.");
+  const old = parseReview({ kind: "editorial_review_view", mode: "signals_only", units: [], warnings: [] });
+  assert.match(provenanceText(old), /Chưa có bằng chứng nội dung/);
+}

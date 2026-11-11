@@ -43,6 +43,34 @@ LABEL_CUES = {
 ORIGINS = ("user", "metadata", "transcript", "vision", "signal")
 # How far each origin's own confidence is trusted (milli).
 TRUST = {"user": 950, "metadata": 550, "transcript": 800, "vision": 800, "signal": 300}
+# Origins that say what a shot *shows*. A file name (``metadata``) only says what someone called the file: it can
+# rank shots, it is never content on its own, so a plan whose only evidence is file names is ``signals_only`` and
+# cannot be READY (rc5 P2-14: every AI call failed with 401 and every part still said ``mode: content``).
+CONTENT_ORIGINS = frozenset({"user", "transcript", "vision"})
+# Where a piece of evidence came from, as the desktop and the reports name it.
+PROVENANCES = ("vision", "transcript", "user_note", "ocr", "filename_metadata", "signal")
+
+
+def provenance(origin: str, detail: str = "") -> str:
+    """The provenance of an evidence item: ``vision``, ``transcript``, ``user_note``, ``ocr``, ``filename_metadata``
+    or ``signal`` (on-screen text read by the vision model is ``ocr`` when its detail says so)."""
+    if origin == "user":
+        return "user_note"
+    if origin == "metadata":
+        return "filename_metadata"
+    if origin == "transcript" and "ocr" in detail.lower():
+        return "ocr"
+    return origin
+
+
+def provenance_counts(evidence: "Mapping[str, Evidence]") -> dict[str, int]:
+    """Provenance → how many candidates have evidence of it (with text or labels; signals counted as present)."""
+    out = {name: 0 for name in PROVENANCES}
+    for found in evidence.values():
+        kinds = {provenance(i.origin, i.detail) for i in found.items if i.origin == "signal" or i.text.strip() or i.labels}
+        for kind in kinds:
+            out[kind] = out.get(kind, 0) + 1
+    return out
 
 # Only words that stay function words without their diacritics: "can" (cận/cần/cân), "chi" (chi tiết), "tu" (tủ),
 # "da" (da thật), "toi" (tối), "tai" (tai nghe), "ban" (bàn/bán) and "con" carry meaning once folded, so they stay.
@@ -209,13 +237,16 @@ class Evidence:
 
     @property
     def content(self) -> bool:
-        """Whether anything says what the candidate shows (not only signals)."""
-        return any(item.origin != "signal" and (item.text.strip() or item.labels) for item in self.items)
+        """Whether anything says what the candidate shows (not only signals, not only its file name)."""
+        return any(item.origin in CONTENT_ORIGINS and (item.text.strip() or item.labels) for item in self.items)
 
-    def terms(self) -> dict[str, int]:
-        """Term → the best trust-weighted confidence any evidence gives it (milli)."""
+    def terms(self, *, content_only: bool = False) -> dict[str, int]:
+        """Term → the best trust-weighted confidence any evidence gives it (milli); ``content_only``: only from what
+        says what the shot shows (not its file name)."""
         out: dict[str, int] = {}
         for item in self.items:
+            if content_only and item.origin not in CONTENT_ORIGINS:
+                continue
             weight = item.confidence * TRUST[item.origin] // 1000
             # each piece on its own: an AI description typed without marks next to label names with marks
             for text in (item.text, *(LABEL_NAMES_VI.get(label, "") for label in item.labels)):

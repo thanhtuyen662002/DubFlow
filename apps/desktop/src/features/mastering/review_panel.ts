@@ -5,7 +5,7 @@
  * video again with the pins and exclusions, keeping its narration.
  */
 import {
-  coverageText, evidenceHelp, parseReview, seconds, STATE_LABELS, unitBadge, unitNumber, type ReviewUnit, type ReviewView, type Shot,
+  coverageText, evidenceHelp, parseReview, provenanceText, seconds, STATE_LABELS, unitBadge, unitNumber, type ReviewUnit, type ReviewView, type Shot,
 } from "./model.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
@@ -213,7 +213,7 @@ export function openReviewPanel(invoke: Invoke, target: ReviewTarget): Promise<v
     if (!view) return;
     const open = view.unreviewed.length;
     summary.textContent = `${view.units.length} câu · ${open ? `${open} câu cần xem lại` : "không còn câu cần xem lại"}`
-      + (view.mode === "signals_only" ? " · chưa có bằng chứng nội dung (chọn theo điểm cắt và độ nét)" : "");
+      + (provenanceText(view) ? ` · ${provenanceText(view)}` : "");
     warnings.replaceChildren(...view.warnings.map((warning) => {
       const item = el("li", warning.acknowledged ? "read" : "");
       item.append(el("span", "", warning.text));
