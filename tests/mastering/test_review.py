@@ -217,5 +217,15 @@ class JobReviewTests(unittest.TestCase):
                 job.load_spec(root / "s.json")
 
 
+class AlternativesTests(unittest.TestCase):
+    def test_a_shot_the_sentence_already_uses_is_not_offered_as_an_alternative(self):
+        """rc2 Windows check (D4): "Dùng cảnh này" on a shot already in use only pinned it and changed nothing."""
+        item = unit("u1", matched=2, chosen=("c1",))
+        item["alternatives"] = [{"candidate_id": "c1", "score": 736, "reasons": []}, {"candidate_id": "c2", "score": 400, "reasons": []}]
+        document = log([item], [cand("c1", text="vòi phun"), cand("c2", text="hộp đựng")])
+        shown = rv.view(document, None, rv.Review())["units"][0]["alternatives"]
+        self.assertEqual([alt["id"] for alt in shown], ["c2"])
+
+
 if __name__ == "__main__":
     unittest.main()

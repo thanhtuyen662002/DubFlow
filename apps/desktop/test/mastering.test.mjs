@@ -125,3 +125,23 @@ console.log("mastering qc ok");
   assert.deepEqual(await exportGate(invoker({ view: view(["s1"], true) }), review, no), { open: true }, "accepted before: no second ask");
 }
 console.log("export gate ok");
+
+// rc2 Windows check: a run saved beside its clips is remembered (D2); the card says why the voice is quieter (D5).
+{
+  const { parseRecentRuns, rememberRun, RECENT_RUNS_MAX } = await import("../src/features/product/model.ts");
+  assert.deepEqual(parseRecentRuns(null), []);
+  assert.deepEqual(parseRecentRuns("{not json"), []);
+  assert.deepEqual(parseRecentRuns(JSON.stringify(["D:/a", 3, "", "D:/a", "D:/b"])), ["D:/a", "D:/b"]);
+  let raw = null;
+  for (let i = 0; i < RECENT_RUNS_MAX + 5; i += 1) raw = rememberRun(raw, `D:/clips/DubFlow Output/Ban hang - A/run-${i}`);
+  const kept = parseRecentRuns(raw);
+  assert.equal(kept.length, RECENT_RUNS_MAX);
+  assert.equal(kept[0], `D:/clips/DubFlow Output/Ban hang - A/run-${RECENT_RUNS_MAX + 4}`, "newest first");
+  assert.equal(parseRecentRuns(rememberRun(raw, kept[5]))[0], kept[5], "a run started again moves to the front once");
+  const { parseDubbingQc, qcRows } = await import("../src/features/mastering/qc.ts");
+  const lowered = qcRows(parseDubbingQc({ level: "balanced", loudness: true, measured: { mix: { integrated: -16.6, true_peak: -0.7, lra: 9 } },
+    output_loudness: { integrated: -18.5, true_peak: -2.5, lra: 9 },
+    notes: ["Âm lượng: -16.6 → -18.4 LUFS (thấp hơn mục tiêu -16 LUFS vì đỉnh -0.7 dBTP: giữ tăng/giảm tuyến tính)."] }));
+  assert.match(lowered.find((row) => row.label === "Âm lượng").text, /Thấp hơn mục tiêu vì đỉnh/);
+}
+console.log("rc2 findings ok");

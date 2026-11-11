@@ -196,10 +196,15 @@ pub(crate) const DUBBING_FILE: &str = "mastering.json";
 const QC_LIMIT: u64 = 4 * 1024 * 1024;
 
 /// A level writes `mastering.json` in a Lồng tiếng output folder; off (or no level) removes it, so off renders as before.
+/// Mạnh (`dynamic`) also asks for the climax suggestion its description promises: only a suggestion for the Hậu kỳ
+/// card (Giữ / Bỏ), never put into the video (ADR-0055).
 pub(crate) fn write_dubbing_options(output: &Path, level: Option<&str>) -> Result<(), String> {
     let path = output.join(DUBBING_FILE);
     match options(level)? {
-        Some(value) => {
+        Some(mut value) => {
+            if value["level"] == "dynamic" {
+                value["enable_climax_hook"] = Value::Bool(true);
+            }
             let temp = output.join(".mastering.json.tmp");
             fs::write(&temp, serde_json::to_vec(&value).map_err(|error| fail(error.to_string()))?)
                 .and_then(|()| fs::rename(&temp, &path))
@@ -407,6 +412,9 @@ mod tests {
         write_dubbing_options(&dir, Some("light")).unwrap();
         let written: Value = serde_json::from_slice(&fs::read(dir.join(DUBBING_FILE)).unwrap()).unwrap();
         assert_eq!(written, json!({"schema_version": 1, "level": "light"}));
+        write_dubbing_options(&dir, Some("dynamic")).unwrap();
+        let written: Value = serde_json::from_slice(&fs::read(dir.join(DUBBING_FILE)).unwrap()).unwrap();
+        assert_eq!(written, json!({"schema_version": 1, "level": "dynamic", "enable_climax_hook": true}), "Mạnh suggests a climax");
         write_dubbing_options(&dir, Some("off")).unwrap();
         assert!(!dir.join(DUBBING_FILE).exists());
         write_dubbing_options(&dir, None).unwrap();

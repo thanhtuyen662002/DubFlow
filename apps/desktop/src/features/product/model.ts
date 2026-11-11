@@ -309,3 +309,27 @@ export function parseProductSpec(value: unknown): SpecInfo | null {
 export function keepsVoice(before: SpecInfo, after: { script: string; voiceId: string; speed: number }): boolean {
   return before.narration && before.spec.script.trim() === after.script.trim() && before.spec.voiceId === after.voiceId && before.spec.speed === after.speed;
 }
+
+/** Where the page remembers the folders of the runs it started, so a run saved beside its clips is listed again
+ * after the app reopens (rc2 Windows check, D2). Newest first, at most `RECENT_RUNS_MAX`. */
+export const RECENT_RUNS_KEY = "dubflow.product.runs.v1";
+export const RECENT_RUNS_MAX = 32;
+
+export function parseRecentRuns(raw: string | null): string[] {
+  try {
+    const value = JSON.parse(raw ?? "[]") as unknown;
+    if (!Array.isArray(value)) return [];
+    const seen = new Set<string>();
+    for (const item of value) {
+      if (typeof item === "string" && item.length > 0 && item.length <= 1024 && !item.includes("\0")) seen.add(item);
+      if (seen.size >= RECENT_RUNS_MAX) break;
+    }
+    return [...seen];
+  } catch {
+    return [];
+  }
+}
+
+export function rememberRun(raw: string | null, dir: string): string {
+  return JSON.stringify([dir, ...parseRecentRuns(raw).filter((item) => item !== dir)].slice(0, RECENT_RUNS_MAX));
+}
