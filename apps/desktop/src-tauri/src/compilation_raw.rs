@@ -34,6 +34,9 @@ const SPEC_LIMIT: u64 = 256 * 1024;
 const STATUS_LIMIT: u64 = 256 * 1024;
 const PROGRAM_LIMIT: u64 = 4 * 1024 * 1024;
 const FINAL: &str = "final.mp4";
+/// What the last final export was made from (P2-6): its hash, its revision and the draft it copied.
+const FINAL_RECORD: &str = "final.json";
+const FINAL_RECORD_LIMIT: u64 = 64 * 1024;
 const FINISHED: [&str; 3] = ["COMPLETED", "FAILED", "CANCELLED"];
 const MAX_TIME_MS: u64 = 24 * 3600 * 1000;
 
@@ -429,8 +432,49 @@ pub fn compilation_raw_open(output_dir: String) -> Result<Value, String> {
         let path = dir.join(name);
         fs::symlink_metadata(&path).is_ok_and(|m| m.is_file() && !crate::edit::is_link(&m)).then(|| display_path(&path))
     };
+    let final_path = file(FINAL);
+    let final_state = final_path.as_ref().map(|path| final_state(&dir, path, status.as_ref()));
     Ok(json!({"dir": display_path(&dir), "spec": spec, "status": status, "program": program,
-              "video": file("compilation.mp4"), "final": file(FINAL)}))
+              "video": file("compilation.mp4"), "final": final_path, "final_state": final_state}))
+}
+
+/// The draft's identity without reading it: length and modification time (ns). A re-render replaces the draft, so
+/// either changes; the final export records it and compares it on every open.
+fn draft_identity(dir: &Path) -> Option<(u64, u128)> {
+    let metadata = fs::symlink_metadata(dir.join("compilation.mp4")).ok().filter(|m| m.is_file() && !crate::edit::is_link(m))?;
+    let modified = metadata.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos();
+    Some((metadata.len(), modified))
+}
+
+fn file_sha256(path: &Path) -> std::io::Result<String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let mut file = fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0u8; 1 << 20];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 { break; }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// Whether `final.mp4` is the current programme (P2-6): stale when the draft was rendered again after the export,
+/// when a render is running, or when no record says what it was made from (an export before the record).
+fn final_state(dir: &Path, path: &str, status: Option<&Value>) -> Value {
+    let record = crate::mastering::read_plain_json(&dir.join(".dubflow-work").join(FINAL_RECORD), FINAL_RECORD_LIMIT)
+        .ok().flatten().filter(|value| value["kind"] == "compilation_final");
+    let running = status.is_some_and(|value| value["state"] == "RUNNING");
+    let Some(record) = record else {
+        return json!({"path": path, "stale": true, "reason": "unknown", "revision": null, "sha256": null, "exported_at_ms": null});
+    };
+    let same = draft_identity(dir).is_some_and(|(len, modified)| {
+        record["draft"]["bytes"].as_u64() == Some(len) && record["draft"]["modified_ns"].as_str() == Some(modified.to_string().as_str())
+    });
+    let reason = if running { Some("rendering") } else if !same { Some("rerendered") } else { None };
+    json!({"path": path, "stale": reason.is_some(), "reason": reason, "revision": record["revision"], "sha256": record["sha256"],
+           "exported_at_ms": record["exported_at_ms"]})
 }
 
 /// The parts of the run's spec, in programme order: hook, intro, items, outro (the ids the engine uses).
@@ -548,11 +592,21 @@ fn finalize_in(dir: &Path, accept: bool, review: impl Fn(&Path, &str, &[String])
     }
     let partial = dir.join("final.partial.mp4");
     let _ = fs::remove_file(&partial);
+    let identity = draft_identity(dir).ok_or_else(|| fail("Không tìm thấy bản dựng"))?;
     fs::copy(&draft, &partial).and_then(|_| fs::rename(&partial, &target)).map_err(|error| {
         let _ = fs::remove_file(&partial);
         fail(format!("Không xuất được video: {error}"))
     })?;
-    Ok(json!({"exported": true, "path": display_path(&target)}))
+    // what this final is: its hash, a revision that grows with each export, the draft it copied (P2-6)
+    let sha256 = file_sha256(&target).map_err(|_| fail("Không đọc lại được bản xuất"))?;
+    let record_path = work.join(FINAL_RECORD);
+    let previous = crate::mastering::read_plain_json(&record_path, FINAL_RECORD_LIMIT).ok().flatten();
+    let revision = previous.as_ref().and_then(|value| value["revision"].as_u64()).unwrap_or(0) + 1;
+    let exported_at_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+    let record = json!({"schema_version": 1, "kind": "compilation_final", "revision": revision, "sha256": sha256,
+                        "exported_at_ms": exported_at_ms, "draft": {"bytes": identity.0, "modified_ns": identity.1.to_string()}});
+    write_replace(&record_path, &serde_json::to_vec(&record).unwrap_or_default()).map_err(|_| fail("Không ghi được thông tin bản xuất"))?;
+    Ok(json!({"exported": true, "path": display_path(&target), "sha256": sha256, "revision": revision}))
 }
 
 #[tauri::command]
@@ -797,8 +851,34 @@ mod tests {
         assert!(!dir.join(FINAL).exists(), "no export without the user's confirmation");
         let done = finalize_in(&dir, true, review).unwrap();
         assert_eq!(done["exported"], true);
+        assert_eq!(done["revision"], 1);
+        assert_eq!(done["sha256"].as_str().map(str::len), Some(64));
         assert_eq!(accepted.borrow().as_slice(), ["i2"], "only the open part is accepted");
         assert_eq!(fs::read(dir.join(FINAL)).unwrap(), b"draft");
+        // P2-6: the final is current until the draft is rendered again; then it is stale until exported again
+        let opened = compilation_raw_open(display_path(&dir)).unwrap();
+        assert_eq!(opened["final_state"]["stale"], false, "{opened}");
+        assert_eq!(opened["final_state"]["revision"], 1);
+        assert_eq!(opened["final_state"]["sha256"], done["sha256"]);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::write(dir.join("compilation.mp4"), b"draft after a re-render").unwrap();
+        let stale = compilation_raw_open(display_path(&dir)).unwrap();
+        assert_eq!(stale["final_state"]["stale"], true);
+        assert_eq!(stale["final_state"]["reason"], "rerendered");
+        assert_eq!(stale["final"], opened["final"], "the old file is still there, only marked");
+        write_status(&work, "RUNNING", "x").unwrap();
+        assert_eq!(compilation_raw_open(display_path(&dir)).unwrap()["final_state"]["reason"], "rendering");
+        write_status(&work, "COMPLETED", "x").unwrap();
+        let again = finalize_in(&dir, true, review).unwrap();
+        assert_eq!(again["revision"], 2);
+        assert_ne!(again["sha256"], done["sha256"]);
+        assert_eq!(fs::read(dir.join(FINAL)).unwrap(), b"draft after a re-render");
+        let fresh = compilation_raw_open(display_path(&dir)).unwrap();
+        assert_eq!(fresh["final_state"]["stale"], false);
+        assert_eq!(fresh["final_state"]["sha256"], again["sha256"]);
+        // an export made before the record existed is never shown as current
+        fs::remove_file(work.join(FINAL_RECORD)).unwrap();
+        assert_eq!(compilation_raw_open(display_path(&dir)).unwrap()["final_state"]["reason"], "unknown");
         let broken = |_: &Path, _: &str, _: &[String]| -> Result<Value, String> { Ok(json!({"kind": "other"})) };
         assert!(finalize_in(&dir, true, broken).is_err(), "an unreadable review fails closed");
         fs::remove_dir_all(base).unwrap();

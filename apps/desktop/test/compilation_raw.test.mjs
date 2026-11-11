@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import {
-  addSources, applySuggestedOrder, buildRawRequest, durationNote, emptyDraft, milliseconds, moveItem, numberRanks, openForExport, parseRawRun,
+  addSources, applySuggestedOrder, finalText, buildRawRequest, durationNote, emptyDraft, milliseconds, moveItem, numberRanks, openForExport, parseRawRun,
   partName, removeItem, removeSource, renderStats, sourceName, sourcesOf, specToDraft, supported,
 } from "../src/features/compilation/raw_model.ts";
 import { levelText, LEVELS } from "../src/features/mastering/model.ts";
@@ -139,6 +139,24 @@ assert.match(renderStats(run), /dựng 1 phần, dùng lại 2 phần/);
 assert.equal(sourceName("i2-s1", spec), "Mục 2 · nguồn 1 (dog.mkv)");
 assert.equal(sourceName("v1", spec), "v1");
 assert.equal(parseRawRun({ spec }), null);
+
+// P2-6: "Bản cuối" says whether the final export is still the programme
+assert.equal(run.finalState, null);
+assert.equal(finalText(run), "");
+const sha = "a".repeat(64);
+const current = parseRawRun({ dir: "d", spec, final: "D:/x/final.mp4",
+  final_state: { path: "D:/x/final.mp4", stale: false, reason: null, revision: 2, sha256: sha, exported_at_ms: 5 } });
+assert.equal(current.finalState.stale, false);
+assert.equal(current.finalState.sha256, sha);
+assert.equal(finalText(current), "Bản cuối (lần xuất 2): D:/x/final.mp4");
+const rerendered = parseRawRun({ dir: "d", spec, final: "D:/x/final.mp4", final_state: { stale: true, reason: "rerendered", revision: 1 } });
+assert.match(finalText(rerendered), /^Bản cuối cũ: .*đã được dựng lại.*xuất bản cuối lại/);
+assert.match(finalText(parseRawRun({ dir: "d", spec, final: "D:/x/final.mp4", final_state: { stale: true, reason: "rendering" } })), /đang được dựng lại/);
+// an older host (no final_state) or a malformed one: never shown as the current final
+const older = parseRawRun({ dir: "d", spec, final: "D:/x/final.mp4" });
+assert.equal(older.finalState, null);
+assert.match(finalText(older), /^Bản cuối cũ: .*không xác định/);
+assert.equal(parseRawRun({ dir: "d", spec, final: "D:/x/final.mp4", final_state: { reason: "rerendered" } }).finalState.stale, true);
 
 // The page's list tells the versions apart.
 const listed = parseRuns([{ dir: "a", spec: { schema_version: 1, items: [] } }, { dir: "b", schema_version: 2, spec: { schema_version: 2, items: [] } },

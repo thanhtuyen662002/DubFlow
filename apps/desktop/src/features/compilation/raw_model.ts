@@ -266,9 +266,40 @@ export type RawPart = {
 };
 export type RawRun = {
   dir: string; spec: unknown; status: RawStatus | null; parts: RawPart[]; video: string | null; final: string | null;
+  /** Whether `final` is the current programme (P2-6); null when there is no final export. */
+  finalState: FinalState | null;
   suggestion: { order: string[]; reasons: Record<string, string> } | null; applied: boolean;
   rendered: string[]; reused: string[]; warnings: string[]; credits: string[];
 };
+
+export type FinalState = {
+  stale: boolean; reason: "rerendered" | "rendering" | "unknown" | null; revision: number | null; sha256: string | null;
+  exportedAtMs: number | null;
+};
+
+function parseFinalState(value: unknown): FinalState | null {
+  if (!value || typeof value !== "object") return null;
+  const object = value as Record<string, unknown>;
+  const reason = ["rerendered", "rendering", "unknown"].includes(object.reason as string) ? object.reason as FinalState["reason"] : null;
+  const whole = (v: unknown): number | null => (Number.isInteger(v) && (v as number) >= 0 ? (v as number) : null);
+  const sha = typeof object.sha256 === "string" && /^[0-9a-f]{64}$/.test(object.sha256) ? object.sha256 : null;
+  // anything but an explicit "current" is stale: a final is never shown as done on a doubt
+  return { stale: object.stale !== false || reason !== null, reason, revision: whole(object.revision), sha256: sha,
+    exportedAtMs: whole(object.exported_at_ms) };
+}
+
+/** The line under the final export: what the final file is, and whether it still matches the programme. */
+export function finalText(run: Pick<RawRun, "final" | "finalState">): string {
+  if (!run.final) return "";
+  const state = run.finalState;
+  if (!state || state.stale) {
+    const why = state?.reason === "rendering" ? "chương trình đang được dựng lại"
+      : state?.reason === "rerendered" ? "chương trình đã được dựng lại sau lần xuất này"
+      : "không xác định được bản này xuất từ bản dựng nào";
+    return `Bản cuối cũ: ${run.final} (${why}). Bản này không còn là bản hiện tại: hãy xuất bản cuối lại.`;
+  }
+  return `Bản cuối (lần xuất ${state.revision ?? 1}): ${run.final}`;
+}
 
 function parseStatus(value: unknown): RawStatus | null {
   const object = (value ?? {}) as Record<string, unknown>;
@@ -304,6 +335,7 @@ export function parseRawRun(value: unknown): RawRun | null {
     : null;
   return {
     dir: object.dir, spec: object.spec, status: parseStatus(object.status), parts, video: str(object.video) || null, final: str(object.final) || null,
+    finalState: str(object.final) ? parseFinalState(object.final_state) : null,
     suggestion, applied: ((object.spec ?? {}) as Record<string, Record<string, unknown>>).program?.apply_suggestion === true,
     rendered: strings(program.rendered_parts), reused: strings(program.reused_parts), warnings: strings(program.warnings, 30),
     credits: strings(program.credits, 60),
