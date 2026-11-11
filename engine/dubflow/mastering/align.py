@@ -172,11 +172,15 @@ class Decision:
     alternatives: list[dict[str, Any]] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     coverage: dict[str, Any] = field(default_factory=dict)
+    signals: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"unit_id": self.unit.unit_id, "text": self.unit.text, "function": self.unit.function,
-                "start_ms": self.unit.start_ms, "end_ms": self.unit.end_ms, "chosen": self.chosen,
-                "alternatives": self.alternatives, "notes": self.notes, "coverage": self.coverage}
+        out = {"unit_id": self.unit.unit_id, "text": self.unit.text, "function": self.unit.function,
+               "start_ms": self.unit.start_ms, "end_ms": self.unit.end_ms, "chosen": self.chosen,
+               "alternatives": self.alternatives, "notes": self.notes, "coverage": self.coverage}
+        if self.signals:
+            out["signals"] = self.signals
+        return out
 
 
 MIN_RELEVANCE = 60  # below this the best match is noise (one common word): no rescaling
@@ -318,11 +322,19 @@ _CARD_CUES = ("man hinh chu", "dong chu", "the tieu de", "man hinh tieu de", "ch
 _TEXT_TOPIC = re.compile(r"\d|\b(gia|chu|tieu de|ten|khuyen mai|giam|ma giam|freeship|dong chu)\b")
 
 
+# What a shot shows besides words: a frame labelled with one of these is footage that carries text (burned-in
+# subtitles, a caption, a screen being used), not a screen of text. Gate S real set: every shot of a Chinese drama
+# with subtitles was labelled text_on_screen and so held back as a card from every sentence not about words.
+SCENE_LABELS = frozenset(ev.PRODUCT_LABELS) | {"action", "reaction", "establishing", "people", "object", "explanation"}
+
+
 def _text_card(found: ev.Evidence | None) -> bool:
     """Whether what is known of a shot says it is a screen of text (a title, an end or a subscribe card)."""
     if found is None:
         return False
-    if found.labels().get("text_on_screen", 0) >= 400 and not found.product_visible:
+    labels = found.labels()
+    if (labels.get("text_on_screen", 0) >= 400 and not found.product_visible
+            and not any(labels.get(name, 0) >= 400 for name in SCENE_LABELS)):
         return True
     text = " ".join(ev.fold(item.text) for item in found.items if item.origin != "signal")
     return any(f" {cue} " in f" {text} " for cue in _CARD_CUES)
@@ -849,8 +861,47 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
                 return choppy or half_matched
             return review or c.confidence < REVIEW_BELOW
         mine[:] = [Choice(c.unit_id, c.candidate, c.offset_ms, c.length_ms, c.score, c.confidence, flag(c), c.reasons) for c in mine]
+        decision.signals = _signals(unit, mine, accept, best, milli, coverage["needs_review"], mode, evidence,
+                                    lambda c: scorer.content_relevance(unit, c, relevance_of[(unit.unit_id, c.candidate_id)][0]),
+                                    still_ids)
     choices = [c for u in found_units for c in by_unit.get(u.unit_id, [])]
     return choices, [decisions[u.unit_id] for u in found_units], mode
+
+
+def _signals(unit: Unit, mine: Sequence[Choice], accept: set[str], best: int, milli: int, review: bool, mode: str,
+             evidence: Mapping[str, ev.Evidence], relevance: Any, stills: set[str]) -> dict[str, Any]:
+    """The separate signals behind a sentence's verdict (Gate S final closure B), each on its own scale.
+
+    evidence_reliability: how far what is known of the shots can be trusted (content origins only: a file name is
+    never content), the weakest of its pieces; semantic_relevance: how well the content says what the sentence says
+    (its best match in the footage, the weakest chosen match); temporal_coverage: share of its time on footage that
+    illustrates it; allocation: where its time went (own footage, neutral, repeats, held frames); review_risk: the
+    lowest piece confidence and whether the sentence needs a look. Nothing here changes a choice or a verdict.
+    """
+    trust, chosen_relevance = [], []
+    own = neutral = repeat = held = 0
+    for c in mine:
+        info = evidence.get(c.candidate.candidate_id)
+        trust.append(max([i.confidence * ev.TRUST[i.origin] // 1000 for i in info.items if i.origin in ev.CONTENT_ORIGINS] or [0])
+                     if info else 0)
+        if any("nhắc lại cảnh" in r for r in c.reasons):
+            repeat += c.length_ms
+        elif c.candidate.candidate_id in stills:
+            held += c.length_ms
+        elif c.candidate.candidate_id in accept:
+            own += c.length_ms
+            chosen_relevance.append(relevance(c.candidate))
+        else:
+            neutral += c.length_ms
+    return {
+        "evidence_reliability": {"mode": mode, "min_trust": min(trust, default=0), "max_trust": max(trust, default=0)},
+        "semantic_relevance": {"best": best, "chosen_min": min(chosen_relevance, default=0),
+                               "matched_footage": len(accept)},
+        "temporal_coverage": {"milli": milli, "need_ms": unit.length_ms},
+        "allocation": {"own_ms": own, "neutral_ms": neutral, "repeat_ms": repeat, "held_ms": held, "pieces": len(mine)},
+        "review_risk": {"min_confidence": min((c.confidence for c in mine), default=0),
+                        "flagged_pieces": sum(c.needs_review for c in mine), "needs_review": bool(review)},
+    }
 
 
 def _room(pick: dict[str, Any], picks: Sequence[dict[str, Any]], still_ids: set[str]) -> int:

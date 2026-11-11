@@ -63,7 +63,32 @@
                          "status": {"enum": ["full", "partial", "none", "generic"]},
                          "needs_review": {"type": "boolean"}, "matched_footage": {"type": "integer", "minimum": 0},
                          "best_relevance": {"description": "The sentence's best relevance (0-1000) over the usable footage; a near miss (> 0) is never SOURCE_INSUFFICIENT. Absent in older logs.",
-                                            "type": "integer", "minimum": 0, "maximum": 1000}}}
+                                            "type": "integer", "minimum": 0, "maximum": 1000}}},
+        "signals": {
+          "description": "The separate signals behind the verdict (Gate S final closure): evidence reliability, semantic relevance, temporal coverage, allocation and review risk, each on its own scale. Explains the verdict, never changes it. Absent in older logs.",
+          "type": "object", "additionalProperties": false,
+          "required": ["evidence_reliability", "semantic_relevance", "temporal_coverage", "allocation", "review_risk"],
+          "properties": {
+            "evidence_reliability": {"type": "object", "additionalProperties": false, "required": ["mode", "min_trust", "max_trust"],
+                                     "properties": {"mode": {"enum": ["content", "signals_only"]},
+                                                    "min_trust": {"type": "integer", "minimum": 0, "maximum": 1000},
+                                                    "max_trust": {"type": "integer", "minimum": 0, "maximum": 1000}}},
+            "semantic_relevance": {"type": "object", "additionalProperties": false, "required": ["best", "chosen_min", "matched_footage"],
+                                   "properties": {"best": {"type": "integer", "minimum": 0, "maximum": 1000},
+                                                  "chosen_min": {"type": "integer", "minimum": 0, "maximum": 1000},
+                                                  "matched_footage": {"type": "integer", "minimum": 0}}},
+            "temporal_coverage": {"type": "object", "additionalProperties": false, "required": ["milli", "need_ms"],
+                                  "properties": {"milli": {"type": "integer", "minimum": 0, "maximum": 1000},
+                                                 "need_ms": {"type": "integer", "minimum": 0}}},
+            "allocation": {"type": "object", "additionalProperties": false,
+                           "required": ["own_ms", "neutral_ms", "repeat_ms", "held_ms", "pieces"],
+                           "properties": {"own_ms": {"type": "integer", "minimum": 0}, "neutral_ms": {"type": "integer", "minimum": 0},
+                                          "repeat_ms": {"type": "integer", "minimum": 0}, "held_ms": {"type": "integer", "minimum": 0},
+                                          "pieces": {"type": "integer", "minimum": 0}}},
+            "review_risk": {"type": "object", "additionalProperties": false, "required": ["min_confidence", "flagged_pieces", "needs_review"],
+                            "properties": {"min_confidence": {"type": "integer", "minimum": 0, "maximum": 1000},
+                                           "flagged_pieces": {"type": "integer", "minimum": 0},
+                                           "needs_review": {"type": "boolean"}}}}}
       }
     },
     "candidate": {
