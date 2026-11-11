@@ -231,6 +231,11 @@ def plan_part(part_id: str, kind: str, spoken: Sequence[tuple[str, int]], narrat
             role = "hook"
             review = True
             reasons.append("cảnh mở màn lấy từ phần sau của chương trình")
+        elif kind == "intro" and len(footage) > 1:
+            # the introduction plays before every item, so whatever it shows is footage an item may need (rc5 B1:
+            # 4.2 s of an item's key shot, READY): it is always looked at, as the level description says
+            review = True
+            reasons.append("cảnh giới thiệu lấy từ nguồn của một mục phía sau: cần kiểm tra trùng cảnh")
         span = m.Span(choice.offset_ms, choice.offset_ms + choice.length_ms)
         if role != "hook" and choice.offset_ms < used_end.get(candidate.source_id, 0):
             # The source has nothing left ahead of what was shown: hold one of its frames instead of playing earlier
