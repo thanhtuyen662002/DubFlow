@@ -222,6 +222,7 @@ class Editorial:
     ai: dict[str, str] | None = None
     vision_budget: int = 80
     draft_narration: bool = True
+    budget_set: bool = False   # the spec gave vision_budget: kept as given; otherwise it follows the length (P2-N11)
 
     def digest_input(self, part: str) -> dict[str, Any]:
         edits = self.edits.get(part)
@@ -251,7 +252,7 @@ def _editorial(value: Any) -> Editorial:
     budget = item.get("vision_budget", 80)
     if type(budget) is not int or not 0 <= budget <= 400 or type(item.get("draft_narration", True)) is not bool:
         raise CompilationError("Thông tin biên tập không hợp lệ")
-    return Editorial(edits, ai, budget, item.get("draft_narration", True))
+    return Editorial(edits, ai, budget, item.get("draft_narration", True), "vision_budget" in item)
 
 
 __all__ = ["Credit", "Editorial", "Item", "Program", "Source", "load"]

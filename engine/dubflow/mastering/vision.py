@@ -30,6 +30,14 @@ from .candidates import Candidate
 PROMPT_VERSION = "vision-v3"  # v2: Vietnamese with its marks, main product; v3: confidence and hook on 0–1000
 BATCH = 4  # six frames with full Vietnamese answers ran past the token limit
 DEFAULT_BUDGET = 60
+# A long programme's budget follows its length when the user set none (P2-N11): this many frames per narrated
+# sentence, never under the default and never over the cap (the most a spec may ask for). Reported in the run.
+FRAMES_PER_SENTENCE = 2
+LONG_FORM_CAP = 400
+
+
+def auto_budget(base: int, sentences: int) -> int:
+    return max(base, min(LONG_FORM_CAP, FRAMES_PER_SENTENCE * max(0, sentences)))
 MAX_TEXT = 300
 
 SYSTEM = (
@@ -315,6 +323,84 @@ def broad(candidates: Sequence[Candidate], folder: Path, room: int) -> list[tupl
     return [(c.candidate_id, folder / c.keyframe) for c in picked]
 
 
+def spread_order(items: Sequence[Any]) -> list[Any]:
+    """``items`` reordered so that every prefix is spread evenly over them: the middle, then the quarters, the
+    eighths… (a look cut short by the budget still covers the whole stretch, not its beginning)."""
+    n = len(items)
+    if n <= 2:
+        return list(items)
+    order: list[int] = []
+    seen: set[int] = set()
+    bits = max(1, (n - 1).bit_length())
+    for k in range(1 << bits):
+        fraction = int(format(k, f"0{bits}b")[::-1], 2) / (1 << bits)  # base-2 van der Corput
+        index = min(n - 1, int(fraction * n + 0.5 / (1 << bits) * n))
+        if index not in seen:
+            seen.add(index)
+            order.append(index)
+    order += [i for i in range(n) if i not in seen]
+    return [items[i] for i in order]
+
+
+def allocate(parts: Sequence[Sequence[Candidate]], folder: Path, room: int,
+             groups: Mapping[str, str] | None = None) -> list[tuple[str, Path]]:
+    """The first look over a programme (P2-N11): only the footage its parts use (inside their trims), each part's
+    usable shots in an evenly spread order, the parts taking turns so that every part is looked at before any part
+    gets a second turn, and one frame per duplicate group (the same picture in two places is looked at once)."""
+    if room <= 0:
+        return []
+    groups = groups or {}
+    queues = [spread_order(sorted((c for c in pool if c.keyframe and c.quality.usable), key=lambda c: (c.source_id, c.start_ms)))
+              for pool in parts]
+    picked: list[Candidate] = []
+    taken: set[str] = set()
+    while len(picked) < room and any(queues):
+        for queue in queues:
+            while queue and groups.get(queue[0].candidate_id, queue[0].candidate_id) in taken:
+                queue.pop(0)
+            if queue and len(picked) < room:
+                chosen = queue.pop(0)
+                picked.append(chosen)
+                taken.add(groups.get(chosen.candidate_id, chosen.candidate_id))
+    return [(c.candidate_id, folder / c.keyframe) for c in picked]
+
+
+def share(found: Mapping[str, Seen], groups: Mapping[str, str], pool: Sequence[Candidate]) -> dict[str, Seen]:
+    """``found`` extended to the shots of the same duplicate group (one picture, looked at once)."""
+    out = dict(found)
+    by_group: dict[str, Seen] = {}
+    for candidate_id, seen in found.items():
+        by_group.setdefault(groups.get(candidate_id, candidate_id), seen)
+    for c in pool:
+        group = groups.get(c.candidate_id, c.candidate_id)
+        if c.candidate_id not in out and group in by_group:
+            out[c.candidate_id] = by_group[group]
+    return out
+
+
+def coverage_map(pool: Sequence[Candidate], evidence: Mapping[str, ev.Evidence], *, gaps: int = 5) -> dict[str, Any]:
+    """What of a part's footage has content evidence (P2-N11): shots and ms with evidence, and the largest stretches
+    no evidence covers (where a sentence's footage may be without anyone having looked)."""
+    content = {c.candidate_id for c in pool if c.candidate_id in evidence and evidence[c.candidate_id].content}
+    total = sum(c.length_ms for c in pool)
+    seen_ms = sum(c.length_ms for c in pool if c.candidate_id in content)
+    stretches: list[list[Any]] = []
+    for source in sorted({c.source_id for c in pool}):
+        mine = sorted((c for c in pool if c.source_id == source), key=lambda c: c.start_ms)
+        start = None
+        for c in mine + [None]:
+            if c is not None and c.candidate_id not in content:
+                start = c.start_ms if start is None else start
+                end = c.end_ms
+                continue
+            if start is not None:
+                stretches.append([source, start, end])
+                start = None
+    stretches.sort(key=lambda s: (-(s[2] - s[1]), s[0], s[1]))
+    return {"shots": len(pool), "shots_with_evidence": len(content), "ms": total, "ms_with_evidence": seen_ms,
+            "milli": seen_ms * 1000 // max(1, total), "unseen": stretches[:gaps]}
+
+
 def targets(units: Sequence[Mapping[str, Any]], pool: Sequence[Candidate], evidence: Mapping[str, ev.Evidence],
             looked: set[str], limit: int, *, forward_only: bool) -> list[str]:
     """Shots worth a targeted look (adaptive sampling, steps 2–3) for the sentences the first plan could not cover.
@@ -369,5 +455,5 @@ def targets(units: Sequence[Mapping[str, Any]], pool: Sequence[Candidate], evide
     return picked
 
 
-__all__ = ["Describer", "PROMPT_VERSION", "Seen", "apply", "broad", "item_of", "factory", "frames_for", "route_ask", "schema", "targets",
+__all__ = ["Describer", "PROMPT_VERSION", "Seen", "allocate", "apply", "broad", "coverage_map", "share", "spread_order", "item_of", "factory", "frames_for", "route_ask", "schema", "targets",
            "text_asker", "validate"]
