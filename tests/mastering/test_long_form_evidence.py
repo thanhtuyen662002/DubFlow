@@ -101,6 +101,27 @@ class AllocationTests(unittest.TestCase):
         shared = seeing.share({a.candidate_id: seen}, groups, pool + [twin])
         self.assertIs(shared["x9c1"], seen)
 
+    def test_one_frame_with_many_duplicates_is_one_frame_of_the_budget(self):  # lead review #784, finding 2
+        a = self.parts[0][0]
+        twins = [shots.Candidate(f"x{k}c1", f"x{k}", a.start_ms, a.end_ms, 0, 30, a.quality, a.dhash, f"x{k}-1.jpg")
+                 for k in range(4)]
+        pool = [c for part in self.parts for c in part] + twins
+        groups = shots.duplicate_groups(pool)
+        seen = seeing.Seen("một người lính", ("soldier",), (), "", (), 900, "clear", None, None, 0)
+
+        class Describer:
+            taken = 0
+
+            def describe(self, frames, cancelled):
+                self.taken += len(frames)
+                return {candidate_id: seen for candidate_id, _ in frames}
+        describer = Describer()
+        result = seeing.look(describer, [(a.candidate_id, Path("f") / a.keyframe)], groups, pool)
+        self.assertEqual(result.frames, 1)            # the model was paid for one frame
+        self.assertEqual(result.shared, len(twins))   # four shots share its answer, counted apart
+        self.assertEqual(len(result.found), 1 + len(twins))
+        self.assertEqual(describer.taken, 1)
+
     def test_spread_order_covers_the_stretch_with_any_prefix(self):
         order = seeing.spread_order(list(range(16)))
         self.assertEqual(sorted(order), list(range(16)))
@@ -129,7 +150,10 @@ class BudgetTests(unittest.TestCase):
         from engine.dubflow.compilation import program
         self.assertTrue(program._editorial({"vision_budget": 80}).budget_set)
         self.assertFalse(program._editorial({}).budget_set)
-        self.assertEqual(program._editorial({}).digest_input("i1"), program._editorial({"vision_budget": 80}).digest_input("i1"))
+        # lead review #784, finding 1: the automatic budget and an explicit 80 plan differently, so they never share a part
+        self.assertNotEqual(program._editorial({}).digest_input("i1"), program._editorial({"vision_budget": 80}).digest_input("i1"))
+        self.assertEqual(program._editorial({"vision_budget": 80}).digest_input("i1"),
+                         program._editorial({"vision_budget": 80}).digest_input("i1"))
 
 
 class CoverageMapTests(unittest.TestCase):

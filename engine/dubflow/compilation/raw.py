@@ -280,14 +280,14 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
             room = describer.budget - describer.budget // 3 if len(everything_seen) > describer.budget else describer.budget
             first = seeing.allocate(list(part_pools.values()), folder, room, groups)
             looked = {candidate_id for candidate_id, _ in first}
-            seen = seeing.share(describer.describe(first, cancelled), groups, pool)
+            broad = seeing.look(describer, first, groups, pool, cancelled)
             check()
-            seeing.apply(seen, evidence, f"AI {describer.provider}/{describer.used_model}")
-            vision_report = {"provider": describer.provider, "model": describer.used_model, "frames": len(looked), "asked": describer.asked,
+            seeing.apply(broad.found, evidence, f"AI {describer.provider}/{describer.used_model}")
+            vision_report = {"provider": describer.provider, "model": describer.used_model, "frames": broad.frames, "asked": describer.asked,
                              "broad": len(first), "targeted": 0, "warnings": [], "budget": describer.budget,
                              "budget_rule": "spec" if resolved.editorial.budget_set else f"auto: {seeing.FRAMES_PER_SENTENCE} × {sentences} câu, "
                                                                                          f"tối thiểu {resolved.editorial.vision_budget}, tối đa {seeing.LONG_FORM_CAP}",
-                             "shared_duplicates": len(seen) - len(set(seen) & looked)}
+                             "shared_duplicates": broad.shared}
             warnings += describer.warnings
             warned = len(describer.warnings)
             if len(everything_seen) > describer.budget:
@@ -344,7 +344,7 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
                                             "editorial": {**resolved.editorial.digest_input(part_id), "edits": edits.to_dict()},
                                             # what the AI saw, not how many frames it was asked this run (cached answers)
                                             "vision": None if vision_report is None else
-                                            {k: vision_report[k] for k in ("provider", "model")},
+                                            {k: vision_report[k] for k in ("provider", "model", "budget")},
                                             "shown": avoid, "trim": [footage[s].trim for s in source_ids]})
             made = planner.plan_part(part_id, kind, spoken, narration_ms, resolved.mastering, lead_ms=script.LEAD_MS,
                                      gap_ms=script.GAP_MS, footage=part_footage, candidates=candidates, evidence=evidence,
@@ -360,16 +360,18 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
                 if ids:
                     status.write(message=f"{context}AI xem thêm cảnh cho câu chưa đủ hình ({index}/{len(parts)})…")
                     by_id = {c.candidate_id: c for c in pool}
-                    extra = seeing.share(describer.describe([(i, folder / by_id[i].keyframe) for i in ids], cancelled), groups, pool)
+                    extra = seeing.look(describer, [(i, folder / by_id[i].keyframe) for i in ids], groups, pool, cancelled)
                     check()
                     looked.update(ids)
-                    seeing.apply(extra, evidence, f"AI {describer.provider}/{describer.used_model}")
-                    vision_report["targeted"] += len(extra)
-                    vision_report["frames"] += len(extra)
+                    seeing.apply(extra.found, evidence, f"AI {describer.provider}/{describer.used_model}")
+                    # the frames the model was paid for; the duplicates that share an answer are counted apart
+                    vision_report["targeted"] += extra.frames
+                    vision_report["frames"] += extra.frames
+                    vision_report["shared_duplicates"] += extra.shared
                     vision_report["asked"] = describer.asked
                     warnings += describer.warnings[warned:]
                     warned = len(describer.warnings)
-                    if extra:
+                    if extra.found:
                         made = planner.plan_part(part_id, kind, spoken, narration_ms, resolved.mastering, lead_ms=script.LEAD_MS,
                                                  gap_ms=script.GAP_MS, footage=part_footage, candidates=candidates, evidence=evidence,
                                                  groups=groups, edits=edits, keep_audio=keep, title=title,

@@ -226,7 +226,9 @@ class Editorial:
 
     def digest_input(self, part: str) -> dict[str, Any]:
         edits = self.edits.get(part)
-        return {"edits": None if edits is None else edits.to_dict(), "ai": self.ai, "vision_budget": self.vision_budget}
+        # the budget mode changes which frames the AI looks at: an explicit 80 and the automatic budget never share a part
+        return {"edits": None if edits is None else edits.to_dict(), "ai": self.ai, "vision_budget": self.vision_budget,
+                "vision_budget_mode": "spec" if self.budget_set else "auto"}
 
 
 def _editorial(value: Any) -> Editorial:

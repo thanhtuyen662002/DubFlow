@@ -378,6 +378,23 @@ def share(found: Mapping[str, Seen], groups: Mapping[str, str], pool: Sequence[C
     return out
 
 
+@dataclass(frozen=True)
+class Look:
+    """One look through a describer: what it found, shared to the duplicates; the frames the budget paid for; and
+    how many shots got an answer only because they are a duplicate of a frame that was looked at (P2-N11)."""
+    found: dict[str, Seen]
+    frames: int
+    shared: int
+
+
+def look(describer: Any, frames: Sequence[tuple[str, Path]], groups: Mapping[str, str], pool: Sequence[Candidate],
+         cancelled: Callable[[], bool] = lambda: False) -> Look:
+    before = describer.taken
+    answered = describer.describe(frames, cancelled)
+    found = share(answered, groups, pool)
+    return Look(found, describer.taken - before, len(found) - len(answered))
+
+
 def coverage_map(pool: Sequence[Candidate], evidence: Mapping[str, ev.Evidence], *, gaps: int = 5) -> dict[str, Any]:
     """What of a part's footage has content evidence (P2-N11): shots and ms with evidence, and the largest stretches
     no evidence covers (where a sentence's footage may be without anyone having looked)."""
