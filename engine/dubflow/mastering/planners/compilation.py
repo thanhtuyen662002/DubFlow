@@ -285,6 +285,8 @@ def plan_part(part_id: str, kind: str, spoken: Sequence[tuple[str, int]], narrat
                            "evidence": evidence[c.candidate_id].to_dict() if c.candidate_id in evidence else None,
                            "summary": evidence[c.candidate_id].summary() if c.candidate_id in evidence else ""} for c in pool],
            "edits": (edits or align.Edits()).to_dict(), "warnings": warnings,
+           # each source's content identity: what an approval was given on (P2-N5 materiality)
+           "sources": {f.source_id: inputs[f.source_id] for f in footage if f.source_id in inputs},
            # what the evidence came from (P2-14): file names alone are never content
            "provenance": ev.provenance_counts({c.candidate_id: evidence[c.candidate_id] for c in pool if c.candidate_id in evidence})}
     return PartPlan(result, log, narration_ms, moment_ms, audio)

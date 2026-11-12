@@ -26,6 +26,10 @@
       }
     },
     "part": {"type": "string", "maxLength": 128},
+    "sources": {
+      "description": "Optional (P2-N5, older logs lack it): source id → the source's content identity, so an approval given on a source whose content has since changed is invalidated while a new plan revision alone is not.",
+      "type": "object", "additionalProperties": {"type": "string", "maxLength": 200}
+    },
     "provenance": {
       "description": "Optional (added for P2-14, older logs lack it): provenance → how many candidates carry evidence of it. filename_metadata is never content: a log with only file names (and signals) is signals_only.",
       "type": "object",
@@ -54,6 +58,12 @@
           "properties": {"candidate_id": {"type": "string"}, "score": {"type": "integer"},
                          "reasons": {"type": "array", "items": {"type": "string", "maxLength": 300}}}}},
         "notes": {"type": "array", "items": {"type": "string", "maxLength": 300}},
+        "pieces": {
+          "description": "Optional (P2-N5, older logs lack it): what the sentence plays, in order: shot, source offset and length in ms. An approval keeps these pieces as constraints of the next plan.",
+          "type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["id", "offset_ms", "length_ms"],
+            "properties": {"id": {"type": "string"}, "offset_ms": {"type": "integer", "minimum": 0}, "length_ms": {"type": "integer", "minimum": 1},
+                           "repeat": {"const": true}}}
+        },
         "coverage": {
           "description": "How much of the sentence plays on footage that illustrates it (Phase 2 hardening); absent in older logs.",
           "type": "object", "additionalProperties": false,

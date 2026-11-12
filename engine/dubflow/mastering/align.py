@@ -125,6 +125,12 @@ class Edits:
     pin: dict[str, list[str]] = field(default_factory=dict)   # unit id → candidate ids, in order
     exclude: set[str] = field(default_factory=set)             # candidate ids
     exclude_sources: set[str] = field(default_factory=set)     # source ids
+    # approvals (P2-N5): unit id → the candidate ids the user approved, kept as constraints of a new plan. Never
+    # part of ``to_dict`` (the plan's identity): an approval is of the footage the plan already shows, so it does
+    # not make the plan another one, and approving alone never plans or renders again.
+    # Each kept piece is (candidate id, source offset ms, length ms, shown again); an offset of -1 (an approval saved before the
+    # pieces were logged) keeps the shot wherever it can play.
+    keep: dict[str, list[tuple[str, int, int, bool]]] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, value: Any) -> "Edits":
@@ -173,6 +179,7 @@ class Decision:
     notes: list[str] = field(default_factory=list)
     coverage: dict[str, Any] = field(default_factory=dict)
     signals: dict[str, Any] = field(default_factory=dict)
+    pieces: list[dict[str, Any]] = field(default_factory=list)  # what plays: shot, source offset, length (P2-N5)
 
     def to_dict(self) -> dict[str, Any]:
         out = {"unit_id": self.unit.unit_id, "text": self.unit.text, "function": self.unit.function,
@@ -180,6 +187,8 @@ class Decision:
                "alternatives": self.alternatives, "notes": self.notes, "coverage": self.coverage}
         if self.signals:
             out["signals"] = self.signals
+        if self.pieces:
+            out["pieces"] = self.pieces
         return out
 
 
@@ -459,6 +468,21 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
     for unit_id, ids in accepts.items():
         for candidate_id in ids:
             accepted_by.setdefault(candidate_id, set()).add(unit_id)
+    # approved footage (P2-N5): a sentence the user approved keeps its shots, and no other sentence takes them. A pin
+    # is the newer, explicit choice: a shot pinned to one sentence is no longer reserved for another that approved it
+    # (that approval then fails, with its reason, when the plan is checked against the decisions).
+    pinned_ids = {cid for ids in edits.pin.values() for cid in ids}
+    pool_ids = {c.candidate_id for c in pool}
+    kept: dict[str, list[tuple[str, int, int, bool]]] = {}
+    reserved: dict[str, set[str]] = {}
+    for unit_id, pieces in sorted(edits.keep.items()):
+        if unit_id in edits.pin or unit_id not in {u.unit_id for u in found_units}:
+            continue
+        mine_kept = [piece for piece in pieces if piece[0] in pool_ids and piece[0] not in pinned_ids]
+        if mine_kept:
+            kept[unit_id] = mine_kept
+            for piece in mine_kept:
+                reserved.setdefault(piece[0], set()).add(unit_id)
 
     def remaining(candidate: Candidate) -> tuple[int, int]:
         if candidate.candidate_id in still_ids:
@@ -589,7 +613,7 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
         order = list(found_units)
     else:
         def scarcity(u: Unit) -> tuple:
-            pinned_first = 0 if edits.pin.get(u.unit_id) else 1
+            pinned_first = 0 if edits.pin.get(u.unit_id) else (1 if u.unit_id in kept else 2)
             has = bool(accepts[u.unit_id])
             # an opening or a call to action chooses after the sentences that describe something: it can do with
             # any good shot, they need theirs (dev2-blower-name-claim, dev2-toothpick-function-words)
@@ -620,6 +644,20 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
         saved = (dict(resume), dict(source_end), dict(uses), dict(group_uses))
         picks: list[dict[str, Any]] = []
         covered = 0
+
+        def free(candidate: Candidate, me: str = unit.unit_id) -> bool:
+            """Not footage another sentence's approval keeps, nor (forward only) a shot that would play past it."""
+            owners = reserved.get(candidate.candidate_id)
+            if owners:
+                return me in owners
+            if forward_only:
+                for cid, owners in reserved.items():
+                    held = by_id[cid]
+                    if owners - {me} - set(decisions) and held.source_id == candidate.source_id \
+                            and held.candidate_id not in still_ids and candidate.end_ms > held.start_ms:
+                        return False
+            return True
+        here = [c for c in usable if free(c)] or usable
 
         def last_source() -> str | None:
             if picks:
@@ -694,12 +732,36 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
             if covered >= need:
                 break
             record(candidate, "pinned", need - covered, [(1000, 1000, ["chọn bởi người dùng"], candidate)])
+        for cid, offset, length, again in kept.get(unit.unit_id, []):  # what the user approved, as it played
+            if covered >= need:
+                break
+            candidate = by_id[cid]
+            still = cid in still_ids
+            tier = "repeat" if again else ("match" if cid in accept else "neutral")
+            total, confidence, reasons, _ = rank([candidate], tier, need - covered)[0]  # also the "other shots"
+            reasons = [*reasons, "giữ cảnh bạn đã duyệt"]
+            if offset < 0:  # an approval from before the pieces were logged: the shot, wherever it can play
+                if allowed(candidate) and (still or remaining(candidate)[1] >= SHORT_FLOOR):
+                    record(candidate, tier, need - covered, [(total, confidence, reasons, candidate)])
+                continue
+            if not still and (offset < candidate.start_ms or offset + length > candidate.end_ms):
+                continue  # no longer playable as approved: the check of the decisions says why
+            length = min(length, need - covered)
+            # forward only, footage behind what has played is shown again: declared, as it was when approved
+            repeat = again or (forward_only and not still and offset < source_end.get(candidate.source_id, 0))
+            picks.append({"candidate": candidate, "offset": 0 if still else offset, "length": length, "tier": tier,
+                          "repeat": repeat, "score": total, "confidence": confidence, "reasons": reasons, "kept": True})
+            before = resume.get(cid)
+            consume(candidate, 0 if still else offset, length)
+            if not still and before is not None:
+                resume[cid] = max(before, resume[cid])
+            covered += length
         # 1. footage that illustrates the sentence, the closest first, short shots included
         while covered < need:
             rest = need - covered
             wanted = rest if rest < pacing.target + pacing.minimum else pacing.target
             later_need = after + max(0, rest - wanted)
-            pool = [c for c in usable if c.candidate_id in accept and allowed(c) and remaining(c)[1] >= SHORT_FLOOR
+            pool = [c for c in here if c.candidate_id in accept and allowed(c) and remaining(c)[1] >= SHORT_FLOOR
                     and safe(c, later_need, wanted)
                     # forward only: not when the sentences to come lose more of their own footage than this one gains
                     and lost(c, min(remaining(c)[1], wanted), later) <= min(remaining(c)[1], wanted)]
@@ -731,7 +793,7 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
             wanted = rest if rest < pacing.target + pacing.minimum else pacing.target
             later_need = after + max(0, rest - wanted)
             floor = max(min(pacing.minimum, rest), pacing.minimum // 2)  # filler is never a flash
-            fits = [c for c in usable if allowed(c) and remaining(c)[1] >= floor
+            fits = [c for c in here if allowed(c) and remaining(c)[1] >= floor
                     # this sentence's own footage left out above for what it costs the next ones stays out
                     and not (c.candidate_id in accept and lost(c, min(remaining(c)[1], wanted), later) > min(remaining(c)[1], wanted))]
             pool = [c for c in fits if safe(c, later_need, wanted)]
@@ -739,13 +801,13 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
                 # nothing ahead is safe for the sentences to come: whatever plays now costs them alike, so this
                 # sentence's own footage goes before filler (rc4 Top 5: its one match was left out for safety, then
                 # an equally unsafe neutral shot was shown and the sentence read "has a match… 0 %")
-                own_left = [c for c in usable if c.candidate_id in accept and allowed(c) and remaining(c)[1] >= SHORT_FLOOR
+                own_left = [c for c in here if c.candidate_id in accept and allowed(c) and remaining(c)[1] >= SHORT_FLOOR
                             and lost(c, min(remaining(c)[1], wanted), later) <= min(remaining(c)[1], wanted)]
                 if own_left:
                     ranked = rank(own_left, "match", wanted)
                     if record(ranked[0][3], "match", max(wanted, PIECE_FLOOR), ranked):
                         continue
-            pool = pool or fits or [c for c in usable if allowed(c) and remaining(c)[1] >= SHORT_FLOOR]
+            pool = pool or fits or [c for c in here if allowed(c) and remaining(c)[1] >= SHORT_FLOOR]
             # another sentence's own footage is not filler: rather than show what a sentence says elsewhere (the
             # keyboard shot behind the price), the sentence shows its own shot again, declared as a repeat
             # ... nor is the rest of a shot another sentence about it already showed (the tail of its key shot)
@@ -757,7 +819,7 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
                     continue
             if not forward_only and pool:
                 untouched = [c for c in pool if not tail(c)]
-                spare = [c for c in usable if allowed(c) and not accepted_by.get(c.candidate_id, set()) - {unit.unit_id}]
+                spare = [c for c in here if allowed(c) and not accepted_by.get(c.candidate_id, set()) - {unit.unit_id}]
                 if not untouched and spare:  # every fresh shot left is such a tail: a neutral shot again, said so
                     again = max(spare, key=lambda c: (c.length_ms, c.candidate_id))
                     if record(again, "repeat", max(wanted, pacing.minimum // 2), []):
@@ -768,7 +830,7 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
                 covered += rest
                 break
             tier = "neutral" if pool else "repeat"
-            ranked = rank(pool or usable, tier, wanted)
+            ranked = rank(pool or here, tier, wanted)
             if not record(ranked[0][3], tier, max(wanted, pacing.minimum // 2), ranked):
                 break
         # 4. exactly the sentence's length, no piece under the floor: trim the pieces with the most slack
@@ -788,7 +850,7 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
             excess -= cut
         if excess < 0 and picks:  # dropping a piece left a little: the last piece plays on if it can
             picks[-1]["length"] -= excess
-        _settle(picks, need, usable, still_ids, accept, used={c for c, n in saved[2].items() if n},
+        _settle(picks, need, here, still_ids, accept, used={c for c, n in saved[2].items() if n},
                 forward_only=forward_only, source_end=saved[1],
                 claimed={cid for v in found_units if v.unit_id not in decisions for cid in accepts[v.unit_id]})
         covered = sum(p["length"] for p in picks)
@@ -821,7 +883,12 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
             mine.append(Choice(unit.unit_id, candidate, pick["offset"], pick["length"], pick["score"], confidence, needs_review,
                                tuple(reasons[:8])))
             decision.chosen.append(candidate.candidate_id)
+            decision.pieces.append({"id": candidate.candidate_id, "offset_ms": pick["offset"], "length_ms": pick["length"],
+                                    **({"repeat": True} if pick["tier"] == "repeat" else {})})
+            before = resume.get(candidate.candidate_id)
             consume(candidate, pick["offset"], pick["length"])
+            if pick.get("kept") and before is not None and candidate.candidate_id not in still_ids:
+                resume[candidate.candidate_id] = max(before, resume[candidate.candidate_id])
         milli = illustrated * 1000 // max(1, unit.length_ms)
         pinned_by_user = bool(edits.pin.get(unit.unit_id))
         has_match = bool(accept) or pinned_by_user

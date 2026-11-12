@@ -445,7 +445,9 @@ def _mastered(spec: Spec, visuals: Sequence[render.Visual], total_ms: int, work:
                         saved, log = make()
             if vision_report is not None and describer.budget - describer.taken >= 2:
                 # More frames of the shots one frame does not represent (long takes, unsure answers), then plan again.
-                locked = {i for ids in edits.pin.values() for i in ids} | set(edits.exclude)
+                # the user's shots keep their ids: pinned, excluded and approved (P2-N5) are never split
+                locked = {i for ids in edits.pin.values() for i in ids} | set(edits.exclude) \
+                    | {p[0] for pieces in edits.keep.values() for p in pieces}
                 ids = more.wanted(log["units"], pool, evidence, (), limit=min(more.EXTRA_SHOTS, (describer.budget - describer.taken) // 2),
                                   locked={i for i in locked if more.parent(i) == i},
                                   again={more.parent(i) for i in locked if more.parent(i) != i})
@@ -465,8 +467,10 @@ def _mastered(spec: Spec, visuals: Sequence[render.Visual], total_ms: int, work:
             if vision_report and vision_report["warnings"]:
                 log["warnings"] = list(log["warnings"]) + vision_report["warnings"]
             reviewing.annotate(log, saved.to_dict())
-            mastering_plan.save(path, saved)
+            # the log before the plan (P2-N5, transactional replan): a plan is reused only with a log beside it, so a
+            # failure between the two writes plans again next time, never pairs a new plan with an old log
             _atomic_text(work / log_name, json.dumps(log, ensure_ascii=False, indent=1))
+            mastering_plan.save(path, saved)
         log = json.loads((work / log_name).read_text(encoding="utf-8"))
         if "review_summary" not in log:  # a log from before the review states
             reviewing.annotate(log, saved.to_dict())
