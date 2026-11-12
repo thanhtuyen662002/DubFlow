@@ -21,6 +21,7 @@ from .. import evidence as ev
 from .. import plan as m
 from .. import policy as rules
 from ..candidates import Candidate
+from ..frames import parent
 
 PLANNER = "dubflow.mastering.compilation"
 VERSION = "7"
@@ -204,7 +205,8 @@ def plan_part(part_id: str, kind: str, spoken: Sequence[tuple[str, int]], narrat
     # the footage a source moment may come from, and the footage counted ahead of it for the narration: never a shot
     # or source the user excluded (rc12 W2: an excluded 6 s opening shot was counted ahead of the moment, leaving 7.95 s
     # of footage for 9.49 s of narration and five held frames)
-    allowed = [c for c in pool if not (edits and (c.candidate_id in edits.exclude or c.source_id in edits.exclude_sources))]
+    gone = align.left_out(edits, pool) if edits else set()
+    allowed = [c for c in pool if c.candidate_id not in gone]
     if moment and kind == "item" and policy.keep_source_audio:
         # The narration first, over all of the footage; the moment then comes from what plays after it. Only when
         # nothing is left after the narration is the moment chosen first (a long source kept its narration to the
@@ -278,6 +280,12 @@ def plan_part(part_id: str, kind: str, spoken: Sequence[tuple[str, int]], narrat
     warnings: list[str] = []
     if mode == "signals_only":
         warnings.append(f"{part_id}: chưa có bằng chứng nội dung (phụ đề nguồn, ghi chú, AI nhìn hình; tên file không tính); cảnh chọn theo điểm cắt và chất lượng.")
+    if edits:
+        # a part of a shot left out while the shot is not split this time, kept whole because nothing else is left
+        kept_whole = sorted({c.candidate_id for c in pool if c.candidate_id in {parent(i) for i in edits.exclude}} - gone)
+        if kept_whole:
+            warnings.append(f"{part_id}: đoạn bạn đã bỏ thuộc cảnh {', '.join(kept_whole[:3])}; lần này cảnh không được chia nhỏ và "
+                            "không còn cảnh nào khác, nên cả cảnh vẫn được dùng. Hãy chọn lại cảnh cho phần này.")
     if moment and kind == "item" and policy.keep_source_audio:
         picked = reserved
         if picked is not None and picked[1] < used_end.get(picked[0].source_id, 0):

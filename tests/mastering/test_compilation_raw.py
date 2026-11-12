@@ -394,6 +394,65 @@ class PartIndependenceTest(unittest.TestCase):
                 self.assertEqual((work / name).read_bytes(), data, name)
 
 
+    @unittest.skipUnless(FFMPEG and FFPROBE, "needs FFmpeg")
+    def test_an_edit_in_the_intro_never_changes_what_an_item_sees(self):
+        """rc14 W5 on W2 (P2-N22, #796): approvals in the intro locked its shots, so its next multi-frame look went to
+        another shot of item 1 and split it; item 1 was re-planned and re-rendered without being touched, and lost
+        its source-audio moment. The intro, hook and outro look at the items' footage for themselves only."""
+        from engine.dubflow.mastering import review as reviewing
+        from engine.dubflow.mastering import vision as seeing
+        import contextlib
+        import io
+        with TemporaryDirectory() as folder:
+            root = Path(folder)
+            items = []
+            for number, pattern in enumerate(("testsrc2", "smptebars", "rgbtestsrc", "testsrc"), 1):
+                clip = root / f"c{number}.mp4"
+                subprocess.run([FFMPEG, "-v", "error", "-y", "-f", "lavfi", "-i", f"{pattern}=s=320x180:r=25:d=60",
+                                "-f", "lavfi", "-i", "sine=f=440:d=60", "-c:v", "mpeg4", "-q:v", "5", "-c:a", "aac", "-shortest",
+                                str(clip)], check=True, timeout=120)
+                items.append({"title": f"Mục {number}", "narration": f"Đây là cảnh số {number}. Quả bóng đỏ lăn qua. Và cảnh cuối.",
+                              "sources": [{"video": str(clip), "rights": "owned"}]})
+            value = {"schema_version": 2, "title": "Bốn mục", "layout": "toan-man-hinh", "voice_id": "v",
+                     "program": {"kind": "list"}, "intro": "Cùng xem quả bóng đỏ lăn qua. Màu xanh đẹp quá. Một ngày vui.",
+                     "outro": "Hết.", "items": items, "editorial": {"ai": {"provider": "gemini"}}}
+
+            class Seeing:  # only the extra frames of a long take show what a sentence says
+                provider, used_model, warnings, budget = "gemini", "fake", [], 44
+
+                def __init__(self, cache, context="", labels=()):
+                    self.asked = self.taken = 0
+
+                def describe(self, frames, cancelled):
+                    self.taken += len(frames)
+                    return {cid: seeing.Seen("quả bóng đỏ lăn" if "@" in cid else "một khung hình màu", (), (), "", (), 600, "clear",
+                                             None, None, 0) for cid, _ in frames}
+
+            def run():
+                return run_program(job.load_spec(write_spec(root, value)), root / "out", speaker=lambda status: FakeSpeaker(),
+                                   probe=lambda path: __import__("engine.dubflow.product.job", fromlist=["x"]).probe_duration_ms(Path(FFPROBE), path),
+                                   inspect=lambda path: scene.probe(Path(FFPROBE), path), ffmpeg=Path(FFMPEG), encoder="mpeg4", vision=Seeing)
+            first = run()
+            self.assertEqual(first["state"], "COMPLETED", first)
+            work = root / "out" / ".dubflow-work"
+            items_plans = {f"plan-i{n}.json": (work / "mastering" / f"plan-i{n}.json").read_bytes() for n in range(1, 5)}
+            shown = io.StringIO()
+            with contextlib.redirect_stdout(shown):
+                # the user edits the intro only: another shot for its first sentence, three of item 2's shots out of
+                # its second
+                first_id, second_id = [u["unit_id"] for u in json.loads((work / "mastering" / "editorial-intro.json")
+                                                                         .read_text(encoding="utf-8"))["units"][:2]]
+                self.assertEqual(reviewing.main(["--work", str(work), "--part", "intro", "decide", first_id, "pin", "i3-s1c4"]), 0,
+                                 shown.getvalue())
+                self.assertEqual(reviewing.main(["--work", str(work), "--part", "intro", "decide", second_id, "exclude",
+                                                 "i2-s1c1", "i2-s1c2", "i2-s1c3"]), 0, shown.getvalue())
+            again = run()
+            self.assertEqual(again["state"], "COMPLETED", again)
+            self.assertFalse(set(again["rendered_parts"]) - {"intro", "outro"}, again["rendered_parts"])
+            for name, data in items_plans.items():
+                self.assertEqual((work / "mastering" / name).read_bytes(), data, name)
+
+
 class MomentTest(unittest.TestCase):
     def test_the_ending_is_kept_for_the_items_own_sound(self):
         from engine.dubflow.mastering import candidates as shots, evidence as ev
@@ -586,6 +645,18 @@ class MomentTest(unittest.TestCase):
                                      inputs={"part": "0" * 64}, edits=align.Edits({}, {"i1-s1c5"}, set()))
         self.assertFalse(any(s.source.end > 24_000 for s in excluded.plan.segments),
                          [(s.role, s.source.start, s.source.end) for s in excluded.plan.segments])
+        # a part of c5 left out while c5 is not split (the split was another part's, P2-N22): c5 is never the moment
+        part = planner.plan_part("i1", "item", spoken, 5600, m.Options("balanced", "entertainment"), lead_ms=200, gap_ms=300,
+                                 footage=[source], candidates={"i1-s1": pool}, evidence=evidence, title="Con mèo nhảy lên bàn",
+                                 inputs={"part": "0" * 64}, edits=align.Edits({}, {"i1-s1c5f2"}, set()))
+        self.assertFalse(any(s.source.end > 24_000 for s in part.plan.segments),
+                         [(s.role, s.source.start, s.source.end) for s in part.plan.segments])
+        self.assertFalse([w for w in part.log["warnings"] if "đoạn bạn đã bỏ" in w])
+        # one shot only: kept whole, and the user is told
+        alone = planner.plan_part("i1", "item", spoken, 5600, m.Options("balanced", "entertainment"), lead_ms=200, gap_ms=300,
+                                  footage=[source], candidates={"i1-s1": pool[:1]}, evidence=evidence, title="Con mèo nhảy lên bàn",
+                                  inputs={"part": "0" * 64}, edits=align.Edits({}, {"i1-s1c1f2"}, set()))
+        self.assertTrue([w for w in alone.log["warnings"] if "đoạn bạn đã bỏ thuộc cảnh i1-s1c1" in w], alone.log["warnings"])
         # a pinned shot that plays past the moment: the moment is chosen again after it, never from the excluded c5
         pinned = planner.plan_part("i1", "item", [spoken[0], ("Ai cũng bất ngờ.", 5000)], 8100,
                                    m.Options("balanced", "entertainment"), lead_ms=200, gap_ms=300, footage=[source],
