@@ -224,7 +224,19 @@ def measure_joins(ffmpeg: str, final: Path, parts: Sequence[tuple[Path, float]],
     worst = max((abs(r["av_ms"]) for r in measured), default=None)
     return {"frame_ms": round(frame_ms, 2), "limit_ms": limit_ms(frame_ms), "cumulative_limit_ms": CUMULATIVE_MS,
             "joins": rows, "measured": len(measured), "unmeasured": len(rows) - len(measured), "worst_av_ms": worst,
-            "passed": None if not measured else all(r["ok"] for r in measured) and worst <= CUMULATIVE_MS}
+            "passed": verdict(rows, frame_ms)}
+
+
+def verdict(rows: Sequence[dict[str, Any]], frame_ms: float) -> bool | None:
+    """The result of the joins of :func:`measure_joins`: False when a measured join is out of sync (per join over
+    max(40 ms, a frame), or over CUMULATIVE_MS); None, never a pass, when any join could not be measured (silence or
+    a still picture there) or there is none; True only when every join is measured and in sync."""
+    measured = [abs(r["av_ms"]) for r in rows if r.get("av_ms") is not None]
+    if any(av > limit_ms(frame_ms) or av > CUMULATIVE_MS for av in measured):
+        return False
+    if not rows or len(measured) < len(rows):
+        return None
+    return True
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -241,8 +253,10 @@ def main(argv: list[str] | None = None) -> int:
         out = subprocess.run([args.ffprobe, "-v", "error", "-select_streams", "v:0", "-count_packets", "-show_entries",
                               "stream=nb_read_packets", "-of", "csv=p=0", name], capture_output=True, text=True, check=True)
         parts.append((Path(name), int(out.stdout.strip().strip(",")) * 1000 / args.fps))
-    print(json.dumps(measure_joins(args.ffmpeg, Path(args.final), parts, fps=args.fps), ensure_ascii=False, indent=1))
-    return 0
+    found = measure_joins(args.ffmpeg, Path(args.final), parts, fps=args.fps)
+    print(json.dumps(found, ensure_ascii=False, indent=1))
+    # 0 in sync at every join; 1 out of sync somewhere; 2 not every join measured (never a pass)
+    return {True: 0, False: 1}.get(found["passed"], 2)
 
 
 if __name__ == "__main__":
