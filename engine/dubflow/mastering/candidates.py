@@ -16,6 +16,7 @@ Everything is in integer milliseconds and cached by the source's content.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -105,8 +106,16 @@ class Candidate:
         return made
 
 
-def windows(found: scene.Analysis) -> list[tuple[int, int, int, int]]:
-    """(start, end, shot index, motion) of each candidate window, kept CUT_MARGIN_MS inside its shot."""
+def windows(found: scene.Analysis, within: tuple[int, int] | None = None) -> list[tuple[int, int, int, int]]:
+    """(start, end, shot index, motion) of each candidate window, kept CUT_MARGIN_MS inside its shot.
+
+    ``within`` (a source trim, ms): only the windows that overlap it, and the cap spreads over those (P2-N11: a
+    105 s window of a 36-minute film kept 12 of its windows, too few for its narration, and held frames)."""
+    return [w for _, w in numbered(found, within)]
+
+
+def numbered(found: scene.Analysis, within: tuple[int, int] | None = None) -> list[tuple[int, tuple[int, int, int, int]]]:
+    """The windows of :func:`windows`, each with its number (stable for a source and a trim)."""
     out = []
     for index, shot in enumerate(found.shots):
         start = shot.start_ms + (CUT_MARGIN_MS if shot.start_ms > 0 else 0)
@@ -121,12 +130,14 @@ def windows(found: scene.Analysis) -> list[tuple[int, int, int, int]]:
             stop = end if end - at < WINDOW_MS + WINDOW_MS // 2 else at + WINDOW_MS
             out.append((at, stop, index, shot.motion))
             at = stop
+    if within is not None:
+        out = [w for w in out if w[1] > within[0] and w[0] < within[1]]
     if len(out) <= MAX_CANDIDATES:
-        return out
+        return list(enumerate(out, start=1))
     # a long source: windows spread over the whole of it, not the first MAX_CANDIDATES in source order (a
     # 36-minute set lost everything after 20 minutes, Why We Fight)
     step = len(out) / MAX_CANDIDATES
-    return [out[int(index * step)] for index in range(MAX_CANDIDATES)]
+    return [(index + 1, out[int(index * step)]) for index in range(MAX_CANDIDATES)]
 
 
 def measure(grey: bytes, width: int = GREY_W, height: int = GREY_H) -> tuple[Quality, int]:
@@ -208,10 +219,15 @@ def fallback_times(start_ms: int, end_ms: int) -> list[int]:
 
 
 def extract(video: Path, source_id: str, found: scene.Analysis, folder: Path, *, ffmpeg: Path, run: Runner,
-            cancelled: Callable[[], bool] = lambda: False) -> list[Candidate]:
-    """The candidates of ``video`` (analysed as ``found``), from the cache in ``folder`` when the file is unchanged."""
-    identity = file_identity(video, RECIPE + scene.RECIPE)
-    tag = identity[:16]
+            cancelled: Callable[[], bool] = lambda: False, within: tuple[int, int] | None = None) -> list[Candidate]:
+    """The candidates of ``video`` (analysed as ``found``), from the cache in ``folder`` when the file is unchanged.
+
+    ``within``: only the part of the source a trim uses (and the cap spreads over it) when the whole source has more
+    windows than the cap; otherwise the windows are the same as without it."""
+    if within is not None and len(windows(found)) < MAX_CANDIDATES:
+        within = None  # every window of the source fits the cap: the same candidates (and cache) as without a trim
+    identity = file_identity(video, RECIPE + scene.RECIPE) + ("" if within is None else f"@{within[0]}-{within[1]}")
+    tag = identity[:16] if within is None else hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
     cache = folder / f"candidates-{tag}.json"
     try:
         saved = json.loads(cache.read_text(encoding="utf-8"))
@@ -221,7 +237,7 @@ def extract(video: Path, source_id: str, found: scene.Analysis, folder: Path, *,
         pass
     folder.mkdir(parents=True, exist_ok=True)
     made = []
-    for number, (start, end, shot, motion) in enumerate(windows(found), start=1):
+    for number, (start, end, shot, motion) in (enumerate(windows(found), start=1) if within is None else numbered(found, within)):
         if cancelled():
             raise scene.AnalysisError("cancelled")
         jpeg, grey = f"{tag}-c{number}.jpg", f"{tag}-c{number}.grey"

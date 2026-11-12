@@ -222,10 +222,13 @@ class Editorial:
     ai: dict[str, str] | None = None
     vision_budget: int = 80
     draft_narration: bool = True
+    budget_set: bool = False   # the spec gave vision_budget: kept as given; otherwise it follows the length (P2-N11)
 
     def digest_input(self, part: str) -> dict[str, Any]:
         edits = self.edits.get(part)
-        return {"edits": None if edits is None else edits.to_dict(), "ai": self.ai, "vision_budget": self.vision_budget}
+        # the budget mode changes which frames the AI looks at: an explicit 80 and the automatic budget never share a part
+        return {"edits": None if edits is None else edits.to_dict(), "ai": self.ai, "vision_budget": self.vision_budget,
+                "vision_budget_mode": "spec" if self.budget_set else "auto"}
 
 
 def _editorial(value: Any) -> Editorial:
@@ -251,7 +254,7 @@ def _editorial(value: Any) -> Editorial:
     budget = item.get("vision_budget", 80)
     if type(budget) is not int or not 0 <= budget <= 400 or type(item.get("draft_narration", True)) is not bool:
         raise CompilationError("Thông tin biên tập không hợp lệ")
-    return Editorial(edits, ai, budget, item.get("draft_narration", True))
+    return Editorial(edits, ai, budget, item.get("draft_narration", True), "vision_budget" in item)
 
 
 __all__ = ["Credit", "Editorial", "Item", "Program", "Source", "load"]

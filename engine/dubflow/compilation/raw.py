@@ -227,8 +227,9 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
                                                      (fps.numerator, fps.denominator) if hasattr(fps, "numerator") else (int(fps), 1),
                                                      cues, source.notes, None if trim == (0, duration) else trim, source.rights,
                                                      source.credit.line())
+                # a trim of a long source: its candidates come from the part used (P2-N11)
                 candidates[source_id] = shots.extract(source.video, source_id, found, folder, ffmpeg=ffmpeg, run=ffmpeg_runner,
-                                                      cancelled=cancelled)
+                                                      cancelled=cancelled, within=None if trim == (0, duration) else trim)
                 item_notes[source_id] = item.notes
                 if source.video.suffix.casefold() == ".webm":
                     # FFmpeg fails ("Invalid data found") when one WebM (AV1/Opus) is opened twice at different
@@ -249,26 +250,6 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
         evidence = planner.evidence_for(list(footage.values()), candidates, item_notes)
         pool = [c for mine in candidates.values() for c in mine]
         groups = shots.duplicate_groups(pool)
-        vision_report = None
-        if vision is not None:
-            status.write(message="AI đang xem các cảnh…")
-            describer = vision(folder / "vision", context=f"Video tổng hợp: {resolved.title}", labels=ev.MOMENT_LABELS)
-            everything_seen = seeing.frames_for(pool, folder)
-            # Adaptive sampling: a broad look spread over every source, keeping a third of the budget for the
-            # sentences the first plan cannot cover (targeted looks below), when the budget does not reach every shot.
-            room = describer.budget - describer.budget // 3 if len(everything_seen) > describer.budget else describer.budget
-            first = seeing.broad(pool, folder, room)
-            looked = {candidate_id for candidate_id, _ in first}
-            seen = describer.describe(first, cancelled)
-            check()
-            seeing.apply(seen, evidence, f"AI {describer.provider}/{describer.used_model}")
-            vision_report = {"provider": describer.provider, "model": describer.used_model, "frames": len(seen), "asked": describer.asked,
-                             "broad": len(first), "targeted": 0, "warnings": []}
-            warnings += describer.warnings
-            warned = len(describer.warnings)
-            if len(everything_seen) > describer.budget:
-                warnings.append(f"Giới hạn {describer.budget} khung hình cho AI nhìn: {len(first)} cảnh trải đều các nguồn, phần còn lại "
-                                f"dành cho câu thiếu hình; {len(everything_seen) - describer.budget} cảnh trở lên chọn theo thông tin khác.")
         # 2. Parts.
         parts: list[tuple[str, str, str, str, int | None, list[str], str]] = []  # id, kind, text, title, rank, sources, keep
         everything = list(footage)
@@ -281,6 +262,37 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
             parts.append((item.item_id, "item", item.narration, item.title, rank, sources_of[item.item_id], item.keep_audio))
         if resolved.outro:
             parts.append(("outro", "outro", resolved.outro, resolved.title, None, everything, "off"))
+        vision_report = None
+        part_pools = {part_id: [c for s in source_ids for c in planner.inside_trim(candidates[s], footage[s].trim)]
+                      for part_id, _, _, _, _, source_ids, _ in parts}
+        if vision is not None:
+            status.write(message="AI đang xem các cảnh…")
+            describer = vision(folder / "vision", context=f"Video tổng hợp: {resolved.title}", labels=ev.MOMENT_LABELS)
+            sentences = sum(len(script.sentences(text)) for _, _, text, _, _, _, _ in parts)
+            if not resolved.editorial.budget_set:
+                # a long programme: the budget follows the narration (capped), reported below (P2-N11)
+                describer.budget = seeing.auto_budget(describer.budget, sentences)
+            used = {c.candidate_id: c for pool_of in part_pools.values() for c in pool_of}
+            everything_seen = seeing.frames_for(list(used.values()), folder)
+            # Adaptive sampling: a broad look over the footage the parts use (inside their trims), every part in turn,
+            # one frame per duplicate picture, keeping a third of the budget for the sentences the first plan cannot
+            # cover (targeted looks, shared fairly between the parts) when the budget does not reach every shot.
+            room = describer.budget - describer.budget // 3 if len(everything_seen) > describer.budget else describer.budget
+            first = seeing.allocate(list(part_pools.values()), folder, room, groups)
+            looked = {candidate_id for candidate_id, _ in first}
+            broad = seeing.look(describer, first, groups, pool, cancelled)
+            check()
+            seeing.apply(broad.found, evidence, f"AI {describer.provider}/{describer.used_model}")
+            vision_report = {"provider": describer.provider, "model": describer.used_model, "frames": broad.frames, "asked": describer.asked,
+                             "broad": len(first), "targeted": 0, "warnings": [], "budget": describer.budget,
+                             "budget_rule": "spec" if resolved.editorial.budget_set else f"auto: {seeing.FRAMES_PER_SENTENCE} × {sentences} câu, "
+                                                                                         f"tối thiểu {resolved.editorial.vision_budget}, tối đa {seeing.LONG_FORM_CAP}",
+                             "shared_duplicates": broad.shared}
+            warnings += describer.warnings
+            warned = len(describer.warnings)
+            if len(everything_seen) > describer.budget:
+                warnings.append(f"Giới hạn {describer.budget} khung hình cho AI nhìn: {len(first)} cảnh trải đều các phần, phần còn lại "
+                                f"dành cho câu thiếu hình; {len(everything_seen) - describer.budget} cảnh trở lên chọn theo thông tin khác.")
         code = hashlib.sha256()
         for module in (render, layout, planner, align, more, proper_names, shots, ev, scene):
             code.update(Path(module.__file__).read_bytes())
@@ -332,41 +344,45 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
                                             "editorial": {**resolved.editorial.digest_input(part_id), "edits": edits.to_dict()},
                                             # what the AI saw, not how many frames it was asked this run (cached answers)
                                             "vision": None if vision_report is None else
-                                            {k: vision_report[k] for k in ("provider", "model")},
+                                            {k: vision_report[k] for k in ("provider", "model", "budget")},
                                             "shown": avoid, "trim": [footage[s].trim for s in source_ids]})
             made = planner.plan_part(part_id, kind, spoken, narration_ms, resolved.mastering, lead_ms=script.LEAD_MS,
                                      gap_ms=script.GAP_MS, footage=part_footage, candidates=candidates, evidence=evidence,
                                      groups=groups, edits=edits, keep_audio=keep, title=title,
                                      inputs=inputs, shown=avoid)
-            room = describer.budget - describer.taken if vision_report is not None else 0
+            # what is left is shared by the parts still to plan: an early part never takes the later parts' looks
+            fair = lambda: (describer.budget - describer.taken) // max(1, len(parts) - index + 1) if vision_report is not None else 0
+            room = fair()
             if room > 0:
                 # Targeted look: shots not yet seen that may show what an uncovered sentence says; plan again with them.
-                ids = seeing.targets(made.log["units"], [c for s in source_ids for c in candidates[s]], evidence, looked,
-                                     min(room, TARGETED_PER_PART), forward_only=True)
+                ids = seeing.targets(made.log["units"], part_pools[part_id], evidence, looked,
+                                     min(room, max(TARGETED_PER_PART, room // 2)), forward_only=True)
                 if ids:
                     status.write(message=f"{context}AI xem thêm cảnh cho câu chưa đủ hình ({index}/{len(parts)})…")
                     by_id = {c.candidate_id: c for c in pool}
-                    extra = describer.describe([(i, folder / by_id[i].keyframe) for i in ids], cancelled)
+                    extra = seeing.look(describer, [(i, folder / by_id[i].keyframe) for i in ids], groups, pool, cancelled)
                     check()
                     looked.update(ids)
-                    seeing.apply(extra, evidence, f"AI {describer.provider}/{describer.used_model}")
-                    vision_report["targeted"] += len(extra)
-                    vision_report["frames"] += len(extra)
+                    seeing.apply(extra.found, evidence, f"AI {describer.provider}/{describer.used_model}")
+                    # the frames the model was paid for; the duplicates that share an answer are counted apart
+                    vision_report["targeted"] += extra.frames
+                    vision_report["frames"] += extra.frames
+                    vision_report["shared_duplicates"] += extra.shared
                     vision_report["asked"] = describer.asked
                     warnings += describer.warnings[warned:]
                     warned = len(describer.warnings)
-                    if extra:
+                    if extra.found:
                         made = planner.plan_part(part_id, kind, spoken, narration_ms, resolved.mastering, lead_ms=script.LEAD_MS,
                                                  gap_ms=script.GAP_MS, footage=part_footage, candidates=candidates, evidence=evidence,
                                                  groups=groups, edits=edits, keep_audio=keep, title=title,
                                                  inputs=inputs, shown=avoid)
-            room = describer.budget - describer.taken if vision_report is not None else 0
+            room = fair()
             if room >= 2:
                 # More frames of the shots one frame does not represent (long takes, unsure answers), then plan again.
                 # the user's shots keep their ids: pinned, excluded and approved (P2-N5) are never split
                 locked = ({i for ids in edits.pin.values() for i in ids} | set(edits.exclude)
                           | {p[0] for pieces in edits.keep.values() for p in pieces}) if edits is not None else set()
-                part_pool = [c for s in source_ids for c in candidates[s]]
+                part_pool = part_pools[part_id]
                 ids = more.wanted(made.log["units"], part_pool, evidence, sampled, limit=min(more.EXTRA_SHOTS, room // 2),
                                   forward_only=True, locked={i for i in locked if more.parent(i) == i},
                                   again={more.parent(i) for i in locked if more.parent(i) != i})
@@ -382,6 +398,8 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
                     candidates.update(mine)
                     pool = [c for every in candidates.values() for c in every]
                     groups = shots.duplicate_groups(pool)
+                    part_pools = {p_id: [c for s in s_ids for c in planner.inside_trim(candidates[s], footage[s].trim)]
+                                  for p_id, _, _, _, _, s_ids, _ in parts}
                     vision_report["multi_frame"] = vision_report.get("multi_frame", 0) + described
                     vision_report["frames"] += described
                     vision_report["asked"] = describer.asked
@@ -392,6 +410,8 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
                                                  gap_ms=script.GAP_MS, footage=part_footage, candidates=candidates, evidence=evidence,
                                                  groups=groups, edits=edits, keep_audio=keep, title=title,
                                                  inputs=inputs, shown=avoid)
+            # what of this part's footage has content evidence, and the largest stretches nobody looked at (P2-N11)
+            made.log["coverage_map"] = seeing.coverage_map(part_pools[part_id], evidence)
             reviewing.annotate(made.log, made.plan.to_dict())
             invalidated = decisions.reconcile(made.log, run=output_dir.name)
             if invalidated or decisions.plan_id != made.log.get("plan_id"):
