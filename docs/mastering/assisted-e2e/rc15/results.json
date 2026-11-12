@@ -1,0 +1,182 @@
+{
+ "version": "1.1.96-rc15",
+ "build": {
+  "run": 43298731065,
+  "conclusion": "success",
+  "commit": "6b1a0cf25d5f8602e433ccec25821a6a0ef937f1",
+  "artifact_id": 13982143495,
+  "zip_sha256": "efafe2cfcb32b7f698ad012fde8c76760f0b994a691bd654affa3eeee178fc74",
+  "zip_matches_evidence": true,
+  "exe_sha256": "104970442e961c7407733cfcd510a6d926dd68c7ea3ae2f26abdb638443fe86f",
+  "cdp_proof": "PROOF OK",
+  "footer": "v1.1.96-rc15 candidate",
+  "cpu_only": true
+ },
+ "W1": {
+  "verdict": "PASS",
+  "draft_s": 166,
+  "rerender_s": [
+   8.3,
+   7.7,
+   7.8
+  ],
+  "kept": 4,
+  "invalidated": 0,
+  "replanned": [
+   [],
+   [
+    "u3"
+   ],
+   [
+    "u3"
+   ]
+  ],
+  "editor": "opens directly (no dialog; u2 READY); no QC block"
+ },
+ "W2": {
+  "verdict": "PASS",
+  "draft_s": 255,
+  "excluded": [
+   "i1-s1c1f2",
+   "i1-s1c1f3"
+  ],
+  "not_excludable": "i1-s1c1f1 (0-1950, unused; alternatives offer only 'Dùng cảnh này')",
+  "rebuild_s": 12.7,
+  "rendered": [
+   "i1"
+  ],
+  "reused": [
+   "hook",
+   "intro",
+   "i2",
+   "i3",
+   "i4",
+   "i5",
+   "outro"
+  ],
+  "kept": 4,
+  "invalidated": 0,
+  "held_frame": {
+   "hook": 0,
+   "intro": 0,
+   "i1": 0,
+   "i2": 0,
+   "i3": 0,
+   "i4": 0,
+   "i5": 0,
+   "outro": 0
+  },
+  "i1_moment_ms": [
+   18000,
+   21500
+  ],
+  "qc_claims_before_approval": "i1: câu 2, i5: câu 2",
+  "export1": "Kiểm tra cuối: đạt.",
+  "final_sha256": "d6af11aa9cd3088fcbcfbf7cf245973bbda558f5710e4424ec17797d71785f5",
+  "final_i1_freezes": 0
+ },
+ "W5_on_W2_pin": {
+  "verdict": "PASS",
+  "rerender_s": 25.9,
+  "rendered": [],
+  "reused": 8,
+  "plan_i1_byte_identical": true,
+  "i1_moment_kept": true,
+  "invalidated": 0,
+  "held_frame": 0,
+  "new_vision_frames": 6,
+  "export2": "Kiểm tra cuối: đạt. (same sha)"
+ },
+ "W3": {
+  "verdict": "Gate B FAIL",
+  "gt_sha256": "afa979d239b6a68be03349308e233809efddc84cd2ed13e0d869913c51f66497",
+  "draft_s": 721,
+  "peak_ram_mb": 3536,
+  "recall_at_5": 0.4833,
+  "hits": 29,
+  "serious_silent_misses": [
+   "i1.u1",
+   "i1.u2",
+   "i16.u1"
+  ],
+  "false_source_insufficient": 0,
+  "held_frame": 0,
+  "vision": {
+   "budget": 142,
+   "used": 139,
+   "broad": 95,
+   "targeted": 42,
+   "multi_frame": 2
+  },
+  "baseline_hits": {
+   "rc12": 31,
+   "rc13": 33,
+   "rc14": 28
+  }
+ },
+ "W4": {
+  "verdict": "PASS",
+  "synthetic": {
+   "run": 17,
+   "ok": 17,
+   "skipped": 0,
+   "adapter": false,
+   "encoder": "mpeg4"
+  },
+  "W2_final1": {
+   "exit": 0,
+   "measured": 7,
+   "unmeasured": 0,
+   "av_ms": [
+    -33.3,
+    0,
+    0,
+    0,
+    0,
+    -33.3,
+    -33.3
+   ],
+   "worst": 33.3
+  },
+  "W2_compilation1": {
+   "exit": 0,
+   "measured": 7,
+   "unmeasured": 0,
+   "worst": 33.3
+  },
+  "W2_final2": {
+   "exit": 0,
+   "measured": 7,
+   "unmeasured": 0,
+   "worst": 33.3
+  },
+  "W3": {
+   "exit": 0,
+   "measured": 21,
+   "unmeasured": 0,
+   "worst": 0.0
+  }
+ },
+ "W5": {
+  "verdict": "PASS",
+  "v1_sha256": "9afa62bcfb3ae46343d28f606b39a5d68db722c7285582c1112c7e9a1002c6d3",
+  "v1_identical": true,
+  "cancel": "CANCELLED, never COMPLETED",
+  "records": 24,
+  "invalidated": 0,
+  "scan": {
+   "files": 10917,
+   "claude": 0,
+   "gemini": 0,
+   "email": 0
+  }
+ },
+ "W6": {
+  "verdict": "BLOCKED"
+ },
+ "performance": {
+  "W1_peak_mb": 3532,
+  "W2_peak_mb": 2983,
+  "W3_peak_mb": 3536
+ }
+}

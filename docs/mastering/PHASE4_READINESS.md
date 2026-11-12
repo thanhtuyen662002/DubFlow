@@ -2,6 +2,23 @@
 
 Epic #637 · 2026-11-12 · cập nhật sau chỉ thị "DUBFLOW — GATE S FINAL CLOSURE" · main sau #763 (bản kiểm cuối: 1.1.96-rc7 = `7acd262`, candidate, `publish=false`)
 
+## Cập nhật 2026-11-12: chỉ thị "Assisted Production Stabilization & Documentary Pilot Entry Gates"
+
+Bản kiểm cuối: **1.1.96-rc15** (`6b1a0cf`, release run 43298731065, candidate, `publish=false`), Windows, chỉ CPU. Không phát hành stable. Mỗi hàng là một kết quả riêng.
+
+| Hạng mục | Kết quả | Bằng chứng |
+|---|---|---|
+| Assisted Production Stability | **PASS** | [LOCALIZED_REPLANNING_REPORT.md](LOCALIZED_REPLANNING_REPORT.md): W1 giữ 4/4 duyệt, huỷ 0 sau Ghim / Bỏ / Thay; W2 dựng 1 phần, dùng lại 7, HELD_FRAME 0, xuất "Kiểm tra cuối: đạt."; W5 trên W2 dựng 0, dùng lại 8. PR #782, #797, #798, #803, #804 |
+| Long-Form Assisted Readiness | **FAIL** | [LONG_FORM_EVIDENCE_REPORT.md](LONG_FORM_EVIDENCE_REPORT.md): recall@5 29/60 (48,3 %) so với ≥ 85 %; 3 bỏ sót không báo (i1.u1, i1.u2, i16.u1); 0 SOURCE_INSUFFICIENT sai; HELD_FRAME 0. Nhãn khoá sha256 `afa979d2…f66497`, không sửa. Backlog #802 |
+| Documentary Assisted Pilot Entry | **NOT READY FOR PILOT IMPLEMENTATION** (thiết kế PASS) | [DOCUMENTARY_PILOT_ENTRY_GATES.md](DOCUMENTARY_PILOT_ENTRY_GATES.md): cổng B FAIL, cổng D BLOCKED ([HUMAN_EDITORIAL_VALIDATION_REPORT.md](HUMAN_EDITORIAL_VALIDATION_REPORT.md): không có người tham gia; tự động hoá CDP không tính là người duyệt) |
+| Documentary Auto (Gate S) | **FAIL → NO-GO**, không đổi | Không có thay đổi nào trong vòng này; xem các mục bên dưới |
+| Windows E2E | W1 **PASS**, W2 **PASS**, W3 **FAIL** (Gate B), W4 **PASS**, W5 **PASS**, W6 **BLOCKED** | [assisted-e2e/rc15](assisted-e2e/rc15/); rc13, rc14 ở [assisted-e2e/rc13](assisted-e2e/rc13/), [assisted-e2e/rc14](assisted-e2e/rc14/). Gate C: 28/28 chỗ nối đo được, tệ nhất 33,3 ms ([AV_BOUNDARY_SYNC_REPORT.md](AV_BOUNDARY_SYNC_REPORT.md)) |
+| Security/Compatibility | **PASS** | Tổng hợp v1 xuất trùng từng byte với rc13 (sha256 `9afa62bc…c6d3`); huỷ một lần dựng cho CANCELLED, không bao giờ COMPLETED; quét khoá và e-mail (ứng dụng đã đóng) trên 10.917 file, 4,89 GiB của sandbox rc15 (thư mục dữ liệu, đầu ra, log…): claude 0 / gemini 0 / email 0 |
+
+Hiệu năng (rc15, Windows CPU): bản nháp W1 166 s, W2 255 s, W3 721 s; dựng lại sau một thao tác: W1 8,3 / 7,7 / 7,8 s, W2 12,7 s (1 phần), W5 trên W2 25,9 s (0 phần); RAM đỉnh 3,0–3,5 GB.
+
+**Phase 4 vẫn NO-GO.** Không có code Phase 4 trong vòng này.
+
 ## Cập nhật 2026-11-12: chỉ thị "Assisted Editorial Production"
 
 Mỗi chế độ có kết quả riêng. Đổi tên một chế độ không biến FAIL thành PASS.

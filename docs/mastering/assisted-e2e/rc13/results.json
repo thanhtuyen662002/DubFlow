@@ -1,0 +1,215 @@
+{
+ "version": "1.1.96-rc13",
+ "date": "2026-11-12/13",
+ "machine": "owner Windows 11, CPU only",
+ "build": {
+  "run": 43250339299,
+  "conclusion": "success",
+  "commit": "f46723aa93553da321e480e6cc0d6e62b6d9a08e",
+  "artifact_id": 13961841624,
+  "outer_zip_sha256": "3f7eeb7bf45a2e65f97de4a00a5005ffbf8d88557e83137bcab834fa747bfad1",
+  "zip_sha256": "fc3861735e3dcb121987cbc15528d5f3f3be8d3024de061afbee6f983824d366",
+  "zip_sha256_matches_evidence": true,
+  "exe_sha256": "a9b10f1e08093ad1b5027b6f2716fca6aacb1e4e6c6720af5b8575524c740775",
+  "manifest_sha256": "b7b2fb8d6640e081767ad51488813c2f9ca8276a4f37d58fadf1abe90169b65e",
+  "cdp_proof": "PROOF OK",
+  "footer": "v1.1.96-rc13 candidate",
+  "cpu_only": true
+ },
+ "W1": {
+  "verdict": "PASS",
+  "draft_s": 146,
+  "approvals": 4,
+  "steps": [
+   {
+    "step": "pin u3",
+    "rerender_s": 9.8,
+    "kept": 4,
+    "invalidated": 0,
+    "replanned": []
+   },
+   {
+    "step": "exclude u3 v2c2",
+    "rerender_s": 9.3,
+    "kept": 4,
+    "invalidated": 0,
+    "replanned": [
+     "u3"
+    ]
+   },
+   {
+    "step": "replace u3 v1c8",
+    "rerender_s": 9.3,
+    "kept": 4,
+    "invalidated": 0,
+    "replanned": [
+     "u3"
+    ]
+   }
+  ],
+  "records": 7
+ },
+ "W2": {
+  "verdict": "FAIL",
+  "replanning": "PASS",
+  "export": "FAIL",
+  "draft_s": 255,
+  "rebuild_s": 12.1,
+  "rendered": [
+   "i1"
+  ],
+  "reused": [
+   "hook",
+   "intro",
+   "i2",
+   "i3",
+   "i4",
+   "i5",
+   "outro"
+  ],
+  "ui_line": "dựng 1 phần, dùng lại 7 phần không đổi",
+  "approvals_kept": 4,
+  "invalidated": 0,
+  "vision_asked_on_rebuild": 0,
+  "plans_byte_identical": [
+   "hook",
+   "intro",
+   "i3",
+   "i4",
+   "i5"
+  ],
+  "held_frame": {
+   "hook": 0,
+   "intro": 0,
+   "i1": 1,
+   "i2": 0,
+   "i3": 0,
+   "i4": 0,
+   "i5": 0,
+   "outro": 0
+  },
+  "held_detail": "i1.u2 1126 ms still of i1-s1c2f1 (repeat)",
+  "i1_moment_ms_after": 0,
+  "export_line": "Chưa xuất. Kiểm tra cuối chưa đạt. Dòng thời gian: i1: HELD_FRAME i1.u2 giữ một khung hình 1126 ms",
+  "rc12": {
+   "rendered": [
+    "i1",
+    "i4"
+   ],
+   "held_frame_i1": 5
+  }
+ },
+ "W5_on_W2_pin_i3u2": {
+  "verdict": "PASS",
+  "rerender_s": 31,
+  "rendered": [
+   "i3"
+  ],
+  "reused": 7,
+  "invalidated": 0
+ },
+ "W3": {
+  "verdict": "Gate B FAIL",
+  "gt_sha256": "afa979d239b6a68be03349308e233809efddc84cd2ed13e0d869913c51f66497",
+  "gt_equals_lock": true,
+  "draft_s": 721,
+  "peak_ram_mb": 3485,
+  "units_scored": 64,
+  "with_footage": 60,
+  "recall_at_5": 0.55,
+  "hits": 33,
+  "chosen_hit": 0.4333,
+  "serious_silent_misses": [
+   "i1.u2",
+   "i16.u1"
+  ],
+  "false_source_insufficient": 0,
+  "missing_flagged": "4/4",
+  "held_frame": 0,
+  "states": {
+   "READY": 7,
+   "NEEDS_REVIEW": 42,
+   "MATCH_NOT_FOUND": 15
+  },
+  "vision": {
+   "budget": 142,
+   "rule": "auto: 2 × 71 câu, tối thiểu 80, tối đa 400",
+   "used": 139,
+   "broad": 95,
+   "targeted_per_part": 2,
+   "multi_frame": 0
+  },
+  "rc12": {
+   "recall_at_5": 0.5167,
+   "hits": 31,
+   "silent_misses": 0
+  },
+  "ui_export": "NOT RUN"
+ },
+ "W4": {
+  "verdict": "PASS",
+  "synthetic": {
+   "run": 17,
+   "ok": 17,
+   "skipped": 0,
+   "failed": 0,
+   "adapter": false,
+   "encoder": "mpeg4"
+  },
+  "W2": {
+   "exit": 0,
+   "joins": 7,
+   "measured": 7,
+   "unmeasured": 0,
+   "av_ms": [
+    -33.3,
+    0,
+    0,
+    0,
+    0,
+    -33.3,
+    -33.3
+   ],
+   "worst_abs_av_ms": 33.3
+  },
+  "W3": {
+   "exit": 0,
+   "joins": 21,
+   "measured": 21,
+   "unmeasured": 0,
+   "worst_abs_av_ms": 0.0
+  },
+  "rc12_measured": "0/28"
+ },
+ "W5": {
+  "verdict": "PASS",
+  "v1_sha256": "9afa62bcfb3ae46343d28f606b39a5d68db722c7285582c1112c7e9a1002c6d3",
+  "v1_identical_rc12_rc10": true,
+  "v1_s": 50,
+  "resume": "i3 only, 7 reused",
+  "cancel": "RUNNING -> CANCELLED, never COMPLETED, 0 videos",
+  "create_button_with_3_scripts": "Tạo 2 video",
+  "scan": {
+   "files": 11201,
+   "claude": 0,
+   "gemini": 0,
+   "email": 0,
+   "self_test": "PASS"
+  },
+  "media_equal_rc12": "30/30"
+ },
+ "W6": {
+  "verdict": "BLOCKED",
+  "reason": "no participant; not simulated"
+ },
+ "performance": {
+  "W1_peak_mb": 3631,
+  "W2_peak_mb": 3113,
+  "W3_peak_mb": 3485
+ },
+ "investigation": {
+  "file": "investigate/answer.md",
+  "replay_equal": true,
+  "network_asks": 0
+ }
+}
