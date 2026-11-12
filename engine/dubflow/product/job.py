@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import time
 import wave
 from typing import Any, Callable, Protocol, Sequence
@@ -206,23 +207,82 @@ def _editorial(value: Any, visuals: int) -> Editorial:
     return Editorial(clean, edits, ai, budget)
 
 
-def _atomic_text(path: Path, text: str) -> None:
+# Windows refuses to replace a file another process holds open (the desktop polling it, an antivirus or a backup
+# tool): ERROR_ACCESS_DENIED (5), ERROR_SHARING_VIOLATION (32), ERROR_LOCK_VIOLATION (33). Such a refusal passes.
+_BUSY_WINERRORS = frozenset({5, 32, 33})
+REPLACE_ATTEMPTS = 6       # ~1.6 s of backoff: a progress line can wait for the next one
+FINAL_ATTEMPTS = 12        # ~8 s: the last state of a job is worth waiting for
+TERMINAL = ("COMPLETED", "FAILED", "CANCELLED")
+
+
+def _busy(error: OSError) -> bool:
+    return isinstance(error, PermissionError) or getattr(error, "winerror", None) in _BUSY_WINERRORS
+
+
+def _atomic_text(path: Path, text: str, *, attempts: int = REPLACE_ATTEMPTS, first_delay: float = 0.05,
+                 sleep: Callable[[float], None] | None = None) -> None:
+    """Write ``text`` to ``path`` whole or not at all: a partial file, flushed to disk, then renamed over ``path``.
+
+    A rename refused because the file is held open is tried again with a growing pause, ``attempts`` times in all
+    (#766: rc7 D1, the engine died on the first WinError 5). Anything else (a full disk) fails at once. On failure
+    the partial file is removed and ``path`` keeps its previous content.
+    """
     partial = path.with_name(path.name + ".partial")
-    partial.write_text(text, encoding="utf-8", newline="\n")
-    os.replace(partial, path)
+    try:
+        with partial.open("w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        delay = first_delay
+        for attempt in range(max(1, attempts)):
+            try:
+                os.replace(partial, path)
+                return
+            except OSError as error:
+                if not _busy(error) or attempt == attempts - 1:
+                    raise
+                (sleep or time.sleep)(delay)
+                delay = min(delay * 2, 1.0)
+    except BaseException:
+        try:
+            partial.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
 
 class Status:
-    """``.dubflow-work/status.json``, which the desktop polls."""
+    """``.dubflow-work/status.json``, which the desktop polls.
+
+    Writing it never ends the job (#766): a progress line that cannot be written is skipped (the next one carries
+    it), the final state is tried for longer, and a write that still fails is said on stderr and counted in
+    ``status_write_failures``. The job's result is also its last stdout line, which the desktop reads when the
+    file still says RUNNING after the engine has ended.
+    """
 
     def __init__(self, path: Path, total: int) -> None:
         self.path = path
+        self.failures = 0
         self.value: dict[str, Any] = {"schema_version": 1, "state": "RUNNING", "done": 0, "total": total, "message": "Đang chuẩn bị giọng đọc (lần đầu cần tải mô hình giọng khoảng 520 MB)…", "videos": []}
         self.write()
 
-    def write(self, **changes: Any) -> None:
+    def write(self, **changes: Any) -> bool:
+        """Update the state and write it; False when the file could not be written (the state is kept)."""
         self.value.update(changes)
-        _atomic_text(self.path, json.dumps(self.value, ensure_ascii=False))
+        if self.failures:
+            self.value["status_write_failures"] = self.failures
+        terminal = self.value.get("state") in TERMINAL
+        try:
+            _atomic_text(self.path, json.dumps(self.value, ensure_ascii=False),
+                         attempts=FINAL_ATTEMPTS if terminal else REPLACE_ATTEMPTS)
+            return True
+        except OSError as error:
+            self.failures += 1
+            self.value["status_write_failures"] = self.failures
+            code = getattr(error, "winerror", None) or error.errno
+            print(f"dubflow: status.json not written ({type(error).__name__} {code}; state {self.value.get('state')})",
+                  file=sys.stderr, flush=True)
+            return False
 
 
 def run_ffmpeg(argv: list[str], cwd: Path, cancelled: Callable[[], bool] = lambda: False, *, poll_seconds: float = 0.5) -> None:

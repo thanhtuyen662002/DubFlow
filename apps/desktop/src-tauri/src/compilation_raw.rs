@@ -281,7 +281,7 @@ fn write_replace(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         return Err(std::io::Error::other("temp file is a link"));
     }
     fs::write(&temp, bytes)?;
-    fs::rename(&temp, path)
+    crate::engine_run::replace_retrying(&temp, path)
 }
 
 fn write_status(work: &Path, state: &str, message: &str) -> Result<(), String> {
@@ -309,7 +309,9 @@ fn spawn(dir: &Path, cpu_only: bool, key: Option<String>) -> Result<(), String> 
         .arg("--model-root").arg(control_root()?.join("models")).arg("--ffmpeg").arg(media.join("ffmpeg.exe"))
         .arg("--ffprobe").arg(media.join("ffprobe.exe"))
         .env("PYTHONUTF8", "1").env("PYTHONNOUSERSITE", "1")
-        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        .stdin(Stdio::null());
+    let (stdout, stderr) = crate::engine_run::engine_output(&work);
+    command.stdout(stdout).stderr(stderr);
     if cpu_only {
         command.arg("--cpu-only");
     }
@@ -320,13 +322,8 @@ fn spawn(dir: &Path, cpu_only: bool, key: Option<String>) -> Result<(), String> 
     command.creation_flags(CREATE_NO_WINDOW);
     let mut child = command.spawn().map_err(|_| fail("Không chạy được bộ tổng hợp video"))?;
     std::thread::spawn(move || {
-        let _ = child.wait();
-        let status = crate::product::read_small_json(&work.join("status.json"), STATUS_LIMIT);
-        if status.as_ref().is_none_or(|value| value["state"] == "RUNNING") {
-            let cancelled = work.join("cancel").exists();
-            let _ = write_status(&work, if cancelled { "CANCELLED" } else { "FAILED" },
-                                 if cancelled { "Đã hủy tổng hợp." } else { "Bộ tổng hợp đã dừng. Hãy thử lại." });
-        }
+        let exited_ok = child.wait().is_ok_and(|status| status.success());
+        crate::engine_run::settle_after_exit(&work, exited_ok, "Bộ tổng hợp đã dừng. Hãy thử lại.");
     });
     Ok(())
 }

@@ -12,6 +12,7 @@ mod douyin_login;
 mod mastering;
 mod docu;
 mod edit;
+mod engine_run;
 mod gpu;
 mod package;
 mod shorts;
