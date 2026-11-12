@@ -76,6 +76,25 @@ class QueueTests(unittest.TestCase):
         self.assertEqual(review.records[-1]["type"], "INVALIDATED")
         self.assertTrue(review.records[-1]["invalidation_reason"])
 
+    def test_an_invalidation_names_its_run(self):  # rc8 P3: INVALIDATED records had an empty run_id
+        made = world()
+        review = rv.Review()
+        review.decide(made, "u1", "approve", run="run-3")
+        made["units"][0]["chosen"] = ["c3"]
+        review.reconcile(made, run="run-3")
+        self.assertEqual((review.records[-1]["type"], review.records[-1]["run_id"]), ("INVALIDATED", "run-3"))
+
+    def test_what_the_user_settled_is_counted_as_theirs(self):  # rc8 P1-N3
+        made = world()
+        review = rv.Review()
+        self.assertEqual(rv.settled_by_user(made, review), [])
+        review.decide(made, "u2", "missing")
+        review.decide(made, "u3", "pin", ["c2"])
+        review.decide(made, "u4", "approve")
+        review.decide(made, "u1", "approve")  # READY already: the planner's pass, not counted as the user's
+        self.assertEqual(rv.unreviewed(made, review), [])
+        self.assertEqual(sorted(rv.settled_by_user(made, review)), ["u2", "u3", "u4"])
+
 
 class SourceMissingTests(unittest.TestCase):
     def test_no_suitable_footage_settles_the_sentence_without_changing_the_verdict(self):

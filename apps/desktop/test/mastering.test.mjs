@@ -51,7 +51,18 @@ assert.equal(needsExportConfirm(null), false);
 
 // A video's mastering report.
 assert.equal(masteringOf({ index: 1 }), null);
-assert.deepEqual(masteringOf({ mastering: { level: "balanced", unreviewed: 2, warnings: ["a", 3] } }), { unreviewed: 2, warnings: ["a"], fallback: null, level: "balanced" });
+assert.deepEqual(masteringOf({ mastering: { level: "balanced", unreviewed: 2, warnings: ["a", 3] } }), { unreviewed: 2, userSettled: null, warnings: ["a"], fallback: null, level: "balanced" });
+// rc8 P1-N3: sentences the user settled are never shown as an automatic pass
+{
+  const { masteringNote } = await import("../src/features/mastering/model.ts");
+  const settled = masteringOf({ mastering: { level: "balanced", unreviewed: 0, user_settled: 4 } });
+  assert.equal(settled.userSettled, 4);
+  assert.doesNotMatch(masteringNote(settled), /tự động/);
+  assert.match(masteringNote(settled), /Bạn đã duyệt hoặc chọn cảnh cho 4 câu/);
+  assert.doesNotMatch(masteringNote({ unreviewed: 0, userSettled: null, fallback: null }), /tự động/, "an older run: who settled is unknown");
+  assert.match(masteringNote({ unreviewed: 0, userSettled: 0, fallback: null }), /tự động \(chưa hiệu chỉnh/);
+  assert.equal(masteringNote({ unreviewed: 3, userSettled: 1, fallback: null }), "3 câu cần xem lại cảnh");
+}
 
 // The product request: off sends nothing new; a level and the vision route are sent; "Chỉ chữ" never asks for mastering.
 const base = { info: { name: "Nồi", price: "1đ", features: [], audience: "", notes: "" }, voiceId: "vi", scripts: [{ text: "Câu.", use: true }],
@@ -68,7 +79,9 @@ assert.equal("mastering" in buildRequest({ ...base, mastering: "max" }), false);
 const unplaced = { evidence: "MATCH_AVAILABLE", coverage: { milli: 0, illustrated_ms: 0, status: "none" }, decision: null };
 assert.match(evidenceHelp(unplaced), /chưa đặt được/);
 assert.equal(evidenceHelp({ ...unplaced, coverage: { milli: 500, illustrated_ms: 1500 } }), "Có cảnh khớp lời câu này.");
-assert.equal(evidenceHelp({ ...unplaced, decision: { pin: ["v1c1"], exclude: [] } }), "Có cảnh khớp lời câu này.");
+// rc8 P2-N6: a pinned shot is the user's choice; the planner's "has a match" never vouches for it
+assert.match(evidenceHelp({ ...unplaced, decision: { pin: ["v1c1"], exclude: [] } }), /Cảnh do bạn chọn/);
+assert.doesNotMatch(evidenceHelp({ ...unplaced, coverage: { milli: 900, illustrated_ms: 1500 }, decision: { pin: ["v1c1"], exclude: [] } }), /Có cảnh khớp/);
 assert.equal(evidenceHelp({ evidence: "UNKNOWN", coverage: {}, decision: null }), "");
 // P1-N1: an opening that needs no shot of its own but is not ready says its shot needs a look
 assert.equal(evidenceHelp({ evidence: "NOT_NEEDED", coverage: { status: "generic" }, decision: null, state: "READY" }),

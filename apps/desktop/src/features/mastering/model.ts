@@ -65,7 +65,10 @@ export function evidenceHelp(unit: Pick<ReviewUnit, "evidence" | "coverage" | "d
   if (unit.evidence === "NOT_NEEDED" && unit.state && unit.state !== "READY") {
     return "Câu mở đầu/kêu gọi: không cần cảnh riêng, nhưng cảnh đang dùng cần kiểm tra (xem lý do bên dưới).";
   }
-  if (unit.evidence === "MATCH_AVAILABLE" && unit.coverage.illustrated_ms === 0 && !unit.decision?.pin.length) {
+  if (unit.decision?.pin.length) {
+    return "Cảnh do bạn chọn. AI không xác nhận cảnh này khớp lời câu: hãy tự xem lại.";
+  }
+  if (unit.evidence === "MATCH_AVAILABLE" && unit.coverage.illustrated_ms === 0) {
     return "Có cảnh khớp lời câu này nhưng chưa đặt được vào câu (cảnh quá ngắn hoặc cần cho câu sau), nên câu đang dùng cảnh chung: hãy xem các cảnh khác hoặc chọn tay.";
   }
   return EVIDENCE_HELP[unit.evidence] ?? "";
@@ -330,11 +333,24 @@ async function finalQcGate(invoke: Invoke, review: { outputDir: string; video: n
 }
 
 /** The report the product job writes per video: whether it has a review to open, and its counts. */
-export function masteringOf(video: unknown): { unreviewed: number; warnings: string[]; fallback: string | null; level: string } | null {
+export function masteringOf(video: unknown): {
+  unreviewed: number; userSettled: number | null; warnings: string[]; fallback: string | null; level: string;
+} | null {
   const report = ((video ?? {}) as Record<string, unknown>).mastering as Record<string, unknown> | undefined;
   if (!report || typeof report !== "object") return null;
   return {
-    unreviewed: isNumber(report.unreviewed) ? report.unreviewed : 0, warnings: strings(report.warnings, 30),
+    unreviewed: isNumber(report.unreviewed) ? report.unreviewed : 0,
+    // null: a run from before the count existed, so who settled the sentences is not known
+    userSettled: isNumber(report.user_settled) ? report.user_settled : null, warnings: strings(report.warnings, 30),
     fallback: isString(report.fallback) ? report.fallback : null, level: isString(report.level) ? report.level : "",
   };
+}
+
+/** A video's review line. What the user settled is said as the user's decision, never as an automatic pass (P1-N3). */
+export function masteringNote(report: { unreviewed: number; userSettled: number | null; fallback: string | null }): string {
+  if (report.fallback) return report.fallback;
+  if (report.unreviewed) return `${report.unreviewed} câu cần xem lại cảnh`;
+  if (report.userSettled === null) return "Không còn câu chờ duyệt";
+  if (report.userSettled > 0) return `Bạn đã duyệt hoặc chọn cảnh cho ${report.userSettled} câu AI chưa chắc; không còn câu chờ duyệt`;
+  return "Cảnh đã đạt kiểm tra tự động (chưa hiệu chỉnh, nên vẫn nên xem lại)";
 }

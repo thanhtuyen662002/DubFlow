@@ -17,7 +17,7 @@ import { confirmDialog } from "../../shell/confirm.ts";
 import { confirmDeleteProject, deleteProjectButton } from "../../shell/project_delete.ts";
 import { closeDrawerOutside } from "../../shell/drawer.ts";
 import { mountPlayerBar } from "../media/player_bar.ts";
-import { exportGate, isLevel, levelText, masteringOf } from "../mastering/model.ts";
+import { exportGate, isLevel, levelText, masteringNote, masteringOf } from "../mastering/model.ts";
 import { openReviewPanel } from "../mastering/review_panel.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
@@ -750,9 +750,7 @@ export function mountProductStudio(invoke: Invoke, apiKey: SessionKey, settings:
         if (report) {
           const note = document.createElement("span");
           note.className = report.fallback ? "product-mastering-note bad" : report.unreviewed ? "product-mastering-note warn" : "product-mastering-note";
-          note.textContent = report.fallback
-            ? report.fallback
-            : report.unreviewed ? `${report.unreviewed} câu cần xem lại cảnh` : "Cảnh đã đạt kiểm tra tự động";
+          note.textContent = masteringNote(report);
           if (review && status.state !== "RUNNING") {
             const check = document.createElement("button");
             check.type = "button";
