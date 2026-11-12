@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 from .. import align
 from .. import analysis as scene
@@ -154,6 +154,20 @@ def _ahead(candidates: Sequence[Candidate], source_id: str, start_ms: int) -> in
                for c in candidates if c.quality.usable)
 
 
+def _held_ms(choices: Sequence[Any]) -> int:
+    """How long a plan's narration would hold a frame: pieces that start before what their source already played
+    (forward only, the planner holds one frame for them instead of playing earlier footage again)."""
+    used: dict[str, int] = {}
+    held = 0
+    for choice in choices:
+        source = choice.candidate.source_id
+        if choice.offset_ms < used.get(source, 0):
+            held += choice.length_ms
+        else:
+            used[source] = max(used.get(source, 0), choice.offset_ms + choice.length_ms)
+    return held
+
+
 def _before(candidates: Sequence[Candidate], source_id: str, start_ms: int) -> list[Candidate]:
     """``candidates`` with ``source_id`` cut at ``start_ms`` (the moment plays after them)."""
     out = []
@@ -186,7 +200,11 @@ def plan_part(part_id: str, kind: str, spoken: Sequence[tuple[str, int]], narrat
         raise ValueError(f"{part_id}: no usable footage in its sources")
     reserved = None
     forward_only = not policy.allows(rules.REORDER)
-    planned = None
+    planned = first = None
+    # the footage a source moment may come from, and the footage counted ahead of it for the narration: never a shot
+    # or source the user excluded (rc12 W2: an excluded 6 s opening shot was counted ahead of the moment, leaving 7.95 s
+    # of footage for 9.49 s of narration and five held frames)
+    allowed = [c for c in pool if not (edits and (c.candidate_id in edits.exclude or c.source_id in edits.exclude_sources))]
     if moment and kind == "item" and policy.keep_source_audio:
         # The narration first, over all of the footage; the moment then comes from what plays after it. Only when
         # nothing is left after the narration is the moment chosen first (a long source kept its narration to the
@@ -196,7 +214,7 @@ def plan_part(part_id: str, kind: str, spoken: Sequence[tuple[str, int]], narrat
         ends: dict[str, int] = {}
         for choice in first[0]:
             ends[choice.candidate.source_id] = max(ends.get(choice.candidate.source_id, 0), choice.offset_ms + choice.length_ms)
-        after = _moment(by_source, pool, evidence, title, ends, keep_audio)
+        after = _moment(by_source, allowed, evidence, title, ends, keep_audio)
         if after is not None:
             planned, reserved = first, after
     if planned is None and moment and kind == "item" and policy.keep_source_audio:
@@ -204,7 +222,7 @@ def plan_part(part_id: str, kind: str, spoken: Sequence[tuple[str, int]], narrat
         # plays only what comes before it (a source that ran out under the narration had nothing left).
         # forward-only selection skips ahead to the best match, so leave room: twice the narration if the sources allow
         for need in (2 * narration_ms, narration_ms, narration_ms // 2):
-            reserved = _moment(by_source, pool, evidence, title, {}, keep_audio, need_before_ms=need)
+            reserved = _moment(by_source, allowed, evidence, title, {}, keep_audio, need_before_ms=need)
             if reserved is not None:
                 break
     if planned is not None:
@@ -215,6 +233,10 @@ def plan_part(part_id: str, kind: str, spoken: Sequence[tuple[str, int]], narrat
             reserved, narration_pool = None, pool
         choices, decisions, mode = align.assign(found_units, narration_pool, evidence, policy.pacing,
                                                 forward_only=forward_only, edits=edits, groups=groups, shown=shown)
+        if reserved is not None and first is not None and _held_ms(choices) > _held_ms(first[0]):
+            # a source moment is never bought with held frames: the narration over all of the footage holds less,
+            # so it is the plan, and the moment comes from what is left after it (or there is none)
+            (choices, decisions, mode), reserved = first, None
     segments: list[m.Segment] = []
     audio: dict[str, str] = {}
     at = 0
@@ -261,7 +283,7 @@ def plan_part(part_id: str, kind: str, spoken: Sequence[tuple[str, int]], narrat
         if picked is not None and picked[1] < used_end.get(picked[0].source_id, 0):
             picked = None  # a pinned shot played past it
         if picked is None:
-            picked = _moment(by_source, pool, evidence, title, used_end, keep_audio)
+            picked = _moment(by_source, allowed, evidence, title, used_end, keep_audio)
         if picked is not None:
             candidate, start, end, reasons = picked
             segment_id = f"{part_id}.s{len(segments) + 1}"

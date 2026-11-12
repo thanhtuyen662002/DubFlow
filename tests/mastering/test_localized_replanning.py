@@ -361,6 +361,54 @@ class RandomizedReplanningTests(unittest.TestCase):  # A5
 class ReviewFollowUpTests(unittest.TestCase):
     """Findings of the independent review of #782, each with its reproduction."""
 
+    def test_a_sentence_that_shows_one_shot_twice_keeps_its_approval(self):  # rc12 W5: voided as plan_changed
+        import copy
+        world = World(3)
+        first = world.plan()
+        unit = next(u for u in first["units"] if u["chosen"])
+        shot = unit["chosen"][0]
+        unit["chosen"] = [shot, *unit["chosen"]]  # the same shot again, as a forward-only part held it twice
+        if unit.get("pieces"):
+            unit["pieces"] = [dict(unit["pieces"][0]), *unit["pieces"]]
+            unit["pieces"][1]["repeat"] = True
+        review = rv.Review()
+        review.decide(first, unit["unit_id"], "approve")
+        self.assertEqual(review.units[unit["unit_id"]].approved, list(dict.fromkeys(unit["chosen"])))
+        again = rv.Review.from_dict(json.loads(json.dumps(review.to_dict())))  # saved and loaded, as the desktop does
+        self.assertEqual(again.reconcile(copy.deepcopy(first), run="run-2"), [])
+        self.assertEqual(rv.user_state(again.units[unit["unit_id"]]), rv.USER_APPROVED)
+
+    def test_an_approval_saved_by_rc12_on_a_shot_shown_twice_is_kept(self):
+        """Up to rc12 the material half of an approval's basis hashed a repeated shot twice; read now (each shot
+        once) it must not look like a changed source."""
+        import copy
+        world = World(3)
+        first = world.plan()
+        first["source_identity"] = "content"
+        first["sources"] = {c["source_id"]: "a" * 64 for c in first["candidates"]}
+        unit = next(u for u in first["units"] if u["chosen"])
+        unit["chosen"] = [unit["chosen"][0], *unit["chosen"]]
+        if unit.get("pieces"):
+            unit["pieces"] = [dict(unit["pieces"][0]), *unit["pieces"]]
+            unit["pieces"][1]["repeat"] = True
+        review = rv.Review()
+        review.decide(first, unit["unit_id"], "approve")
+        saved = review.to_dict()
+        old = rv.basis(unit, first, repeats=True)
+        self.assertNotEqual(old, rv.basis(unit, first))  # the two ways differ for this sentence
+        saved["units"][unit["unit_id"]]["approved"] = list(unit["chosen"])  # as rc12 saved it: with the repeat
+        saved["units"][unit["unit_id"]]["basis"] = old
+        again = rv.Review.from_dict(json.loads(json.dumps(saved)))
+        self.assertEqual(again.reconcile(copy.deepcopy(first), run="run-2"), [])
+        self.assertEqual(rv.user_state(again.units[unit["unit_id"]]), rv.USER_APPROVED)
+        self.assertEqual(again.units[unit["unit_id"]].basis, rv.basis(unit, first))  # taken the new way from now on
+        # a real change of source content is still a changed source
+        changed = copy.deepcopy(first)
+        changed["sources"] = {k: "b" * 64 for k in changed["sources"]}
+        later = rv.Review.from_dict(json.loads(json.dumps(saved)))
+        self.assertTrue(later.reconcile(changed, run="run-3"))
+        self.assertEqual(later.conflicts[unit["unit_id"]]["cause"], "source_changed")
+
     def test_approving_one_sentence_alone_changes_no_other_sentence(self):
         changed = checked = 0
         for forward_only in (False, True):
