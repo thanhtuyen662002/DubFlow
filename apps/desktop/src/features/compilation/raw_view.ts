@@ -431,8 +431,10 @@ export function mountRawCompilation(invoke: Invoke, session: AiSession, host: Ra
         const qc = parseFinalQc(answer.qc);
         const unmeasured = qc ? qc.checks.filter((check) => check.ok === null).map((check) => check.label) : [];
         const checked = qc ? `\nKiểm tra cuối: đạt${unmeasured.length ? ` (chưa đo: ${unmeasured.join(", ")})` : ""}.` : "";
-        if (note) note.textContent = `Đã xuất: ${answer.path}${checked}`;
         await showRun(run.dir);
+        // showRun redraws the result, so the line is written after it (rc9 P3-N9)
+        const fresh = host.result.querySelector<HTMLElement>(".compilation-raw-export-state");
+        if (fresh) fresh.textContent = `${fresh.textContent ?? ""}${checked}`;
         // the editor opens the programme's own video (compilation.mp4), now that the export gate passed
         if (thenEdit && run.video) host.edit?.(run.video, displayTitle(run));
       }

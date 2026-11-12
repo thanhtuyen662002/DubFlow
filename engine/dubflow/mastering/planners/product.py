@@ -30,7 +30,7 @@ from ..candidates import Candidate
 PLANNER = "dubflow.mastering.product"
 # 1: shot-aware parts in turn (Phase 1). 2: each sentence illustrated by the footage that matches it (ADR-0054).
 VERSION = "8"
-RECIPE = "product-editorial-v16"  # v16: a product opening is READY only where the vision saw the product (P1-N1); v15: subtitled footage is not a text card, per-sentence signals (Gate S); v14: multi-frame evidence (#724); v13: proper names (#722); v12: semantic root-cause fixes (#705); v11: every piece inside its shot
+RECIPE = "product-editorial-v17"  # v17: a pinned shot without an AI match is the user's, never AI coverage (P2-N14); v16: a product opening is READY only where the vision saw the product (P1-N1); v15: subtitled footage is not a text card, per-sentence signals (Gate S); v14: multi-frame evidence (#724); v13: proper names (#722); v12: semantic root-cause fixes (#705); v11: every piece inside its shot
 WORKFLOW = "product_showcase"
 SHOT_MARGIN_MS = 120
 # A shot shorter than this is skipped while longer ones exist; it is used when nothing else is left.

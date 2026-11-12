@@ -91,7 +91,7 @@ export const PRIORITY_LABELS: Record<Priority, { text: string; tone: "bad" | "wa
 const isPriority = (value: unknown): value is Priority => value === "critical" || value === "review" || value === "optional";
 export type ReviewUnit = {
   unit_id: string; text: string; function: string; start_ms: number; end_ms: number;
-  coverage: { milli?: number; status?: string; need_ms?: number; illustrated_ms?: number };
+  coverage: { milli?: number; status?: string; need_ms?: number; illustrated_ms?: number; user_ms?: number };
   notes: string[]; evidence: string; state: string; user_state: string | null; decision: Decision | null;
   chosen: Shot[]; pieces: Piece[]; alternatives: Shot[]; unreviewed: boolean;
   /** Its place in the review queue (null: settled by the user) and why. */
@@ -212,6 +212,13 @@ export function unitNumber(unitId: string): string {
 export function coverageText(unit: ReviewUnit): string {
   if (unit.coverage.status === "generic") return "Không cần cảnh riêng";
   const milli = unit.coverage.milli;
+  const need = unit.coverage.need_ms ?? 0;
+  const user = unit.coverage.user_ms ?? 0;
+  // the user's pinned shot is theirs, never "khớp" (rc9 P2-N14)
+  if (user > 0 && need > 0) {
+    const mine = Math.min(100, Math.round(user * 100 / need));
+    return `${typeof milli === "number" && milli > 0 ? `AI thấy khớp ${Math.round(milli / 10)} % · ` : ""}cảnh bạn chọn ${mine} % thời lượng câu`;
+  }
   return typeof milli === "number" ? `Hình khớp ${Math.round(milli / 10)} % thời lượng câu` : "";
 }
 

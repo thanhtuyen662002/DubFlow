@@ -39,6 +39,9 @@ assert.equal(unitBadge(view.units[1]).text, "Bạn đã duyệt");
 assert.equal(view.units[1].state, "MATCH_NOT_FOUND");
 assert.equal(coverageText(view.units[0]), "Không cần cảnh riêng");
 assert.equal(coverageText(view.units[1]), "Hình khớp 0 % thời lượng câu");
+// rc9 P2-N14: the user's pinned shot is theirs, never "Hình khớp 100 %"
+assert.equal(coverageText({ ...view.units[1], coverage: { milli: 0, need_ms: 2000, illustrated_ms: 0, user_ms: 2000 } }), "cảnh bạn chọn 100 % thời lượng câu");
+assert.equal(coverageText({ ...view.units[1], coverage: { milli: 500, need_ms: 2000, illustrated_ms: 1000, user_ms: 1000 } }), "AI thấy khớp 50 % · cảnh bạn chọn 50 % thời lượng câu");
 assert.equal(seconds(65_400), "1:05,4");
 assert.equal(seconds(2_000), "2,0 s");
 assert.equal(reviewSummary(view), "Mọi câu đã đạt hoặc đã duyệt · 1 cảnh báo chưa xem");

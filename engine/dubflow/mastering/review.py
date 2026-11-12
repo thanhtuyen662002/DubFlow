@@ -97,8 +97,11 @@ def content_mode(log: Mapping[str, Any]) -> str:
 def evidence_state(unit: Mapping[str, Any], log: Mapping[str, Any]) -> str:
     """Whether footage for ``unit`` was found, and if not whether the footage given can be said to lack it."""
     coverage = unit.get("coverage") or {}
-    if coverage.get("matched_footage") or (log.get("edits") or {}).get("pin", {}).get(unit.get("unit_id")):
+    # only what the AI matched is evidence; a user's pin is the user's decision, shown as theirs (rc9 P2-N14)
+    if coverage.get("matched_footage"):
         return MATCH_AVAILABLE
+    if (log.get("edits") or {}).get("pin", {}).get(unit.get("unit_id")) and "user_ms" not in coverage:
+        return MATCH_AVAILABLE  # a log from before user_ms: its planner counted the pin as a match
     if coverage.get("status") == "generic":
         return NOT_NEEDED
     usable = [c for c in log.get("candidates") or () if _usable(c)]
