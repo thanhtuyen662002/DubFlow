@@ -259,7 +259,10 @@ fn spawn_product(root: &Path, spec_path: &Path, output: &Path, cpu_only: bool, k
         .arg("--model-root").arg(control_root()?.join("models"))
         .arg("--ffmpeg").arg(media.join("ffmpeg.exe"))
         .arg("--ffprobe").arg(media.join("ffprobe.exe"))
-        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        .stdin(Stdio::null());
+    let work = output.join(".dubflow-work");
+    let (stdout, stderr) = crate::engine_run::engine_output(&work);
+    command.stdout(stdout).stderr(stderr);
     if cpu_only {
         command.arg("--cpu-only");
     }
@@ -268,7 +271,12 @@ fn spawn_product(root: &Path, spec_path: &Path, output: &Path, cpu_only: bool, k
     }
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
-    command.spawn().map_err(|error| fail(format!("Không chạy được bộ tạo video: {error}")))?;
+    let mut child = command.spawn().map_err(|error| fail(format!("Không chạy được bộ tạo video: {error}")))?;
+    // a job that ends without writing its last state (a status file held open, a crash) is settled, never left RUNNING
+    std::thread::spawn(move || {
+        let exited_ok = child.wait().is_ok_and(|status| status.success());
+        crate::engine_run::settle_after_exit(&work, exited_ok, "Bộ tạo video đã dừng. Hãy thử lại.");
+    });
     Ok(())
 }
 
@@ -334,7 +342,7 @@ fn rerender_in(dir: &Path, work: &Path, video: u32, start: impl FnOnce(&Path, Op
 fn write_replace(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let temp = path.with_extension("json.tmp");
     fs::write(&temp, bytes)?;
-    fs::rename(&temp, path)
+    crate::engine_run::replace_retrying(&temp, path)
 }
 
 /// A product run's folder, for the review panel (`mastering.rs`).
