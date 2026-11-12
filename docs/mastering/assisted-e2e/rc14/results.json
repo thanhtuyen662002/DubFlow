@@ -1,0 +1,168 @@
+{
+ "version": "1.1.96-rc14",
+ "build": {
+  "run": 43279224888,
+  "conclusion": "success",
+  "commit": "96400fb990097ae81df7c87fe1f4fa8039a4d58e",
+  "artifact_id": 13973951823,
+  "zip_sha256": "b93c6604fbbd6fb0ae26d7d90d234c33ef5f8252f41f4b0f340427ab638a5f3c",
+  "zip_matches_evidence": true,
+  "exe_sha256": "11effd5b5601ba98cccba82c3ba27d5986ac2593c5884e8fdc1a0430399b3573",
+  "cdp_proof": "PROOF OK",
+  "footer": "v1.1.96-rc14 candidate",
+  "cpu_only": true
+ },
+ "W1": {
+  "verdict": "PASS",
+  "draft_s": 161,
+  "rerender_s": [
+   9.1,
+   8.3,
+   8.3
+  ],
+  "kept": 4,
+  "invalidated": 0,
+  "replanned": [
+   [],
+   [
+    "u3"
+   ],
+   [
+    "u3"
+   ]
+  ],
+  "editor": "opens after dialog 'Còn câu chưa duyệt cảnh' (1 unreviewed); no QC block in editor"
+ },
+ "W2": {
+  "verdict": "PASS",
+  "draft_s": 240,
+  "exclusion": "i1-s1c1f1,f2,f3 (= i1-s1c1 0-6000 split by multi-frame look)",
+  "rebuild_s": 12.4,
+  "rendered": [
+   "i1"
+  ],
+  "reused": [
+   "hook",
+   "intro",
+   "i2",
+   "i3",
+   "i4",
+   "i5",
+   "outro"
+  ],
+  "kept": 4,
+  "invalidated": 0,
+  "held_frame": {
+   "hook": 0,
+   "intro": 0,
+   "i1": 0,
+   "i2": 0,
+   "i3": 0,
+   "i4": 0,
+   "i5": 0,
+   "outro": 0
+  },
+  "i1_moment_ms": [
+   18000,
+   21500
+  ],
+  "export": "Kiểm tra cuối: đạt.",
+  "final1_sha256": "4161e91360f79618e88f39c636aa62c2ef51c09a75f622b0e9566cd8f65c4da",
+  "final_i1_freezes": 0
+ },
+ "W5_on_W2_pin": {
+  "verdict": "FAIL",
+  "rerender_s": 22.7,
+  "rendered": [
+   "i1"
+  ],
+  "expected": "i3 or none",
+  "invalidated": 0,
+  "held_frame": 0,
+  "i1_duration_ms": [
+   12990,
+   9490
+  ],
+  "i1_moment_lost": true,
+  "cause": "intro multi-frame look split i1-s1c4 (P2-N22 class)",
+  "final2_sha256": "489540534747a53fe0986c44a6ef7fd861903911cae9926993971eb24437d88"
+ },
+ "W3": {
+  "verdict": "Gate B FAIL",
+  "gt_sha256": "afa979d239b6a68be03349308e233809efddc84cd2ed13e0d869913c51f66497",
+  "draft_s": 676,
+  "peak_ram_mb": 3534,
+  "recall_at_5": 0.4667,
+  "hits": 28,
+  "serious_silent_misses": [],
+  "false_source_insufficient": 0,
+  "held_frame": 0,
+  "vision": {
+   "budget": 142,
+   "used": 139,
+   "broad": 95,
+   "targeted": 42,
+   "targeted_per_item": 2,
+   "multi_frame": 2
+  },
+  "rc12_hits": 31,
+  "rc13_hits": 33
+ },
+ "W4": {
+  "verdict": "PASS",
+  "synthetic": {
+   "run": 17,
+   "ok": 17,
+   "skipped": 0,
+   "adapter": false,
+   "encoder": "mpeg4"
+  },
+  "W2_compilation": {
+   "exit": 0,
+   "measured": 7,
+   "unmeasured": 0,
+   "av_ms": [
+    -33.3,
+    0,
+    0,
+    0,
+    0,
+    -33.3,
+    0
+   ],
+   "worst": 33.3
+  },
+  "W2_final_export2": {
+   "exit": 0,
+   "measured": 7,
+   "unmeasured": 0,
+   "worst": 33.3
+  },
+  "W3": {
+   "exit": 0,
+   "measured": 21,
+   "unmeasured": 0,
+   "worst": 0.0
+  }
+ },
+ "W5": {
+  "verdict": "PASS (resume case FAIL under W2)",
+  "v1_sha256": "9afa62bcfb3ae46343d28f606b39a5d68db722c7285582c1112c7e9a1002c6d3",
+  "v1_identical": true,
+  "cancel": "CANCELLED, never COMPLETED",
+  "scan": {
+   "files": 11365,
+   "claude": 0,
+   "gemini": 0,
+   "email": 0
+  }
+ },
+ "W6": {
+  "verdict": "BLOCKED"
+ },
+ "performance": {
+  "W1_peak_mb": 3729,
+  "W2_peak_mb": 3194,
+  "W3_peak_mb": 3534
+ }
+}
