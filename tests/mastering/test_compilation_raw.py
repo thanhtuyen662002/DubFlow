@@ -226,8 +226,11 @@ class RealMediaProgrammeTest(unittest.TestCase):
             starts = [p["start_ms"] for p in programme["parts"]]
             self.assertEqual(starts[0], 0)
             self.assertEqual(starts[1:], [p["start_ms"] + p["duration_ms"] for p in programme["parts"][:-1]], "parts follow each other")
-            renders = [c for c in commands if "-filter_complex" in c and "concat=n=" in " ".join(c) and str(c[-1]).endswith(".mp4")]
-            self.assertEqual(len(renders), 8)  # one encode per part; the join copies them
+            renders = [c for c in commands if "-filter_complex" in c and "concat=n=" in " ".join(c) and str(c[-1]).endswith(".mp4")
+                       and "parts.ffconcat" not in c]
+            self.assertEqual(len(renders), 8)  # one encode per part; the join copies their pictures
+            join = next(c for c in commands if "parts.ffconcat" in c)
+            self.assertEqual(join[join.index("-c:v") + 1], "copy")  # P2-9: pictures copied, sound joined sample-exactly once
             self.assertEqual(programme["joined"], "copy")
             self.assertTrue([c for c in commands if "parts.ffconcat" in c and "copy" in c])
             streams = json.loads(subprocess.run([FFPROBE, "-v", "error", "-show_entries", "stream=codec_type,duration", "-of", "json",
