@@ -150,6 +150,33 @@ pub async fn mastering_review(output_dir: String, video: u32, action: String, un
         .await.map_err(|error| fail(error.to_string()))?
 }
 
+/// The Final QC of a run (`python -m engine.dubflow.mastering.final_qc`): `scope` is `["--video", n]` (Bán hàng) or
+/// `["--program"]` (Tổng hợp). It measures the output with the packaged FFmpeg; a render alone never passes it.
+pub(crate) fn run_final_qc(run: &Path, scope: &[&str]) -> Result<Value, String> {
+    let root = version_root()?;
+    let media = root.join("runtime").join("media");
+    let mut command = Command::new(root.join("runtime").join("python.exe"));
+    command.current_dir(root.join("app"))
+        .args(["-B", "-m", "engine.dubflow.mastering.final_qc", "--work"]).arg(run.join(".dubflow-work"))
+        .args(scope).arg("--ffmpeg").arg(media.join("ffmpeg.exe")).arg("--ffprobe").arg(media.join("ffprobe.exe"))
+        .env("PYTHONUTF8", "1").env("PYTHONNOUSERSITE", "1")
+        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    #[cfg(windows)]
+    command.creation_flags(crate::CREATE_NO_WINDOW);
+    let output = command.output().map_err(|error| fail(format!("Không chạy được kiểm tra cuối: {error}")))?;
+    serde_json::from_slice::<Value>(&output.stdout).ok().filter(|value| value["kind"] == "final_qc")
+        .ok_or_else(|| fail("Kiểm tra cuối không trả về kết quả"))
+}
+
+/// The Final QC of video `video` of a Bán hàng run, before it is opened for export.
+#[tauri::command]
+pub async fn mastering_final_qc(output_dir: String, video: u32) -> Result<Value, String> {
+    let run = crate::product::run_dir(&output_dir)?;
+    let video = video_number(video)?;
+    tauri::async_runtime::spawn_blocking(move || run_final_qc(&run, &["--video", &video]))
+        .await.map_err(|error| fail(error.to_string()))?
+}
+
 fn keyframe_path(run: &Path, name: &str) -> Result<PathBuf, String> {
     if !is_keyframe(name) {
         return Err(fail("Ảnh cảnh không hợp lệ"));

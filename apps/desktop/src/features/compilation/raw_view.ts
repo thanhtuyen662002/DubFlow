@@ -10,7 +10,7 @@ import {
   numberRanks, openForExport, parseRawRun, partName, removeItem, removeSource, renderStats, RIGHTS_NAMES, sourceName, sourcesOf,
   specToDraft, supported, type RawDraft, type RawPart, type RawRun, type Rights,
 } from "./raw_model.ts";
-import { isLevel, LEVEL_NAMES, LEVELS, levelText } from "../mastering/model.ts";
+import { isLevel, LEVEL_NAMES, LEVELS, levelText, parseFinalQc, qcMessage } from "../mastering/model.ts";
 import { openReviewPanel } from "../mastering/review_panel.ts";
 import { PROVIDERS, type AiSession } from "../ai/provider.ts";
 import { parseVoiceCatalog, voiceOptionGroups } from "../voices/model.ts";
@@ -406,7 +406,7 @@ export function mountRawCompilation(invoke: Invoke, session: AiSession, host: Ra
     const note = host.result.querySelector<HTMLElement>(".compilation-raw-export-state");
     try {
       let answer = await invoke<Record<string, unknown>>("compilation_raw_finalize", { outputDir: run.dir, accept: false });
-      if (answer.exported !== true) {
+      if (answer.exported !== true && answer.qc === undefined) {
         const parts = Array.isArray(answer.parts) ? answer.parts as Array<{ part: string; unreviewed: number }> : [];
         const names = parts.map((item) => {
           const part = run.parts.find((candidate) => candidate.id === item.part);
@@ -419,6 +419,12 @@ export function mountRawCompilation(invoke: Invoke, session: AiSession, host: Ra
         });
         if (!ok) { if (note) note.textContent = "Chưa xuất. Bản nháp vẫn ở trong thư mục dự án."; return; }
         answer = await invoke<Record<string, unknown>>("compilation_raw_finalize", { outputDir: run.dir, accept: true });
+      }
+      if (answer.exported !== true && answer.qc !== undefined) {
+        // the render completed but the Final QC did not pass: nothing was exported, and the user sees why
+        const qc = parseFinalQc(answer.qc);
+        if (note) note.textContent = qc ? `Chưa xuất. ${qcMessage(qc)}` : "Chưa xuất: kiểm tra cuối không đọc được.";
+        return;
       }
       if (answer.exported === true && typeof answer.path === "string") {
         if (note) note.textContent = `Đã xuất: ${answer.path}`;
