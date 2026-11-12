@@ -35,6 +35,7 @@ from typing import Any, Iterable, Mapping, Sequence
 from . import entities as names
 from . import evidence as ev
 from .candidates import Candidate
+from .frames import parent
 from .policy import Pacing
 
 FUNCTIONS = ("hook", "benefit", "demonstration", "feature", "result", "cta", "narration", "intro", "outro")
@@ -387,6 +388,17 @@ def _coverage_note(milli: int, has_match: bool) -> str:
     return ""
 
 
+def left_out(edits: Edits, candidates: Sequence[Candidate]) -> set[str]:
+    """The candidates the user's exclusions leave out: the shots and sources named, and a whole shot when a part of it
+    is named (``v1c3f2``) and the shot is not split this time, so the excluded footage is never shown (P2-N22: the
+    sub-shots another part's look made are no longer the item's own). When that would leave no footage at all, only
+    what is named (the plan goes on; the decision is the user's to settle)."""
+    named = {c.candidate_id for c in candidates if c.candidate_id in edits.exclude or c.source_id in edits.exclude_sources}
+    whole = {parent(i) for i in edits.exclude} - set(edits.exclude)
+    wider = named | {c.candidate_id for c in candidates if c.candidate_id in whole}
+    return wider if len(wider) < len(candidates) else named
+
+
 def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidence: Mapping[str, ev.Evidence], pacing: Pacing,
            *, forward_only: bool, edits: Edits | None = None, groups: Mapping[str, str] | None = None,
            stills: Iterable[str] = (), shown: Iterable[str] = (), product: bool = False) -> tuple[list[Choice], list[Decision], str]:
@@ -444,7 +456,8 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
     edits = edits or Edits()
     groups = groups or {}
     still_ids = set(stills)
-    pool = [c for c in candidates if c.candidate_id not in edits.exclude and c.source_id not in edits.exclude_sources]
+    gone = left_out(edits, candidates)
+    pool = [c for c in candidates if c.candidate_id not in gone]
     by_id = {c.candidate_id: c for c in candidates}
     if not pool:
         raise ValueError("no footage left after the edits")

@@ -201,6 +201,39 @@ class AlignTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             align.Edits.from_dict({"pin": {"u1": "v1c1"}})
 
+    def test_a_left_out_part_of_a_shot_that_is_not_split_leaves_out_the_whole_shot(self):  # P2-N22 (#796)
+        pool, found = product_world()
+        units = [unit("u1", "Cận cảnh lòng nồi chống dính.", 0, 3000, "feature")]
+        choices, _, _ = align.assign(units, pool, found, PACING, forward_only=False)
+        shown = choices[0].candidate.candidate_id
+        self.assertNotIn("f", shown.rpartition("c")[2])  # a whole shot
+        for excluded in ({f"{shown}f2"}, {f"{shown}f1", f"{shown}f3"}):
+            again, _, _ = align.assign(units, pool, found, PACING, forward_only=False, edits=align.Edits(exclude=excluded))
+            self.assertNotIn(shown, {c.candidate.candidate_id for c in again})
+        # a split shot: only the excluded piece is out
+        pieces = [candidate(f"{shown}f{n}", "vx", 0, 2000) for n in (1, 2)]
+        for piece in pieces:
+            found[piece.candidate_id] = found[shown]
+        kept, _, _ = align.assign(units, [*pieces, *pool], found, PACING, forward_only=False,
+                                  edits=align.Edits(exclude={f"{shown}f1"}))
+        self.assertNotIn(f"{shown}f1", {c.candidate.candidate_id for c in kept})
+        # one shot only, a part of it left out and the shot not split this time: the plan goes on with what is named
+        alone = [candidate("v9c1", "v9", 0, 6000)]
+        found["v9c1"] = ev.Evidence("v9c1")
+        still, _, _ = align.assign(units, alone, found, PACING, forward_only=False, edits=align.Edits(exclude={"v9c1f3"}))
+        self.assertEqual({c.candidate.candidate_id for c in still}, {"v9c1"})
+        # the decision stands on the next run: a part of a shot that is there is no shot gone
+        from engine.dubflow.mastering import review as rv
+        review = rv.Review()
+        log = {"mode": "content", "units": [{"unit_id": "u1", "chosen": [f"{shown}f2"], "pieces": []}],
+               "candidates": [{"id": f"{shown}f2"}, {"id": f"{shown}f3"}]}
+        review.decide(log, "u1", "exclude", [f"{shown}f2"])
+        again_log = {"mode": "content", "units": [{"unit_id": "u1", "chosen": ["v1c1"], "pieces": []}],
+                     "candidates": [{"id": shown}, {"id": "v1c1"}]}
+        self.assertEqual(review.reconcile(again_log), [])
+        self.assertFalse(review.units["u1"].invalidated)
+        self.assertIn(f"{shown}f2", review.edits().exclude)
+
     def test_the_shot_of_what_is_said_beats_a_sharper_unrelated_one(self):
         # As in the real run: the gauge shot is a little soft, the start button shot is sharp and shares one word.
         gauge = shots.Candidate("v2c1", "v2", 0, 4000, 0, 30, shots.Quality(110, 40, 60), 1)

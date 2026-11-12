@@ -29,6 +29,7 @@ import re
 from typing import Any, Iterable, Mapping, Sequence
 
 from . import align, evidence as ev
+from .frames import parent
 
 SCHEMA_VERSION = 2  # 2: review later, no suitable footage, the decision record, the queue position (1 still reads)
 READABLE_VERSIONS = (1, 2)
@@ -442,7 +443,10 @@ class Review:
                 if not decision.empty:
                     messages.append(self._void(unit_id, "sentence_removed", "Câu này không còn trong kịch bản."))
                 continue
-            gone = [i for i in [*decision.pin, *decision.exclude] if i not in known]
+            # a part of a shot left out (``c3f2``) while the shot is not split this time is still that shot's footage:
+            # the exclusion stands (the plan leaves out the whole shot, P2-N22)
+            gone = [i for i in decision.pin if i not in known] + [i for i in decision.exclude
+                                                                   if i not in known and parent(i) not in known]
             if gone:
                 messages.append(self._void(unit_id, "shot_gone", "Cảnh đã chọn không còn trong nguồn (nguồn đã đổi); hãy chọn lại.",
                                            shots=gone))

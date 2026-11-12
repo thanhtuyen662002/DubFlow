@@ -378,6 +378,15 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
             # this part's share, less what it has looked at so far (an early part never takes the later parts' looks)
             if looks is not None:
                 looks.start()
+            # the hook, intro and outro plan over every item's footage: what they look at stays theirs, so an edit or
+            # an approval there never changes what an item sees (rc14 W5, P2-N22: approvals in the intro sent its
+            # multi-frame look to another shot of item 1, split it, and item 1 was re-planned and lost its moment)
+            shared = (candidates, evidence, looked, sampled, pool, groups, part_pools) \
+                if kind != "item" and vision_report is not None else None
+            if shared is not None:
+                candidates = {source_id: list(mine) for source_id, mine in candidates.items()}
+                evidence = {candidate_id: replace(found, items=list(found.items)) for candidate_id, found in evidence.items()}
+                looked, sampled = set(looked), set(sampled)
             fair = looks.room if looks is not None else (lambda: 0)
             room = fair()
             if room > 0:
@@ -440,6 +449,8 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
                                                  inputs=inputs, shown=avoid)
             # what of this part's footage has content evidence, and the largest stretches nobody looked at (P2-N11)
             made.log["coverage_map"] = seeing.coverage_map(part_pools[part_id], evidence)
+            if shared is not None:
+                candidates, evidence, looked, sampled, pool, groups, part_pools = shared
             reviewing.annotate(made.log, made.plan.to_dict())
             invalidated = decisions.reconcile(made.log, run=output_dir.name)
             if invalidated or decisions.plan_id != made.log.get("plan_id"):
