@@ -154,7 +154,6 @@ class VerdictTests(unittest.TestCase):
         self.assertIs(probe.verdict(self.rows(0.0, 90.0), 1000 / 10), False)  # a 100 ms frame, but over the 80 ms total
 
 
-@unittest.skipUnless(FFMPEG and FFPROBE, "needs FFmpeg")
 class PitchedVoiceTests(unittest.TestCase):
     """rc12 W4 (P2-N19): narration's pitch pulses (120–220 Hz) make the 1 ms loudness envelope correlate almost as
     well a few ms off the true lag, so the clear-peak rule rejected every real join. No FFmpeg: samples are made here."""
@@ -203,6 +202,7 @@ class PitchedVoiceTests(unittest.TestCase):
         self.assertIsNone(lag)
 
 
+@unittest.skipUnless(FFMPEG and FFPROBE, "needs FFmpeg")
 class BoundaryTests(unittest.TestCase):
     """Decoded boundaries of real renders (FFmpeg) on synthetic markers."""
 
