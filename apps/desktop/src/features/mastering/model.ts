@@ -256,6 +256,40 @@ export function needsExportConfirm(view: ReviewView | null): boolean {
   return Boolean(view && view.unreviewed.length && !view.accept_unreviewed);
 }
 
+/** One Final QC check: `ok` null means it was not measured (said so, never counted as passed). */
+export interface QcCheck { id: string; label: string; ok: boolean | null; detail: string }
+export interface FinalQc { state: string; passed: boolean; checks: QcCheck[]; unmeasured: string[] }
+
+export const QC_STATE_LABELS: Record<string, string> = {
+  RENDERING: "Đang dựng", RENDER_PENDING: "Còn lựa chọn chưa render", REVIEW_PENDING: "Chưa duyệt xong",
+  FINAL_QC_FAILED: "Kiểm tra cuối chưa đạt", READY_TO_FINALIZE: "Sẵn sàng xuất bản cuối",
+};
+
+/** The engine's Final QC answer, or null when it is not one (the caller then fails closed). */
+export function parseFinalQc(raw: unknown): FinalQc | null {
+  const value = (raw ?? {}) as Record<string, unknown>;
+  if (value.kind !== "final_qc" || !isString(value.state) || !Array.isArray(value.checks)) return null;
+  const checks = (value.checks as unknown[]).slice(0, 40).flatMap((item) => {
+    const check = (item ?? {}) as Record<string, unknown>;
+    if (!isString(check.id) || !(check.ok === true || check.ok === false || check.ok === null)) return [];
+    return [{ id: check.id, label: isString(check.label) ? check.label : check.id, ok: check.ok as boolean | null,
+              detail: isString(check.detail) ? check.detail.slice(0, 400) : "" }];
+  });
+  // passed only when the engine says so AND no check failed: a successful render is never a passed QC
+  const passed = value.passed === true && value.state === "READY_TO_FINALIZE" && checks.every((check) => check.ok !== false);
+  return { state: value.state, passed, checks, unmeasured: strings(value.unmeasured, 40) };
+}
+
+/** What blocks the export, one line per failed check, plus what was not measured. */
+export function qcMessage(qc: FinalQc): string {
+  const failed = qc.checks.filter((check) => check.ok === false).map((check) => `${check.label}: ${check.detail}`);
+  const lines = [`${QC_STATE_LABELS[qc.state] ?? qc.state}.`, ...failed];
+  if (qc.state === "RENDER_PENDING") lines.push("Hãy render lại để áp dụng các lựa chọn mới trước khi xuất.");
+  const unmeasured = qc.checks.filter((check) => check.ok === null).map((check) => check.label);
+  if (unmeasured.length) lines.push(`Chưa đo: ${unmeasured.join(", ")}.`);
+  return lines.join("\n");
+}
+
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 
 /**
@@ -273,14 +307,26 @@ export async function exportGate(invoke: Invoke, review: { outputDir: string; vi
   }
   const view = parseReview(raw);
   if (!view) return { open: false, error: "Bản duyệt cảnh của video này không đọc được. Hãy bấm “Render lại video này” hoặc tạo lại video." };
-  if (!needsExportConfirm(view)) return { open: true };
+  if (!needsExportConfirm(view)) return finalQcGate(invoke, review);
   if (!await ask(view.unreviewed.length)) return { open: false };
   try {
     await invoke<unknown>("mastering_review", { outputDir: review.outputDir, video: review.video, action: "accept", value: true });
   } catch (error) {
     return { open: false, error: `Không lưu được xác nhận xuất các câu chưa duyệt: ${String(error).slice(0, 160)}` };
   }
-  return { open: true };
+  return finalQcGate(invoke, review);
+}
+
+/** The Final QC after the review gate: the editor (where the video is exported) opens only when it passes. */
+async function finalQcGate(invoke: Invoke, review: { outputDir: string; video: number }): Promise<{ open: boolean; error?: string }> {
+  let qc: FinalQc | null;
+  try {
+    qc = parseFinalQc(await invoke<unknown>("mastering_final_qc", { outputDir: review.outputDir, video: review.video }));
+  } catch (error) {
+    return { open: false, error: `Không chạy được kiểm tra cuối của video này: ${String(error).slice(0, 160)}` };
+  }
+  if (!qc) return { open: false, error: "Kiểm tra cuối của video này không đọc được." };
+  return qc.passed ? { open: true } : { open: false, error: qcMessage(qc) };
 }
 
 /** The report the product job writes per video: whether it has a review to open, and its counts. */

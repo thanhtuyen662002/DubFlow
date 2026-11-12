@@ -2612,3 +2612,5 @@ body.settings-open .rail-item.active:not(#nav-settings)::before { display: none;
 .compilation-raw-result { display: grid; gap: 10px; }
 .mreview-context { display: grid; gap: 2px; padding: 8px 20px; border-bottom: 1px solid var(--line); }
 .mreview-context p { margin: 0; }
+.compilation-raw-export-state { white-space: pre-line; }
+#product-render-state { white-space: pre-line; }

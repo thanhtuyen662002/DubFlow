@@ -557,7 +557,8 @@ fn open_parts(dir: &Path, review: impl Fn(&Path, &str) -> Result<Value, String>)
 
 /// The final export: only from a completed run, and only when every part is reviewed or its unreviewed sentences
 /// were accepted (`accept`, recorded per part, after the user confirmed). Copies the draft to `final.mp4`.
-fn finalize_in(dir: &Path, accept: bool, review: impl Fn(&Path, &str, &[String]) -> Result<Value, String>) -> Result<Value, String> {
+fn finalize_in(dir: &Path, accept: bool, review: impl Fn(&Path, &str, &[String]) -> Result<Value, String>,
+               qc: impl Fn(&Path) -> Result<Value, String>) -> Result<Value, String> {
     let work = dir.join(".dubflow-work");
     let status = crate::mastering::read_plain_json(&work.join("status.json"), STATUS_LIMIT)?.unwrap_or(Value::Null);
     if status["state"] != "COMPLETED" {
@@ -577,6 +578,12 @@ fn finalize_in(dir: &Path, accept: bool, review: impl Fn(&Path, &str, &[String])
         if !open_parts(dir, &view)?.is_empty() {
             return Err(fail("Không lưu được xác nhận xuất các câu chưa duyệt"));
         }
+    }
+    // Final QC: a completed render is not a passed check (timeline, length, captions, peak, decisions not rendered,
+    // critical sentences left unsettled); nothing is exported until it passes
+    let checked = qc(dir)?;
+    if checked["passed"] != true {
+        return Ok(json!({"exported": false, "qc": checked}));
     }
     let draft = dir.join("compilation.mp4");
     let metadata = fs::symlink_metadata(&draft).map_err(|_| fail("Không tìm thấy bản dựng"))?;
@@ -610,8 +617,17 @@ fn finalize_in(dir: &Path, accept: bool, review: impl Fn(&Path, &str, &[String])
 pub async fn compilation_raw_finalize(output_dir: String, accept: bool) -> Result<Value, String> {
     let dir = raw_dir(&output_dir)?;
     tauri::async_runtime::spawn_blocking(move || {
-        finalize_in(&dir, accept, |dir, part, args| crate::mastering::run_review(dir, ["--part", part], args))
+        finalize_in(&dir, accept, |dir, part, args| crate::mastering::run_review(dir, ["--part", part], args),
+                    |dir| crate::mastering::run_final_qc(dir, &["--program"]))
     }).await.map_err(|error| fail(error.to_string()))?
+}
+
+/// The Final QC of a raw programme (what "Xuất bản cuối" checks first), for the result page.
+#[tauri::command]
+pub async fn compilation_raw_final_qc(output_dir: String) -> Result<Value, String> {
+    let dir = raw_dir(&output_dir)?;
+    tauri::async_runtime::spawn_blocking(move || crate::mastering::run_final_qc(&dir, &["--program"]))
+        .await.map_err(|error| fail(error.to_string()))?
 }
 
 /// "Thêm cả thư mục": a folder of source videos.
@@ -837,16 +853,29 @@ mod tests {
             Ok(json!({"kind": "editorial_review_view", "unreviewed": if open { json!(["i2.u1"]) } else { json!([]) },
                       "accept_unreviewed": !open && part == "i2"}))
         };
+        let passed = |_: &Path| -> Result<Value, String> { Ok(json!({"kind": "final_qc", "passed": true})) };
         write_status(&work, "RUNNING", "x").unwrap();
-        assert!(finalize_in(&dir, true, review).is_err(), "nothing to export before the render completes");
+        assert!(finalize_in(&dir, true, review, passed).is_err(), "nothing to export before the render completes");
         write_status(&work, "COMPLETED", "x").unwrap();
         fs::write(dir.join("compilation.mp4"), b"draft").unwrap();
-        let asked = finalize_in(&dir, false, review).unwrap();
+        let asked = finalize_in(&dir, false, review, passed).unwrap();
         assert_eq!(asked["exported"], false);
         assert_eq!(asked["unreviewed"], 1);
         assert_eq!(asked["parts"][0]["part"], "i2");
         assert!(!dir.join(FINAL).exists(), "no export without the user's confirmation");
-        let done = finalize_in(&dir, true, review).unwrap();
+        // a completed render whose final QC fails is not exported, and the failed checks come back
+        let failing = |_: &Path| -> Result<Value, String> {
+            Ok(json!({"kind": "final_qc", "passed": false, "state": "FINAL_QC_FAILED",
+                      "failed": [{"id": "duration", "ok": false, "detail": "x"}]}))
+        };
+        let blocked = finalize_in(&dir, true, review, failing).unwrap();
+        assert_eq!(blocked["exported"], false);
+        assert_eq!(blocked["qc"]["state"], "FINAL_QC_FAILED");
+        assert!(!dir.join(FINAL).exists(), "no export when the final QC fails");
+        let unreadable = |_: &Path| -> Result<Value, String> { Err("qc crashed".to_owned()) };
+        assert!(finalize_in(&dir, true, review, unreadable).is_err(), "a QC that cannot run fails closed");
+        assert!(!dir.join(FINAL).exists());
+        let done = finalize_in(&dir, true, review, passed).unwrap();
         assert_eq!(done["exported"], true);
         assert_eq!(done["revision"], 1);
         assert_eq!(done["sha256"].as_str().map(str::len), Some(64));
@@ -866,7 +895,7 @@ mod tests {
         write_status(&work, "RUNNING", "x").unwrap();
         assert_eq!(compilation_raw_open(display_path(&dir)).unwrap()["final_state"]["reason"], "rendering");
         write_status(&work, "COMPLETED", "x").unwrap();
-        let again = finalize_in(&dir, true, review).unwrap();
+        let again = finalize_in(&dir, true, review, passed).unwrap();
         assert_eq!(again["revision"], 2);
         assert_ne!(again["sha256"], done["sha256"]);
         assert_eq!(fs::read(dir.join(FINAL)).unwrap(), b"draft after a re-render");
@@ -877,7 +906,7 @@ mod tests {
         fs::remove_file(work.join(FINAL_RECORD)).unwrap();
         assert_eq!(compilation_raw_open(display_path(&dir)).unwrap()["final_state"]["reason"], "unknown");
         let broken = |_: &Path, _: &str, _: &[String]| -> Result<Value, String> { Ok(json!({"kind": "other"})) };
-        assert!(finalize_in(&dir, true, broken).is_err(), "an unreadable review fails closed");
+        assert!(finalize_in(&dir, true, broken, passed).is_err(), "an unreadable review fails closed");
         fs::remove_dir_all(base).unwrap();
     }
 }

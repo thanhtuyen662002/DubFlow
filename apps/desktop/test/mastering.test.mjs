@@ -120,7 +120,15 @@ console.log("mastering qc ok");
   const review = { outputDir: "D:/DubFlow Output/Ban hang - A/run-1", video: 1 };
   const view = (unreviewed, accepted = false) => ({ ...raw, unreviewed, accept_unreviewed: accepted });
   const calls = [];
-  const invoker = (answers) => async (command, args) => { calls.push(args.action); const next = answers[args.action]; if (next instanceof Error) throw next; return next; };
+  const passedQc = { kind: "final_qc", state: "READY_TO_FINALIZE", passed: true, unmeasured: [],
+    checks: [{ id: "render", label: "Bản dựng", ok: true, detail: "video-1.mp4" }] };
+  const invoker = (answers) => async (command, args) => {
+    const key = command === "mastering_final_qc" ? "qc" : args.action;
+    if (key !== "qc") calls.push(key);
+    const next = key in answers ? answers[key] : key === "qc" ? passedQc : undefined;
+    if (next instanceof Error) throw next;
+    return next;
+  };
   const yes = async () => true, no = async () => false;
   assert.deepEqual(await exportGate(invoker({ view: view([]) }), review, yes), { open: true });
   assert.equal((await exportGate(invoker({ view: new Error("io") }), review, yes)).open, false);
@@ -136,6 +144,23 @@ console.log("mastering qc ok");
   assert.deepEqual(await exportGate(invoker({ view: unreviewedView, accept: unreviewedView }), review, yes), { open: true });
   assert.deepEqual(calls, ["view", "accept"]);
   assert.deepEqual(await exportGate(invoker({ view: view(["s1"], true) }), review, no), { open: true }, "accepted before: no second ask");
+  // §B Final QC: a reviewed video whose render fails the final check does not open for export, and says why
+  const failedQc = { ...passedQc, state: "FINAL_QC_FAILED", passed: false,
+    checks: [...passedQc.checks, { id: "duration", label: "Thời lượng", ok: false, detail: "dài 6500 ms, kế hoạch 6000 ms" },
+             { id: "audio", label: "Âm thanh", ok: null, detail: "chưa đo đỉnh âm" }] };
+  const blocked = await exportGate(invoker({ view: view([]), qc: failedQc }), review, yes);
+  assert.equal(blocked.open, false);
+  assert.match(blocked.error, /Kiểm tra cuối chưa đạt/);
+  assert.match(blocked.error, /Thời lượng: dài 6500/);
+  assert.match(blocked.error, /Chưa đo: Âm thanh/);
+  assert.equal((await exportGate(invoker({ view: view([]), qc: new Error("python") }), review, yes)).open, false, "a QC that cannot run fails closed");
+  assert.equal((await exportGate(invoker({ view: view([]), qc: { kind: "other" } }), review, yes)).open, false);
+  const { parseFinalQc } = await import("../src/features/mastering/model.ts");
+  assert.equal(parseFinalQc({ ...passedQc, checks: [{ id: "audio", label: "x", ok: false, detail: "" }] }).passed, false,
+    "passed is never trusted over a failed check");
+  assert.equal(parseFinalQc({ ...passedQc, state: "RENDER_PENDING" }).passed, false);
+  const pendingMsg = (await exportGate(invoker({ view: view([]), qc: { ...passedQc, state: "RENDER_PENDING", passed: false } }), review, yes)).error;
+  assert.match(pendingMsg, /render lại/);
 }
 console.log("export gate ok");
 
