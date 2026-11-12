@@ -103,6 +103,21 @@ def _cover(width: int, height: int, focus: tuple[float, float]) -> str:
             f"crop={width}:{height}:x='(iw-{width})*{across:.4f}':y='(ih-{height})*{down:.4f}'")
 
 
+READ_PAST_MS = 200  # a clip or photo read past its segment, so the segment's last frame is never missing
+
+
+def frame_counts(lengths_ms: Sequence[int]) -> list[int]:
+    """Frames of each segment on one grid: segment k covers frames round(start_k × FPS) to round(end_k × FPS) (at
+    least one), so the cumulative error to the planned cuts stays within half a frame (P2-9)."""
+    out, at, last = [], 0, 0
+    for length in lengths_ms:
+        at += length
+        edge = max(last + 1, (at * FPS + 500) // 1000)
+        out.append(edge - last)
+        last = edge
+    return out
+
+
 def ffmpeg_argv(ffmpeg: Path, segments: Sequence[Segment], narration: Path, music: Path | None,
                 music_volume: float, total_ms: int, output: Path, *, subtitles: str = "captions.ass",
                 encoder: str = ENCODER, backdrop: Background | None = None, media_height: int = MEDIA_HEIGHT) -> list[str]:
@@ -113,22 +128,28 @@ def ffmpeg_argv(ffmpeg: Path, segments: Sequence[Segment], narration: Path, musi
     """
     argv = [str(ffmpeg), "-nostdin", "-hide_banner", "-v", "error", "-y"]
     filters = []
+    # every cut on one frame grid (P2-9): segment k ends on frame round(end_k × FPS), so the pictures never drift
+    # from the narration by more than half a frame, however many segments (each rounded up on its own: +1 frame a
+    # cut at worst, cumulative)
+    frames = frame_counts([segment.duration_ms for segment in segments])
     for index, segment in enumerate(segments):
         seconds = _seconds(segment.duration_ms)
+        read = _seconds(segment.duration_ms + READ_PAST_MS)
         if segment.visual.duration_ms is None:
-            argv += ["-loop", "1", "-framerate", str(FPS), "-t", seconds, "-i", str(segment.visual.path)]
+            argv += ["-loop", "1", "-framerate", str(FPS), "-t", read, "-i", str(segment.visual.path)]
             travel = f"(iw-{WIDTH})*t/{seconds}" if index % 2 == 0 else f"(iw-{WIDTH})*(1-t/{seconds})"
             fit = (f"scale={round(WIDTH * _PAN_SCALE)}:{round(media_height * _PAN_SCALE)}:force_original_aspect_ratio=increase,"
                    f"crop={WIDTH}:{media_height}:x='{travel}':y='(ih-{media_height})/2'")
         else:
-            argv += ["-stream_loop", "-1", "-ss", _seconds(segment.offset_ms), "-t", seconds, "-i", str(segment.visual.path)]
+            argv += ["-stream_loop", "-1", "-ss", _seconds(segment.offset_ms), "-t", read, "-i", str(segment.visual.path)]
             fit = f"scale={WIDTH}:{media_height}:force_original_aspect_ratio=increase,crop={WIDTH}:{media_height}"
             if segment.focus is not None:
                 # Centre the crop on the focus point, clamped inside the picture: nothing is scaled, stretched or zoomed.
                 across, down = (min(1.0, max(0.0, value)) for value in segment.focus)
                 fit += (f":x='max(0,min(iw-{WIDTH},iw*{across:.4f}-{WIDTH}/2))'"
                         f":y='max(0,min(ih-{media_height},ih*{down:.4f}-{media_height}/2))'")
-        filters.append(f"[{index}:v]{fit},setsar=1,fps={FPS},format=yuv420p,trim=duration={seconds},setpts=PTS-STARTPTS[v{index}]")
+        filters.append(f"[{index}:v]{fit},setsar=1,fps={FPS},format=yuv420p,tpad=stop_mode=clone:stop=2,"
+                       f"trim=end_frame={frames[index]},setpts=PTS-STARTPTS[v{index}]")
     voice = len(segments)
     argv += ["-i", str(narration)]
     total = _seconds(total_ms)

@@ -501,7 +501,7 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
         joined = "copy"
         _atomic_text(work / "parts.ffconcat", render.concat_list(names))
         try:
-            execute(render.concat_copy_argv(ffmpeg, "parts.ffconcat", partial))
+            execute(render.concat_copy_argv(ffmpeg, "parts.ffconcat", partial, parts=names, durations_ms=[ms for _, ms in timeline]))
             if abs(probe(partial) - expected) > tolerance:
                 joined = "encode"
         except Cancelled:
@@ -510,7 +510,7 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
             joined = "encode"
         if joined == "encode":
             partial.unlink(missing_ok=True)
-            execute(render.concat_argv(ffmpeg, names, partial, encoder=encoder))
+            execute(render.concat_argv(ffmpeg, names, partial, encoder=encoder, durations_ms=[ms for _, ms in timeline]))
             if abs(probe(partial) - expected) > tolerance:
                 raise CompilationError("Thời lượng video tổng hợp không khớp")
         _atomic_text(output_dir / "chapters.txt", chapter_text)
