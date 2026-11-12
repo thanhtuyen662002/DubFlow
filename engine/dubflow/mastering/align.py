@@ -369,7 +369,7 @@ def _coverage_note(milli: int, has_match: bool) -> str:
 
 def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidence: Mapping[str, ev.Evidence], pacing: Pacing,
            *, forward_only: bool, edits: Edits | None = None, groups: Mapping[str, str] | None = None,
-           stills: Iterable[str] = (), shown: Iterable[str] = ()) -> tuple[list[Choice], list[Decision], str]:
+           stills: Iterable[str] = (), shown: Iterable[str] = (), product: bool = False) -> tuple[list[Choice], list[Decision], str]:
     """Footage for every unit, the decision log and the mode (``content`` or ``signals_only``).
 
     *Sentence coverage*: each sentence gets pieces until its whole time is covered, first from the footage that
@@ -385,6 +385,9 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
     ``stills`` are candidate ids of photos: they can be held as long as needed. ``groups`` maps a candidate to its
     duplicate group; ``shown`` lists footage another part of the same video showed. When a forward-only source has
     nothing left ahead, earlier footage is shown again, declared as a repeat and flagged.
+
+    ``product``: the footage is of one product (Bán hàng): an opening with no match of its own is READY only on a
+    shot the vision saw the product in (P1-N1).
     """
     edits = edits or Edits()
     groups = groups or {}
@@ -846,6 +849,15 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
         if half_matched:
             decision.notes.append("câu mở đầu/kêu gọi nói tới nội dung cụ thể nhưng cảnh chỉ khớp một phần lời: cần kiểm tra")
             coverage["needs_review"] = True
+        # a product's opening with no match of its own needs no shot of its own, but it needs the product: over footage
+        # the vision looked at and saw no product in, what it says of the product is shown on something else
+        # (rc7 D3b, P1-N1: "Chiếc nồi chiên không dầu này có lòng nồi chống dính…" READY on 3D dominoes). Unknown
+        # (no vision flag: a note, a transcript) is not "absent".
+        unseen = generic and product and unit.function == "hook" and mode == "content" \
+            and not edits.pin.get(unit.unit_id) and _product_unseen(mine, evidence)
+        if unseen:
+            decision.notes.append("câu mở đầu nói về sản phẩm nhưng AI không thấy sản phẩm trong cảnh được chọn: cần kiểm tra")
+            coverage["needs_review"] = True
         # an opening or closing that still shows a later sentence's own shot (nothing else was left) is never silent
         spoiler = unit.function in OPENING_CLOSING and not edits.pin.get(unit.unit_id) and any(
             owners_after(unit, c.candidate.candidate_id) for c in mine)
@@ -858,7 +870,7 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
                 return True
             if generic:
                 # its pieces carry the flag too: the plan and the checks read the pieces (rc5: still silent on rc4 data)
-                return choppy or half_matched
+                return choppy or half_matched or unseen
             return review or c.confidence < REVIEW_BELOW
         mine[:] = [Choice(c.unit_id, c.candidate, c.offset_ms, c.length_ms, c.score, c.confidence, flag(c), c.reasons) for c in mine]
         decision.signals = _signals(unit, mine, accept, best, milli, coverage["needs_review"], mode, evidence,
@@ -866,6 +878,12 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
                                     still_ids)
     choices = [c for u in found_units for c in by_unit.get(u.unit_id, [])]
     return choices, [decisions[u.unit_id] for u in found_units], mode
+
+
+def _product_unseen(mine: Sequence[Choice], evidence: Mapping[str, ev.Evidence]) -> bool:
+    """Whether the vision looked at the shots of ``mine`` and saw the product in none of them."""
+    seen = [getattr(evidence.get(c.candidate.candidate_id), "product_visible", None) for c in mine]
+    return bool(seen) and True not in seen and False in seen
 
 
 def _signals(unit: Unit, mine: Sequence[Choice], accept: set[str], best: int, milli: int, review: bool, mode: str,
