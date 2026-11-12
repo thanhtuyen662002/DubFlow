@@ -371,6 +371,7 @@ def _length_fit(candidate_ms: int, wanted_ms: int) -> int:
 ACCEPT_SHARE = 500  # a shot matching a sentence at least this share (‰) of its best match illustrates it
 GOOD_COVERAGE = 900  # ‰ of a sentence's time on footage that illustrates it before it needs no review
 LOSS_PENALTY = 450  # forward only: taking a shot that removes the only footage of a sentence still to come
+HELD_PENALTY = 2000  # forward only: neutral footage that leaves the sentences short of footage; a held frame blocks export
 MATCH_FULL = 500  # relevance at which a match counts as complete for the confidence
 PIECE_FLOOR = SHORT_FLOOR  # ms a new piece takes at least when the sentence's rest is shorter (others give way)
 SKIP_PENALTY = 200  # forward only: passing over all the footage there is to spare (half for footage that illustrates)
@@ -774,6 +775,14 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
             return (not forward_only or not later_need or candidate.candidate_id in still_ids
                     or ahead(candidate) + max(0, remaining(candidate)[1] - wanted) >= later_need)
 
+        def short_of(candidate: Candidate, later_need: int, wanted: int) -> int:
+            """Forward only: footage the sentences to come and the rest of this one (the part the shot is too short
+            for) will lack after it plays: frames held later."""
+            if not forward_only or candidate.candidate_id in still_ids:
+                return 0
+            left = remaining(candidate)[1]
+            return max(0, later_need + max(0, wanted - left) - ahead(candidate) - max(0, left - wanted))
+
         for candidate in pinned:  # the user's choice, in order
             if covered >= need:
                 break
@@ -843,6 +852,14 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
                     # this sentence's own footage left out above for what it costs the next ones stays out
                     and not (c.candidate_id in accept and lost(c, min(remaining(c)[1], wanted), later) > min(remaining(c)[1], wanted))]
             pool = [c for c in fits if safe(c, later_need, wanted)]
+            least = min((short_of(c, later_need, wanted) for c in pool), default=0)
+            if forward_only and least >= SHORT_FLOOR:
+                # every safe filler shot leaves at least a piece's worth of footage short (a held frame): shots shorter
+                # than the filler floor that leave less short compete with them (rc13 W2 i1: u2 took a 1225 ms shot
+                # past a 1138 ms one, ran out 1126 ms short and held a frame)
+                pool = pool + [c for c in here if allowed(c) and SHORT_FLOOR <= remaining(c)[1] < floor
+                               and not (c.candidate_id in accept and lost(c, min(remaining(c)[1], wanted), later) > min(remaining(c)[1], wanted))
+                               and short_of(c, later_need, wanted) < least]
             if not pool and forward_only:
                 # nothing ahead is safe for the sentences to come: whatever plays now costs them alike, so this
                 # sentence's own footage goes before filler (rc4 Top 5: its one match was left out for safety, then
@@ -877,6 +894,11 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
                 break
             tier = "neutral" if pool else "repeat"
             ranked = rank(pool or here, tier, wanted)
+            if forward_only and pool and len(ranked) > 1:
+                # weighed like a lost match: the frames a shot leaves to hold, this sentence's included
+                ranked = sorted(((total - HELD_PENALTY * min(2 * wanted, short_of(candidate, later_need, wanted)) // max(1, wanted),
+                                  confidence, reasons, candidate) for total, confidence, reasons, candidate in ranked),
+                                key=lambda item: (-item[0], item[3].source_id, item[3].start_ms))
             if not record(ranked[0][3], tier, max(wanted, pacing.minimum // 2), ranked):
                 break
         # 4. exactly the sentence's length, no piece under the floor: trim the pieces with the most slack
