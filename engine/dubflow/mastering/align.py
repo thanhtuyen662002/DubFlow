@@ -26,6 +26,8 @@ confidence 450 and marked for review, and the decision log says so.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
+import json
 import math
 import re
 from typing import Any, Iterable, Mapping, Sequence
@@ -100,6 +102,11 @@ def product_function(index: int, count: int, text: str) -> str:
     return "benefit"
 
 
+def words_digest(unit_id: str, text: str) -> str:
+    """The short digest of a sentence (its id and words) an approval is given on (P2-N5)."""
+    return hashlib.sha256(json.dumps([unit_id, text], ensure_ascii=False).encode("utf-8")).hexdigest()[:8]
+
+
 def units(spoken: Sequence[tuple[str, int]], total_ms: int, *, lead_ms: int, gap_ms: int,
           function: Any = None, prefix: str = "u") -> list[Unit]:
     """The sentences as contiguous units covering ``[0, total_ms)``; cuts sit in the middle of each pause."""
@@ -131,6 +138,9 @@ class Edits:
     # Each kept piece is (candidate id, source offset ms, length ms, shown again); an offset of -1 (an approval saved before the
     # pieces were logged) keeps the shot wherever it can play.
     keep: dict[str, list[tuple[str, int, int, bool]]] = field(default_factory=dict)
+    # the sentence each approval was given on (:func:`words_digest`): an approval of a sentence whose words changed
+    # (a line added above shifts every unit id) is no constraint, it was given to other words. Not in ``to_dict``.
+    keep_words: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, value: Any) -> "Edits":
@@ -379,6 +389,38 @@ def _coverage_note(milli: int, has_match: bool) -> str:
 def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidence: Mapping[str, ev.Evidence], pacing: Pacing,
            *, forward_only: bool, edits: Edits | None = None, groups: Mapping[str, str] | None = None,
            stills: Iterable[str] = (), shown: Iterable[str] = (), product: bool = False) -> tuple[list[Choice], list[Decision], str]:
+    """See :func:`_assign`. Approvals (``edits.keep``) are constraints only where they are needed: when the plan made
+    without them already shows every approved sentence as approved, that plan is the plan, so approving alone never
+    changes another sentence's footage (P2-N5). Only an approval whose footage the plan would change makes the
+    approved sentences go first and hold their shots."""
+    edits = edits or Edits()
+    texts = {u.unit_id: u.text for u in found_units}
+    keep = {unit_id: pieces for unit_id, pieces in edits.keep.items() if unit_id in texts and unit_id not in edits.pin
+            and (unit_id not in edits.keep_words or edits.keep_words[unit_id] == words_digest(unit_id, texts[unit_id]))}
+    kwargs = dict(forward_only=forward_only, groups=groups, stills=tuple(stills), shown=tuple(shown), product=product)
+    free = Edits(dict(edits.pin), set(edits.exclude), set(edits.exclude_sources))
+    if not keep:
+        return _assign(found_units, candidates, evidence, pacing, edits=free, **kwargs)
+    plain = _assign(found_units, candidates, evidence, pacing, edits=free, **kwargs)
+    decided = {d.unit.unit_id: d for d in plain[1]}
+
+    def shown_as_approved(unit_id: str, pieces: Sequence[tuple[str, int, int, bool]]) -> bool:
+        decision = decided.get(unit_id)
+        if decision is None:
+            return False
+        if any(offset < 0 for _, offset, _, _ in pieces):  # an approval from before the pieces were logged: its shots
+            return list(dict.fromkeys(decision.chosen)) == list(dict.fromkeys(p[0] for p in pieces))
+        return [(p["id"], p["offset_ms"], p["length_ms"], bool(p.get("repeat"))) for p in decision.pieces] \
+            == [(cid, offset, length, bool(again)) for cid, offset, length, again in pieces]
+    if all(shown_as_approved(unit_id, pieces) for unit_id, pieces in keep.items()):
+        return plain
+    held = Edits(dict(edits.pin), set(edits.exclude), set(edits.exclude_sources), keep)
+    return _assign(found_units, candidates, evidence, pacing, edits=held, **kwargs)
+
+
+def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidence: Mapping[str, ev.Evidence], pacing: Pacing,
+            *, forward_only: bool, edits: Edits | None = None, groups: Mapping[str, str] | None = None,
+            stills: Iterable[str] = (), shown: Iterable[str] = (), product: bool = False) -> tuple[list[Choice], list[Decision], str]:
     """Footage for every unit, the decision log and the mode (``content`` or ``signals_only``).
 
     *Sentence coverage*: each sentence gets pieces until its whole time is covered, first from the footage that
@@ -407,7 +449,11 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
         raise ValueError("no footage left after the edits")
     scorer = Scorer(pool, evidence)
     mode = "content" if scorer.content else "signals_only"
-    usable = [c for c in pool if c.quality.usable] or pool
+    # footage the user approved is usable for that sentence, whatever its measurements (a dark clip approved before a
+    # well-exposed one was added: the approval holds, never a crash)
+    approved_ids = {piece[0] for pieces in edits.keep.values() for piece in pieces}
+    sound = {c.candidate_id for c in ([c for c in pool if c.quality.usable] or pool)} | approved_ids
+    usable = [c for c in pool if c.candidate_id in sound]
     uses: dict[str, int] = {}
     group_uses: dict[str, int] = {}
     for shown_id in shown:  # footage another part of the same video already showed: weighed as a duplicate
@@ -884,7 +930,7 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
                                tuple(reasons[:8])))
             decision.chosen.append(candidate.candidate_id)
             decision.pieces.append({"id": candidate.candidate_id, "offset_ms": pick["offset"], "length_ms": pick["length"],
-                                    **({"repeat": True} if pick["tier"] == "repeat" else {})})
+                                    **({"repeat": True} if pick["tier"] == "repeat" or (pick.get("kept") and pick["repeat"]) else {})})
             before = resume.get(candidate.candidate_id)
             consume(candidate, pick["offset"], pick["length"])
             if pick.get("kept") and before is not None and candidate.candidate_id not in still_ids:

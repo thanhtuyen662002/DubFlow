@@ -26,7 +26,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
 from . import align, evidence as ev
 
@@ -61,6 +61,7 @@ CONFLICT_OPTIONS = {
     "excluded": ("Bỏ loại trừ cảnh", "Chọn cảnh khác cho câu này"),
     "pinned_elsewhere": ("Ghim cảnh khác cho câu kia", "Chọn cảnh khác cho câu này"),
     "timing_changed": ("Duyệt lại câu với thời lượng mới", "Chọn cảnh khác"),
+    "shown_again": ("Duyệt lại cảnh chiếu lại", "Chọn cảnh khác"),
     "plan_changed": ("Duyệt lại cảnh mới", "Chọn cảnh khác"),
 }
 
@@ -279,6 +280,8 @@ class Review:
                 # it played when the pieces are known
                 out.keep[unit_id] = [(p[0], p[1], p[2], len(p) > 3 and p[3] is True) for p in decision.pieces] \
                     if decision.pieces else [(i, -1, 0, False) for i in decision.approved]
+                if decision.basis:  # the words it was given on: no constraint for a sentence that is now another one
+                    out.keep_words[unit_id] = decision.basis[:8]
             out.exclude.update(decision.exclude)
         return out
 
@@ -458,7 +461,8 @@ class Review:
                     decision.approved = None
                     messages.append(self._void(unit_id, "sentence_changed", "Lời câu đã đổi sau khi bạn duyệt; hãy xem lại."))
                     continue
-                if decision.basis and list(decision.approved) == chosen and now[8:] != decision.basis[8:]:
+                if decision.basis and list(decision.approved) == chosen and _material(decision.basis) is not None \
+                        and _material(now) is not None and _material(now) != _material(decision.basis):
                     decision.approved = None
                     messages.append(self._void(unit_id, "source_changed",
                                                "Nội dung nguồn của cảnh đã đổi sau khi bạn duyệt; hãy xem lại.", shots=chosen))
@@ -471,6 +475,14 @@ class Review:
                 decision.approved = None
                 messages.append(self._void(unit_id, "timing_changed", "Thời lượng câu đã đổi sau khi bạn duyệt; hãy xem lại.",
                                            shots=chosen))
+                continue
+            pinned_elsewhere = {i for other, ids in (log.get("edits") or {}).get("pin", {}).items() if other != unit_id for i in ids}
+            if moved and [p[:3] for p in playing] == [p[:3] for p in decision.pieces] and not pinned_elsewhere & set(chosen):
+                # the same footage, now behind what has already played (forward only: another sentence's new footage
+                # comes from later in the source): it is shown again, which the approval was not given on
+                decision.approved = None
+                messages.append(self._void(unit_id, "shown_again", "Cảnh bạn đã duyệt giờ chiếu lại đoạn đã chiếu (do câu khác đổi "
+                                           "cảnh); hãy xem lại.", shots=chosen))
                 continue
             if decision.approved is not None and (list(decision.approved) != chosen or moved):
                 # the same shots from another part of them are other footage: never a silent change
@@ -494,6 +506,10 @@ class Review:
                 elif any(i not in known for i in approved):
                     messages.append(self._void(unit_id, "shot_gone", "Cảnh bạn đã duyệt không còn trong nguồn; hãy chọn lại.",
                                                shots=[i for i in approved if i not in known]))
+                elif decision.pieces and playing and sum(p[2] for p in decision.pieces) != sum(p[2] for p in playing):
+                    # the sentence is spoken longer or shorter: its footage is planned again for the new length
+                    messages.append(self._void(unit_id, "timing_changed", "Thời lượng câu đã đổi sau khi bạn duyệt; hãy xem lại.",
+                                               shots=approved))
                 else:
                     messages.append(self._void(unit_id, "plan_changed", "Cảnh của câu đã đổi sau khi bạn duyệt; hãy xem lại.",
                                                shots=approved))
@@ -502,10 +518,17 @@ class Review:
                 # an approval that holds is given on what plays now (and an approval saved before the pieces were
                 # logged gets them here, so the next replan keeps it exactly)
                 decision.pieces = pieces_of(unit) if unit.get("pieces") else decision.pieces
-                decision.basis = decision.basis or basis(unit, log)
+                if _material(decision.basis) is None or not decision.basis:
+                    decision.basis = basis(unit, log)  # an approval from before the sources' content was logged
             if decision.invalidated and decision.pin and all(i in known for i in decision.pin):
                 decision.invalidated = ""
         return messages
+
+
+def _material(fingerprint: str) -> str | None:
+    """The material half of a :func:`basis`, or None when it was taken without the sources' content identity (a log
+    from before it was written, or a basis from before it was marked): such a half cannot tell a changed source."""
+    return fingerprint[8:16] if len(fingerprint) == 17 and fingerprint[16] == "c" else None
 
 
 def _applied(pin: Iterable[str], chosen: list[str]) -> bool:
@@ -557,12 +580,17 @@ def basis(unit: Mapping[str, Any], log: Mapping[str, Any]) -> str:
     source, range and the source's content identity when the log has it). A new plan revision is neither."""
     candidates = {c["id"]: c for c in log.get("candidates") or ()}
     identity = log.get("sources") or {}
-    words = hashlib.sha256(json.dumps([unit.get("unit_id"), unit.get("text")], ensure_ascii=False).encode("utf-8")).hexdigest()
+    words = align.words_digest(str(unit.get("unit_id")), str(unit.get("text")))
     shown = [(i, (candidates.get(i) or {}).get("source_id"), (candidates.get(i) or {}).get("start_ms"),
               (candidates.get(i) or {}).get("end_ms"), identity.get((candidates.get(i) or {}).get("source_id") or ""))
              for i in unit.get("chosen") or ()]
+    # comparable only when every shown source's content was read: a source the log leaves out (unreadable when the log
+    # was written) has an unknown identity, never a stand-in that a new analysis recipe would change
+    content = bool(identity) and log.get("source_identity") == "content" and all(s[4] is not None for s in shown)
     material = hashlib.sha256(json.dumps(shown, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
-    return words[:8] + material[:8]
+    # "c": the material half holds the sources' content identity (not the analysis recipe), so it can tell a changed
+    # source; "-": it cannot, and is not compared (P2-N5)
+    return words[:8] + material[:8] + ("c" if content else "-")
 
 
 def fingerprint(unit: Mapping[str, Any], candidates: Mapping[str, Mapping[str, Any]]) -> str:

@@ -699,6 +699,23 @@ def file_identity(path: Path, recipe: str = "") -> str:
     return digest_json({"content": content_fingerprint(path), "recipe": recipe})
 
 
+def source_content(path: Path) -> str | None:
+    """A source's content identity for the decision log (P2-N5): its content fingerprint alone, without the analysis
+    recipe (a release that analyses differently does not change what the user approved). None when the file cannot
+    be read here: its identity is unknown, never stood in for by the cache identity (which holds the recipe)."""
+    try:
+        return content_fingerprint(path)
+    except OSError:
+        return None
+
+
+def source_contents(paths: Mapping[str, Path]) -> dict[str, str]:
+    """``sources`` of a decision log: source id → content fingerprint, for each source whose content could be read. A
+    source left out has an unknown identity, and approvals shown on it are not compared (:func:`review.basis`)."""
+    found = {source_id: source_content(path) for source_id, path in paths.items()}
+    return {source_id: fingerprint for source_id, fingerprint in found.items() if fingerprint is not None}
+
+
 def _frame_tick(frame: int, time_base: TimeBase, fps: Fraction) -> int:
     """The first plan tick inside frame ``frame`` (its exact start, rounded up to a whole tick)."""
     return math.ceil(Fraction(frame) / fps / time_base.seconds)

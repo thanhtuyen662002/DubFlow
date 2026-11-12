@@ -38,6 +38,14 @@
       "description": "Optional (P2-N5, older logs lack it): source id → the source's content identity, so an approval given on a source whose content has since changed is invalidated while a new plan revision alone is not.",
       "type": "object", "additionalProperties": {"type": "string", "maxLength": 200}
     },
+    "plan_inputs": {
+      "description": "Optional (Bán hàng): the digest of the inputs of the plan this log was made with; a saved plan is reused only with its own log.",
+      "type": "string", "maxLength": 64
+    },
+    "source_identity": {
+      "description": "Optional: \"content\" when every value of sources is a file's content fingerprint alone (no analysis recipe); a source left out of sources could not be read and has an unknown identity. Approvals compare the sources' identity only then, and only when every shown source has one.",
+      "type": "string", "enum": ["content"]
+    },
     "provenance": {
       "description": "Optional (added for P2-14, older logs lack it): provenance → how many candidates carry evidence of it. filename_metadata is never content: a log with only file names (and signals) is signals_only.",
       "type": "object",
