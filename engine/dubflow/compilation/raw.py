@@ -279,8 +279,9 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
             # cover (targeted looks, shared fairly between the parts) when the budget does not reach every shot.
             room = describer.budget - describer.budget // 3 if len(everything_seen) > describer.budget else describer.budget
             first = seeing.allocate(list(part_pools.values()), folder, room, groups)
-            looked = {candidate_id for candidate_id, _ in first}
             broad = seeing.look(describer, first, groups, pool, cancelled)
+            # looked at: the frames asked and the duplicates that share their answers (never asked again)
+            looked = {candidate_id for candidate_id, _ in first} | broad.answered()
             check()
             seeing.apply(broad.found, evidence, f"AI {describer.provider}/{describer.used_model}")
             vision_report = {"provider": describer.provider, "model": describer.used_model, "frames": broad.frames, "asked": describer.asked,
@@ -363,6 +364,7 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
                     extra = seeing.look(describer, [(i, folder / by_id[i].keyframe) for i in ids], groups, pool, cancelled)
                     check()
                     looked.update(ids)
+                    looked.update(extra.answered())
                     seeing.apply(extra.found, evidence, f"AI {describer.provider}/{describer.used_model}")
                     # the frames the model was paid for; the duplicates that share an answer are counted apart
                     vision_report["targeted"] += extra.frames

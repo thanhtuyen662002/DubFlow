@@ -64,6 +64,48 @@ class TrimmedCandidatesTests(unittest.TestCase):
         self.assertLess(len(shots.windows(short)), shots.MAX_CANDIDATES)
 
 
+class CandidateIdTests(unittest.TestCase):  # review of #784: ids inside a trim, the cap boundary
+    def test_a_shot_keeps_its_id_when_the_trim_moves(self):
+        first = dict((w[:2], n) for n, w in shots.numbered(film(), (0, WINDOW_MS)))
+        moved = dict((w[:2], n) for n, w in shots.numbered(film(), (30_000, 30_000 + WINDOW_MS)))
+        both = set(first) & set(moved)
+        self.assertGreater(len(both), 20)
+        self.assertEqual({k: first[k] for k in both}, {k: moved[k] for k in both})
+        # before: numbered from 1 inside each trim, so the shot at 31.2 s was c14 in one trim and c1 in the other
+        self.assertTrue(all(n > shots.WITHIN_BASE for n in [*first.values(), *moved.values()]))
+
+    def test_an_id_of_the_whole_source_spread_never_names_a_shot_of_a_trim(self):
+        whole = {n for n, _ in shots.numbered(film())}
+        self.assertEqual(whole, set(range(1, shots.MAX_CANDIDATES + 1)))
+        self.assertFalse(whole & {n for n, _ in shots.numbered(film(), (0, WINDOW_MS))})
+
+    def extract(self, found, within):
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as folder:
+            video = Path(folder) / "clip.mp4"
+            video.write_bytes(b"clip" * 256)
+
+            def run(argv, cwd, cancelled):
+                raise OSError("no FFmpeg here")  # unreadable frames: the ids are what is tested
+            made = shots.extract(video, "s1", found, Path(folder) / "cache", ffmpeg=Path("ffmpeg"), run=run, within=within)
+            return [(c.candidate_id, c.start_ms, c.end_ms) for c in made], sorted(p.name for p in (Path(folder) / "cache").glob("*.json"))
+
+    def test_a_source_with_exactly_the_cap_of_windows_is_the_same_with_or_without_a_trim(self):
+        length = shots.MAX_CANDIDATES * 2400
+        bounds = range(0, length + 1, 2400)
+        exact = scene.Analysis(length, tuple(bounds[1:-1]), tuple(scene.Shot(a, b, 10) for a, b in zip(bounds, bounds[1:])),
+                               (), True, "exact")
+        self.assertEqual(len(shots.windows(exact)), shots.MAX_CANDIDATES)
+        self.assertEqual(self.extract(exact, (0, 60_000)), self.extract(exact, None))  # was: trimmed, another cache
+
+    def test_a_long_source_inside_a_trim_has_its_own_cache_and_stable_ids(self):
+        trimmed, cache = self.extract(film(), (0, WINDOW_MS))
+        whole, whole_cache = self.extract(film(), None)
+        self.assertNotEqual(cache, whole_cache)
+        self.assertTrue(all(int(cid.rpartition("c")[2]) > shots.WITHIN_BASE for cid, _, _ in trimmed))
+        self.assertGreaterEqual(len(trimmed), 43)
+
+
 class AllocationTests(unittest.TestCase):
     def setUp(self):
         self.found, self.trims, self.groups = copies()
@@ -126,6 +168,42 @@ class AllocationTests(unittest.TestCase):
         order = seeing.spread_order(list(range(16)))
         self.assertEqual(sorted(order), list(range(16)))
         self.assertTrue(max(order[:4]) >= 8 and min(order[:4]) < 4)
+
+    def test_spread_order_looks_at_the_middle_first_never_the_first_shot(self):  # review of #784
+        for n in (3, 5, 16, 43, 100):
+            order = seeing.spread_order(list(range(n)))
+            self.assertEqual(sorted(order), list(range(n)), n)
+            self.assertLessEqual(abs(order[0] - (n - 1) / 2), 1, n)  # was 0: a one-frame look saw the stretch's start
+            self.assertNotEqual(order[0], 0, n)
+
+    def test_a_shot_answered_through_its_duplicate_is_never_looked_at_again(self):  # review of #784
+        one, _, _ = copies(1)
+        # two items using the same window of the same film (hard links): every picture is in both
+        found = {"i1-s1": one["i1-s1"], "i2-s1": [shots.Candidate(c.candidate_id.replace("i1-", "i2-"), "i2-s1", c.start_ms, c.end_ms,
+                                                                 c.shot_index, c.motion, c.quality, c.dhash, c.keyframe)
+                                                  for c in one["i1-s1"]]}
+        pool = [c for mine in found.values() for c in mine]
+        groups = shots.duplicate_groups(pool)
+        first = seeing.allocate(list(found.values()), Path("frames"), 8, groups)
+
+        class Describer:
+            taken = 0
+
+            def describe(self, frames, cancelled):
+                self.taken += len(frames)
+                return {cid: seeing.Seen("một cánh đồng", (), (), "", (), 900, "clear", None, None, 0) for cid, _ in frames}
+        broad = seeing.look(Describer(), first, groups, pool)
+        self.assertGreater(broad.shared, 0)
+        looked = {cid for cid, _ in first} | broad.answered()
+        units = [{"unit_id": f"u{k}", "text": "xe tăng tiến qua làng", "chosen": [],
+                  "coverage": {"needs_review": True, "status": "none"}} for k in range(3)]
+        evidence = ev.gather(c.candidate_id for c in pool)
+        picked = seeing.targets(units, pool, evidence, looked, 40, forward_only=False)
+        self.assertTrue(picked)
+        self.assertFalse(set(picked) & broad.answered())
+        # before: only the frames asked counted as looked at, so their duplicates were asked again
+        again = seeing.targets(units, pool, evidence, {cid for cid, _ in first}, 40, forward_only=False)
+        self.assertTrue(set(again) & (broad.answered() - {cid for cid, _ in first}))
 
 
 def shots_whole() -> dict[str, list[shots.Candidate]]:
