@@ -285,9 +285,8 @@ def plan_editorial(visuals: Sequence[Visual], spoken: Sequence[tuple[str, int]],
                         "summary": evidence[c.candidate_id].summary() if c.candidate_id in evidence else ""} for c in pool],
         "edits": (edits or align.Edits()).to_dict(), "warnings": warnings,
         # each source's content identity: what an approval was given on (P2-N5 materiality)
-        "sources": {f"v{i + 1}": m.source_content(v.path, inputs.get(f"v{i + 1}")) for i, v in enumerate(visuals)
-                    if f"v{i + 1}" in inputs},
-        "source_identity": "content",  # the file's content only: a new analysis recipe is no change of the source
+        "sources": m.source_contents({f"v{i + 1}": v.path for i, v in enumerate(visuals) if f"v{i + 1}" in inputs}),
+        "source_identity": "content",  # every value in sources is a content fingerprint (no recipe); a source left out is unknown
         # what the evidence came from (P2-14): file names alone are never content
         "provenance": ev.provenance_counts({c.candidate_id: evidence[c.candidate_id] for c in pool if c.candidate_id in evidence}),
     }

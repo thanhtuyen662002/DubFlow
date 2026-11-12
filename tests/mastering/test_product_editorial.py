@@ -66,6 +66,147 @@ class ProductPlanTests(unittest.TestCase):
         m.Plan.from_dict(json.loads(made.to_json()))
 
 
+SPOKEN = [("Nồi chiên không dầu cho cả nhà.", 2000), ("Lòng nồi chống dính rất dễ rửa.", 2500),
+          ("Chỉ cần bấm nút chọn chế độ.", 2200)]
+
+
+class SourceIdentityTests(unittest.TestCase):
+    """The decision log's ``sources`` hold content fingerprints only: an unreadable source is unknown (P2-N5)."""
+
+    def plan(self, paths, recipe, unreadable=()):
+        pool, found = product_world()
+        # the input identity first (the file's content and the analysis recipe), as the job computes it
+        wanted = {f"v{i + 1}": m.file_identity(path, recipe) for i, path in enumerate(paths)}
+        hidden = []
+        for index in unreadable:  # gone after the inputs were computed, before the log is written
+            moved = paths[index].with_suffix(".gone")
+            paths[index].rename(moved)
+            hidden.append((moved, paths[index]))
+        try:
+            visuals = [planner.Visual(path, 12_000, 1920, 1080) for path in paths]
+            total = 300 + sum(d for _, d in SPOKEN) + 250 * 2 + 700
+            _, log = planner.plan_editorial(visuals, SPOKEN, total, m.Options("balanced"), lead_ms=300, gap_ms=250,
+                                            candidates={0: [pool[0]], 1: [pool[1]], 2: pool[2:]}, evidence=found,
+                                            inputs=wanted)
+        finally:
+            for moved, back in hidden:
+                moved.rename(back)
+        return log
+
+    def test_an_unreadable_source_after_a_new_recipe_never_voids_an_approval_as_source_changed(self):
+        from engine.dubflow.mastering import review as rv
+        with TemporaryDirectory() as folder:
+            paths = [Path(folder) / f"v{i}.mp4" for i in (1, 2, 3)]
+            for index, path in enumerate(paths):
+                path.write_bytes(bytes([index + 1]) * 4096)
+            first = self.plan(paths, "recipe-1")
+            self.assertEqual(first["source_identity"], "content")
+            self.assertEqual(first["sources"], {f"v{i + 1}": m.content_fingerprint(p) for i, p in enumerate(paths)})
+            review = rv.Review()
+            for unit in first["units"]:
+                review.decide(first, unit["unit_id"], "approve")
+            approved = {u: list(d.approved) for u, d in review.units.items() if d.approved is not None}
+            self.assertEqual(len(approved), 3)
+            # A release with another analysis recipe, and v1 unreadable when the log is written: v1 is unknown, never
+            # its recipe-sensitive cache identity
+            second = self.plan(paths, "recipe-2", unreadable=(0,))
+            self.assertNotIn("v1", second["sources"])
+            self.assertEqual(set(second["sources"].values()) - {m.content_fingerprint(p) for p in paths}, set())
+            on_v1 = [u["unit_id"] for u in second["units"] if any(i.startswith("v1") for i in u["chosen"])]
+            self.assertTrue(on_v1)
+            self.assertTrue(all(rv.basis(u, second).endswith("-") for u in second["units"] if u["unit_id"] in on_v1))
+            self.assertEqual(review.reconcile(second), [])
+            self.assertEqual({u: list(d.approved) for u, d in review.units.items() if d.approved is not None}, approved)
+            # readable again under the new recipe: the same content, still approved
+            third = self.plan(paths, "recipe-2")
+            self.assertEqual(review.reconcile(third), [])
+            self.assertNotIn("source_changed", {c["cause"] for c in review.conflicts.values()})
+            # the content itself changes: that is a reason, and it is said
+            paths[0].write_bytes(b"other footage" * 400)
+            fourth = self.plan(paths, "recipe-2")
+            self.assertTrue(review.reconcile(fourth))
+            self.assertEqual({c["cause"] for c in review.conflicts.values()}, {"source_changed"})
+            self.assertEqual(sorted(review.conflicts), sorted(on_v1))
+
+
+class PlanLogPairingTests(unittest.TestCase):
+    """A saved plan is reused only with the log made with it (P2-N5, the log is written before the plan)."""
+
+    def run_job(self, root, edits=None):
+        value = {"schema_version": 1, "name": "Nồi chiên", "price": "299.000đ", "voice_id": "vi-test", "variants": ["x"],
+                 "visuals": [str(root / f"v{i}.jpg") for i in (1, 2, 3)], "mastering": {"schema_version": 1, "level": "balanced"},
+                 "editorial": {"notes": ["Toàn cảnh nồi chiên trên bàn", "Cận cảnh lòng nồi chống dính",
+                                         "Thao tác bấm nút chọn chế độ"], **({"edits": edits} if edits else {})}}
+        spec_path = root / "spec.json"
+        spec_path.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
+        spec = job.load_spec(spec_path)
+        work = root / "work"
+        work.mkdir(exist_ok=True)
+
+        def no_ffmpeg(argv, cwd, cancelled):
+            raise OSError("no FFmpeg here")  # a photo without measurements is still the seller's photo
+        total = 300 + sum(d for _, d in SPOKEN) + 250 * 2 + 700
+        return job._mastered(spec, [render.Visual(Path(v)) for v in value["visuals"]], total, work, 1, spoken=SPOKEN,
+                             inspect=lambda path: None, measure=lambda path: (1080, 1080), ffmpeg=Path("ffmpeg"),
+                             ffmpeg_runner=no_ffmpeg, cancelled=lambda: False), work
+
+    def setUp(self):
+        self.folder = TemporaryDirectory()
+        self.root = Path(self.folder.name)
+        for index in (1, 2, 3):
+            (self.root / f"v{index}.jpg").write_bytes(bytes([index]) * 2048)
+
+    def tearDown(self):
+        self.folder.cleanup()
+
+    def saved(self, work):
+        return (json.loads((work / "editorial-1.json").read_text(encoding="utf-8")),
+                json.loads((work / "mastering_plan-1.json").read_text(encoding="utf-8")))
+
+    def test_a_failed_plan_save_then_undo_never_pairs_the_old_plan_with_the_newer_log(self):
+        from unittest import mock
+        report, work = self.run_job(self.root)
+        self.assertNotIn("fallback", report, report)
+        self.assertFalse(report["reused"])
+        old_log, old_plan = self.saved(work)
+        self.assertEqual(self.run_job(self.root)[0]["reused"], True)  # the same inputs: plan and log reused
+        # The user pins v1 to the second sentence: the new log is written, then saving the plan fails.
+        pin = {"pin": {"u2": ["v1c1"]}}
+        with mock.patch.object(m, "save", side_effect=OSError("disk full")):
+            failed, _ = self.run_job(self.root, pin)
+        self.assertIn("fallback", failed)
+        newer_log, plan_left = self.saved(work)
+        self.assertEqual(plan_left, old_plan)  # the old plan is still there
+        self.assertNotEqual(newer_log["plan_inputs"], old_log["plan_inputs"])
+        self.assertEqual(newer_log["edits"]["pin"], pin["pin"])
+        # Undo: back to the first inputs. The old plan matches them, but the log beside it is the newer one.
+        undone, _ = self.run_job(self.root)
+        self.assertNotIn("fallback", undone, undone)
+        self.assertFalse(undone["reused"])  # planned again, not the old plan with the pinned log
+        log, plan = self.saved(work)
+        self.assertEqual(log["plan_inputs"], old_log["plan_inputs"])
+        self.assertEqual(log["edits"]["pin"], {})
+        self.assertEqual(log["plan_id"], plan["plan_id"])
+        self.assertEqual([u["chosen"] for u in log["units"]], [u["chosen"] for u in old_log["units"]])
+
+    def test_an_older_log_without_plan_inputs_is_still_reused_with_its_plan(self):
+        report, work = self.run_job(self.root)
+        self.assertFalse(report["reused"])
+        log, _ = self.saved(work)
+        log.pop("plan_inputs")  # a log from before the key was written
+        (work / "editorial-1.json").write_text(json.dumps(log, ensure_ascii=False), encoding="utf-8")
+        again, _ = self.run_job(self.root)
+        self.assertNotIn("fallback", again, again)
+        self.assertTrue(again["reused"])
+
+    def test_an_unreadable_log_is_never_reused(self):
+        report, work = self.run_job(self.root)
+        (work / "editorial-1.json").write_text("{not json", encoding="utf-8")
+        again, _ = self.run_job(self.root)
+        self.assertNotIn("fallback", again, again)
+        self.assertFalse(again["reused"])
+
+
 class RenderFocusTests(unittest.TestCase):
     def test_focus_moves_the_crop_only(self):
         clip = render.Visual(Path("a.mp4"), 10_000)

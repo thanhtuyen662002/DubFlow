@@ -401,8 +401,10 @@ class ReviewFollowUpTests(unittest.TestCase):
             clip = Path(tmp) / "clip.mp4"
             clip.write_bytes(b"same bytes" * 100)
             self.assertNotEqual(m.file_identity(clip, "recipe-1"), m.file_identity(clip, "recipe-2"))
-            self.assertEqual(m.source_content(clip, "x"), m.content_fingerprint(clip))
-            self.assertEqual(m.source_content(Path(tmp) / "missing.mp4", "fallback"), "fallback")
+            self.assertEqual(m.source_content(clip), m.content_fingerprint(clip))
+            # unreadable: unknown, never a stand-in (the cache identity holds the recipe)
+            self.assertIsNone(m.source_content(Path(tmp) / "missing.mp4"))
+            self.assertEqual(m.source_contents({"v1": clip, "v2": Path(tmp) / "missing.mp4"}), {"v1": m.content_fingerprint(clip)})
 
     def test_a_sentence_spoken_longer_or_shorter_is_timing_changed(self):
         causes: dict[str, int] = {}

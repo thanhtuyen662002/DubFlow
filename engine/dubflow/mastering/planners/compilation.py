@@ -286,8 +286,8 @@ def plan_part(part_id: str, kind: str, spoken: Sequence[tuple[str, int]], narrat
                            "summary": evidence[c.candidate_id].summary() if c.candidate_id in evidence else ""} for c in pool],
            "edits": (edits or align.Edits()).to_dict(), "warnings": warnings,
            # each source's content identity: what an approval was given on (P2-N5 materiality)
-           "sources": {f.source_id: m.source_content(f.path, inputs.get(f.source_id)) for f in footage if f.source_id in inputs},
-           "source_identity": "content",  # the file's content only: a new analysis recipe is no change of the source
+           "sources": m.source_contents({f.source_id: f.path for f in footage if f.source_id in inputs}),
+           "source_identity": "content",  # every value in sources is a content fingerprint (no recipe); a source left out is unknown
            # what the evidence came from (P2-14): file names alone are never content
            "provenance": ev.provenance_counts({c.candidate_id: evidence[c.candidate_id] for c in pool if c.candidate_id in evidence})}
     return PartPlan(result, log, narration_ms, moment_ms, audio)

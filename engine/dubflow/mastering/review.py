@@ -580,11 +580,13 @@ def basis(unit: Mapping[str, Any], log: Mapping[str, Any]) -> str:
     source, range and the source's content identity when the log has it). A new plan revision is neither."""
     candidates = {c["id"]: c for c in log.get("candidates") or ()}
     identity = log.get("sources") or {}
-    content = bool(identity) and log.get("source_identity") == "content"
     words = align.words_digest(str(unit.get("unit_id")), str(unit.get("text")))
     shown = [(i, (candidates.get(i) or {}).get("source_id"), (candidates.get(i) or {}).get("start_ms"),
               (candidates.get(i) or {}).get("end_ms"), identity.get((candidates.get(i) or {}).get("source_id") or ""))
              for i in unit.get("chosen") or ()]
+    # comparable only when every shown source's content was read: a source the log leaves out (unreadable when the log
+    # was written) has an unknown identity, never a stand-in that a new analysis recipe would change
+    content = bool(identity) and log.get("source_identity") == "content" and all(s[4] is not None for s in shown)
     material = hashlib.sha256(json.dumps(shown, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
     # "c": the material half holds the sources' content identity (not the analysis recipe), so it can tell a changed
     # source; "-": it cannot, and is not compared (P2-N5)

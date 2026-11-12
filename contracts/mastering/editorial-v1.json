@@ -43,7 +43,7 @@
       "type": "string", "maxLength": 64
     },
     "source_identity": {
-      "description": "Optional: \"content\" when sources holds each file's content fingerprint alone (no analysis recipe). Approvals compare the sources' identity only then.",
+      "description": "Optional: \"content\" when every value of sources is a file's content fingerprint alone (no analysis recipe); a source left out of sources could not be read and has an unknown identity. Approvals compare the sources' identity only then, and only when every shown source has one.",
       "type": "string", "enum": ["content"]
     },
     "provenance": {
