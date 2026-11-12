@@ -7,8 +7,8 @@ start times alone (a file-level start difference says nothing about drift inside
   frame where the colour changes and the 2 ms window where the tone changes are each boundary's decoded video and
   audio times, compared with the plan.
 * **reference** (real footage, any join of parts): the part file is its own reference. Around each join of the
-  final programme, the next part's opening is found in the final's decoded sound (1 ms loudness envelope,
-  cross-correlation, ±300 ms) and in its decoded pictures (small grey frames, nearest match, ±10 frames); the two
+  final programme, the next part's opening (3 s) is found in the final's decoded sound (onsets of the 1 ms
+  loudness envelope, cross-correlation, ±300 ms, a clear peak twice anything beyond ±20 ms) and in its decoded pictures (small grey frames, nearest match, ±10 frames); the two
   lags are the join's audio and video offsets, and their difference its A/V offset. A stretch without sound or
   without picture change is reported as not measured, never as in sync.
 
@@ -30,6 +30,12 @@ RATE = 48000
 ENVELOPE_MS = 1
 SEARCH_MS = 300
 REF_MS = 1500
+# the sound of a join is matched on its onsets over a longer stretch (rc12 W4, P2-N19): a voice's pitch makes the 1 ms
+# envelope correlate almost as well 4–9 ms off the peak (0.81–0.88 against 1.0), so no real join of narration over
+# music had a clear peak. The onsets (the envelope's first difference) do not carry that ripple. A clear peak must
+# still be twice as high as anything away from it; "away" is beyond SIDELOBE_MS, a fraction of the 40 ms limit.
+AUDIO_REF_MS = 2 * REF_MS
+SIDELOBE_MS = 20
 SEARCH_FRAMES = 10
 GREY_W, GREY_H = 32, 18
 BOUNDARY_FLOOR_MS = 40
@@ -78,9 +84,16 @@ def envelope(samples: Sequence[int], bin_ms: int = ENVELOPE_MS) -> list[float]:
     return [sum(abs(x) for x in samples[i:i + step]) / step for i in range(0, len(samples) - step + 1, step)]
 
 
-def best_lag(reference: Sequence[float], target: Sequence[float], centre: int, search: int) -> tuple[int | None, float]:
+def onsets(values: Sequence[float]) -> list[float]:
+    """The first difference of an envelope: where the sound starts and stops, without its slow level."""
+    return [b - a for a, b in zip(values, values[1:])]
+
+
+def best_lag(reference: Sequence[float], target: Sequence[float], centre: int, search: int,
+             apart: int = 2) -> tuple[int | None, float]:
     """The lag (bins, relative to ``centre``) where ``reference`` best matches ``target`` (normalised correlation),
-    and that correlation; None when the reference is flat (silence) or nothing matches."""
+    and that correlation; None when the reference is flat (silence) or nothing matches. The peak must be clear:
+    at least 0.3, and twice as high as any lag more than ``apart`` bins from it."""
     n = len(reference)
     mean = sum(reference) / max(1, n)
     ref = [x - mean for x in reference]
@@ -102,7 +115,7 @@ def best_lag(reference: Sequence[float], target: Sequence[float], centre: int, s
     best = max(scores, key=lambda lag: scores[lag])
     # a clear peak: well correlated, and twice as high as anything more than 2 bins away (an offset of a fraction of
     # a bin splits the peak between two neighbours; re-encoding adds noise)
-    others = max((v for lag, v in scores.items() if abs(lag - best) > 2), default=0.0)
+    others = max((v for lag, v in scores.items() if abs(lag - best) > apart), default=0.0)
     clear = scores[best] >= 0.3 and scores[best] >= 2 * max(0.0, others)
     return (best, scores[best]) if clear else (None, scores[best])
 
@@ -200,13 +213,17 @@ def measure_joins(ffmpeg: str, final: Path, parts: Sequence[tuple[Path, float]],
     frame_ms = 1000 / fps
     rows = []
     at = 0
+    total = sum(length for _, length in parts)
     for index, ((part, length), (following, _)) in enumerate(zip(parts, parts[1:]), start=1):
         at += length
-        ref = envelope(audio(ffmpeg, following, 0, REF_MS))
+        # the reference fits every lag searched: near the end (a short last part) it is shorter than AUDIO_REF_MS,
+        # never shorter than REF_MS when the programme has that much left
+        reference_ms = max(min(REF_MS, round(total - at)), min(AUDIO_REF_MS, round(total - at) - SEARCH_MS))
+        ref = onsets(envelope(audio(ffmpeg, following, 0, reference_ms)))
         begin = max(0, round(at) - SEARCH_MS)
-        around = envelope(audio(ffmpeg, final, begin, REF_MS + 2 * SEARCH_MS))
+        around = onsets(envelope(audio(ffmpeg, final, begin, reference_ms + 2 * SEARCH_MS)))
         centre = round(at - begin) // ENVELOPE_MS
-        lag, _ = best_lag(ref, around, centre, SEARCH_MS // ENVELOPE_MS)
+        lag, _ = best_lag(ref, around, centre, SEARCH_MS // ENVELOPE_MS, apart=SIDELOBE_MS // ENVELOPE_MS)
         count = max(8, int(REF_MS / frame_ms) // 2)
         # seek to just before a frame's time, so the first decoded frame is that frame (an accurate seek returns the
         # first frame at or after the time asked)

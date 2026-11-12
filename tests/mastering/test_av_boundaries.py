@@ -154,6 +154,54 @@ class VerdictTests(unittest.TestCase):
         self.assertIs(probe.verdict(self.rows(0.0, 90.0), 1000 / 10), False)  # a 100 ms frame, but over the 80 ms total
 
 
+class PitchedVoiceTests(unittest.TestCase):
+    """rc12 W4 (P2-N19): narration's pitch pulses (120–220 Hz) make the 1 ms loudness envelope correlate almost as
+    well a few ms off the true lag, so the clear-peak rule rejected every real join. No FFmpeg: samples are made here."""
+
+    @staticmethod
+    def narration(ms: int, seed: int, music: float) -> list[int]:
+        import random
+        rnd = random.Random(seed)
+        n = probe.RATE * ms // 1000
+        out = [0.0] * n
+        t = 0
+        while t < n:  # syllables of 120–300 ms, a voiced pulse train at the syllable's pitch, gaps between them
+            syllable, gap = (rnd.randint(120, 300) * probe.RATE // 1000, rnd.randint(30, 120) * probe.RATE // 1000)
+            pitch, level = rnd.uniform(120, 220), rnd.uniform(3000, 9000)
+            for i in range(min(syllable, n - t)):
+                phase = (i * pitch / probe.RATE) % 1.0
+                out[t + i] += level * math.sin(math.pi * i / syllable) * math.exp(-12 * phase) \
+                    * math.sin(2 * math.pi * 900 * i / probe.RATE)
+            t += syllable + gap
+        for i in range(n):  # a steady music bed and a little noise
+            out[i] += music * (math.sin(2 * math.pi * 220 * i / probe.RATE) + 0.7 * math.sin(2 * math.pi * 330.7 * i / probe.RATE)) \
+                + rnd.gauss(0, 50)
+        return [int(x) for x in out]
+
+    def test_a_join_of_narration_is_measured_at_its_true_lag(self):
+        rate = probe.RATE // 1000
+        for seed, music in ((1, 0), (2, 0), (1, 300), (2, 300)):
+            whole = self.narration(6000, seed, music)
+            for shift in (0, 17, -23):  # where the next part's opening really is, against the plan (ms)
+                join, begin = 2000, 2000 - probe.SEARCH_MS
+                part = whole[join * rate:(join + probe.AUDIO_REF_MS) * rate]
+                final = whole[(begin - shift) * rate:(begin - shift + probe.AUDIO_REF_MS + 2 * probe.SEARCH_MS) * rate]
+                centre = join - begin
+                lag, _ = probe.best_lag(probe.onsets(probe.envelope(part)), probe.onsets(probe.envelope(final)), centre,
+                                        probe.SEARCH_MS, apart=probe.SIDELOBE_MS // probe.ENVELOPE_MS)
+                self.assertEqual(lag, shift, (seed, music, shift))
+                # the method before: the envelope itself, 1.5 s, a peak twice anything beyond 2 ms
+                old, score = probe.best_lag(probe.envelope(part[:probe.REF_MS * rate]),
+                                            probe.envelope(final[:(probe.REF_MS + 2 * probe.SEARCH_MS) * rate]), centre, probe.SEARCH_MS)
+                if seed == 1 and music == 0:
+                    self.assertIsNone(old, (shift, score))  # the true peak was there, but never clear
+
+    def test_silence_is_never_measured(self):
+        lag, _ = probe.best_lag(probe.onsets(probe.envelope([0] * 48_000)), probe.onsets(probe.envelope([0] * 76_800)),
+                                300, probe.SEARCH_MS, apart=probe.SIDELOBE_MS)
+        self.assertIsNone(lag)
+
+
 @unittest.skipUnless(FFMPEG and FFPROBE, "needs FFmpeg")
 class BoundaryTests(unittest.TestCase):
     """Decoded boundaries of real renders (FFmpeg) on synthetic markers."""
@@ -165,6 +213,8 @@ class BoundaryTests(unittest.TestCase):
         (cls.dir / "empty.ass").write_text(ASS, encoding="utf-8")
         encoders = subprocess.run([FFMPEG, "-hide_banner", "-encoders"], capture_output=True, text=True).stdout
         cls.encoder = "libx264" if "libx264" in encoders else "mpeg4"  # B-frames when available (the join's case)
+        # the blur the product uses with this FFmpeg (the shipped LGPL build has no boxblur, rc12 W4 P3-N20)
+        cls.blur = render.available_blur(Path(FFMPEG)).replace("boxblur=20:2", "boxblur=2:1").replace("sigma=20", "sigma=2")
 
     @classmethod
     def tearDownClass(cls):
@@ -204,7 +254,7 @@ class BoundaryTests(unittest.TestCase):
 
     def part(self, pieces, lengths, name, narration=None):
         argv = render.montage_argv(Path(FFMPEG), pieces, narration, None, 0.0, sum(lengths), "empty.ass", self.dir / name,
-                                   layout="toan-man-hinh", encoder=self.encoder, blur="boxblur=2:1", fade=False)
+                                   layout="toan-man-hinh", encoder=self.encoder, blur=self.blur, fade=False)
         subprocess.run(argv, cwd=self.dir, check=True, capture_output=True)
         return self.dir / name
 
@@ -315,7 +365,7 @@ class BoundaryTests(unittest.TestCase):
         subprocess.run(render.concat_copy_argv(Path(FFMPEG), "tx.ffconcat", old), cwd=self.dir, check=True, capture_output=True)
         before = probe.measure_joins(FFMPEG, old, files, fps=render.FPS)
         keep("reference method, old join (baseline)", before)
-        self.assertFalse(before["passed"], before)  # the old join (baseline) fails the same measurement
+        self.assertIs(before["passed"], False, before)  # the old join (baseline) is measured and fails (unmeasured is None)
 
 
 if __name__ == "__main__":
