@@ -386,6 +386,15 @@ def _mastered(spec: Spec, visuals: Sequence[render.Visual], total_ms: int, work:
                                              inputs=wanted)
         if saved is not None and not (work / log_name).is_file():
             saved = None
+        if saved is not None:
+            # the log must be the one made with this plan: a failed write between the two (the log first) followed by
+            # an undo would otherwise pair an older plan with the newer log (P2-N5). Older logs carry no key.
+            try:
+                made_from = json.loads((work / log_name).read_text(encoding="utf-8")).get("plan_inputs")
+            except (OSError, ValueError, AttributeError):
+                made_from = ""
+            if made_from is not None and made_from != mastering_plan.digest_json(sorted(wanted.items())):
+                saved = None
         report["reused"] = saved is not None
         if saved is None:
             if inspect is None:
@@ -469,6 +478,7 @@ def _mastered(spec: Spec, visuals: Sequence[render.Visual], total_ms: int, work:
             reviewing.annotate(log, saved.to_dict())
             # the log before the plan (P2-N5, transactional replan): a plan is reused only with a log beside it, so a
             # failure between the two writes plans again next time, never pairs a new plan with an old log
+            log["plan_inputs"] = mastering_plan.digest_json(sorted(wanted.items()))  # which plan this log goes with
             _atomic_text(work / log_name, json.dumps(log, ensure_ascii=False, indent=1))
             mastering_plan.save(path, saved)
         log = json.loads((work / log_name).read_text(encoding="utf-8"))

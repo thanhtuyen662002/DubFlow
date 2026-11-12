@@ -699,6 +699,16 @@ def file_identity(path: Path, recipe: str = "") -> str:
     return digest_json({"content": content_fingerprint(path), "recipe": recipe})
 
 
+def source_content(path: Path, fallback: str | None = None) -> str:
+    """A source's content identity for the decision log (P2-N5): its content fingerprint alone, without the analysis
+    recipe (a release that analyses differently does not change what the user approved). ``fallback`` (the cache
+    identity) when the file cannot be read here."""
+    try:
+        return content_fingerprint(path)
+    except OSError:
+        return fallback or ""
+
+
 def _frame_tick(frame: int, time_base: TimeBase, fps: Fraction) -> int:
     """The first plan tick inside frame ``frame`` (its exact start, rounded up to a whole tick)."""
     return math.ceil(Fraction(frame) / fps / time_base.seconds)

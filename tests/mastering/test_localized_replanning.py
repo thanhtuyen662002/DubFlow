@@ -27,7 +27,7 @@ PACING = rules.STYLE_PACING["natural"]
 WORDS = ["nồi chiên", "lòng nồi", "nút bấm", "khay nướng", "gà rán", "khoai tây", "màn hình", "tay cầm", "nắp kính",
          "dây điện", "bàn bếp", "đĩa ăn"]
 REAL_CAUSES = {"sentence_removed", "sentence_changed", "source_changed", "timing_changed", "shot_gone", "excluded",
-               "pinned_elsewhere"}
+               "pinned_elsewhere", "shown_again"}
 
 
 class World:
@@ -61,7 +61,7 @@ class World:
         _, decisions, mode = align.assign(units, self.pool, found, PACING, forward_only=self.forward_only, edits=edits)
         return {"plan_id": plan_id, "mode": mode, "units": [d.to_dict() for d in decisions],
                 "candidates": [{**c.to_dict(), "id": c.candidate_id} for c in self.pool],
-                "edits": (edits or align.Edits()).to_dict(), "sources": dict(self.identity)}
+                "edits": (edits or align.Edits()).to_dict(), "sources": dict(self.identity), "source_identity": "content"}
 
 
 def approve_all(log: dict) -> rv.Review:
@@ -293,6 +293,13 @@ class TransactionalReplanTests(unittest.TestCase):
                         self.assertEqual(rv.user_state(decision), rv.USER_APPROVED, unit_id)
 
 
+def is_shown_again(first: dict, new: dict, unit_id: str) -> bool:
+    """The same pieces, only now marked as shown again."""
+    old, now = pieces(first, unit_id), pieces(new, unit_id)
+    strip = lambda ps: [(p["id"], p["offset_ms"], p["length_ms"]) for p in ps or ()]  # noqa: E731
+    return bool(now) and strip(old) == strip(now) and any(p.get("repeat") for p in now)
+
+
 def trial(seed: int, forward_only: bool) -> tuple[int, int, int]:
     """One randomized replan: approve everything, one pin or exclusion, plan again. Returns (approvals checked,
     avoidable invalidations, invalidations with a real cause, approvals kept over footage that changed)."""
@@ -330,6 +337,8 @@ def trial(seed: int, forward_only: bool) -> tuple[int, int, int]:
         touched = set(ids) & set(shown)
         if cause in ("excluded", "pinned_elsewhere") and touched:
             real += 1
+        elif cause == "shown_again" and forward_only and is_shown_again(first, new, unit_id):
+            real += 1  # forward only: the action's footage plays later in the source, the approved piece is now a repeat
         else:
             avoidable += 1
     return len(before), avoidable, real, silent
@@ -347,6 +356,113 @@ class RandomizedReplanningTests(unittest.TestCase):  # A5
                 self.assertEqual(totals[1], 0, totals)  # no avoidable invalidation
                 self.assertEqual(totals[3], 0, totals)  # no silent change of approved footage
                 self.assertGreater(totals[2], 0, totals)  # real conflicts happen, and each is recorded
+
+
+class ReviewFollowUpTests(unittest.TestCase):
+    """Findings of the independent review of #782, each with its reproduction."""
+
+    def test_approving_one_sentence_alone_changes_no_other_sentence(self):
+        changed = checked = 0
+        for forward_only in (False, True):
+            for seed in range(60):
+                world = World(seed, forward_only=forward_only)
+                try:
+                    first = world.plan()
+                except ValueError:
+                    continue
+                for unit in first["units"]:
+                    if not unit["chosen"]:
+                        continue
+                    review = rv.Review()
+                    review.decide(first, unit["unit_id"], "approve")
+                    again = world.plan(review.edits())
+                    checked += 1
+                    changed += [u.get("pieces") for u in again["units"]] != [u.get("pieces") for u in first["units"]]
+        self.assertGreater(checked, 300)
+        self.assertEqual(changed, 0)  # was 469 forward-only and 312 reorder trials out of 729
+
+    def test_a_log_without_content_identities_never_voids_approvals_as_source_changed(self):
+        for seed in range(15):
+            world = World(seed)
+            first = world.plan()
+            first.pop("source_identity")  # a log from before the content identity was written
+            review = approve_all(first)
+            target = first["units"][0]
+            others = [c["id"] for c in first["candidates"] if not any(c["id"] in u["chosen"] for u in first["units"])]
+            if not others:
+                continue
+            review.decide(first, target["unit_id"], "pin", [others[0]])
+            replan(world, review)
+            self.assertNotIn("source_changed", {c["cause"] for c in review.conflicts.values()}, seed)
+
+    def test_the_source_identity_of_a_log_is_its_content_not_the_analysis_recipe(self):
+        from engine.dubflow.mastering import plan as m
+        with TemporaryDirectory() as tmp:
+            clip = Path(tmp) / "clip.mp4"
+            clip.write_bytes(b"same bytes" * 100)
+            self.assertNotEqual(m.file_identity(clip, "recipe-1"), m.file_identity(clip, "recipe-2"))
+            self.assertEqual(m.source_content(clip, "x"), m.content_fingerprint(clip))
+            self.assertEqual(m.source_content(Path(tmp) / "missing.mp4", "fallback"), "fallback")
+
+    def test_a_sentence_spoken_longer_or_shorter_is_timing_changed(self):
+        causes: dict[str, int] = {}
+        for factor in (1.3, 0.6):
+            for seed in range(40):
+                world = World(seed, forward_only=bool(seed % 2))
+                try:
+                    first = world.plan()
+                except ValueError:
+                    continue
+                review = approve_all(first)
+                world.spoken = [(text, int(ms * factor)) for text, ms in world.spoken]
+                try:
+                    replan(world, review)
+                except ValueError:
+                    continue
+                for conflict in review.conflicts.values():
+                    causes[conflict["cause"]] = causes.get(conflict["cause"], 0) + 1
+        self.assertGreater(causes.get("timing_changed", 0), 50, causes)
+        self.assertEqual(causes.get("plan_changed", 0), 0, causes)  # was 164 at ×1.3 and 78 at ×0.6
+
+    def test_an_approved_piece_now_shown_again_is_never_silent(self):
+        world = World(78, forward_only=True)
+        first = world.plan()
+        review = approve_all(first)
+        review.decide(first, "u1", "pin", ["v1c2"])
+        new, _ = replan(world, review)
+        for unit in new["units"]:
+            if unit["unit_id"] == "u1" or not any(p.get("repeat") for p in unit.get("pieces") or ()):
+                continue
+            decision = review.units[unit["unit_id"]]
+            if decision.approved is not None:  # still approved: it was approved as a repeat
+                self.assertEqual(decision.pieces, rv.pieces_of(unit))
+            else:
+                self.assertIn(review.conflicts[unit["unit_id"]]["cause"], REAL_CAUSES)
+
+    def test_approvals_of_sentences_that_moved_never_steer_the_new_plan(self):
+        for seed in range(30):
+            world = World(seed)
+            first = world.plan()
+            review = approve_all(first)
+            world.spoken.insert(0, ("Mở đầu bằng một câu mới.", 1800))  # every unit id now names another sentence
+            stale = world.plan(review.edits())
+            fresh = world.plan()
+            self.assertEqual([u["pieces"] for u in stale["units"]], [u["pieces"] for u in fresh["units"]], seed)
+            review.reconcile(stale, run="run-2")
+            self.assertTrue(all(c["cause"] in ("sentence_changed", "sentence_removed") for c in review.conflicts.values()))
+
+    def test_an_approved_shot_that_is_no_longer_usable_keeps_its_approval(self):
+        dark = shots.Quality(10, 4, 2, ("tối",))
+        pool = [shots.Candidate("v1c1", "v1", 0, 3000, 0, 40, dark, 1), shots.Candidate("v1c2", "v1", 3000, 6000, 1, 40, dark, 2)]
+        found = ev.gather(c.candidate_id for c in pool)
+        units = align.units([("Đây là nồi chiên.", 2000), ("Bạn thấy lòng nồi.", 2000)], 5000, lead_ms=300, gap_ms=250)
+        _, decisions, _ = align.assign(units, pool, found, PACING, forward_only=False)
+        log = {"units": [d.to_dict() for d in decisions], "candidates": [{**c.to_dict(), "id": c.candidate_id} for c in pool]}
+        review = approve_all(log)
+        bright = shots.Candidate("v2c1", "v2", 0, 6000, 0, 40, shots.Quality(120, 50, 300), 3)
+        _, again, _ = align.assign(units, [*pool, bright], ev.gather(["v1c1", "v1c2", "v2c1"]), PACING, forward_only=False,
+                                   edits=review.edits())  # was KeyError: ('u1', 'v1c...')
+        self.assertEqual([d.chosen for d in again], [d.chosen for d in decisions])
 
 
 if __name__ == "__main__":
