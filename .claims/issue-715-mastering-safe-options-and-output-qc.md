@@ -1,7 +1,7 @@
 DUBFLOW_PR_V1
 Issue: #715
 Lease-Owner: Claude/issue-715-mastering-safe-options-and-output-qc
-Lease-Heartbeat: 2026-11-12T16:37:40Z
+Lease-Heartbeat: 2026-11-12T16:54:30Z
 Tested-Base-SHA: f46723aa93553da321e480e6cc0d6e62b6d9a08e
 Conflict-Domains: mastering-options-write,mastering-output-qc,component-registry
 Expected-Paths: .claims/issue-715-mastering-safe-options-and-output-qc.md,apps/desktop/src-tauri/src/mastering.rs,engine/dubflow/worker/production_job.py,apps/desktop/src/features/mastering/qc.ts,apps/desktop/test/mastering.test.mjs,tests/production/worker/test_dubbing_mastering.py,scripts/ci/component_registry.json
