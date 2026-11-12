@@ -427,7 +427,11 @@ export function mountRawCompilation(invoke: Invoke, session: AiSession, host: Ra
         return;
       }
       if (answer.exported === true && typeof answer.path === "string") {
-        if (note) note.textContent = `Đã xuất: ${answer.path}`;
+        // what the final QC said comes with it, unmeasured checks named (rc8 P3)
+        const qc = parseFinalQc(answer.qc);
+        const unmeasured = qc ? qc.checks.filter((check) => check.ok === null).map((check) => check.label) : [];
+        const checked = qc ? `\nKiểm tra cuối: đạt${unmeasured.length ? ` (chưa đo: ${unmeasured.join(", ")})` : ""}.` : "";
+        if (note) note.textContent = `Đã xuất: ${answer.path}${checked}`;
         await showRun(run.dir);
         // the editor opens the programme's own video (compilation.mp4), now that the export gate passed
         if (thenEdit && run.video) host.edit?.(run.video, displayTitle(run));

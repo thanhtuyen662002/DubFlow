@@ -391,7 +391,7 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
                                                  groups=groups, edits=edits, keep_audio=keep, title=title,
                                                  inputs=inputs, shown=avoid)
             reviewing.annotate(made.log, made.plan.to_dict())
-            invalidated = decisions.reconcile(made.log)
+            invalidated = decisions.reconcile(made.log, run=output_dir.name)
             if invalidated or decisions.plan_id != made.log.get("plan_id"):
                 decisions.plan_id = str(made.log.get("plan_id") or "")
                 if decisions_path.is_file() or invalidated:

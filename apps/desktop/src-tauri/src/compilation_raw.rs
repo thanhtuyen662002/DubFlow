@@ -610,7 +610,7 @@ fn finalize_in(dir: &Path, accept: bool, review: impl Fn(&Path, &str, &[String])
     let record = json!({"schema_version": 1, "kind": "compilation_final", "revision": revision, "sha256": sha256,
                         "exported_at_ms": exported_at_ms, "draft": {"bytes": identity.0, "modified_ns": identity.1.to_string()}});
     write_replace(&record_path, &serde_json::to_vec(&record).unwrap_or_default()).map_err(|_| fail("Không ghi được thông tin bản xuất"))?;
-    Ok(json!({"exported": true, "path": display_path(&target), "sha256": sha256, "revision": revision}))
+    Ok(json!({"exported": true, "path": display_path(&target), "sha256": sha256, "revision": revision, "qc": checked}))
 }
 
 #[tauri::command]
@@ -877,6 +877,7 @@ mod tests {
         assert!(!dir.join(FINAL).exists());
         let done = finalize_in(&dir, true, review, passed).unwrap();
         assert_eq!(done["exported"], true);
+        assert_eq!(done["qc"]["passed"], true, "the export says which check it passed (rc8 P3)");
         assert_eq!(done["revision"], 1);
         assert_eq!(done["sha256"].as_str().map(str::len), Some(64));
         assert_eq!(accepted.borrow().as_slice(), ["i2"], "only the open part is accepted");

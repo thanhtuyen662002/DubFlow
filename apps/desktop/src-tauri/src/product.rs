@@ -142,6 +142,19 @@ pub(crate) fn plain_dir(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_dir() && !crate::edit::is_link(&metadata))
 }
 
+/// The save folder the user chose: an existing absolute folder that is not a link. Like Tổng hợp, a link or junction
+/// is refused, since it could lead outside (rc8 P2-N7).
+fn chosen_base(value: &str) -> Result<PathBuf, String> {
+    let base = PathBuf::from(value);
+    if !base.is_absolute() || !base.is_dir() {
+        return Err(fail("Thư mục lưu kết quả không tồn tại; hãy chọn lại"));
+    }
+    if !plain_dir(&base) {
+        return Err(fail("Thư mục lưu kết quả là liên kết (junction/symlink); hãy chọn một thư mục thường"));
+    }
+    Ok(base)
+}
+
 /// A product run's folder: below "DubFlow Output", with a work folder. Every folder from "DubFlow Output" down to
 /// the run, and the work folder, is a plain folder (never a link that could lead outside), and the run resolves to a
 /// place inside "DubFlow Output".
@@ -203,13 +216,7 @@ pub fn product_render(request: ProductRequest) -> Result<String, String> {
     let beside_reuse = reuse.as_deref().and_then(|dir| dir.ancestors().find(|part| part.file_name().is_some_and(|name| name == "DubFlow Output")))
         .and_then(Path::parent).map(Path::to_path_buf);
     let base = match request.output_root {
-        Some(value) => {
-            let base = PathBuf::from(value);
-            if !base.is_absolute() || !base.is_dir() {
-                return Err(fail("Thư mục lưu kết quả không tồn tại; hãy chọn lại"));
-            }
-            base
-        }
+        Some(value) => chosen_base(&value)?,
         // Beside the run it is made again from; else next to the first photo or
         // clip; "Chỉ chữ" has none, so the Videos folder.
         None if beside_reuse.is_some() => beside_reuse.unwrap_or_default(),
@@ -708,6 +715,13 @@ pub(crate) mod tests {
             assert!(product_dir(&work_alias.to_string_lossy()).is_err(), "a work folder that is a link");
         }
         assert_eq!(fs::read(outside.join(".dubflow-work/status.json")).unwrap(), b"marker");
+        // rc8 P2-N7: a save folder that is a junction is refused before anything is written behind it
+        assert!(chosen_base(&outside.to_string_lossy()).is_ok());
+        let save_alias = base.join("save-alias");
+        if link_dir(&outside, &save_alias) {
+            assert!(chosen_base(&save_alias.to_string_lossy()).is_err(), "a save folder that is a link");
+        }
+        assert!(chosen_base("relative\\folder").is_err());
         let _ = fs::remove_dir_all(&base);
     }
 

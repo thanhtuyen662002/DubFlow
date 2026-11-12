@@ -470,12 +470,14 @@ def _mastered(spec: Spec, visuals: Sequence[render.Visual], total_ms: int, work:
         log = json.loads((work / log_name).read_text(encoding="utf-8"))
         if "review_summary" not in log:  # a log from before the review states
             reviewing.annotate(log, saved.to_dict())
-        invalidated = decisions.reconcile(log)
+        invalidated = decisions.reconcile(log, run=work.parent.name)
         if invalidated or decisions.plan_id != log.get("plan_id"):
             decisions.plan_id = str(log.get("plan_id") or "")
             reviewing.save(review_path, decisions)
         report["review_states"] = log.get("review_summary") or {}
         report["unreviewed"] = len(reviewing.unreviewed(log, decisions))
+        # what the user settled is said as theirs, never as "passed the automatic check" (P1-N3)
+        report["user_settled"] = len(reviewing.settled_by_user(log, decisions))
         report["segments"] = [render.Segment(visuals[p.visual], p.offset_ms, p.duration_ms, p.focus) for p in planner.pieces(saved)]
         report["count"] = len(saved.segments)
         report["review"] = sum(segment.needs_review for segment in saved.segments)

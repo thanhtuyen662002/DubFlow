@@ -371,15 +371,16 @@ class Review:
                     self.record(log, unit_id, "UNDO", [], run=run, now=now, detail="undo")
         return True
 
-    def reconcile(self, log: Mapping[str, Any]) -> list[str]:
+    def reconcile(self, log: Mapping[str, Any], *, run: str = "") -> list[str]:
         """Check the decisions against a new decision log: drop what no longer exists, invalidate what changed.
 
-        Returns the messages for the user (one per invalidated decision); each invalidation is recorded."""
+        Returns the messages for the user (one per invalidated decision); each invalidation is recorded, with the
+        run (its folder name) like every other record."""
         before = {k: v.invalidated for k, v in self.units.items()}
         messages = self._reconcile(log)
         for unit_id, decision in sorted(self.units.items()):
             if decision.invalidated and decision.invalidated != before.get(unit_id):
-                self.record(log, unit_id, "INVALIDATED", [], reason=decision.invalidated)
+                self.record(log, unit_id, "INVALIDATED", [], run=run, reason=decision.invalidated)
         return messages
 
     def _reconcile(self, log: Mapping[str, Any]) -> list[str]:
@@ -447,20 +448,30 @@ def fingerprint(unit: Mapping[str, Any], candidates: Mapping[str, Mapping[str, A
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
-def unreviewed(log: Mapping[str, Any], review: Review) -> list[str]:
-    """Units the planner is not sure of and the user has neither approved nor replaced (pinned)."""
-    out = []
+def _not_ready(log: Mapping[str, Any]) -> list[str]:
+    """Units the planner did not mark READY (in an honest mode, its word; otherwise recomputed)."""
     honest = content_mode(log) == log.get("mode")
+    out = []
     for unit in log.get("units") or ():
         state = (unit.get("review") or {}).get("state") if honest else unit_state(unit, log)
-        if state in (None, READY):
-            continue
-        decision = review.units.get(unit["unit_id"])
-        if decision is not None and not decision.invalidated and (decision.approved is not None or decision.pin
-                                                                   or decision.source_missing):
-            continue
-        out.append(unit["unit_id"])
+        if state not in (None, READY):
+            out.append(unit["unit_id"])
     return out
+
+
+def _settled(decision: UnitDecision | None) -> bool:
+    return decision is not None and not decision.invalidated and (decision.approved is not None or bool(decision.pin)
+                                                                   or decision.source_missing)
+
+
+def unreviewed(log: Mapping[str, Any], review: Review) -> list[str]:
+    """Units the planner is not sure of and the user has neither approved nor replaced (pinned)."""
+    return [u for u in _not_ready(log) if not _settled(review.units.get(u))]
+
+
+def settled_by_user(log: Mapping[str, Any], review: Review) -> list[str]:
+    """Units the planner was not sure of that the user settled: the user's word, never an automatic pass (P1-N3)."""
+    return [u for u in _not_ready(log) if _settled(review.units.get(u))]
 
 
 _CLAIM_NOTES = ("không thấy sản phẩm",)
