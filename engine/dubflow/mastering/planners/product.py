@@ -30,7 +30,7 @@ from ..candidates import Candidate
 PLANNER = "dubflow.mastering.product"
 # 1: shot-aware parts in turn (Phase 1). 2: each sentence illustrated by the footage that matches it (ADR-0054).
 VERSION = "8"
-RECIPE = "product-editorial-v15"  # v15: subtitled footage is not a text card, per-sentence signals (Gate S); v14: multi-frame evidence (#724); v13: proper names (#722); v12: semantic root-cause fixes (#705); v11: every piece inside its shot
+RECIPE = "product-editorial-v16"  # v16: a product opening is READY only where the vision saw the product (P1-N1); v15: subtitled footage is not a text card, per-sentence signals (Gate S); v14: multi-frame evidence (#724); v13: proper names (#722); v12: semantic root-cause fixes (#705); v11: every piece inside its shot
 WORKFLOW = "product_showcase"
 SHOT_MARGIN_MS = 120
 # A shot shorter than this is skipped while longer ones exist; it is used when nothing else is left.
@@ -201,7 +201,8 @@ def plan_editorial(visuals: Sequence[Visual], spoken: Sequence[tuple[str, int]],
             stills += [c.candidate_id for c in mine]
         pool += mine
     choices, decisions, mode = align.assign(found_units, pool, evidence, policy.pacing,
-                                            forward_only=not policy.allows(rules.REORDER), edits=edits, groups=groups, stills=stills)
+                                            forward_only=not policy.allows(rules.REORDER), edits=edits, groups=groups, stills=stills,
+                                            product=True)
     warnings: list[str] = []
     if mode == "signals_only":
         warnings.append("Chưa có bằng chứng nội dung (ghi chú clip hoặc AI nhìn hình; tên file không tính): cảnh được chọn theo "

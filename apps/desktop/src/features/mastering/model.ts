@@ -59,7 +59,11 @@ export const EVIDENCE_HELP: Record<string, string> = {
 };
 
 /** The evidence line of a sentence; a match the planner could not place is said so, never "has a match… 0 %". */
-export function evidenceHelp(unit: Pick<ReviewUnit, "evidence" | "coverage" | "decision">): string {
+export function evidenceHelp(unit: Pick<ReviewUnit, "evidence" | "coverage" | "decision"> & { state?: string }): string {
+  // an opening that needs no shot of its own but whose shot needs a look (P1-N1): never "không cần cảnh riêng" alone
+  if (unit.evidence === "NOT_NEEDED" && unit.state && unit.state !== "READY") {
+    return "Câu mở đầu/kêu gọi: không cần cảnh riêng, nhưng cảnh đang dùng cần kiểm tra (xem lý do bên dưới).";
+  }
   if (unit.evidence === "MATCH_AVAILABLE" && unit.coverage.illustrated_ms === 0 && !unit.decision?.pin.length) {
     return "Có cảnh khớp lời câu này nhưng chưa đặt được vào câu (cảnh quá ngắn hoặc cần cho câu sau), nên câu đang dùng cảnh chung: hãy xem các cảnh khác hoặc chọn tay.";
   }

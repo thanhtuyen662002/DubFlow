@@ -69,6 +69,11 @@ assert.match(evidenceHelp(unplaced), /chưa đặt được/);
 assert.equal(evidenceHelp({ ...unplaced, coverage: { milli: 500, illustrated_ms: 1500 } }), "Có cảnh khớp lời câu này.");
 assert.equal(evidenceHelp({ ...unplaced, decision: { pin: ["v1c1"], exclude: [] } }), "Có cảnh khớp lời câu này.");
 assert.equal(evidenceHelp({ evidence: "UNKNOWN", coverage: {}, decision: null }), "");
+// P1-N1: an opening that needs no shot of its own but is not ready says its shot needs a look
+assert.equal(evidenceHelp({ evidence: "NOT_NEEDED", coverage: { status: "generic" }, decision: null, state: "READY" }),
+  "Câu mở đầu/kêu gọi: không cần cảnh riêng.");
+assert.match(evidenceHelp({ evidence: "NOT_NEEDED", coverage: { status: "generic" }, decision: null, state: "NEEDS_REVIEW" }),
+  /cảnh đang dùng cần kiểm tra/);
 
 console.log("mastering tests passed");
 
