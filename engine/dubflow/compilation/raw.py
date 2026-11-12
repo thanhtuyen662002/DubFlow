@@ -159,6 +159,28 @@ def resolve(spec: Program, ask_text: AskText | None, warnings: list[str], answer
 TARGETED_PER_PART = 8  # targeted looks one part may take from what the broad look left
 
 
+class PartLooks:
+    """The vision frames one part may still spend after the broad look.
+
+    Each part's share is fixed once, before any part is planned, from what the broad look left: what one part spends
+    never changes the looks of another part, so an edit in one part never re-plans another (rc12 W2, P2-N18: an
+    exclusion in i1 and approvals in i2 left more frames for i4, whose larger look changed its shots). A part never
+    spends more than its share, and never more than the budget has left."""
+
+    def __init__(self, describer: Any, parts: int) -> None:
+        self.describer = describer
+        self.share = max(0, describer.budget - describer.taken) // max(1, parts)
+        self.began = describer.taken
+
+    def start(self) -> None:
+        """A new part begins: what it spends is counted from here."""
+        self.began = self.describer.taken
+
+    def room(self) -> int:
+        spent = self.describer.taken - self.began
+        return max(0, min(self.share - spent, self.describer.budget - self.describer.taken))
+
+
 def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], Speaker], probe: Callable[[Path], int],
                 inspect: Callable[[Path], scene.StreamInfo], ffmpeg: Path,
                 ffmpeg_runner: Callable[[list[str], Path, Callable[[], bool]], None] = run_ffmpeg,
@@ -311,6 +333,8 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
         reused_parts: list[str] = []
         cursor = 0
         placed: dict[str, tuple[int, int]] = {}
+        # each part's own share of what the broad look left, fixed before any part is planned (P2-N18)
+        looks = PartLooks(describer, len(parts)) if vision_report is not None else None
         for index, (part_id, kind, text, title, rank, source_ids, keep) in enumerate(parts, 1):
             check()
             context = f"{title}: " if kind == "item" else ""
@@ -351,8 +375,10 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
                                      gap_ms=script.GAP_MS, footage=part_footage, candidates=candidates, evidence=evidence,
                                      groups=groups, edits=edits, keep_audio=keep, title=title,
                                      inputs=inputs, shown=avoid)
-            # what is left is shared by the parts still to plan: an early part never takes the later parts' looks
-            fair = lambda: (describer.budget - describer.taken) // max(1, len(parts) - index + 1) if vision_report is not None else 0
+            # this part's share, less what it has looked at so far (an early part never takes the later parts' looks)
+            if looks is not None:
+                looks.start()
+            fair = looks.room if looks is not None else (lambda: 0)
             room = fair()
             if room > 0:
                 # Targeted look: shots not yet seen that may show what an uncovered sentence says; plan again with them.
