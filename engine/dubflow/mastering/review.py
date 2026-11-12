@@ -316,7 +316,8 @@ class Review:
         if action == "pin":
             kind = "PIN" if all(i in shown for i in wanted) else "REPLACE"
         if action == "approve":
-            chosen = list(units[unit_id].get("chosen") or [])
+            # the shots, each once (a shot shown twice is one shot; its pieces say how it plays)
+            chosen = list(dict.fromkeys(units[unit_id].get("chosen") or []))
             # approving a pin before the render that applies it approves the user's own pick (P2-5): what the
             # sentence will show is the pinned shots, not the planner's choice still on screen
             decision.approved = chosen if not decision.pin or _applied(decision.pin, chosen) else list(decision.pin)
@@ -446,7 +447,9 @@ class Review:
                 messages.append(self._void(unit_id, "shot_gone", "Cảnh đã chọn không còn trong nguồn (nguồn đã đổi); hãy chọn lại.",
                                            shots=gone))
                 continue
-            chosen = list(unit.get("chosen") or [])
+            # each shot once, as an approval is stored: a shot the sentence shows twice is not another plan (rc12
+            # W5: i1.u1 chose [c3f1, c3f1, c2f1] and its approval [c3f1, c2f1] was voided as plan_changed)
+            chosen = list(dict.fromkeys(unit.get("chosen") or []))
             # A pin approved and then applied by a re-render is still approved (P2-5): a pin resets an earlier
             # approval, so an approval that sits with a pin was given to the pinned shots. It goes only when the
             # sentence no longer shows them (the plan could not honour the pin) or shows something else.
@@ -462,7 +465,8 @@ class Review:
                     messages.append(self._void(unit_id, "sentence_changed", "Lời câu đã đổi sau khi bạn duyệt; hãy xem lại."))
                     continue
                 if decision.basis and list(decision.approved) == chosen and _material(decision.basis) is not None \
-                        and _material(now) is not None and _material(now) != _material(decision.basis):
+                        and _material(now) is not None and _material(decision.basis) not in (
+                            _material(now), _material(basis(unit, log, repeats=True))):
                     decision.approved = None
                     messages.append(self._void(unit_id, "source_changed",
                                                "Nội dung nguồn của cảnh đã đổi sau khi bạn duyệt; hãy xem lại.", shots=chosen))
@@ -518,8 +522,11 @@ class Review:
                 # an approval that holds is given on what plays now (and an approval saved before the pieces were
                 # logged gets them here, so the next replan keeps it exactly)
                 decision.pieces = pieces_of(unit) if unit.get("pieces") else decision.pieces
-                if _material(decision.basis) is None or not decision.basis:
-                    decision.basis = basis(unit, log)  # an approval from before the sources' content was logged
+                if _material(decision.basis) is None or not decision.basis \
+                        or _material(decision.basis) != _material(basis(unit, log)):
+                    # an approval from before the sources' content was logged, or taken the rc12 way (a repeat hashed
+                    # twice; the material was found unchanged above)
+                    decision.basis = basis(unit, log)
             if decision.invalidated and decision.pin and all(i in known for i in decision.pin):
                 decision.invalidated = ""
         return messages
@@ -575,15 +582,18 @@ def pieces_of(unit: Mapping[str, Any]) -> list[list[Any]] | None:
     return [[p["id"], int(p["offset_ms"]), int(p["length_ms"]), *([True] if p.get("repeat") else [])] for p in found][:MAX_IDS]
 
 
-def basis(unit: Mapping[str, Any], log: Mapping[str, Any]) -> str:
+def basis(unit: Mapping[str, Any], log: Mapping[str, Any], *, repeats: bool = False) -> str:
     """What an approval is given on, in two halves: the sentence (its words) and the material it shows (each shot's
-    source, range and the source's content identity when the log has it). A new plan revision is neither."""
+    source, range and the source's content identity when the log has it). A new plan revision is neither.
+
+    ``repeats``: hash a shot shown twice twice, as builds up to 1.1.96-rc12 did (a basis they saved is read as it
+    was taken, never as a changed source)."""
     candidates = {c["id"]: c for c in log.get("candidates") or ()}
     identity = log.get("sources") or {}
     words = align.words_digest(str(unit.get("unit_id")), str(unit.get("text")))
     shown = [(i, (candidates.get(i) or {}).get("source_id"), (candidates.get(i) or {}).get("start_ms"),
               (candidates.get(i) or {}).get("end_ms"), identity.get((candidates.get(i) or {}).get("source_id") or ""))
-             for i in unit.get("chosen") or ()]
+             for i in (list if repeats else dict.fromkeys)(unit.get("chosen") or ())]  # each shot once, as an approval names it
     # comparable only when every shown source's content was read: a source the log leaves out (unreadable when the log
     # was written) has an unknown identity, never a stand-in that a new analysis recipe would change
     content = bool(identity) and log.get("source_identity") == "content" and all(s[4] is not None for s in shown)
