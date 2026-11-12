@@ -118,6 +118,29 @@ def product_world():
 
 
 class AlignTests(unittest.TestCase):
+    def test_a_pinned_shot_the_ai_saw_no_match_in_is_never_ai_coverage(self):  # rc9 P2-N14
+        pool, found = product_world()
+        said = unit("u1", "Lòng nồi chống dính phủ ceramic, rửa rất nhanh.", 0, 4000, "feature")
+        _, (free,), _ = align.assign([said], pool, found, PACING, forward_only=False)
+        self.assertGreater(free.coverage["matched_footage"], 0)
+        # the user pins the overview (v1c1), which does not show the pan's coating
+        _, (pinned,), _ = align.assign([said], pool, found, PACING, forward_only=False,
+                                       edits=align.Edits(pin={"u1": ["v1c1"]}))
+        self.assertEqual(pinned.chosen[0], "v1c1")  # a valid pin is never changed
+        self.assertEqual(pinned.coverage["illustrated_ms"], 0)
+        self.assertGreater(pinned.coverage["user_ms"], 0)
+        self.assertTrue(pinned.coverage["needs_review"])
+        self.assertIn("cảnh do người dùng chọn; AI không thấy cảnh này khớp lời câu", pinned.notes)
+        from engine.dubflow.mastering import review as rv
+        log = {"mode": "content", "edits": {"pin": {"u1": ["v1c1"]}}, "candidates": []}
+        # the planner's verdict is never READY on the user's shot (the user's decision settles it, as theirs)
+        self.assertNotEqual(rv.unit_state({"unit_id": "u1", "coverage": pinned.coverage}, log), rv.READY)
+        # with no AI match anywhere, the pin alone is not "match available"
+        alone = dict(pinned.coverage, matched_footage=0)
+        self.assertNotEqual(rv.evidence_state({"unit_id": "u1", "coverage": alone}, log), rv.MATCH_AVAILABLE)
+        old = {k: v for k, v in alone.items() if k != "user_ms"}  # a log written before user_ms
+        self.assertEqual(rv.evidence_state({"unit_id": "u1", "coverage": old}, log), rv.MATCH_AVAILABLE)
+
     def test_each_sentence_gets_the_footage_its_words_describe(self):
         pool, found = product_world()
         units = [unit("u1", "Lòng nồi chống dính phủ ceramic, rửa rất nhanh.", 0, 4000, "feature"),

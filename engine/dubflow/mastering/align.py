@@ -613,6 +613,7 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
         best = best_of[unit.unit_id]
         accept = accepts[unit.unit_id]
         illustrated = 0
+        user_ms = 0
         pinned = [by_id[i] for i in edits.pin.get(unit.unit_id, []) if i in by_id]
         if len(pinned) != len(edits.pin.get(unit.unit_id, [])):
             decision.notes.append("một số cảnh đã ghim không còn trong danh sách nên được bỏ qua")
@@ -810,15 +811,20 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
                 reasons.append("cảnh chung: không còn cảnh khớp lời câu này")
                 confidence = min(confidence, SIGNALS_ONLY_CAP)
             # a shot shown again to fill the sentence says nothing new: it is not counted as illustrating it
-            if (candidate.candidate_id in accept or pick["tier"] == "pinned") and pick["tier"] != "repeat":
+            # a pinned shot the AI saw no match in is the user's illustration, never AI evidence: it counts apart (rc9
+            # P2-N14: a pin of an unrelated shot turned into "MATCH_AVAILABLE, coverage 1000, READY")
+            if candidate.candidate_id in accept and pick["tier"] != "repeat":
                 illustrated += pick["length"]
+            elif pick["tier"] == "pinned":
+                user_ms += pick["length"]
             needs_review = confidence < REVIEW_BELOW or not candidate.quality.usable
             mine.append(Choice(unit.unit_id, candidate, pick["offset"], pick["length"], pick["score"], confidence, needs_review,
                                tuple(reasons[:8])))
             decision.chosen.append(candidate.candidate_id)
             consume(candidate, pick["offset"], pick["length"])
         milli = illustrated * 1000 // max(1, unit.length_ms)
-        has_match = bool(accept) or bool(edits.pin.get(unit.unit_id))
+        pinned_by_user = bool(edits.pin.get(unit.unit_id))
+        has_match = bool(accept) or pinned_by_user
         # a generic sentence (an opening or a call to action without a match) needs no match of its own, unless it
         # names something written (a price, a code): then a frame showing it is what it needs (dev2 blower u6)
         generic = not has_match and unit.function in ("hook", "cta", "intro", "outro") and not about_text(unit) \
@@ -826,9 +832,12 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
         review = mode != "content" or (not generic and milli < GOOD_COVERAGE)
         coverage = {"need_ms": unit.length_ms, "illustrated_ms": illustrated, "milli": milli,
                     "status": "generic" if generic else ("full" if milli >= GOOD_COVERAGE else ("partial" if milli else "none")),
-                    "needs_review": review, "matched_footage": len(accept), "best_relevance": best}
+                    "needs_review": review, "matched_footage": len(accept), "best_relevance": best, "user_ms": user_ms}
         decision.coverage = coverage
-        note = "" if generic else _coverage_note(milli, has_match)
+        note = "" if generic else _coverage_note(milli, bool(accept))
+        if pinned_by_user and user_ms:
+            note = "cảnh do người dùng chọn; AI không thấy cảnh này khớp lời câu" if not milli else \
+                f"chỉ {milli // 10} % thời lượng câu có cảnh AI thấy khớp lời; phần còn lại là cảnh người dùng chọn"
         if not has_match and unit.unit_id in on_card:
             note = "lời câu chỉ khớp một thẻ chữ (đã để dành cho câu nói về chữ): dùng cảnh thật, cần kiểm tra"
         if note:
