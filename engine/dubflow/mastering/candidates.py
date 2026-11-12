@@ -114,8 +114,13 @@ def windows(found: scene.Analysis, within: tuple[int, int] | None = None) -> lis
     return [w for _, w in numbered(found, within)]
 
 
-def numbered(found: scene.Analysis, within: tuple[int, int] | None = None) -> list[tuple[int, tuple[int, int, int, int]]]:
-    """The windows of :func:`windows`, each with its number (stable for a source and a trim)."""
+# Windows of a trimmed long source are numbered from here by their place in the whole source, so a window keeps its
+# number when the trim moves, and never takes a number of the whole-source spread (1…MAX_CANDIDATES) an older pin or
+# exclusion may name (such an id is then gone, and its decision says so, never another shot silently).
+WITHIN_BASE = 100_000
+
+
+def _all_windows(found: scene.Analysis) -> list[tuple[int, int, int, int]]:
     out = []
     for index, shot in enumerate(found.shots):
         start = shot.start_ms + (CUT_MARGIN_MS if shot.start_ms > 0 else 0)
@@ -130,14 +135,28 @@ def numbered(found: scene.Analysis, within: tuple[int, int] | None = None) -> li
             stop = end if end - at < WINDOW_MS + WINDOW_MS // 2 else at + WINDOW_MS
             out.append((at, stop, index, shot.motion))
             at = stop
-    if within is not None:
-        out = [w for w in out if w[1] > within[0] and w[0] < within[1]]
+    return out
+
+
+def numbered(found: scene.Analysis, within: tuple[int, int] | None = None) -> list[tuple[int, tuple[int, int, int, int]]]:
+    """The windows of :func:`windows`, each with its number: the whole source spread over the cap and numbered
+    1…MAX_CANDIDATES; inside a trim of a source with more windows than the cap, numbered from WITHIN_BASE by their
+    place in the whole source (stable when the trim moves)."""
+    every = _all_windows(found)
+    if within is None or len(every) <= MAX_CANDIDATES:
+        out = list(enumerate(every, start=1))
+        if within is not None:
+            out = [(n, w) for n, w in out if w[1] > within[0] and w[0] < within[1]]
+    else:
+        out = [(WITHIN_BASE + n, w) for n, w in enumerate(every, start=1) if w[1] > within[0] and w[0] < within[1]]
     if len(out) <= MAX_CANDIDATES:
-        return list(enumerate(out, start=1))
+        return out if within is not None else [(index, w) for index, (_, w) in enumerate(out, start=1)]
     # a long source: windows spread over the whole of it, not the first MAX_CANDIDATES in source order (a
     # 36-minute set lost everything after 20 minutes, Why We Fight)
     step = len(out) / MAX_CANDIDATES
-    return [(index + 1, out[int(index * step)]) for index in range(MAX_CANDIDATES)]
+    if within is None:
+        return [(index + 1, out[int(index * step)][1]) for index in range(MAX_CANDIDATES)]
+    return [out[int(index * step)] for index in range(MAX_CANDIDATES)]
 
 
 def measure(grey: bytes, width: int = GREY_W, height: int = GREY_H) -> tuple[Quality, int]:
@@ -224,9 +243,11 @@ def extract(video: Path, source_id: str, found: scene.Analysis, folder: Path, *,
 
     ``within``: only the part of the source a trim uses (and the cap spreads over it) when the whole source has more
     windows than the cap; otherwise the windows are the same as without it."""
-    if within is not None and len(windows(found)) < MAX_CANDIDATES:
+    if within is not None and len(_all_windows(found)) <= MAX_CANDIDATES:
         within = None  # every window of the source fits the cap: the same candidates (and cache) as without a trim
-    identity = file_identity(video, RECIPE + scene.RECIPE) + ("" if within is None else f"@{within[0]}-{within[1]}")
+    # a trim's candidates are numbered by their place in the whole source (WITHIN_BASE): a cache made before that is not
+    # reused, so an older id never names another shot
+    identity = file_identity(video, RECIPE + scene.RECIPE) + ("" if within is None else f"@{within[0]}-{within[1]}+n{WITHIN_BASE}")
     tag = identity[:16] if within is None else hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
     cache = folder / f"candidates-{tag}.json"
     try:

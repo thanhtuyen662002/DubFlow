@@ -332,7 +332,8 @@ def spread_order(items: Sequence[Any]) -> list[Any]:
     order: list[int] = []
     seen: set[int] = set()
     bits = max(1, (n - 1).bit_length())
-    for k in range(1 << bits):
+    # k from 1 (the middle), 0 (the start) last: the first look of a stretch is never its first shot
+    for k in [*range(1, 1 << bits), 0]:
         fraction = int(format(k, f"0{bits}b")[::-1], 2) / (1 << bits)  # base-2 van der Corput
         index = min(n - 1, int(fraction * n + 0.5 / (1 << bits) * n))
         if index not in seen:
@@ -385,6 +386,10 @@ class Look:
     found: dict[str, Seen]
     frames: int
     shared: int
+
+    def answered(self) -> set[str]:
+        """Every shot this look gave an answer to, its duplicates included: none of them is worth another look."""
+        return set(self.found)
 
 
 def look(describer: Any, frames: Sequence[tuple[str, Path]], groups: Mapping[str, str], pool: Sequence[Candidate],
