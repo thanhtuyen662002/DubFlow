@@ -363,7 +363,9 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
             room = describer.budget - describer.taken if vision_report is not None else 0
             if room >= 2:
                 # More frames of the shots one frame does not represent (long takes, unsure answers), then plan again.
-                locked = ({i for ids in edits.pin.values() for i in ids} | set(edits.exclude)) if edits is not None else set()
+                # the user's shots keep their ids: pinned, excluded and approved (P2-N5) are never split
+                locked = ({i for ids in edits.pin.values() for i in ids} | set(edits.exclude)
+                          | {p[0] for pieces in edits.keep.values() for p in pieces}) if edits is not None else set()
                 part_pool = [c for s in source_ids for c in candidates[s]]
                 ids = more.wanted(made.log["units"], part_pool, evidence, sampled, limit=min(more.EXTRA_SHOTS, room // 2),
                                   forward_only=True, locked={i for i in locked if more.parent(i) == i},

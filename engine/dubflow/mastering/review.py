@@ -52,6 +52,17 @@ USER_SOURCE_MISSING = "USER_SOURCE_MISSING"   # the user found no suitable foota
 # exclude → EXCLUDE, later → REVIEW_LATER, missing → MARK_SOURCE_MISSING, undo/reset/unapprove → UNDO; a decision a
 # new plan voids is recorded by the system as INVALIDATED.
 DECISION_TYPES = ("APPROVE", "PIN", "EXCLUDE", "REPLACE", "REVIEW_LATER", "MARK_SOURCE_MISSING", "UNDO", "INVALIDATED")
+# Why a decision no longer holds (the conflict record of an INVALIDATED decision, P2-N5) and what the user can do.
+CONFLICT_OPTIONS = {
+    "sentence_removed": ("Bỏ qua: câu không còn trong kịch bản",),
+    "sentence_changed": ("Duyệt lại câu với lời mới", "Chọn cảnh khác"),
+    "source_changed": ("Duyệt lại cảnh với nội dung nguồn mới", "Chọn cảnh khác"),
+    "shot_gone": ("Chọn cảnh khác",),
+    "excluded": ("Bỏ loại trừ cảnh", "Chọn cảnh khác cho câu này"),
+    "pinned_elsewhere": ("Ghim cảnh khác cho câu kia", "Chọn cảnh khác cho câu này"),
+    "timing_changed": ("Duyệt lại câu với thời lượng mới", "Chọn cảnh khác"),
+    "plan_changed": ("Duyệt lại cảnh mới", "Chọn cảnh khác"),
+}
 
 # The review queue (uncalibrated: the groups say what the planner and the checks flagged, not a measured risk)
 CRITICAL, REVIEW, OPTIONAL = "critical", "review", "optional"
@@ -158,11 +169,19 @@ class UnitDecision:
     invalidated: str = ""               # why an earlier decision no longer holds
     later: bool = False                 # the user will come back to it (REVIEW_LATER): still unreviewed
     source_missing: bool = False        # the user found no suitable footage (MARK_SOURCE_MISSING)
+    # what the approval was given on (P2-N5): the pieces as they played ([shot, source offset ms, length ms]) and
+    # the material (the sentence and the sources' content, :func:`basis`). Absent in reviews saved before.
+    pieces: list[list[Any]] | None = None
+    basis: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {"pin": list(self.pin), "exclude": list(self.exclude)}
         if self.approved is not None:
             out["approved"] = list(self.approved)
+            if self.pieces is not None:
+                out["pieces"] = [list(p) for p in self.pieces]
+            if self.basis:
+                out["basis"] = self.basis
         if self.invalidated:
             out["invalidated"] = self.invalidated
         if self.later:
@@ -195,6 +214,7 @@ class Review:
     history: list[dict[str, Any]] = field(default_factory=list)
     records: list[dict[str, Any]] = field(default_factory=list)  # every decision as the contract records it
     position: str = ""                                        # the sentence the user was on (kept across reopen)
+    conflicts: dict[str, dict[str, Any]] = field(default_factory=dict, compare=False, repr=False)  # last reconcile's
 
     @classmethod
     def from_dict(cls, value: Any) -> "Review":
@@ -206,13 +226,16 @@ class Review:
         units: dict[str, UnitDecision] = {}
         for unit_id, raw in units_in.items():
             if type(unit_id) is not str or not 0 < len(unit_id) <= 32 or not isinstance(raw, Mapping) \
-                    or set(raw) - {"approved", "pin", "exclude", "invalidated", "later", "source_missing"}:
+                    or set(raw) - {"approved", "pin", "exclude", "invalidated", "later", "source_missing", "pieces", "basis"}:
                 raise ReviewError("a unit decision has unknown fields")
             approved = raw.get("approved")
+            basis = raw.get("basis") or ""
+            if type(basis) is not str or len(basis) > 64:
+                raise ReviewError("basis must be a fingerprint")
             units[unit_id] = UnitDecision(None if approved is None else _ids(approved, "approved"),
                                           _ids(raw.get("pin", []), "pin"), _ids(raw.get("exclude", []), "exclude"),
                                           str(raw.get("invalidated") or "")[:300], raw.get("later") is True,
-                                          raw.get("source_missing") is True)
+                                          raw.get("source_missing") is True, _pieces(raw.get("pieces")), basis)
         acknowledged = value.get("acknowledged") or []
         if not isinstance(acknowledged, list) or len(acknowledged) > 500 or any(type(v) is not str or len(v) != 16 for v in acknowledged):
             raise ReviewError("acknowledged must list warning ids")
@@ -251,6 +274,11 @@ class Review:
                 continue
             if decision.pin:
                 out.pin[unit_id] = list(decision.pin)
+            elif decision.approved and not decision.source_missing:
+                # an approval is a constraint of the next plan (P2-N5): the sentence keeps the footage approved, as
+                # it played when the pieces are known
+                out.keep[unit_id] = [(p[0], p[1], p[2], len(p) > 3 and p[3] is True) for p in decision.pieces] \
+                    if decision.pieces else [(i, -1, 0, False) for i in decision.approved]
             out.exclude.update(decision.exclude)
         return out
 
@@ -278,7 +306,7 @@ class Review:
             return
         current = self.units.get(unit_id, UnitDecision())
         decision = UnitDecision(current.approved, list(current.pin), list(current.exclude), "", current.later,
-                                current.source_missing)
+                                current.source_missing, current.pieces, current.basis)
         shown = list(units[unit_id].get("chosen") or [])
         kind = {"approve": "APPROVE", "exclude": "EXCLUDE", "later": "REVIEW_LATER", "missing": "MARK_SOURCE_MISSING",
                 "unapprove": "UNDO", "reset": "UNDO"}.get(action)
@@ -289,8 +317,11 @@ class Review:
             # approving a pin before the render that applies it approves the user's own pick (P2-5): what the
             # sentence will show is the pinned shots, not the planner's choice still on screen
             decision.approved = chosen if not decision.pin or _applied(decision.pin, chosen) else list(decision.pin)
+            showing = decision.approved == chosen
+            decision.pieces = pieces_of(units[unit_id]) if showing else None
+            decision.basis = basis(units[unit_id], log) if showing else ""
         elif action == "unapprove":
-            decision.approved = None
+            decision.approved, decision.pieces, decision.basis = None, None, ""
         elif action == "pin":
             if not wanted:
                 raise ReviewError("pin needs a shot")
@@ -328,7 +359,7 @@ class Review:
                     else "")
 
     def record(self, log: Mapping[str, Any], unit_id: str, kind: str, shots: list[str], *, run: str = "",
-               now: str | None = None, detail: str = "", reason: str = "") -> None:
+               now: str | None = None, detail: str = "", reason: str = "", conflict: Mapping[str, Any] | None = None) -> None:
         """Append one decision as the Human Decision Contract records it."""
         units = {u["unit_id"]: u for u in log.get("units") or ()}
         candidates = {c["id"]: c for c in log.get("candidates") or ()}
@@ -345,6 +376,8 @@ class Review:
             "invalidation_reason": reason[:300] or None}
         if detail:
             entry["detail"] = detail
+        if conflict:
+            entry["conflict"] = dict(conflict)
         self.records.append(entry)
         del self.records[:-MAX_RECORDS]
 
@@ -380,11 +413,20 @@ class Review:
         Returns the messages for the user (one per invalidated decision); each invalidation is recorded, with the
         run (its folder name) like every other record."""
         before = {k: v.invalidated for k, v in self.units.items()}
+        self.conflicts = {}
         messages = self._reconcile(log)
         for unit_id, decision in sorted(self.units.items()):
             if decision.invalidated and decision.invalidated != before.get(unit_id):
-                self.record(log, unit_id, "INVALIDATED", [], run=run, reason=decision.invalidated)
+                self.record(log, unit_id, "INVALIDATED", [], run=run, reason=decision.invalidated,
+                            conflict=self.conflicts.get(unit_id))
         return messages
+
+    def _void(self, unit_id: str, cause: str, reason: str, *, shots: Iterable[str] = (), other: str | None = None) -> str:
+        """Invalidate the decision on ``unit_id`` for ``cause``; the conflict record says what to do (P2-N5)."""
+        self.units[unit_id].invalidated = reason
+        self.conflicts[unit_id] = {"cause": cause, "with": other, "shots": list(shots)[:MAX_IDS],
+                                   "options": list(CONFLICT_OPTIONS.get(cause, CONFLICT_OPTIONS["plan_changed"]))}
+        return f"Câu {unit_id[1:]}: {reason}"
 
     def _reconcile(self, log: Mapping[str, Any]) -> list[str]:
         units = {u["unit_id"]: u for u in log.get("units") or ()}
@@ -394,25 +436,73 @@ class Review:
             unit = units.get(unit_id)
             if unit is None:
                 if not decision.empty:
-                    decision.invalidated = "Câu này không còn trong kịch bản."
-                    messages.append(f"Câu {unit_id[1:]}: {decision.invalidated}")
+                    messages.append(self._void(unit_id, "sentence_removed", "Câu này không còn trong kịch bản."))
                 continue
             gone = [i for i in [*decision.pin, *decision.exclude] if i not in known]
             if gone:
-                decision.invalidated = "Cảnh đã chọn không còn trong nguồn (nguồn đã đổi); hãy chọn lại."
-                messages.append(f"Câu {unit_id[1:]}: {decision.invalidated}")
+                messages.append(self._void(unit_id, "shot_gone", "Cảnh đã chọn không còn trong nguồn (nguồn đã đổi); hãy chọn lại.",
+                                           shots=gone))
                 continue
             chosen = list(unit.get("chosen") or [])
             # A pin approved and then applied by a re-render is still approved (P2-5): a pin resets an earlier
             # approval, so an approval that sits with a pin was given to the pinned shots. It goes only when the
             # sentence no longer shows them (the plan could not honour the pin) or shows something else.
             if decision.approved is not None and decision.pin and _applied(decision.pin, chosen):
-                decision.approved = chosen
-            if decision.approved is not None and list(decision.approved) != chosen:
+                if decision.approved != chosen or not decision.basis:
+                    decision.approved, decision.pieces, decision.basis = chosen, pieces_of(unit), basis(unit, log)
+            if decision.approved is not None:
+                # what the approval was given on: the sentence and the content of its sources (P2-N5 materiality: a
+                # new plan revision alone is no reason; a changed sentence or source is)
+                now = basis(unit, log)
+                if decision.basis and now[:8] != decision.basis[:8]:
+                    decision.approved = None
+                    messages.append(self._void(unit_id, "sentence_changed", "Lời câu đã đổi sau khi bạn duyệt; hãy xem lại."))
+                    continue
+                if decision.basis and list(decision.approved) == chosen and now[8:] != decision.basis[8:]:
+                    decision.approved = None
+                    messages.append(self._void(unit_id, "source_changed",
+                                               "Nội dung nguồn của cảnh đã đổi sau khi bạn duyệt; hãy xem lại.", shots=chosen))
+                    continue
+            playing = pieces_of(unit)
+            moved = decision.approved is not None and list(decision.approved) == chosen and decision.pieces is not None \
+                and playing is not None and playing != decision.pieces  # another range, or now shown twice
+            if moved and sum(p[2] for p in decision.pieces) != sum(p[2] for p in playing):
+                # the sentence is spoken longer or shorter (another voice or speed): the approved pieces no longer fit it
                 decision.approved = None
-                decision.invalidated = "Cảnh của câu đã đổi sau khi bạn duyệt; hãy xem lại."
-                messages.append(f"Câu {unit_id[1:]}: {decision.invalidated}")
+                messages.append(self._void(unit_id, "timing_changed", "Thời lượng câu đã đổi sau khi bạn duyệt; hãy xem lại.",
+                                           shots=chosen))
                 continue
+            if decision.approved is not None and (list(decision.approved) != chosen or moved):
+                # the same shots from another part of them are other footage: never a silent change
+                approved, decision.approved = list(decision.approved), None
+                edits = log.get("edits") or {}
+                candidates = {c["id"]: c for c in log.get("candidates") or ()}
+                excluded = [i for i in approved if i in set(edits.get("exclude") or ())
+                            or (candidates.get(i) or {}).get("source_id") in set(edits.get("exclude_sources") or ())]
+                by = next((other for other, d in sorted(self.units.items()) if other != unit_id
+                           and set(excluded) & set(d.exclude)), None)
+                taken = {i: other for other, ids in sorted((edits.get("pin") or {}).items()) if other != unit_id
+                         for i in ids if i in approved}
+                if excluded:
+                    where = f" ở câu {by[1:]}" if by else ""
+                    messages.append(self._void(unit_id, "excluded", f"Cảnh bạn đã duyệt bị loại trừ{where}; hãy chọn cảnh khác "
+                                               "hoặc bỏ loại trừ.", shots=excluded, other=by))
+                elif taken:
+                    other = sorted(taken.values())[0]
+                    messages.append(self._void(unit_id, "pinned_elsewhere", f"Cảnh bạn đã duyệt đã được ghim cho câu {other[1:]}; "
+                                               "hãy chọn cảnh khác cho câu này.", shots=sorted(taken), other=other))
+                elif any(i not in known for i in approved):
+                    messages.append(self._void(unit_id, "shot_gone", "Cảnh bạn đã duyệt không còn trong nguồn; hãy chọn lại.",
+                                               shots=[i for i in approved if i not in known]))
+                else:
+                    messages.append(self._void(unit_id, "plan_changed", "Cảnh của câu đã đổi sau khi bạn duyệt; hãy xem lại.",
+                                               shots=approved))
+                continue
+            if decision.approved is not None and decision.approved == chosen:
+                # an approval that holds is given on what plays now (and an approval saved before the pieces were
+                # logged gets them here, so the next replan keeps it exactly)
+                decision.pieces = pieces_of(unit) if unit.get("pieces") else decision.pieces
+                decision.basis = decision.basis or basis(unit, log)
             if decision.invalidated and decision.pin and all(i in known for i in decision.pin):
                 decision.invalidated = ""
         return messages
@@ -441,6 +531,38 @@ def user_state(decision: UnitDecision | None) -> str | None:
 def _now() -> str:
     from datetime import datetime, timezone
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _pieces(value: Any) -> list[list[Any]] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list) or len(value) > MAX_IDS or any(
+            not isinstance(p, list) or len(p) not in (3, 4) or type(p[0]) is not str or not 0 < len(p[0]) <= 64
+            or any(type(n) is not int or n < 0 for n in p[1:3]) or (len(p) == 4 and p[3] is not True) for p in value):
+        raise ReviewError("pieces must list [shot, offset, length, (shown again)]")
+    return [list(p) for p in value]
+
+
+def pieces_of(unit: Mapping[str, Any]) -> list[list[Any]] | None:
+    """The pieces a sentence plays ([shot, source offset ms, length ms] and ``True`` for a piece shown again), when
+    the log has them."""
+    found = unit.get("pieces")
+    if not isinstance(found, list) or not found:
+        return None
+    return [[p["id"], int(p["offset_ms"]), int(p["length_ms"]), *([True] if p.get("repeat") else [])] for p in found][:MAX_IDS]
+
+
+def basis(unit: Mapping[str, Any], log: Mapping[str, Any]) -> str:
+    """What an approval is given on, in two halves: the sentence (its words) and the material it shows (each shot's
+    source, range and the source's content identity when the log has it). A new plan revision is neither."""
+    candidates = {c["id"]: c for c in log.get("candidates") or ()}
+    identity = log.get("sources") or {}
+    words = hashlib.sha256(json.dumps([unit.get("unit_id"), unit.get("text")], ensure_ascii=False).encode("utf-8")).hexdigest()
+    shown = [(i, (candidates.get(i) or {}).get("source_id"), (candidates.get(i) or {}).get("start_ms"),
+              (candidates.get(i) or {}).get("end_ms"), identity.get((candidates.get(i) or {}).get("source_id") or ""))
+             for i in unit.get("chosen") or ()]
+    material = hashlib.sha256(json.dumps(shown, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+    return words[:8] + material[:8]
 
 
 def fingerprint(unit: Mapping[str, Any], candidates: Mapping[str, Mapping[str, Any]]) -> str:
