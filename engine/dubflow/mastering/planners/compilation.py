@@ -24,7 +24,7 @@ from ..candidates import Candidate
 
 PLANNER = "dubflow.mastering.compilation"
 VERSION = "7"
-RECIPE = "compilation-program-v17"  # v17: candidates and vision looks inside the trims, every part in turn (P2-N11); v16: a pinned shot without an AI match is the user's, never AI coverage (P2-N14); v15: subtitled footage is not a text card, per-sentence signals (Gate S); v14: multi-frame evidence (#724); v13: proper names (#722); v12: on long sources the narration is planned before the moment; v11: #705
+RECIPE = "compilation-program-v18"  # v18: a trim's shots keep their ids when the trim moves, duplicates answered once are never looked at again, every stretch is first looked at in its middle (#784 review); v17: candidates and vision looks inside the trims, every part in turn (P2-N11); v16: a pinned shot without an AI match is the user's, never AI coverage (P2-N14); v15: subtitled footage is not a text card, per-sentence signals (Gate S); v14: multi-frame evidence (#724); v13: proper names (#722); v12: on long sources the narration is planned before the moment; v11: #705
 WORKFLOW = "compilation_entertainment"
 MOMENT_MIN_MS, MOMENT_TARGET_MS, MOMENT_MAX_MS = 2000, 3500, 6000
 PART_FUNCTION = {"hook": "hook", "intro": "intro", "item": "narration", "outro": "outro"}
