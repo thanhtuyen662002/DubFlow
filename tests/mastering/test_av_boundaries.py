@@ -132,6 +132,28 @@ class LegacyArgvTests(unittest.TestCase):
         self.assertNotIn("trim=duration=", graph.split("[voice]")[0])
 
 
+class VerdictTests(unittest.TestCase):
+    """A join that could not be measured is never counted as in sync (review of #786)."""
+
+    def rows(self, *offsets):
+        return [{"join": i, "av_ms": av} for i, av in enumerate(offsets, start=1)]
+
+    def test_every_join_measured_and_in_sync_passes(self):
+        self.assertIs(probe.verdict(self.rows(0.0, 12.5, -33.3), 1000 / 30), True)
+
+    def test_an_unmeasured_join_is_never_a_pass(self):
+        # before: True, because the two joins that were measured are in sync
+        self.assertIsNone(probe.verdict(self.rows(0.0, None, 1.3), 1000 / 30))
+        self.assertIsNone(probe.verdict(self.rows(None, None), 1000 / 30))
+        self.assertIsNone(probe.verdict([], 1000 / 30))
+
+    def test_a_join_out_of_sync_fails_even_beside_unmeasured_ones(self):
+        self.assertIs(probe.verdict(self.rows(None, 45.0), 1000 / 30), False)  # over max(40 ms, 33.3 ms)
+        self.assertIs(probe.verdict(self.rows(0.0, 41.0), 1000 / 24), True)   # within one frame at 24 fps (41.7 ms)
+        self.assertIs(probe.verdict(self.rows(0.0, 45.0), 1000 / 24), False)
+        self.assertIs(probe.verdict(self.rows(0.0, 90.0), 1000 / 10), False)  # a 100 ms frame, but over the 80 ms total
+
+
 @unittest.skipUnless(FFMPEG and FFPROBE, "needs FFmpeg")
 class BoundaryTests(unittest.TestCase):
     """Decoded boundaries of real renders (FFmpeg) on synthetic markers."""
