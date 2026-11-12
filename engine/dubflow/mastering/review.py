@@ -30,18 +30,32 @@ from typing import Any, Iterable, Mapping
 
 from . import align, evidence as ev
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # 2: review later, no suitable footage, the decision record, the queue position (1 still reads)
+READABLE_VERSIONS = (1, 2)
 KIND = "editorial_review"
 GENERIC = ("hook", "cta", "intro", "outro")
 READY_CONFIDENCE = align.REVIEW_BELOW
 MAX_HISTORY = 30
 MAX_UNITS = 500
 MAX_IDS = 50
+MAX_RECORDS = 1000
+MAX_SHOTS = 300
 
 MATCH_AVAILABLE, MATCH_NOT_FOUND, SOURCE_INSUFFICIENT, NOT_NEEDED = (
     "MATCH_AVAILABLE", "MATCH_NOT_FOUND", "SOURCE_INSUFFICIENT", "NOT_NEEDED")
 READY, NEEDS_REVIEW = "READY", "NEEDS_REVIEW"
 USER_APPROVED, INVALIDATED = "USER_APPROVED", "INVALIDATED"
+USER_SOURCE_MISSING = "USER_SOURCE_MISSING"   # the user found no suitable footage: the sentence stays without its own shot
+
+# The Human Decision Contract (directive "Assisted Editorial Production" §B): each decision is recorded with these
+# types. Panel actions map onto them: approve → APPROVE, pin of a shot already shown → PIN, of another → REPLACE,
+# exclude → EXCLUDE, later → REVIEW_LATER, missing → MARK_SOURCE_MISSING, undo/reset/unapprove → UNDO; a decision a
+# new plan voids is recorded by the system as INVALIDATED.
+DECISION_TYPES = ("APPROVE", "PIN", "EXCLUDE", "REPLACE", "REVIEW_LATER", "MARK_SOURCE_MISSING", "UNDO", "INVALIDATED")
+
+# The review queue (uncalibrated: the groups say what the planner and the checks flagged, not a measured risk)
+CRITICAL, REVIEW, OPTIONAL = "critical", "review", "optional"
+PRIORITY_ORDER = {CRITICAL: 0, REVIEW: 1, OPTIONAL: 2}
 
 
 class ReviewError(ValueError):
@@ -139,6 +153,8 @@ class UnitDecision:
     pin: list[str] = field(default_factory=list)
     exclude: list[str] = field(default_factory=list)
     invalidated: str = ""               # why an earlier decision no longer holds
+    later: bool = False                 # the user will come back to it (REVIEW_LATER): still unreviewed
+    source_missing: bool = False        # the user found no suitable footage (MARK_SOURCE_MISSING)
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {"pin": list(self.pin), "exclude": list(self.exclude)}
@@ -146,11 +162,16 @@ class UnitDecision:
             out["approved"] = list(self.approved)
         if self.invalidated:
             out["invalidated"] = self.invalidated
+        if self.later:
+            out["later"] = True
+        if self.source_missing:
+            out["source_missing"] = True
         return out
 
     @property
     def empty(self) -> bool:
-        return self.approved is None and not self.pin and not self.exclude and not self.invalidated
+        return self.approved is None and not self.pin and not self.exclude and not self.invalidated \
+            and not self.later and not self.source_missing
 
 
 def _ids(value: Any, name: str) -> list[str]:
@@ -169,23 +190,26 @@ class Review:
     acknowledged: list[str] = field(default_factory=list)   # warning ids the user has read
     accept_unreviewed: bool = False                          # the user chose to export with unreviewed units
     history: list[dict[str, Any]] = field(default_factory=list)
+    records: list[dict[str, Any]] = field(default_factory=list)  # every decision as the contract records it
+    position: str = ""                                        # the sentence the user was on (kept across reopen)
 
     @classmethod
     def from_dict(cls, value: Any) -> "Review":
-        if not isinstance(value, Mapping) or value.get("schema_version") != SCHEMA_VERSION or value.get("kind") != KIND:
-            raise ReviewError("not an editorial review v1")
+        if not isinstance(value, Mapping) or value.get("schema_version") not in READABLE_VERSIONS or value.get("kind") != KIND:
+            raise ReviewError("not an editorial review v1/v2")
         units_in = value.get("units") or {}
         if not isinstance(units_in, Mapping) or len(units_in) > MAX_UNITS:
             raise ReviewError("units must map unit ids to decisions")
         units: dict[str, UnitDecision] = {}
         for unit_id, raw in units_in.items():
             if type(unit_id) is not str or not 0 < len(unit_id) <= 32 or not isinstance(raw, Mapping) \
-                    or set(raw) - {"approved", "pin", "exclude", "invalidated"}:
+                    or set(raw) - {"approved", "pin", "exclude", "invalidated", "later", "source_missing"}:
                 raise ReviewError("a unit decision has unknown fields")
             approved = raw.get("approved")
             units[unit_id] = UnitDecision(None if approved is None else _ids(approved, "approved"),
                                           _ids(raw.get("pin", []), "pin"), _ids(raw.get("exclude", []), "exclude"),
-                                          str(raw.get("invalidated") or "")[:300])
+                                          str(raw.get("invalidated") or "")[:300], raw.get("later") is True,
+                                          raw.get("source_missing") is True)
         acknowledged = value.get("acknowledged") or []
         if not isinstance(acknowledged, list) or len(acknowledged) > 500 or any(type(v) is not str or len(v) != 16 for v in acknowledged):
             raise ReviewError("acknowledged must list warning ids")
@@ -195,14 +219,22 @@ class Review:
         revision = value.get("revision", 0)
         if type(revision) is not int or revision < 0:
             raise ReviewError("revision must be a whole number")
+        records = value.get("records") or []
+        if not isinstance(records, list) or any(not isinstance(r, Mapping) or r.get("type") not in DECISION_TYPES
+                                                for r in records):
+            raise ReviewError("records must list decisions")
+        position = value.get("position") or ""
+        if type(position) is not str or len(position) > 32:
+            raise ReviewError("position must be a sentence id")
         return cls(str(value.get("plan_id") or "")[:100], revision, units, list(dict.fromkeys(acknowledged)),
-                   value.get("accept_unreviewed") is True, history[-MAX_HISTORY:])
+                   value.get("accept_unreviewed") is True, history[-MAX_HISTORY:],
+                   [dict(r) for r in records[-MAX_RECORDS:]], position)
 
     def to_dict(self) -> dict[str, Any]:
         return {"schema_version": SCHEMA_VERSION, "kind": KIND, "plan_id": self.plan_id, "revision": self.revision,
                 "units": {k: v.to_dict() for k, v in sorted(self.units.items()) if not v.empty},
                 "acknowledged": list(self.acknowledged), "accept_unreviewed": self.accept_unreviewed,
-                "history": self.history[-MAX_HISTORY:]}
+                "history": self.history[-MAX_HISTORY:], "records": self.records[-MAX_RECORDS:], "position": self.position}
 
     def snapshot(self) -> dict[str, Any]:
         return {"revision": self.revision, "units": {k: v.to_dict() for k, v in self.units.items() if not v.empty},
@@ -226,8 +258,11 @@ class Review:
         del self.history[:-MAX_HISTORY]
         self.revision += 1
 
-    def decide(self, log: Mapping[str, Any], unit_id: str, action: str, ids: list[str] | None = None) -> None:
-        """Apply one action of the review panel to ``unit_id`` of the decision log ``log``."""
+    def decide(self, log: Mapping[str, Any], unit_id: str, action: str, ids: list[str] | None = None, *,
+               run: str = "", now: str | None = None) -> None:
+        """Apply one action of the review panel to ``unit_id`` of the decision log ``log``, and record it.
+
+        ``focus`` only remembers the sentence the user is on: no revision, no undo step, no record."""
         units = {u["unit_id"]: u for u in log.get("units") or ()}
         known = {c["id"] for c in log.get("candidates") or ()}
         if unit_id not in units:
@@ -235,8 +270,17 @@ class Review:
         wanted = _ids(ids or [], "shots")
         if any(i not in known for i in wanted):
             raise ReviewError("unknown shot")
+        if action == "focus":
+            self.position = unit_id
+            return
         current = self.units.get(unit_id, UnitDecision())
-        decision = UnitDecision(current.approved, list(current.pin), list(current.exclude))
+        decision = UnitDecision(current.approved, list(current.pin), list(current.exclude), "", current.later,
+                                current.source_missing)
+        shown = list(units[unit_id].get("chosen") or [])
+        kind = {"approve": "APPROVE", "exclude": "EXCLUDE", "later": "REVIEW_LATER", "missing": "MARK_SOURCE_MISSING",
+                "unapprove": "UNDO", "reset": "UNDO"}.get(action)
+        if action == "pin":
+            kind = "PIN" if all(i in shown for i in wanted) else "REPLACE"
         if action == "approve":
             chosen = list(units[unit_id].get("chosen") or [])
             # approving a pin before the render that applies it approves the user's own pick (P2-5): what the
@@ -258,10 +302,48 @@ class Review:
             decision.approved = None
         elif action == "reset":
             decision = UnitDecision()
+        elif action == "later":
+            decision.later = not decision.later
+        elif action == "missing":
+            # no suitable footage: the user's word that the sentence stays without its own shot; an approval of the
+            # shown footage would contradict it, so it goes
+            decision.source_missing = not decision.source_missing
+            if decision.source_missing:
+                decision.approved = None
+                decision.later = False
         else:
             raise ReviewError("unknown action")
+        if action in ("approve", "pin"):
+            decision.later = False
+            decision.source_missing = False
         self._change()
         self.units[unit_id] = decision
+        self.position = unit_id
+        self.record(log, unit_id, kind or "UNDO", wanted or (decision.approved or shown)[:1], run=run, now=now,
+                    detail=action if action in ("reset", "unapprove") or (action in ("later", "missing")
+                                                                       and not (decision.later or decision.source_missing))
+                    else "")
+
+    def record(self, log: Mapping[str, Any], unit_id: str, kind: str, shots: list[str], *, run: str = "",
+               now: str | None = None, detail: str = "", reason: str = "") -> None:
+        """Append one decision as the Human Decision Contract records it."""
+        units = {u["unit_id"]: u for u in log.get("units") or ()}
+        candidates = {c["id"]: c for c in log.get("candidates") or ()}
+        unit = units.get(unit_id) or {}
+        shot = candidates.get(shots[0]) if shots else None
+        decision = self.units.get(unit_id)
+        entry: dict[str, Any] = {
+            "type": kind, "run_id": run[:120], "plan_revision": str(log.get("plan_id") or "")[:100],
+            "speech_ref": unit_id, "source_id": shot.get("source_id") if shot else None,
+            "shot_id": shot.get("id") if shot else None,
+            "source_ms": [shot.get("start_ms"), shot.get("end_ms")] if shot else None,
+            "decision_revision": self.revision, "approval_state": user_state(decision) or "NONE",
+            "input_fingerprint": fingerprint(unit, candidates), "decided_at": now or _now(),
+            "invalidation_reason": reason[:300] or None}
+        if detail:
+            entry["detail"] = detail
+        self.records.append(entry)
+        del self.records[:-MAX_RECORDS]
 
     def acknowledge(self, warning: str) -> None:
         wid = warning_id(warning)
@@ -274,19 +356,33 @@ class Review:
             self._change()
             self.accept_unreviewed = value
 
-    def undo(self) -> bool:
+    def undo(self, log: Mapping[str, Any] | None = None, *, run: str = "", now: str | None = None) -> bool:
         if not self.history:
             return False
         last = self.history.pop()
+        before = {k: v.to_dict() for k, v in self.units.items()}
         restored = Review.from_dict({"schema_version": SCHEMA_VERSION, "kind": KIND, **last})
         self.units, self.acknowledged, self.accept_unreviewed = restored.units, restored.acknowledged, restored.accept_unreviewed
         self.revision += 1
+        if log is not None:
+            after = {k: v.to_dict() for k, v in self.units.items()}
+            for unit_id in sorted(set(before) | set(after)):
+                if before.get(unit_id) != after.get(unit_id):
+                    self.record(log, unit_id, "UNDO", [], run=run, now=now, detail="undo")
         return True
 
     def reconcile(self, log: Mapping[str, Any]) -> list[str]:
         """Check the decisions against a new decision log: drop what no longer exists, invalidate what changed.
 
-        Returns the messages for the user (one per invalidated decision)."""
+        Returns the messages for the user (one per invalidated decision); each invalidation is recorded."""
+        before = {k: v.invalidated for k, v in self.units.items()}
+        messages = self._reconcile(log)
+        for unit_id, decision in sorted(self.units.items()):
+            if decision.invalidated and decision.invalidated != before.get(unit_id):
+                self.record(log, unit_id, "INVALIDATED", [], reason=decision.invalidated)
+        return messages
+
+    def _reconcile(self, log: Mapping[str, Any]) -> list[str]:
         units = {u["unit_id"]: u for u in log.get("units") or ()}
         known = {c["id"] for c in log.get("candidates") or ()}
         messages = []
@@ -331,9 +427,24 @@ def user_state(decision: UnitDecision | None) -> str | None:
         return None
     if decision.invalidated:
         return INVALIDATED
+    if decision.source_missing:
+        return USER_SOURCE_MISSING
     if decision.approved is not None:
         return USER_APPROVED
     return None
+
+
+def _now() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def fingerprint(unit: Mapping[str, Any], candidates: Mapping[str, Mapping[str, Any]]) -> str:
+    """What a decision was made on: the sentence and the shots it showed (ids and source ranges)."""
+    shown = [(i, (candidates.get(i) or {}).get("source_id"), (candidates.get(i) or {}).get("start_ms"),
+              (candidates.get(i) or {}).get("end_ms")) for i in unit.get("chosen") or ()]
+    payload = json.dumps([unit.get("unit_id"), unit.get("text"), shown], ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
 def unreviewed(log: Mapping[str, Any], review: Review) -> list[str]:
@@ -345,10 +456,48 @@ def unreviewed(log: Mapping[str, Any], review: Review) -> list[str]:
         if state in (None, READY):
             continue
         decision = review.units.get(unit["unit_id"])
-        if decision is not None and not decision.invalidated and (decision.approved is not None or decision.pin):
+        if decision is not None and not decision.invalidated and (decision.approved is not None or decision.pin
+                                                                   or decision.source_missing):
             continue
         out.append(unit["unit_id"])
     return out
+
+
+_CLAIM_NOTES = ("không thấy sản phẩm",)
+
+
+def priority(unit: Mapping[str, Any], state: str, decision: UnitDecision | None, mode: str,
+             warnings: Iterable[str] = ()) -> tuple[str | None, list[str]]:
+    """The sentence's place in the review queue and why (None: the user has settled it). Uncalibrated."""
+    if decision is not None and not decision.invalidated and (decision.approved is not None or decision.pin
+                                                               or decision.source_missing):
+        return None, []
+    reasons: list[str] = []
+    number = re.search(r"(\d+)$", str(unit.get("unit_id") or ""))
+    said = [w for w in warnings if number and re.match(rf"Câu {number.group(1)}\b", w)]
+    if decision is not None and decision.invalidated:
+        reasons.append("lựa chọn trước không còn hợp lệ: " + decision.invalidated)
+    if mode != "content":
+        reasons.append("chưa có bằng chứng nội dung (AI chưa nhìn được hình)")
+    if state in (MATCH_NOT_FOUND, SOURCE_INSUFFICIENT):
+        reasons.append("thiếu cảnh cho câu này" if state == SOURCE_INSUFFICIENT else "chưa tìm thấy cảnh khớp")
+    notes = [str(n) for n in unit.get("notes") or ()]
+    if any(cue in n for n in notes for cue in _CLAIM_NOTES):
+        reasons.append("câu nêu thông tin cụ thể nhưng không có bằng chứng hình")
+    reasons += [w for w in said if "nhưng thông tin sản phẩm không có" in w]
+    if reasons:
+        return CRITICAL, reasons
+    if state == NEEDS_REVIEW:
+        return REVIEW, notes[:3] or ["AI chưa chắc về cảnh của câu này"]
+    return OPTIONAL, []
+
+
+def queue(units: list[dict[str, Any]], review: Review) -> list[str]:
+    """The sentences still to look at, most serious first; one put off for later goes to the end of its group."""
+    waiting = [u for u in units if u.get("priority")]
+    later = {k for k, v in review.units.items() if v.later}
+    waiting.sort(key=lambda u: (PRIORITY_ORDER[u["priority"]], u["unit_id"] in later, units.index(u)))
+    return [u["unit_id"] for u in waiting]
 
 
 def view(log: Mapping[str, Any], plan: Mapping[str, Any] | None, review: Review, *, warnings: Iterable[str] = ()) -> dict[str, Any]:
@@ -378,12 +527,15 @@ def view(log: Mapping[str, Any], plan: Mapping[str, Any] | None, review: Review,
             "reasons": list(segment.get("reasons") or [])})
     acknowledged = set(review.acknowledged)
     open_units = set(unreviewed(log, review))
+    texts_all = list(dict.fromkeys([*warnings, *(log.get("warnings") or [])]))
     units = []
     for unit in log.get("units") or ():
         decision = review.units.get(unit["unit_id"])
         stored = unit.get("review") if content_mode(log) == log.get("mode") else None  # an old file-name-only log
         verdict = stored or {"evidence": evidence_state(unit, log), "state": unit_state(unit, log)}
+        rank, why = priority(unit, verdict["state"], decision, content_mode(log), texts_all)
         units.append({
+            "priority": rank, "queue_reasons": why, "later": bool(decision and decision.later),
             "unit_id": unit["unit_id"], "text": unit.get("text", ""), "function": unit.get("function"),
             "start_ms": unit.get("start_ms"), "end_ms": unit.get("end_ms"), "coverage": unit.get("coverage") or {},
             "notes": list(unit.get("notes") or []), "evidence": verdict["evidence"], "state": verdict["state"],
@@ -402,7 +554,10 @@ def view(log: Mapping[str, Any], plan: Mapping[str, Any] | None, review: Review,
             "revision": review.revision, "can_undo": bool(review.history), "units": units,
             "warnings": [{"id": warning_id(t), "text": t, "acknowledged": warning_id(t) in acknowledged} for t in texts],
             "unreviewed": [u for u in (x["unit_id"] for x in units) if u in open_units],
-            "accept_unreviewed": review.accept_unreviewed, "summary": log.get("review_summary") or {}}
+            "accept_unreviewed": review.accept_unreviewed, "summary": log.get("review_summary") or {},
+            # the review queue (its groups are not calibrated), where the user was, and every shot to choose from
+            "queue": queue(units, review), "queue_calibrated": False, "position": review.position,
+            "shots": [s for s in (shot(c["id"]) for c in (log.get("candidates") or ())[:MAX_SHOTS]) if s and s["usable"]]}
 
 
 def path_for(work: Path, number: int) -> Path:
@@ -456,7 +611,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("view")
     decide_p = sub.add_parser("decide")
     decide_p.add_argument("unit")
-    decide_p.add_argument("what", choices=["approve", "unapprove", "pin", "exclude", "reset"])
+    decide_p.add_argument("what", choices=["approve", "unapprove", "pin", "exclude", "reset", "later", "missing", "focus"])
     decide_p.add_argument("ids", nargs="*")
     sub.add_parser("undo")
     ack = sub.add_parser("ack")
@@ -487,10 +642,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         review = load(path)
+        run = work.parent.name  # the run folder: what the decision record names the run by (never a full path)
         if args.action == "decide":
-            review.decide(log, args.unit, args.what, args.ids)
+            review.decide(log, args.unit, args.what, args.ids, run=run)
         elif args.action == "undo":
-            review.undo()
+            review.undo(log, run=run)
         elif args.action == "ack":
             texts = list(dict.fromkeys([*extra, *(log.get("warnings") or [])]))
             match = [t for t in texts if warning_id(t) == args.warning_id]
@@ -509,7 +665,8 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-__all__ = ["INVALIDATED", "MATCH_AVAILABLE", "MATCH_NOT_FOUND", "NEEDS_REVIEW", "NOT_NEEDED", "READY", "Review",
+__all__ = ["CRITICAL", "DECISION_TYPES", "OPTIONAL", "REVIEW", "USER_SOURCE_MISSING", "fingerprint", "priority", "queue",
+           "INVALIDATED", "MATCH_AVAILABLE", "MATCH_NOT_FOUND", "NEEDS_REVIEW", "NOT_NEEDED", "READY", "Review",
            "ReviewError", "SOURCE_INSUFFICIENT", "USER_APPROVED", "UnitDecision", "annotate", "evidence_state", "load",
            "part_path", "path_for", "save", "unit_state", "unreviewed", "user_state", "main", "view", "warning_id"]
 

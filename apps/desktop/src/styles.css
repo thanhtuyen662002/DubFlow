@@ -2545,6 +2545,14 @@ body.settings-open .rail-item.active:not(#nav-settings)::before { display: none;
 .mreview-units { display: grid; gap: 12px; margin: 0; padding: 16px 20px; overflow: auto; list-style: none; }
 .mreview-unit { padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
 .mreview-unit.open { border-color: var(--warn); }
+.mreview-main { display: flex; flex-direction: column; min-height: 0; gap: 8px; }
+.mreview-queue { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2, transparent); }
+.mreview-queue .hint { margin: 0; }
+.mreview-main > .mreview-queue { margin: 12px 20px 0; }
+.mreview-main > .mreview-units { flex: 1; min-height: 0; }
+.mreview-unit.current { outline: 2px solid var(--accent); outline-offset: 2px; }
+.mreview-reasons { margin: 4px 0 0; font-size: 13px; color: var(--err); }
 .mreview-unit-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
 .mreview-text { margin-top: 6px; line-height: 1.5; }
 .mreview-unit > .hint { margin-top: 4px; }

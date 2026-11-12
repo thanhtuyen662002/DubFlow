@@ -47,7 +47,7 @@ The decision log `editorial-<n>.json` carries, per unit, the planner's own
 written when every usable shot has content evidence and none matches;
 otherwise a missing match is `MATCH_NOT_FOUND`.
 
-The user's decisions live apart in `review-<n>.json` (`schema_version: 1`,
+The user's decisions live apart in `review-<n>.json` (`schema_version: 2`; 1 still reads,
 `kind: editorial_review`): per unit `approved` (the chosen shot ids the user
 saw), `pin`, `exclude` (shot ids from the log) and `invalidated` (why a
 decision no longer holds), plus `acknowledged` warning ids,
@@ -57,3 +57,19 @@ confidence. A new plan invalidates decisions whose shots are gone and
 approvals of footage that changed. The executable reference is
 `engine/dubflow/mastering/review.py`; the desktop changes the file only
 through `python -m engine.dubflow.mastering.review`.
+
+Version 2 (Assisted Editorial Production) adds, per unit, `later` (the user
+puts it off: still unreviewed) and `source_missing` (the user found no
+suitable footage: settled, the planner's verdict unchanged, nothing reaches
+the planner); `position` (the sentence the user was on); and `records`, the
+Human Decision Contract: one entry per decision with `type` (`APPROVE`,
+`PIN`, `EXCLUDE`, `REPLACE`, `REVIEW_LATER`, `MARK_SOURCE_MISSING`, `UNDO`,
+or `INVALIDATED` written by the system), `run_id` (the run folder's name),
+`plan_revision`, `speech_ref`, `source_id`, `shot_id`, `source_ms`,
+`decision_revision`, `approval_state`, `input_fingerprint` (the sentence and
+the shots it showed), `decided_at` (UTC) and `invalidation_reason`.
+`USER_APPROVED` is never `SEMANTIC_CORRECT`, a pin is re-checked on every
+plan, and `READY` is not `USER_APPROVED`. The panel's view adds per unit
+`priority` (`critical` | `review` | `optional` | null when settled) with
+`queue_reasons`, and `queue` (most serious first), `queue_calibrated: false`,
+`position` and `shots` (every usable shot).
