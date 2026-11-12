@@ -25,6 +25,8 @@ on:
       - engine/dubflow/separation/__main__.py
       - engine/dubflow/separation/outdir.py
       - tests/separation/test_editor_cli.py
+      - engine/dubflow/product/job.py
+      - tests/product/test_status_write.py
   pull_request:
     paths:
       - .github/workflows/pr-desktop-editor-windows.yml
@@ -43,6 +45,8 @@ on:
       - engine/dubflow/separation/__main__.py
       - engine/dubflow/separation/outdir.py
       - tests/separation/test_editor_cli.py
+      - engine/dubflow/product/job.py
+      - tests/product/test_status_write.py
 
 permissions:
   contents: read
@@ -140,6 +144,17 @@ jobs:
           if ($text -match '\.\.\. skipped') { throw 'Media adapter tests skipped some cases' }
           if ($text -notmatch '(?m)^Ran (\d+) tests? in ') { throw 'Media test count missing' }
           Write-Host "Media adapter tests passed: $($Matches[1]), none skipped"
+
+      - name: Run the status-file write tests with a real reader holding the file (#766)
+        shell: pwsh
+        run: |
+          $log = Join-Path $env:RUNNER_TEMP 'status-write-tests.log'
+          python -B -m unittest tests.product.test_status_write -v 2>&1 | Tee-Object -FilePath $log
+          if ($LASTEXITCODE -ne 0) { throw 'Status write tests failed' }
+          $text = Get-Content -LiteralPath $log -Raw
+          if ($text -match '\.\.\. skipped') { throw 'Status write tests skipped some cases' }
+          if ($text -notmatch '(?m)^Ran (\d+) tests? in ') { throw 'Status write test count missing' }
+          Write-Host "Status write tests passed: $($Matches[1]), none skipped"
 
       - name: Run the custom beep-sound decode test against real FFmpeg
         shell: pwsh
