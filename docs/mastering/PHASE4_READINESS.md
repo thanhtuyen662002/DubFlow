@@ -2,7 +2,23 @@
 
 Epic #637 · 2026-11-12 · cập nhật sau chỉ thị "DUBFLOW — GATE S FINAL CLOSURE" · main sau #763 (bản kiểm cuối: 1.1.96-rc7 = `7acd262`, candidate, `publish=false`)
 
-## Quyết định: **NO-GO**
+## Cập nhật 2026-11-12: chỉ thị "Assisted Editorial Production"
+
+Mỗi chế độ có kết quả riêng. Đổi tên một chế độ không biến FAIL thành PASS.
+
+| Hạng mục | Kết quả | Bằng chứng |
+|---|---|---|
+| Semantic Auto (Gate S) | **FAIL**, không đổi | REAL-HOLDOUT coverage 26,8 %, READY 0/20. Không hạ ngưỡng nào. Bản nháp rc9 có 0/28 câu READY |
+| Assisted Safety | **PASS** | [ASSISTED_SAFETY_CLOSURE_REPORT.md](ASSISTED_SAFETY_CLOSURE_REPORT.md): #764 qua #769, #766 qua #770, #765 phân loại không đổi code, Windows Kịch bản A trên rc8 và rc9 |
+| Assisted Production (Bán hàng / Tổng hợp) | **PASS** (Quyết định 1), còn mở P2-N5, P2-N11 | [ASSISTED_EDITORIAL_PRODUCTION_REPORT.md](ASSISTED_EDITORIAL_PRODUCTION_REPORT.md): hàng đợi, hợp đồng quyết định, kiểm tra cuối; sau duyệt 0 câu sai trên 28 câu (rc9) và 0 trên 30 câu (rc8), do agent chấm |
+| Documentary Assisted Pilot | **READY FOR LIMITED DESIGN/PILOT, có điều kiện** (Quyết định 2) | [DOCUMENTARY_ASSISTED_READINESS.md](DOCUMENTARY_ASSISTED_READINESS.md). Chỉ là thiết kế, chưa có code |
+| Documentary Auto | **NO-GO** (Quyết định 3) | Gate S FAIL |
+| Windows E2E | **PASS** trên rc9 và rc10 (bản kiểm cuối `a4ec540`) cho A–E; F (phim dài) bị kiểm tra cuối chặn đúng | [assisted-e2e/rc8](assisted-e2e/rc8/report-rc8.md), [assisted-e2e/rc9](assisted-e2e/rc9/report-rc9.md) |
+| Security/Compatibility | **PASS** | junction bị từ chối ở cả hai luồng; v1 trùng từng byte; schema lạ bị từ chối; quét khoá và e-mail 0/0/0 |
+
+**Phase 4 vẫn NO-GO.** Gate S vẫn FAIL, và vẫn không có code Phase 4.
+
+## Quyết định (Gate S final closure): **NO-GO**
 
 Hai cổng không đạt:
 

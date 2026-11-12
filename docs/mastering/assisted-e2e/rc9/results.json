@@ -1,0 +1,33 @@
+{
+  "schema": "assisted-e2e-results/rc9",
+  "date": "2026-11-12",
+  "candidate": {"version": "1.1.96-rc9", "commit": "07e4fb52c56363eabf2b0d8798a0ba5dd603ba2a", "actions_run": 43155582509,
+    "artifact": "DubFlow-1.1.96-rc9-windows-x64", "outer_artifact_zip_sha256": "40c75a519b346727fa097dad802681881c644ecf39d80e73b598520988e556ef",
+    "zip_sha256": "abd4a0879fffc6a4876706280ceddb56f633b90a024415d50363cfc028038081", "zip_matches_release_evidence": true,
+    "exe_sha256": "45ac4c48d97f4eeddc614f34eab492e607072e67b0348b5f4888acd4c96d60c0",
+    "release_manifest_sha256": "f8e54704f89370a3a1d768f6d091cee72aaeeccb9e8f1b2901353b42d5b31ee2",
+    "channel": "candidate", "production_qualified": false, "pyc_files": 0},
+  "cdp_proof": ["launch1 pid 24008", "launch2 pid 16312", "launch3 pid 3708"],
+  "rc9_fix_checks": {
+    "P1-N3": {"verdict": "FIXED", "evidence": ["B-09-results-rows-user-settled.png", "A-07-result-row.png", "logs/B-result-rows-final.txt"], "detail": "all 6 settled videos read 'Bạn đã duyệt hoặc chọn cảnh cho N câu AI chưa chắc; không còn câu chờ duyệt'; never 'tự động'"},
+    "P2-N6": {"verdict": "FIXED (evidence line); residual P2-N14", "evidence": ["B-v3-03-P2N6-pinned-unrelated.png", "B-v3-09-P2N6-after-restart.png", "A-06-pinned-evidence.png"]},
+    "P2-N7": {"verdict": "FIXED", "evidence": ["E-02-junction-refused.png", "logs/E-junction-target-before.txt", "logs/E-junction-target-after.txt"]},
+    "P3-N8": {"verdict": "FIXED", "evidence": ["logs/metrics-B-records.json", "logs/metrics-A-P2-P3-records.json"], "detail": "8 INVALIDATED records, all run_id = run folder name"},
+    "P3-N9": {"verdict": "NOT FIXED in the UI", "evidence": ["C-02-export-line-no-qc.png", "logs/C-export-line-watch.json"], "detail": "raw_view.ts finalExport writes the QC line, then await showRun() rebuilds the panel with 'Bản cuối (lần xuất N): <path>'; sampled every 100 ms for 60 s, never visible"}
+  },
+  "scenarios": {
+    "A": {"verdict": "PASS", "run": "run-f509e3034616"},
+    "B": {"verdict": "PASS with P2s", "run": "run-11a60c9fd78c"},
+    "C": {"verdict": "PASS for export; P3-N9 not fixed", "run": "run-912c0a26c383 (copy)"},
+    "D": {"verdict": "PASS (same limitation as rc8: no free timestamp / import from the panel)"},
+    "E": {"verdict": "PASS", "key_scan": {"files": 9926, "claude": 0, "gemini": 0, "email": 0, "self_test": "PASS"}, "sources_unchanged": "11/11 rc8 media; phase2 p2/p3 8/8 not modified"},
+    "metrics_P2_P3": {"verdict": "run", "runs": ["run-d3e3d71f4703", "run-3dbb88d451e7"], "excluded": "run-eaddebc0ca09 (harness slip: P2 script over a stale espresso clip)"}
+  },
+  "gates": {"A": "PASS", "B": "PASS (P2-N5, P2-N14 open)", "C": "PASS for B, P2, P3, C export; BLOCKED for A (footage)", "D": "PASS with limitations", "E": "PASS"},
+  "defects": [
+    {"id": "P2-N14", "sev": "P2", "status": "new (residual of P2-N6)"},
+    {"id": "P2-N5", "sev": "P2", "status": "open", "count": "9 of 27 approvals voided"},
+    {"id": "P3-N9", "sev": "P3", "status": "not fixed"},
+    {"id": "P3-N13", "sev": "P3", "status": "open (button 'Tạo 2 video' with 3 scripts)"}
+  ]
+}

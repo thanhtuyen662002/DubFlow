@@ -1,0 +1,68 @@
+{
+ "schema": "assisted-rc8-metrics-v1",
+ "build": {"version": "1.1.96-rc8", "commit": "d398f9d3b5f2a5a91482dbf3e37d6145bfce67a5"},
+ "notes": [
+  "Review wall time = harness wall time of scripted UI clicks (CDP) from panel open to last action, including the 2-3 s waits the harness inserts after every click. It is NOT human review time and excludes the agent's own reading/decision time. No human reviewer took part.",
+  "Quality = agent-evaluated: the agent looked at 2 key frames per sentence of the exported video against the narration (sheets in screenshots/*-keyframes.jpg). correct = frame shows what the sentence says; acceptable = related/generic but not misleading; wrong = unrelated or misleading. No independent human.",
+  "Draft = AI draft before any decision. Actions are counted from the decision records (review-*.json 'records'). INVALIDATED records are written by the system, not the user.",
+  "Rerender time = from clicking the panel's re-render button to the output file being replaced (product) or to the UI leaving the 'Đang…' state (compilation)."
+ ],
+ "product": [
+  {"id": "A", "run": "run-b9be1235defc", "video": 1, "dataset": "rc7 D3 repro (m4 3D-domino clip renamed as an air fryer; script about an air fryer)",
+   "sentences": 4, "draft_ready": 1, "draft_states": {"NEEDS_REVIEW": 1, "READY": 1, "SOURCE_INSUFFICIENT": 2},
+   "draft_queue": {"critical": 3, "review": 0, "optional": 1}, "opened": 3,
+   "actions": {"REPLACE": 1, "MARK_SOURCE_MISSING": 2}, "invalidated": 0, "marked_missing": 2,
+   "review_wall_s": "about 60 (not timed precisely)", "rerenders": 1, "rerender_s": [4], "draft_render_s": 102.7,
+   "final_qc": "READY_TO_FINALIZE (editor opened)", "final_qc_failed_checks_before_settling": ["claims: câu 1, 2, 3"], "final_qc_render_pending_seen": true,
+   "quality": {"correct": 0, "acceptable": 0, "wrong": 4, "note": "footage contains no air fryer; the human-settled final is exportable by policy but not usable"}},
+  {"id": "B-v1", "run": "run-87d6e2cb52fa", "video": 1, "dataset": "Espresso (phase2 P1 footage, 4 clips), script 1 = P1 truth script",
+   "sentences": 6, "draft_ready": 1, "draft_states": {"NEEDS_REVIEW": 5, "READY": 1},
+   "draft_queue": {"critical": 0, "review": 5, "optional": 1}, "opened": 6,
+   "actions": {"APPROVE": 8, "PIN": 1, "EXCLUDE": 1, "UNDO": 1, "REVIEW_LATER": 1}, "invalidated": 3, "marked_missing": 0,
+   "review_rounds": 3, "review_wall_s": [97, 2, 24], "rerenders": 2, "rerender_s": [8.2, 6.0],
+   "final_qc": "READY_TO_FINALIZE (editor opened)", "final_qc_failed_checks": [],
+   "quality": {"correct": 4, "acceptable": 2, "wrong": 0}},
+  {"id": "B-v2", "run": "run-87d6e2cb52fa", "video": 2, "dataset": "Espresso, script 2 (written for this test)",
+   "sentences": 5, "draft_ready": 0, "draft_states": {"MATCH_NOT_FOUND": 1, "NEEDS_REVIEW": 4},
+   "draft_queue": {"critical": 1, "review": 4, "optional": 0}, "opened": 5,
+   "actions": {"MARK_SOURCE_MISSING": 2, "REPLACE": 2, "APPROVE": 5}, "invalidated": 2, "marked_missing": "1 (then taken back with the same button)",
+   "review_rounds": 2, "review_wall_s": [54, 6], "rerenders": 2, "rerender_s": [6.8, 6.9],
+   "final_qc": "READY_TO_FINALIZE (editor opened)", "final_qc_failed_checks": [],
+   "quality": {"correct": 2, "acceptable": 3, "wrong": 0}},
+  {"id": "B-v3", "run": "run-87d6e2cb52fa", "video": 3, "dataset": "Espresso, script 3 (written for this test)",
+   "sentences": 5, "draft_ready": 0, "draft_states": {"NEEDS_REVIEW": 5},
+   "draft_queue": {"critical": 0, "review": 5, "optional": 0}, "opened": 5,
+   "actions": {"APPROVE": 4, "REPLACE": 1, "REVIEW_LATER": 1}, "invalidated": 0, "marked_missing": 0,
+   "review_rounds": 1, "review_wall_s": [39], "rerenders": 1, "rerender_s": [7.2],
+   "final_qc": "READY_TO_FINALIZE (editor opened)", "final_qc_failed_checks": [],
+   "quality": {"correct": 3, "acceptable": 2, "wrong": 0}}
+ ],
+ "product_run_B": {"draft_render_s_3_videos": 153.3, "status_lock_holds_during_run": 2},
+ "compilation_C": {
+  "run": "run-912c0a26c383", "dataset": "Top 5 raw (rc4 media m1-m5, 5 sources, read-only copies)", "draft_render_s": 282.7,
+  "parts": [
+   {"part": "hook", "sentences": 1, "draft_ready": 0, "draft_queue": {"critical": 0, "review": 1, "optional": 0}, "actions": {"APPROVE": 1}, "invalidated": 0, "marked_missing": 0, "review_wall_s": [8], "quality": {"correct": 1, "acceptable": 0, "wrong": 0}},
+   {"part": "intro", "sentences": 1, "draft_ready": 0, "draft_queue": {"critical": 0, "review": 1, "optional": 0}, "actions": {"APPROVE": 1}, "invalidated": 0, "marked_missing": 0, "review_wall_s": [8.1], "quality": {"correct": 1, "acceptable": 0, "wrong": 0}},
+   {"part": "i1 (#5)", "sentences": 2, "draft_ready": 0, "draft_queue": {"critical": 0, "review": 2, "optional": 0}, "actions": {"APPROVE": 3, "EXCLUDE": 1}, "invalidated": 1, "marked_missing": 0, "review_wall_s": [10.1, 10.1], "quality": {"correct": 1, "acceptable": 1, "wrong": 0}},
+   {"part": "i2 (#4)", "sentences": 2, "draft_ready": 0, "draft_queue": {"critical": 0, "review": 2, "optional": 0}, "actions": {"APPROVE": 2}, "invalidated": 0, "marked_missing": 0, "review_wall_s": [10.1], "quality": {"correct": 1, "acceptable": 1, "wrong": 0}},
+   {"part": "i3 (#3)", "sentences": 2, "draft_ready": 1, "draft_queue": {"critical": 0, "review": 1, "optional": 1}, "actions": {"APPROVE": 1}, "invalidated": 0, "marked_missing": 0, "review_wall_s": [8], "quality": {"correct": 2, "acceptable": 0, "wrong": 0}},
+   {"part": "i4 (#2)", "sentences": 2, "draft_ready": 0, "draft_queue": {"critical": 0, "review": 2, "optional": 0}, "actions": {"PIN": 1, "APPROVE": 2}, "invalidated": 1, "marked_missing": 0, "review_wall_s": [10.1, 8], "quality": {"correct": 2, "acceptable": 0, "wrong": 0}},
+   {"part": "i5 (#1)", "sentences": 2, "draft_ready": 0, "draft_queue": {"critical": 0, "review": 2, "optional": 0}, "actions": {"APPROVE": 2, "REVIEW_LATER": 1}, "invalidated": 0, "marked_missing": 0, "review_wall_s": [5.9, 8.1], "quality": {"correct": 2, "acceptable": 0, "wrong": 0}},
+   {"part": "outro", "sentences": 2, "draft_ready": 0, "draft_queue": {"critical": 0, "review": 2, "optional": 0}, "actions": {"APPROVE": 1, "MARK_SOURCE_MISSING": 1}, "invalidated": 0, "marked_missing": 1, "review_wall_s": [10.1], "quality": {"correct": 1, "acceptable": 1, "wrong": 0}}
+  ],
+  "totals": {"sentences": 14, "draft_ready": 1, "draft_queue": {"critical": 0, "review": 13, "optional": 1}, "actions": {"APPROVE": 13, "EXCLUDE": 1, "PIN": 1, "REVIEW_LATER": 1, "MARK_SOURCE_MISSING": 1}, "invalidated": 2, "marked_missing": 1,
+             "review_wall_s_total": 96.6, "rerenders": 1, "rerender_s": 25, "rerender_parts": "2 rebuilt, 6 reused", "export_s": 6.3,
+             "final_qc": "READY_TO_FINALIZE; exported final.json revision 1, sha256 8663fb69... = final.mp4 = compilation.mp4",
+             "final_qc_failed_checks_before_settling": ["claims: i1 câu 1, i4 câu 2"],
+             "quality": {"correct": 11, "acceptable": 3, "wrong": 0}, "ranking_changed_by_ai": false}
+ },
+ "longform_F": {
+  "run": "run-81488142b8c6", "dataset": "Why We Fight 5a 'The Battle of Russia' part 1 (phase2 footage/long, 2146.8 s), 20 items x 105 s windows via 20 hard links of the same read-only file; narration written for this test",
+  "duration_s": 1201.09, "draft_render_s": 831, "draft_duration_s": 870.8, "edit_rerenders": [{"what": "10 narrations extended", "s": 344, "parts": "11 rebuilt, 12 reused"}, {"what": "outro+intro", "s": 67, "parts": "2 rebuilt, 21 reused"}, {"what": "intro", "s": 56, "parts": "1 rebuilt, 22 reused"}, {"what": "1 REPLACE in i9", "s": 56, "parts": "2 rebuilt (i9, outro), 21 reused"}],
+  "peak_ram_mb": {"draft": {"total": 4940, "engine_python": 2049, "ffmpeg": 2321}, "rerender_11_parts": {"total": 5280, "engine_python": 2046, "ffmpeg": 2621}},
+  "sentences": 214, "draft_states": {"READY": 1, "NEEDS_REVIEW": 20, "MATCH_NOT_FOUND": 193}, "parts_signals_only": "16/23 (80-frame vision budget, warned)",
+  "av": {"final_av_ms": -5.4, "max_abs_part_av_ms": 31.7, "sum_of_part_audio_vs_final_audio_ms": -301},
+  "final_qc_host": {"render": true, "duration": "video 1201120 ms vs plan 1201100 ms: ok", "captions": "last caption ends 1200373 ms: ok", "audio": "peak -1.5 dBTP: ok", "timeline": "FAIL HELD_FRAME (i1, i2: frames held 0.5-2.6 s)", "pending": true, "decisions": "213 unreviewed, accepted", "claims": "FAIL (critical unsettled)"},
+  "final_qc_ui_s": "about 90 (no progress text shown)", "exported": false
+ }
+}
