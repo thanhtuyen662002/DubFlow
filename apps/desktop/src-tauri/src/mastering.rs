@@ -19,7 +19,8 @@ use std::os::windows::process::CommandExt;
 use crate::{fail, version_root, AiTranslation};
 
 pub(crate) const LEVELS: [&str; 4] = ["off", "light", "balanced", "dynamic"];
-const ACTIONS: [&str; 5] = ["approve", "unapprove", "pin", "exclude", "reset"];
+/// The panel's decisions; "later" (REVIEW_LATER), "missing" (no suitable footage) and "focus" (remember the place).
+const ACTIONS: [&str; 8] = ["approve", "unapprove", "pin", "exclude", "reset", "later", "missing", "focus"];
 const MAX_IDS: usize = 20;
 const KEYFRAME_LIMIT: u64 = 8 * 1024 * 1024;
 
@@ -381,6 +382,9 @@ mod tests {
         assert_eq!(action_args("view", None, None, &[], None, None).unwrap(), vec!["view"]);
         assert_eq!(action_args("decide", Some("s2"), Some("pin"), &["v1c3".into()], None, None).unwrap(), vec!["decide", "s2", "pin", "v1c3"]);
         assert!(action_args("decide", Some("s2"), Some("filter"), &[], None, None).is_err());
+        for what in ["later", "missing", "focus"] {
+            assert_eq!(action_args("decide", Some("s2"), Some(what), &[], None, None).unwrap(), vec!["decide", "s2", what]);
+        }
         assert!(action_args("decide", Some("s2"), Some("pin"), &["--work".into()], None, None).is_err());
         assert!(action_args("decide", None, Some("pin"), &[], None, None).is_err());
         assert_eq!(action_args("accept", None, None, &[], None, Some(true)).unwrap(), vec!["accept", "true"]);

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  nextInQueue, queueSummary, startUnit, PRIORITY_LABELS,
   coverageText, evidenceHelp, provenanceText, isLevel, unitNumber, levelText, masteringOf, needsExportConfirm, parseReview, reviewSummary, seconds, unitBadge,
 } from "../src/features/mastering/model.ts";
 import { buildRequest } from "../src/features/product/model.ts";
@@ -173,4 +174,37 @@ assert.equal(unitNumber("hook.u1"), "1");
   assert.equal(provenanceText(seen), "Bằng chứng: AI nhìn hình 5 cảnh.");
   const old = parseReview({ kind: "editorial_review_view", mode: "signals_only", units: [], warnings: [] });
   assert.match(provenanceText(old), /Chưa có bằng chứng nội dung/);
+}
+
+{
+  // the review queue (Assisted Editorial Production §B)
+  const raw = {
+    kind: "editorial_review_view", mode: "content", warnings: [], queue: ["u2", "u3", "u1", "ghost"], queue_calibrated: false, position: "u3",
+    shots: [{ id: "c1", source_id: "v1", start_ms: 0, end_ms: 2000 }, { bad: true }],
+    units: [
+      { unit_id: "u1", state: "READY", priority: "optional", queue_reasons: [] },
+      { unit_id: "u2", state: "MATCH_NOT_FOUND", priority: "critical", queue_reasons: ["chưa tìm thấy cảnh khớp"], later: true },
+      { unit_id: "u3", state: "NEEDS_REVIEW", priority: "review", queue_reasons: ["x"] },
+      { unit_id: "u4", state: "READY", priority: "nonsense", user_state: "USER_SOURCE_MISSING", decision: { pin: [], exclude: [], source_missing: true } },
+    ],
+  };
+  const view = parseReview(raw);
+  assert.deepEqual(view.queue, ["u2", "u3", "u1"]);  // an id the units do not have is dropped
+  assert.equal(view.units[1].priority, "critical");
+  assert.equal(view.units[1].later, true);
+  assert.equal(view.units[3].priority, null);
+  assert.equal(view.units[3].decision.source_missing, true);
+  assert.equal(unitBadge(view.units[3]).text, "Bạn ghi: không có cảnh phù hợp");
+  assert.equal(view.shots.length, 1);
+  assert.equal(queueSummary(view), "Hàng đợi duyệt: 1 nghiêm trọng · 1 cần xem · 1 tuỳ chọn (nhóm theo cờ của AI, chưa hiệu chỉnh)");
+  assert.equal(startUnit(view), "u3");  // the saved place
+  assert.equal(startUnit({ ...view, position: "u9" }), "u2");
+  assert.equal(nextInQueue(view, "u2"), "u3");
+  assert.equal(nextInQueue(view, "u1"), "u2");  // wraps to the first one waiting
+  // u3 was settled while the user was on it: next is what came after it in the queue they were walking
+  assert.equal(nextInQueue({ queue: ["u2", "u1"] }, "u3", ["u2", "u3", "u1"]), "u1");
+  assert.equal(nextInQueue({ queue: [] }, "u1"), null);
+  assert.equal(queueSummary({ units: [], queue: [], queue_calibrated: false }), "Hàng đợi duyệt trống: mọi câu đã được bạn xử lý.");
+  assert.equal(PRIORITY_LABELS.critical.text, "Nghiêm trọng");
+  console.log("review queue ok");
 }

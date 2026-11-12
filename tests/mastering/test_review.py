@@ -206,7 +206,7 @@ class DecisionTests(unittest.TestCase):
         with self.assertRaises(rv.ReviewError):
             rv.Review.from_dict(bad)
         with self.assertRaises(rv.ReviewError):
-            rv.Review.from_dict({**review.to_dict(), "schema_version": 2})
+            rv.Review.from_dict({**review.to_dict(), "schema_version": 3})
 
 
 class CliTests(unittest.TestCase):

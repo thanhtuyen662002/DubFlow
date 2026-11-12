@@ -48,6 +48,7 @@ export const STATE_LABELS: Record<string, { text: string; tone: "ok" | "warn" | 
   MATCH_NOT_FOUND: { text: "Chưa tìm thấy cảnh khớp", tone: "bad" },
   SOURCE_INSUFFICIENT: { text: "Nguồn không có cảnh này", tone: "bad" },
   USER_APPROVED: { text: "Bạn đã duyệt", tone: "info" },
+  USER_SOURCE_MISSING: { text: "Bạn ghi: không có cảnh phù hợp", tone: "info" },
   INVALIDATED: { text: "Cần chọn lại", tone: "bad" },
 };
 
@@ -78,12 +79,20 @@ export type Piece = {
   segment_id: string; source_id: string; role: string; source_start: number; source_end: number;
   timeline_start: number; timeline_end: number; confidence: number | null; needs_review: boolean; reasons: string[];
 };
-export type Decision = { pin: string[]; exclude: string[]; approved?: string[]; invalidated?: string };
+export type Decision = { pin: string[]; exclude: string[]; approved?: string[]; invalidated?: string; later?: boolean; source_missing?: boolean };
+/** The review queue's groups; they say what was flagged, not a measured risk (uncalibrated). */
+export type Priority = "critical" | "review" | "optional";
+export const PRIORITY_LABELS: Record<Priority, { text: string; tone: "bad" | "warn" | "info" }> = {
+  critical: { text: "Nghiêm trọng", tone: "bad" }, review: { text: "Cần xem", tone: "warn" }, optional: { text: "Tuỳ chọn", tone: "info" },
+};
+const isPriority = (value: unknown): value is Priority => value === "critical" || value === "review" || value === "optional";
 export type ReviewUnit = {
   unit_id: string; text: string; function: string; start_ms: number; end_ms: number;
   coverage: { milli?: number; status?: string; need_ms?: number; illustrated_ms?: number };
   notes: string[]; evidence: string; state: string; user_state: string | null; decision: Decision | null;
   chosen: Shot[]; pieces: Piece[]; alternatives: Shot[]; unreviewed: boolean;
+  /** Its place in the review queue (null: settled by the user) and why. */
+  priority: Priority | null; queue_reasons: string[]; later: boolean;
 };
 export type ReviewWarning = { id: string; text: string; acknowledged: boolean };
 export type ReviewView = {
@@ -91,6 +100,8 @@ export type ReviewView = {
   unreviewed: string[]; accept_unreviewed: boolean; summary: Record<string, number>;
   /** Provenance → shots with evidence of it (vision, transcript, user_note, ocr, filename_metadata, signal). */
   provenance: Record<string, number>;
+  /** The sentences still to look at, most serious first; where the user was; every usable shot to choose from. */
+  queue: string[]; queue_calibrated: boolean; position: string; shots: Shot[];
 };
 
 const PROVENANCE_NAMES: Array<[string, string]> = [
@@ -154,11 +165,13 @@ export function parseReview(value: unknown): ReviewView | null {
         pin: strings(decision.pin), exclude: strings(decision.exclude),
         ...(Array.isArray(decision.approved) ? { approved: strings(decision.approved) } : {}),
         ...(isString(decision.invalidated) ? { invalidated: decision.invalidated } : {}),
+        ...(decision.later === true ? { later: true } : {}), ...(decision.source_missing === true ? { source_missing: true } : {}),
       } : null,
       chosen: (Array.isArray(unit.chosen) ? unit.chosen : []).map(shot).filter((item): item is Shot => item !== null),
       pieces: (Array.isArray(unit.pieces) ? unit.pieces : []).map(piece).filter((item): item is Piece => item !== null),
       alternatives: (Array.isArray(unit.alternatives) ? unit.alternatives : []).map(shot).filter((item): item is Shot => item !== null).slice(0, 3),
       unreviewed: unit.unreviewed === true,
+      priority: isPriority(unit.priority) ? unit.priority : null, queue_reasons: strings(unit.queue_reasons, 8), later: unit.later === true,
     });
   }
   const warnings = (Array.isArray(object.warnings) ? object.warnings : []).flatMap((raw) => {
@@ -173,6 +186,9 @@ export function parseReview(value: unknown): ReviewView | null {
     plan_id: isString(object.plan_id) ? object.plan_id : "", mode: isString(object.mode) ? object.mode : "",
     revision: isNumber(object.revision) ? object.revision : 0, can_undo: object.can_undo === true, units, warnings,
     unreviewed: strings(object.unreviewed, 500), accept_unreviewed: object.accept_unreviewed === true, summary, provenance,
+    queue: strings(object.queue, 500).filter((id) => units.some((unit) => unit.unit_id === id)),
+    queue_calibrated: object.queue_calibrated === true, position: isString(object.position) ? object.position : "",
+    shots: (Array.isArray(object.shots) ? object.shots : []).map(shot).filter((item): item is Shot => item !== null).slice(0, 300),
   };
 }
 
@@ -180,6 +196,7 @@ export function parseReview(value: unknown): ReviewView | null {
 export function unitBadge(unit: ReviewUnit): { text: string; tone: string } {
   if (unit.user_state === "INVALIDATED") return STATE_LABELS.INVALIDATED;
   if (unit.user_state === "USER_APPROVED") return STATE_LABELS.USER_APPROVED;
+  if (unit.user_state === "USER_SOURCE_MISSING") return STATE_LABELS.USER_SOURCE_MISSING;
   if (unit.decision?.pin.length) return { text: "Bạn đã chọn cảnh", tone: "info" };
   return STATE_LABELS[unit.state] ?? { text: unit.state, tone: "warn" };
 }
@@ -200,6 +217,29 @@ export function seconds(ms: number): string {
   const minutes = Math.floor(total / 60);
   const rest = (total - minutes * 60).toFixed(1).replace(".", ",");
   return minutes ? `${minutes}:${rest.padStart(4, "0")}` : `${rest} s`;
+}
+
+/** The queue in one line: how many sentences of each group are left, and that the groups are not calibrated. */
+export function queueSummary(view: Pick<ReviewView, "units" | "queue" | "queue_calibrated">): string {
+  if (!view.queue.length) return "Hàng đợi duyệt trống: mọi câu đã được bạn xử lý.";
+  const count = (priority: Priority) => view.units.filter((unit) => unit.priority === priority).length;
+  const parts = (["critical", "review", "optional"] as const).map((key) => [PRIORITY_LABELS[key].text.toLowerCase(), count(key)] as const)
+    .filter(([, n]) => n > 0).map(([label, n]) => `${n} ${label}`);
+  return `Hàng đợi duyệt: ${parts.join(" · ")}` + (view.queue_calibrated ? "" : " (nhóm theo cờ của AI, chưa hiệu chỉnh)");
+}
+
+/** The sentence to go to after `current`: the next one of the queue as it was (`before`, the queue the user was
+ * walking) that is still waiting, else the first one waiting; null when nothing waits. */
+export function nextInQueue(view: Pick<ReviewView, "queue">, current: string, before: readonly string[] = view.queue): string | null {
+  if (!view.queue.length) return null;
+  const at = before.indexOf(current);
+  const after = at >= 0 ? before.slice(at + 1).find((id) => view.queue.includes(id) && id !== current) : undefined;
+  return after ?? view.queue.find((id) => id !== current) ?? view.queue[0];
+}
+
+/** Where the panel opens: the saved place when it is still in the queue, else the first sentence of the queue. */
+export function startUnit(view: Pick<ReviewView, "queue" | "position">): string | null {
+  return view.queue.includes(view.position) ? view.position : view.queue[0] ?? null;
 }
 
 /** One line for a video's result row: how much of it is unreviewed and how many warnings are unread. */
