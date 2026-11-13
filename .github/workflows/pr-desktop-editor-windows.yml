@@ -20,6 +20,8 @@ on:
       - tests/production/media/**
       - engine/dubflow/worker/beep_sounds.py
       - tests/production/worker/test_beep.py
+      - engine/dubflow/worker/production_job.py
+      - tests/production/worker/test_dubbing_mastering.py
       - engine/dubflow/separation/split.py
       - tests/separation/test_music_split.py
       - engine/dubflow/separation/__main__.py
@@ -40,6 +42,8 @@ on:
       - tests/production/media/**
       - engine/dubflow/worker/beep_sounds.py
       - tests/production/worker/test_beep.py
+      - engine/dubflow/worker/production_job.py
+      - tests/production/worker/test_dubbing_mastering.py
       - engine/dubflow/separation/split.py
       - tests/separation/test_music_split.py
       - engine/dubflow/separation/__main__.py
@@ -180,3 +184,18 @@ jobs:
           if ($text -match '\.\.\. skipped') { throw 'Music/SFX split tests skipped some cases' }
           if ($text -notmatch '(?m)^Ran 16 tests in ') { throw 'Expected 16 music/SFX split and separation CLI tests (junctions included)' }
           Write-Host 'Music/SFX split + separation CLI tests passed on Windows: 16, none skipped'
+
+      - name: Run the mastering planted-link tests with real FFmpeg, real junctions and symlinks (#821)
+        shell: pwsh
+        run: |
+          $log = Join-Path $env:RUNNER_TEMP 'mastering-link-tests.log'
+          python -B -m unittest `
+            tests.production.worker.test_dubbing_mastering.PlantedLinkTests.test_windows_links_at_the_old_names_are_never_written_through `
+            tests.production.worker.test_dubbing_mastering.PlantedLinkTests.test_windows_junctions_at_the_old_names_are_never_written_through `
+            tests.production.worker.test_dubbing_mastering.AacTrueCeilingTests.test_a_link_at_the_mastered_mix_is_replaced_and_a_linked_folder_refused `
+            -v 2>&1 | Tee-Object -FilePath $log
+          if ($LASTEXITCODE -ne 0) { throw 'Mastering planted-link tests failed' }
+          $text = Get-Content -LiteralPath $log -Raw
+          if ($text -match '\.\.\. skipped') { throw 'Mastering planted-link tests skipped some cases' }
+          if ($text -notmatch '(?m)^Ran 3 tests in ') { throw 'Expected 3 mastering planted-link tests (symlinks and junctions)' }
+          Write-Host 'Mastering planted-link tests passed on Windows through the pinned FFmpeg: 3, none skipped'
