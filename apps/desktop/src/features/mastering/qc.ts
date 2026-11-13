@@ -116,7 +116,15 @@ export function qcRows(qc: DubbingQc): { label: string; text: string; tone: "ok"
       : check.tries > 1 ? ` dù đã thử giảm ${check.tries - 1} lần (không lần nào hạ được đỉnh nên giữ bản chưa giảm)` : "")
     : "";
   const unmeasured = check?.status === "unmeasured" || check?.unmeasured === true;
-  if (qc.loudness && qc.after) {
+  if (check?.path === "none" && qc.after) {
+    // Vietsub only: the sound is the source's, never mastered, so the ceiling does not apply (the engine judges
+    // nothing and warns nothing): a measurement only, neither "vượt trần" nor "đạt"
+    rows.push({
+      label: "Âm lượng",
+      text: `Vietsub: âm thanh gốc, không áp trần ${ceiling}. Đo bản xuất: ${number(qc.after.integrated)} LUFS, đỉnh ${number(qc.after.true_peak)} dBTP sau AAC`,
+      tone: "info",
+    });
+  } else if (qc.loudness && qc.after) {
     const over = qc.after.true_peak > TRUE_PEAK_CEILING || failed;
     rows.push({
       label: "Âm lượng",

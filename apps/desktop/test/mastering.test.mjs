@@ -231,6 +231,25 @@ console.log("mastering tests passed");
   const vietsub = row(b1Card({ ...b1Record, path: "none" }));
   assert.equal(vietsub.tone, "info");
   assert.match(vietsub.text, /không đo được sau AAC/);
+  // Vietsub only, measured over the ceiling: the sound is the source's, not mastered, so the ceiling does not apply:
+  // a plain measurement (info), neither "vượt trần" (the engine adds no warning) nor "đạt"
+  const vietsubRecord = { status: "not_applicable", ceiling_dbtp: -1.5, true_peak_dbtp: -0.4, trim_db: 0, tries: 0, path: "none", ceiling_met: false };
+  const vietsubCard = (extra) => parseDubbingQc({ level: "light", loudness: false, notes: ["Âm lượng: bản trộn im lặng, không chỉnh."],
+    measured: {}, output_loudness: { integrated: -14.0, true_peak: -0.4, lra: 8 }, conformance: vietsubRecord, ...extra });
+  for (const [name, qc] of [["no normalisation", vietsubCard({})], ["loudness flag set", vietsubCard({ loudness: true })]]) {
+    const over = row(qc);
+    assert.equal(over.tone, "info", name);
+    assert.doesNotMatch(over.text, /vượt trần|đạt|không được chỉnh|Đã giảm/, name);
+    assert.equal(over.text, "Vietsub: âm thanh gốc, không áp trần −1,5 dBTP. Đo bản xuất: −14,0 LUFS, đỉnh −0,4 dBTP sau AAC", name);
+  }
+  // ... while the same measurement on the B1 fallback still warns with the B1 sentence (the engine warns too)
+  const b1Over = row(vietsubCard({ fallback: true, notes: ["Đã quay về âm thanh gốc (B1)"], conformance: { ...vietsubRecord, path: "B1" } }));
+  assert.equal(b1Over.tone, "warn");
+  assert.match(b1Over.text, /\(vượt trần −1,5 dBTP\)\. Đây là âm thanh gốc \(B1\), không được chỉnh$/);
+  // ... and a report without a conformance record (before #821) keeps its old reading
+  const oldOver = row(vietsubCard({ conformance: undefined }));
+  assert.equal(oldOver.tone, "warn");
+  assert.match(oldOver.text, /\(vượt trần −1,5 dBTP\)$/);
   const passed = row(card({ status: "passed", ceiling_dbtp: -1.5, true_peak_dbtp: -2.3, trim_db: 0, tries: 1, path: "B2" }));
   assert.equal(passed.tone, "ok");
   assert.match(passed.text, /\(trần −1,5 dBTP: đạt\)$/);
