@@ -16,6 +16,15 @@
     "candidates": {"type": "array", "maxItems": 5000, "items": {"$ref": "#/$defs/candidate"}},
     "edits": {"$ref": "#/$defs/edits"},
     "warnings": {"type": "array", "maxItems": 500, "items": {"type": "string", "maxLength": 500}},
+    "exclusions": {
+      "description": "Optional (#805): what the user's exclusions did to this plan's shots. left_out: each shot left out and the exclusion (a shot id, a whole shot's id or a source id) that leaves it out, matched by id or by the footage the exclusion was made on; widened: an unsplit shot left out for a part of it the user named (P2-N22); reused: excluded footage used anyway because nothing else was left (a conflict for the user, never silent).",
+      "type": "object", "additionalProperties": false, "required": ["left_out", "widened", "reused"],
+      "properties": {
+        "left_out": {"type": "object", "maxProperties": 5000, "additionalProperties": {"type": "string", "minLength": 1, "maxLength": 64}},
+        "widened": {"type": "object", "maxProperties": 5000, "additionalProperties": {"type": "string", "minLength": 1, "maxLength": 64}},
+        "reused": {"type": "array", "maxItems": 5000, "items": {"type": "string", "minLength": 1, "maxLength": 64}}
+      }
+    },
     "vision": {
       "type": ["object", "null"],
       "additionalProperties": false,
@@ -116,7 +125,13 @@
             "review_risk": {"type": "object", "additionalProperties": false, "required": ["min_confidence", "flagged_pieces", "needs_review"],
                             "properties": {"min_confidence": {"type": "integer", "minimum": 0, "maximum": 1000},
                                            "flagged_pieces": {"type": "integer", "minimum": 0},
-                                           "needs_review": {"type": "boolean"}}}}}
+                                           "needs_review": {"type": "boolean"}}},
+            "claims": {"description": "Only for a sentence that states a number, a written title or a card's words (#802): whether it speaks of something displayed, and which of those claims the chosen shots' content evidence shows, leaves unshown or contradicts. Absent otherwise and in older logs.",
+                       "type": "object", "additionalProperties": false, "required": ["display", "verified", "unverified", "conflicts"],
+                       "properties": {"display": {"type": "boolean"},
+                                      "verified": {"type": "array", "maxItems": 50, "items": {"type": "string", "maxLength": 200}},
+                                      "unverified": {"type": "array", "maxItems": 50, "items": {"type": "string", "maxLength": 200}},
+                                      "conflicts": {"type": "array", "maxItems": 50, "items": {"type": "string", "maxLength": 200}}}}}}
       }
     },
     "candidate": {

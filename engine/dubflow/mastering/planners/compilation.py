@@ -24,7 +24,7 @@ from ..candidates import Candidate
 
 PLANNER = "dubflow.mastering.compilation"
 VERSION = "7"
-RECIPE = "compilation-program-v18"  # v18: a trim's shots keep their ids when the trim moves, duplicates answered once are never looked at again, every stretch is first looked at in its middle (#784 review); v17: candidates and vision looks inside the trims, every part in turn (P2-N11); v16: a pinned shot without an AI match is the user's, never AI coverage (P2-N14); v15: subtitled footage is not a text card, per-sentence signals (Gate S); v14: multi-frame evidence (#724); v13: proper names (#722); v12: on long sources the narration is planned before the moment; v11: #705
+RECIPE = "compilation-program-v19"  # v19: what a sentence says is displayed (a number with its unit, a title, a card's words) must be in the chosen shot, never READY on shared words alone (#802); v18: a trim's shots keep their ids when the trim moves, duplicates answered once are never looked at again, every stretch is first looked at in its middle (#784 review); v17: candidates and vision looks inside the trims, every part in turn (P2-N11); v16: a pinned shot without an AI match is the user's, never AI coverage (P2-N14); v15: subtitled footage is not a text card, per-sentence signals (Gate S); v14: multi-frame evidence (#724); v13: proper names (#722); v12: on long sources the narration is planned before the moment; v11: #705
 WORKFLOW = "compilation_entertainment"
 MOMENT_MIN_MS, MOMENT_TARGET_MS, MOMENT_MAX_MS = 2000, 3500, 6000
 PART_FUNCTION = {"hook": "hook", "intro": "intro", "item": "narration", "outro": "outro"}
@@ -204,7 +204,9 @@ def plan_part(part_id: str, kind: str, spoken: Sequence[tuple[str, int]], narrat
     # the footage a source moment may come from, and the footage counted ahead of it for the narration: never a shot
     # or source the user excluded (rc12 W2: an excluded 6 s opening shot was counted ahead of the moment, leaving 7.95 s
     # of footage for 9.49 s of narration and five held frames)
-    allowed = [c for c in pool if not (edits and (c.candidate_id in edits.exclude or c.source_id in edits.exclude_sources))]
+    left = align.exclusion(edits, pool) if edits else None
+    gone = left.gone if left else set()
+    allowed = [c for c in pool if c.candidate_id not in gone]
     if moment and kind == "item" and policy.keep_source_audio:
         # The narration first, over all of the footage; the moment then comes from what plays after it. Only when
         # nothing is left after the narration is the moment chosen first (a long source kept its narration to the
@@ -278,6 +280,11 @@ def plan_part(part_id: str, kind: str, spoken: Sequence[tuple[str, int]], narrat
     warnings: list[str] = []
     if mode == "signals_only":
         warnings.append(f"{part_id}: chưa có bằng chứng nội dung (phụ đề nguồn, ghi chú, AI nhìn hình; tên file không tính); cảnh chọn theo điểm cắt và chất lượng.")
+    if left is not None and left.reused:
+        # footage the user left out, used because nothing else was left: said here, and a conflict on the sentence
+        # that excluded it (review.reconcile), never a silent reuse (#805)
+        warnings.append(f"{part_id}: mọi cảnh còn lại đều đã bị loại nên cảnh bạn đã loại ({', '.join(left.reused[:3])}) vẫn phải "
+                        "dùng. Hãy bỏ loại một cảnh hoặc chọn cảnh khác cho phần này.")
     if moment and kind == "item" and policy.keep_source_audio:
         picked = reserved
         if picked is not None and picked[1] < used_end.get(picked[0].source_id, 0):
@@ -307,6 +314,7 @@ def plan_part(part_id: str, kind: str, spoken: Sequence[tuple[str, int]], narrat
                            "evidence": evidence[c.candidate_id].to_dict() if c.candidate_id in evidence else None,
                            "summary": evidence[c.candidate_id].summary() if c.candidate_id in evidence else ""} for c in pool],
            "edits": (edits or align.Edits()).to_dict(), "warnings": warnings,
+           **align.exclusion_log(left),
            # each source's content identity: what an approval was given on (P2-N5 materiality)
            "sources": m.source_contents({f.source_id: f.path for f in footage if f.source_id in inputs}),
            "source_identity": "content",  # every value in sources is a content fingerprint (no recipe); a source left out is unknown

@@ -77,7 +77,18 @@ export function evidenceHelp(unit: Pick<ReviewUnit, "evidence" | "coverage" | "d
 export type Shot = {
   id: string; source_id: string; start_ms: number; end_ms: number; keyframe: string | null; summary: string; usable: boolean;
   problems: string[]; score?: number; reasons?: string[];
+  /** The whole shot this one is a piece of (its own id when it is not a piece), and whether an exclusion leaves it
+   * out now, made in which sentence (#805). */
+  parent: string; excluded: boolean; excluded_by: string | null;
 };
+/** A shot split into pieces, each with the sentences that use it (#805). */
+export type Family = {
+  id: string; source_id: string; start_ms: number; end_ms: number;
+  pieces: Array<{ id: string; start_ms: number; end_ms: number; used_by: string[] }>;
+};
+/** One exclusion: the sentence that made it, whether it names a whole shot, what it leaves out now, and footage used
+ * anyway because nothing else was left. */
+export type Exclusion = { id: string; by: string; whole: boolean; covers: string[]; reused: string[] };
 export type Piece = {
   segment_id: string; source_id: string; role: string; source_start: number; source_end: number;
   timeline_start: number; timeline_end: number; confidence: number | null; needs_review: boolean; reasons: string[];
@@ -105,6 +116,7 @@ export type ReviewView = {
   provenance: Record<string, number>;
   /** The sentences still to look at, most serious first; where the user was; every usable shot to choose from. */
   queue: string[]; queue_calibrated: boolean; position: string; shots: Shot[];
+  families: Record<string, Family>; exclusions: Exclusion[];
 };
 
 const PROVENANCE_NAMES: Array<[string, string]> = [
@@ -134,7 +146,48 @@ function shot(value: unknown): Shot | null {
     keyframe: isString(item.keyframe) ? item.keyframe : null, summary: isString(item.summary) ? item.summary : "",
     usable: item.usable !== false, problems: strings(item.problems),
     ...(isNumber(item.score) ? { score: item.score } : {}), ...(Array.isArray(item.reasons) ? { reasons: strings(item.reasons, 8) } : {}),
+    parent: isString(item.parent) ? item.parent : item.id, excluded: item.excluded === true,
+    excluded_by: isString(item.excluded_by) ? item.excluded_by : null,
   };
+}
+
+function family(value: unknown): Family | null {
+  const item = (value ?? {}) as Record<string, unknown>;
+  if (!isString(item.id) || !isString(item.source_id) || !isNumber(item.start_ms) || !isNumber(item.end_ms) || !Array.isArray(item.pieces)) return null;
+  const pieces = item.pieces.flatMap((raw) => {
+    const piece = (raw ?? {}) as Record<string, unknown>;
+    return isString(piece.id) && isNumber(piece.start_ms) && isNumber(piece.end_ms)
+      ? [{ id: piece.id, start_ms: piece.start_ms, end_ms: piece.end_ms, used_by: strings(piece.used_by, 50) }] : [];
+  }).slice(0, 50);
+  return { id: item.id, source_id: item.source_id, start_ms: item.start_ms, end_ms: item.end_ms, pieces };
+}
+
+function exclusion(value: unknown): Exclusion | null {
+  const item = (value ?? {}) as Record<string, unknown>;
+  if (!isString(item.id) || !isString(item.by)) return null;
+  return { id: item.id, by: item.by, whole: item.whole === true, covers: strings(item.covers, 300), reused: strings(item.reused, 300) };
+}
+
+/** The whole shot a piece was cut from, when "Bỏ cả cảnh gốc" applies to it: any piece of a split shot, in use, an
+ * alternative or in the list of every shot (#805: rc15 W2's unused f1 only showed as an alternative). */
+export function wholeShotOf(view: Pick<ReviewView, "families">, shot: Pick<Shot, "id" | "parent">): Family | null {
+  if (shot.parent === shot.id) return null;
+  const whole = view.families[shot.parent];
+  return whole && whole.pieces.some((piece) => piece.id === shot.id) ? whole : null;
+}
+
+/** What "Bỏ cả cảnh gốc" will leave out, said before it is done: each piece, its time in the source, and the
+ * sentences using it now (#805). */
+export function familyLines(whole: Family): string[] {
+  return whole.pieces.map((piece, index) => `Đoạn ${index + 1} · ${seconds(piece.start_ms)}–${seconds(piece.end_ms)}`
+    + (piece.used_by.length ? ` · ${piece.used_by.map((id) => `Câu ${unitNumber(id)}`).join(", ")} đang dùng` : " · chưa câu nào dùng"));
+}
+
+/** One exclusion in a line: what it names and how much footage it leaves out now. */
+export function exclusionText(item: Exclusion): string {
+  const what = item.whole ? `cả cảnh gốc ${item.id} (${item.covers.length} đoạn)` : `cảnh ${item.id}`;
+  const reused = item.reused.length ? " · vẫn phải dùng vì không còn cảnh nào khác" : "";
+  return `Câu ${unitNumber(item.by)} đã loại ${what}${reused}`;
 }
 
 function piece(value: unknown): Piece | null {
@@ -192,6 +245,9 @@ export function parseReview(value: unknown): ReviewView | null {
     queue: strings(object.queue, 500).filter((id) => units.some((unit) => unit.unit_id === id)),
     queue_calibrated: object.queue_calibrated === true, position: isString(object.position) ? object.position : "",
     shots: (Array.isArray(object.shots) ? object.shots : []).map(shot).filter((item): item is Shot => item !== null).slice(0, 300),
+    families: Object.fromEntries(Object.entries((object.families ?? {}) as Record<string, unknown>).slice(0, 500)
+      .map(([key, raw]) => [key, family(raw)] as const).filter((entry): entry is readonly [string, Family] => entry[1] !== null && entry[1].id === entry[0])),
+    exclusions: (Array.isArray(object.exclusions) ? object.exclusions : []).map(exclusion).filter((item): item is Exclusion => item !== null).slice(0, 300),
   };
 }
 

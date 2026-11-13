@@ -333,6 +333,16 @@ class RealMediaJobTest(unittest.TestCase):
             looked_for = calls[1][0]
             unit = next(u for u in log["units"] if looked_for in u["chosen"])
             self.assertEqual(unit["coverage"]["status"], "full")
+            # the user leaves that shot out: the frames kept back never go to it again (#805)
+            value["editorial"] = {"edits": {"exclude": [looked_for]}}
+            spec_path.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
+            calls.clear()
+            again = job.run(job.load_spec(spec_path), root / "out", speaker=lambda status: FakeSpeaker(),
+                            probe=lambda path: job.probe_duration_ms(Path(FFPROBE), path),
+                            measure=lambda path: job.probe_size(Path(FFPROBE), path), ffmpeg=Path(FFMPEG), encoder="mpeg4",
+                            inspect=lambda path: scene.probe(Path(FFPROBE), path), vision=Seeing)
+            self.assertEqual(again["state"], "COMPLETED", again)
+            self.assertFalse([i for later in calls[1:] for i in later if i == looked_for], calls)
 
 
 if __name__ == "__main__":

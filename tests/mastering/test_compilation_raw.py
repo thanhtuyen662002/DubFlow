@@ -394,6 +394,65 @@ class PartIndependenceTest(unittest.TestCase):
                 self.assertEqual((work / name).read_bytes(), data, name)
 
 
+    @unittest.skipUnless(FFMPEG and FFPROBE, "needs FFmpeg")
+    def test_an_edit_in_the_intro_never_changes_what_an_item_sees(self):
+        """rc14 W5 on W2 (P2-N22, #796): approvals in the intro locked its shots, so its next multi-frame look went to
+        another shot of item 1 and split it; item 1 was re-planned and re-rendered without being touched, and lost
+        its source-audio moment. The intro, hook and outro look at the items' footage for themselves only."""
+        from engine.dubflow.mastering import review as reviewing
+        from engine.dubflow.mastering import vision as seeing
+        import contextlib
+        import io
+        with TemporaryDirectory() as folder:
+            root = Path(folder)
+            items = []
+            for number, pattern in enumerate(("testsrc2", "smptebars", "rgbtestsrc", "testsrc"), 1):
+                clip = root / f"c{number}.mp4"
+                subprocess.run([FFMPEG, "-v", "error", "-y", "-f", "lavfi", "-i", f"{pattern}=s=320x180:r=25:d=60",
+                                "-f", "lavfi", "-i", "sine=f=440:d=60", "-c:v", "mpeg4", "-q:v", "5", "-c:a", "aac", "-shortest",
+                                str(clip)], check=True, timeout=120)
+                items.append({"title": f"Mục {number}", "narration": f"Đây là cảnh số {number}. Quả bóng đỏ lăn qua. Và cảnh cuối.",
+                              "sources": [{"video": str(clip), "rights": "owned"}]})
+            value = {"schema_version": 2, "title": "Bốn mục", "layout": "toan-man-hinh", "voice_id": "v",
+                     "program": {"kind": "list"}, "intro": "Cùng xem quả bóng đỏ lăn qua. Màu xanh đẹp quá. Một ngày vui.",
+                     "outro": "Hết.", "items": items, "editorial": {"ai": {"provider": "gemini"}}}
+
+            class Seeing:  # only the extra frames of a long take show what a sentence says
+                provider, used_model, warnings, budget = "gemini", "fake", [], 44
+
+                def __init__(self, cache, context="", labels=()):
+                    self.asked = self.taken = 0
+
+                def describe(self, frames, cancelled):
+                    self.taken += len(frames)
+                    return {cid: seeing.Seen("quả bóng đỏ lăn" if "@" in cid else "một khung hình màu", (), (), "", (), 600, "clear",
+                                             None, None, 0) for cid, _ in frames}
+
+            def run():
+                return run_program(job.load_spec(write_spec(root, value)), root / "out", speaker=lambda status: FakeSpeaker(),
+                                   probe=lambda path: __import__("engine.dubflow.product.job", fromlist=["x"]).probe_duration_ms(Path(FFPROBE), path),
+                                   inspect=lambda path: scene.probe(Path(FFPROBE), path), ffmpeg=Path(FFMPEG), encoder="mpeg4", vision=Seeing)
+            first = run()
+            self.assertEqual(first["state"], "COMPLETED", first)
+            work = root / "out" / ".dubflow-work"
+            items_plans = {f"plan-i{n}.json": (work / "mastering" / f"plan-i{n}.json").read_bytes() for n in range(1, 5)}
+            shown = io.StringIO()
+            with contextlib.redirect_stdout(shown):
+                # the user edits the intro only: another shot for its first sentence, three of item 2's shots out of
+                # its second
+                first_id, second_id = [u["unit_id"] for u in json.loads((work / "mastering" / "editorial-intro.json")
+                                                                         .read_text(encoding="utf-8"))["units"][:2]]
+                self.assertEqual(reviewing.main(["--work", str(work), "--part", "intro", "decide", first_id, "pin", "i3-s1c4"]), 0,
+                                 shown.getvalue())
+                self.assertEqual(reviewing.main(["--work", str(work), "--part", "intro", "decide", second_id, "exclude",
+                                                 "i2-s1c1", "i2-s1c2", "i2-s1c3"]), 0, shown.getvalue())
+            again = run()
+            self.assertEqual(again["state"], "COMPLETED", again)
+            self.assertFalse(set(again["rendered_parts"]) - {"intro", "outro"}, again["rendered_parts"])
+            for name, data in items_plans.items():
+                self.assertEqual((work / "mastering" / name).read_bytes(), data, name)
+
+
 class MomentTest(unittest.TestCase):
     def test_the_ending_is_kept_for_the_items_own_sound(self):
         from engine.dubflow.mastering import candidates as shots, evidence as ev
@@ -496,6 +555,75 @@ class MomentTest(unittest.TestCase):
                 self.assertFalse(any(s.source.start < c.end_ms and s.source.end > c.start_ms
                                      for s in segments for c in shown.values()), (excluded, narration_ms))
 
+    def test_a_short_shot_ahead_is_never_skipped_for_a_held_frame(self):  # P2-N17, rc13 W2 i1
+        """rc13 W2: after excluding i1's opening shot the narration started at 12 s, where 9502 ms were left for
+        9490 ms of narration. Filler had to be at least 1200 ms, so u2 skipped c4f1 (1138 ms) for c4f2, ran out of
+        footage 1126 ms short and held a frame of c2f1. Geometry and evidence as the rc13 replay saw them."""
+        from engine.dubflow.mastering import align, candidates as shots, evidence as ev
+        from engine.dubflow.mastering.planners import compilation as planner
+        bounds = [("c1", 0, 6000, 958), ("c2f1", 6000, 7950, 964), ("c2f2", 7950, 10050, 964), ("c2f3", 10050, 12000, 964),
+                  ("c3f1", 12000, 13950, 990), ("c3f2", 13950, 16050, 990), ("c3f3", 16050, 18000, 990),
+                  ("c4f1", 18000, 19138, 948), ("c4f2", 19138, 20363, 948), ("c4f3", 20363, 21502, 948)]
+        box = lambda x, y, w, h: m.Box(x, y, w, h, "product")
+        SEEN = {
+         "c1": (800, ("people", "establishing", "object"), "Nhóm học sinh mặc đồng phục đứng quanh bàn dài quan sát mô hình phản ứng dây chuyền gồm xe đồ chơi màu vàng, chai, quả bóng đỏ và các thanh trượt. học sinh, bàn dài, xe đồ chơi màu vàng, quả bóng đỏ, chai, giấy báo, máy tính xách tay, dây đứng quan sát mô hình", box(0, 1500, 10000, 8500), 450, True, "may-day-chuyen-hoc-sinh"),
+         "c2f1": (750, ("people", "object", "reaction"), "Một nhóm thiếu niên đứng sau bàn có hàng khối gỗ xếp kiểu domino, đường dốc bằng gỗ và vài vật nhỏ nhiều màu; hai bạn nữ đang cười. khối gỗ domino, đường dốc gỗ, bàn, vật nhỏ nhiều màu, người đứng xem, cười", None, 0, True, "mo-hinh-day-chuyen-ban-go"),
+         "c2f2": (375, ("people", "object"), "Hai thiếu niên mặc áo thể thao đứng cạnh một mô hình phản ứng dây chuyền đặt trên bàn, có đường ray, các hình nhân nhỏ và dốc trượt bằng gỗ. mô hình phản ứng dây chuyền, đường ray, hình nhân nhỏ, dốc gỗ, xô đỏ, thiếu niên quan sát mô hình", box(0, 3800, 10000, 6200), 350, True, "mo-hinh-day-chuyen-ban-go"),
+         "c2f3": (300, ("people", "object"), "Cảnh hơi nhòe: một cậu bé và một người mặc áo khoác trắng đứng cạnh bàn có hàng domino, lon, cốc nhựa và đồ vật nhỏ; phía sau có thùng nhựa xanh, vỏ máy tính và bảng trắng. domino, lon, cốc nhựa, thùng nhựa xanh, vỏ máy tính, bảng trắng, người đứng xem", None, 0, True, "mo-hinh-day-chuyen-ban-go"),
+         "c3f1": (780, ("establishing", "object", "people"), "Bàn trắng bày cỗ máy phản ứng dây chuyền: hàng quân domino, lon, chai, ly nhựa, tượng nhỏ, khung gỗ; học sinh đứng phía sau cạnh bảng trắng. quân domino, lon, chai, ly nhựa, khung gỗ, chậu nhựa xanh, đầu đĩa, tượng nhỏ, học sinh học sinh đứng quan sát", None, 0, True, "may-tu-che-lop-hoc"),
+         "c3f2": (275, ("people", "object"), "Học sinh áo trắng đứng sau bàn có cỗ máy phản ứng dây chuyền tự chế bằng ống giấy, khung gỗ và đồ vật nhỏ; hình bị nhòe. học sinh, bàn, ống giấy, khung gỗ, đồ vật nhỏ đứng quan sát", box(0, 1100, 10000, 8900), 250, True, "may-tu-che-lop-hoc"),
+         "c3f3": (350, ("object",), "Cận cảnh bàn với máng trượt trắng, xe đồ chơi nhỏ, sách xếp chồng; phía sau là khung gỗ, hàng domino và tượng nhỏ trên bàn khác. máng trượt, xe đồ chơi, sách, khung gỗ, quân domino, tượng nhỏ", None, 0, True, "may-tu-che-lop-hoc"),
+         "c4f1": (310, ("establishing", "object", "people"), "Góc nhìn dọc bàn dài có máng trượt và sách xếp chồng; một học sinh áo kẻ sọc đứng phía sau; hình bị nhòe do chuyển động máy quay. máng trượt, sách, bàn, học sinh máy quay lia", None, 0, False, None),
+         "c4f2": (360, ("people", "establishing", "object"), "Phòng học hoặc xưởng: hai thiếu niên mặc áo trắng đứng cạnh bàn dài có dựng đường ống nhựa trắng, xe đồ chơi, chai nước, giấy báo và các vật dụng của một cỗ máy phản ứng dây chuyền tự chế. thiếu niên, bàn dài, ống nhựa trắng, xe đồ chơi, giấy báo, chai nước, máy tính xách tay, kệ treo tường đứng quan sát cỗ máy", None, 300, False, None),
+         "c4f3": (300, ("people", "establishing"), "Hai học sinh đứng cạnh các bàn bày cỗ máy dây chuyền trong phòng tường vàng; hình nhòe do chuyển động. học sinh, bàn, máng trượt, dụng cụ trên bàn học sinh đứng cạnh bàn", None, 0, False, None),
+        }
+        found = scene.Analysis(21_502, tuple(b for _, _, b, _ in bounds[:-1]), tuple(scene.Shot(a, b, 50) for _, a, b, _ in bounds),
+                               (), True, "r" * 64)
+        source = planner.Footage("i1-s1", Path("m2-lop-hoc-2995.webm"), found, 640, 480, (29483, 986), rights="licensed")
+        pool = [shots.Candidate(f"i1-s1{n}", "i1-s1", a, b, 0, 110, shots.Quality(120, 50, q), k * 2**20 + 1, f"k{k}.jpg")
+                for k, (n, a, b, q) in enumerate(bounds)]
+        evidence = planner.evidence_for([source], {"i1-s1": pool}, {})
+        for n, (confidence, labels, text, product, hook, visible, same) in SEEN.items():
+            evidence[f"i1-s1{n}"].add(ev.Item("vision", confidence, text, labels, "AI"))
+            evidence[f"i1-s1{n}"].product_box, evidence[f"i1-s1{n}"].hook = product, hook
+            evidence[f"i1-s1{n}"].product_visible, evidence[f"i1-s1{n}"].same_product = visible, same
+        spoken = [("Ở vị trí thứ năm là cỗ máy của một nhóm học sinh dựng ngay trên những dãy bàn trong lớp.", 4240),
+                  ("Hàng domino gỗ đổ nối tiếp nhau dọc mặt bàn trong khi cả lớp đứng xem hồi hộp.", 4000)]
+        for edits in (None, align.Edits({}, {"i1-s1c1"}, set())):
+            made = planner.plan_part("i1", "item", spoken, 9490, m.Options("balanced", "entertainment"), lead_ms=300, gap_ms=250,
+                                     footage=[source], candidates={"i1-s1": pool}, evidence=evidence,
+                                     title="Cỗ máy domino trong lớp học", inputs={"part": "0" * 64}, edits=edits)
+            segments = made.plan.segments
+            shown = [(s.role, s.source.start, s.source.end) for s in segments]
+            self.assertEqual([s for s in segments if s.role == "still"], [], shown)  # before: 1126 ms held (c2f1)
+            narration = [s for s in segments if s.audio_mode != "source"]
+            self.assertEqual(sum(s.timeline.end - s.timeline.start for s in narration), 9490, shown)
+            self.assertEqual([s.source.start for s in narration], sorted(s.source.start for s in narration), shown)  # forward
+            if edits:
+                self.assertTrue(all(s.source.start >= 6000 for s in segments), shown)
+
+    def test_filler_that_runs_the_sentence_out_of_footage_never_goes_before_one_that_lasts(self):  # P2-N17 (#801)
+        # nine shots in one source, one 10.4 s sentence: a first fix for the rc13 held frame skipped shots ahead and
+        # held frames for 6.1 s here; the filler must take the shots in turn and hold none
+        from engine.dubflow.mastering import candidates as shots
+        from engine.dubflow.mastering.planners import compilation as planner
+        bounds = [(0, 1274), (1274, 2790), (2790, 3527), (3527, 5526), (5526, 7056), (7056, 8309), (8309, 9538),
+                  (9538, 11509), (11509, 12771)]
+        cues = ((50, 1224, "máng trượt trắng"), (1324, 2740, "học sinh xếp domino"), (2840, 3477, "cả lớp đứng xem"),
+                (9588, 11459, "xe đồ chơi chạy xuống dốc"))
+        found = scene.Analysis(12771, tuple(b for _, b in bounds[:-1]), tuple(scene.Shot(a, b, 50) for a, b in bounds), (),
+                               True, "q" * 64)
+        source = planner.Footage("i1-s1", Path("x.webm"), found, 640, 360, (30, 1), cues=cues)
+        pool = [shots.Candidate(f"i1-s1c{k + 1}", "i1-s1", a, b, k, 50, shots.Quality(120, 50, 300), k * 2**20 + 1)
+                for k, (a, b) in enumerate(bounds)]
+        made = planner.plan_part("i1", "item", [("Xe đồ chơi chạy xuống dốc và học sinh xếp domino.", 10355)], 10855,
+                                 m.Options("balanced", "entertainment"), lead_ms=300, gap_ms=250, footage=[source],
+                                 candidates={"i1-s1": pool}, evidence=planner.evidence_for([source], {"i1-s1": pool}, {}),
+                                 title="xe đồ chơi chạy xuống dốc", inputs={"part": "0" * 64})
+        shown = [(s.role, s.source.start, s.source.end) for s in made.plan.segments]
+        self.assertFalse([s for s in made.plan.segments if s.role == "still"], shown)
+        self.assertEqual([s.source.start for s in made.plan.segments], sorted(s.source.start for s in made.plan.segments), shown)
+
     def test_an_excluded_shot_is_never_the_moment(self):  # P2-N17
         from engine.dubflow.mastering import align, candidates as shots
         from engine.dubflow.mastering.planners import compilation as planner
@@ -517,6 +645,22 @@ class MomentTest(unittest.TestCase):
                                      inputs={"part": "0" * 64}, edits=align.Edits({}, {"i1-s1c5"}, set()))
         self.assertFalse(any(s.source.end > 24_000 for s in excluded.plan.segments),
                          [(s.role, s.source.start, s.source.end) for s in excluded.plan.segments])
+        # a part of c5 left out while c5 is not split (the split was another part's, P2-N22): c5 is never the moment
+        part = planner.plan_part("i1", "item", spoken, 5600, m.Options("balanced", "entertainment"), lead_ms=200, gap_ms=300,
+                                 footage=[source], candidates={"i1-s1": pool}, evidence=evidence, title="Con mèo nhảy lên bàn",
+                                 inputs={"part": "0" * 64}, edits=align.Edits({}, {"i1-s1c5f2"}, set()))
+        self.assertFalse(any(s.source.end > 24_000 for s in part.plan.segments),
+                         [(s.role, s.source.start, s.source.end) for s in part.plan.segments])
+        self.assertFalse([w for w in part.log["warnings"] if "đoạn bạn đã bỏ" in w])
+        self.assertEqual(part.log["exclusions"]["left_out"], {"i1-s1c5": "i1-s1c5f2"})
+        self.assertEqual(part.log["exclusions"]["widened"], {"i1-s1c5": "i1-s1c5f2"})
+        self.assertEqual(part.log["exclusions"]["reused"], [])
+        # one shot only: used because nothing else is left, said in a warning and in the log, never silently (#805 B6)
+        alone = planner.plan_part("i1", "item", spoken, 5600, m.Options("balanced", "entertainment"), lead_ms=200, gap_ms=300,
+                                  footage=[source], candidates={"i1-s1": pool[:1]}, evidence=evidence, title="Con mèo nhảy lên bàn",
+                                  inputs={"part": "0" * 64}, edits=align.Edits({}, {"i1-s1c1f2"}, set()))
+        self.assertTrue([w for w in alone.log["warnings"] if "cảnh bạn đã loại (i1-s1c1)" in w], alone.log["warnings"])
+        self.assertEqual(alone.log["exclusions"]["reused"], ["i1-s1c1"])
         # a pinned shot that plays past the moment: the moment is chosen again after it, never from the excluded c5
         pinned = planner.plan_part("i1", "item", [spoken[0], ("Ai cũng bất ngờ.", 5000)], 8100,
                                    m.Options("balanced", "entertainment"), lead_ms=200, gap_ms=300, footage=[source],

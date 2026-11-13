@@ -30,7 +30,7 @@ from ..candidates import Candidate
 PLANNER = "dubflow.mastering.product"
 # 1: shot-aware parts in turn (Phase 1). 2: each sentence illustrated by the footage that matches it (ADR-0054).
 VERSION = "8"
-RECIPE = "product-editorial-v17"  # v17: a pinned shot without an AI match is the user's, never AI coverage (P2-N14); v16: a product opening is READY only where the vision saw the product (P1-N1); v15: subtitled footage is not a text card, per-sentence signals (Gate S); v14: multi-frame evidence (#724); v13: proper names (#722); v12: semantic root-cause fixes (#705); v11: every piece inside its shot
+RECIPE = "product-editorial-v18"  # v18: what a sentence says is displayed (a number with its unit, a title, a card's words) must be in the chosen shot, never READY on shared words alone (#802); v17: a pinned shot without an AI match is the user's, never AI coverage (P2-N14); v16: a product opening is READY only where the vision saw the product (P1-N1); v15: subtitled footage is not a text card, per-sentence signals (Gate S); v14: multi-frame evidence (#724); v13: proper names (#722); v12: semantic root-cause fixes (#705); v11: every piece inside its shot
 WORKFLOW = "product_showcase"
 SHOT_MARGIN_MS = 120
 # A shot shorter than this is skipped while longer ones exist; it is used when nothing else is left.
@@ -204,6 +204,10 @@ def plan_editorial(visuals: Sequence[Visual], spoken: Sequence[tuple[str, int]],
                                             forward_only=not policy.allows(rules.REORDER), edits=edits, groups=groups, stills=stills,
                                             product=True)
     warnings: list[str] = []
+    left = align.exclusion(edits, pool) if edits else None
+    if left is not None and left.reused:
+        warnings.append(f"Mọi cảnh còn lại đều đã bị loại nên cảnh bạn đã loại ({', '.join(left.reused[:3])}) vẫn phải dùng. "
+                        "Hãy bỏ loại một cảnh hoặc chọn cảnh khác.")
     if mode == "signals_only":
         warnings.append("Chưa có bằng chứng nội dung (ghi chú clip hoặc AI nhìn hình; tên file không tính): cảnh được chọn theo "
                         "điểm cắt, độ nét và đa dạng, cần kiểm tra.")
@@ -284,6 +288,7 @@ def plan_editorial(visuals: Sequence[Visual], spoken: Sequence[tuple[str, int]],
                         "evidence": evidence[c.candidate_id].to_dict() if c.candidate_id in evidence else None,
                         "summary": evidence[c.candidate_id].summary() if c.candidate_id in evidence else ""} for c in pool],
         "edits": (edits or align.Edits()).to_dict(), "warnings": warnings,
+        **align.exclusion_log(left),
         # each source's content identity: what an approval was given on (P2-N5 materiality)
         "sources": m.source_contents({f"v{i + 1}": v.path for i, v in enumerate(visuals) if f"v{i + 1}" in inputs}),
         "source_identity": "content",  # every value in sources is a content fingerprint (no recipe); a source left out is unknown

@@ -71,6 +71,49 @@ class PartTests(unittest.TestCase):
         made["edits"]["pin"]["u3"] = ["c3"]  # the render that applied it
         self.assertTrue(self.checks(made, plan_dict(GOOD), review)["pending"]["ok"])
 
+    def test_an_exclusion_taken_back_after_the_render_is_pending(self):  # #805
+        made, review = settled_world()
+        shot = made["candidates"][-1]["id"]
+        review.decide(made, "u3", "exclude", [shot])
+        made["edits"]["exclude"] = [shot]  # the render that applied it
+        self.assertTrue(self.checks(made, plan_dict(GOOD), review)["pending"]["ok"])
+        review.decide(made, "u3", "include", [shot])
+        check = self.checks(made, plan_dict(GOOD), review)["pending"]
+        self.assertFalse(check["ok"])
+        self.assertIn("câu 3", check["detail"])
+
+    def test_an_exclusion_taken_back_by_undo_or_reset_is_pending(self):  # #805 review
+        for how in ("undo", "reset"):
+            made, review = settled_world()
+            shot = made["candidates"][-1]["id"]
+            review.decide(made, "u3", "exclude", [shot])
+            made["edits"]["exclude"] = [shot]  # the render that applied it
+            self.assertTrue(self.checks(made, plan_dict(GOOD), review)["pending"]["ok"])
+            if how == "undo":
+                review.undo(made)
+            else:
+                review.decide(made, "u3", "reset")
+            self.assertFalse(self.checks(made, plan_dict(GOOD), review)["pending"]["ok"], how)
+
+    def test_footage_the_video_shows_that_is_now_excluded_is_pending(self):  # #805 review
+        from tests.mastering.test_review import footage
+        made = world()
+        made["candidates"] = [footage(c["id"], 2000 * n, 2000 * (n + 1)) for n, c in enumerate(made["candidates"])]
+        review = rv.Review()
+        for unit in made["units"]:
+            review.decide(made, unit["unit_id"], "approve")
+        shown = made["units"][0]["chosen"][0]
+        other = next(c["id"] for c in made["candidates"] if c["id"] != shown)
+        review.decide(made, "u3", "exclude", [other])
+        made["edits"]["exclude"] = [other]  # rendered with that exclusion...
+        self.assertTrue(self.checks(made, plan_dict(GOOD), review)["pending"]["ok"])
+        # ...then the same id is excluded again where it now names the footage the video shows
+        source = next(c for c in made["candidates"] if c["id"] == shown)
+        review.units["u3"].ranges[other].append([source["source_id"], source["start_ms"], source["end_ms"]])
+        check = self.checks(made, plan_dict(GOOD), review)["pending"]
+        self.assertFalse(check["ok"])
+        self.assertIn("câu 3", check["detail"])
+
     def test_unreviewed_needs_acceptance_and_critical_is_never_waved_through(self):
         made = world()
         review = rv.Review()

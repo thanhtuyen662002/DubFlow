@@ -766,6 +766,7 @@ mod tests {
         assert!(is_unit("i1.u2") && is_unit("hook.u1") && is_unit("outro.u123"));
         assert!(!is_unit("i1.u") && !is_unit("u2") && !is_unit("i1.u2;x") && !is_unit("../i1.u2"));
         assert!(is_shot("i1-s1c3") && is_shot("i12-s8c1234") && is_shot("i2-s1c12f3"));
+        assert!(is_shot("i1-s1c100509") && is_shot("i16-s2c100509f3") && !is_shot("i1-s1c1005091"));
         for bad in ["v1c3", "hook-s1c3", "i1-s12c3", "i1-s1c", "i1-s1c3f12", "i1-s1c3;rm", "../i1-s1c3"] {
             assert!(!is_shot(bad), "{bad}");
         }

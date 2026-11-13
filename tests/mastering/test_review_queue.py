@@ -166,7 +166,7 @@ class RecordTests(unittest.TestCase):
         loaded.decide(made, "u2", "later")
         again = rv.Review.from_dict(json.loads(json.dumps(loaded.to_dict())))
         self.assertEqual(again.to_dict(), loaded.to_dict())
-        self.assertEqual(again.to_dict()["schema_version"], 2)
+        self.assertEqual(again.to_dict()["schema_version"], rv.SCHEMA_VERSION)  # written as the current version (3 since #805)
         bad = loaded.to_dict()
         bad["records"] = [{"type": "DELETE_EVERYTHING"}]
         with self.assertRaises(rv.ReviewError):
