@@ -82,7 +82,13 @@ excluded by its own id, and its range spans the pieces). The planner leaves out
 a shot named or every piece of a whole shot named while at least half of it is
 in the recorded footage, and any shot at least half inside a recorded range,
 whatever it is called now; an id renumbered onto other footage is not left out,
-and when none of the footage is left the decision says it is gone. The recorded
+and when none of the footage is left the decision says it is gone. A piece of a
+new split that shows 250 ms or more of a recorded range (or all of a shorter
+one) without being half inside it is left out too and listed in the log's
+`exclusions.widened`, so excluded footage is not shown and the widening is not
+silent. A pin on a shot the plan left out for an exclusion no longer plays: the
+sentence is planned and checked as the AI's choice, and the pin's decision gets
+an `excluded` conflict naming the excluding sentence. The recorded
 footage is part of a plan's identity. An exclusion that would leave a part no
 usable footage is refused; footage used anyway is listed in the log's
 `exclusions.reused` and the sentence gets an `all_excluded` conflict, which

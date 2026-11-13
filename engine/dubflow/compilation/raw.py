@@ -421,10 +421,10 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
                 # the user's shots keep their ids: pinned, excluded and approved (P2-N5) are never split
                 locked = ({i for ids in edits.pin.values() for i in ids} | set(edits.exclude)
                           | {p[0] for pieces in edits.keep.values() for p in pieces}) if edits is not None else set()
-                part_pool = align.usable_pool(edits, part_pools[part_id])
+                again = {more.parent(i) for i in locked if more.parent(i) != i}
+                part_pool = align.usable_pool(edits, part_pools[part_id], again=again)
                 ids = more.wanted(made.log["units"], part_pool, evidence, sampled, limit=min(more.EXTRA_SHOTS, room // 2),
-                                  forward_only=True, locked={i for i in locked if more.parent(i) == i},
-                                  again={more.parent(i) for i in locked if more.parent(i) != i})
+                                  forward_only=True, locked={i for i in locked if more.parent(i) == i}, again=again)
                 if ids:
                     status.write(message=f"{context}AI xem thêm khung hình của cảnh dài ({index}/{len(parts)})…")
                     mine = {s: candidates[s] for s in source_ids}

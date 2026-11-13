@@ -377,6 +377,67 @@ class WholeShotExclusionTests(unittest.TestCase):  # #805
         self.assertNotEqual(align.ranges_digest_input(one), align.ranges_digest_input(other))
 
 
+class MergedReviewFindingsTests(unittest.TestCase):  # #805 after #802: an independent review of the merged branch
+    def left(self, review: rv.Review, the_log: dict) -> set[str]:
+        from engine.dubflow.mastering import align
+        return align.exclusion(review.edits(), rv._log_candidates(the_log)).gone
+
+    def test_excluding_an_id_again_is_undone_completely(self):
+        first = split_log()
+        review = rv.Review()
+        review.decide(first, "u1", "exclude", ["c2"])
+        moved = json.loads(json.dumps(first))
+        for c in moved["candidates"]:
+            if c["id"] == "c2":
+                c["start_ms"], c["end_ms"] = 9000, 11_000
+        review.decide(moved, "u1", "exclude", ["c2"])
+        self.assertEqual(review.units["u1"].ranges["c2"], [["v1", 2000, 4000], ["v1", 9000, 11_000]])
+        review.undo(moved)
+        self.assertEqual(review.units["u1"].ranges["c2"], [["v1", 2000, 4000]])
+        self.assertEqual(review.edits().exclude_ranges, {"c2": (("v1", 2000, 4000),)})
+
+    def test_a_refused_exclusion_changes_nothing(self):
+        first = split_log()
+        review = rv.Review()
+        review.decide(first, "u1", "exclude", ["c2"])
+        review.decide(first, "u2", "pin", ["c1"])
+        moved = json.loads(json.dumps(first))
+        for c in moved["candidates"]:
+            if c["id"] == "c2":
+                c["start_ms"], c["end_ms"] = 0, 2000  # c2 now names c1's footage, which u2 pins
+        with self.assertRaises(rv.ReviewError):
+            review.decide(moved, "u1", "exclude", ["c2"])
+        self.assertEqual(review.units["u1"].ranges["c2"], [["v1", 2000, 4000]])
+
+    def test_a_split_across_the_excluded_footage_never_shows_it_and_says_how_much_went(self):
+        review = rv.Review()
+        review.decide(split_log((("c3f1", 4000, 5000), ("c3f2", 5000, 6000), ("c3f3", 6000, 7000))), "u1", "exclude", ["c3f2"])
+        # the next split cuts across 5000-6000: no piece is mostly in it
+        again = split_log((("c7f1", 3000, 5600), ("c7f2", 5600, 9000)))
+        from engine.dubflow.mastering import align
+        found = align.exclusion(review.edits(), rv._log_candidates(again))
+        self.assertEqual(found.gone, {"c7f1", "c7f2"})
+        self.assertEqual(found.widened, {"c7f1": "c3f2", "c7f2": "c3f2"})  # reported, never silent
+        self.assertEqual(review.reconcile(again), [])
+        # a sliver at a cut boundary is not footage shown
+        edge = split_log((("c8f1", 3000, 5100), ("c8f2", 5100, 5900), ("c8f3", 5900, 9000)))
+        self.assertEqual(self.left(review, edge), {"c8f2"})
+
+    def test_a_pin_the_plan_left_out_is_voided(self):
+        the_log = split_log()
+        review = rv.Review()
+        review.decide(the_log, "u2", "pin", ["c2"])
+        # the plan left c2 out for u1's exclusion of the footage under another id (a new split numbered it)
+        review.units["u1"] = rv.UnitDecision(exclude=["c9"], ranges={"c9": [["v1", 2000, 4000]]})
+        made = json.loads(json.dumps(the_log))
+        made["exclusions"] = {"left_out": {"c2": "c9"}, "widened": {}, "reused": []}
+        messages = review.reconcile(made)
+        self.assertEqual(len(messages), 1)
+        self.assertEqual((review.conflicts["u2"]["cause"], review.conflicts["u2"]["with"]), ("excluded", "u1"))
+        self.assertTrue(review.units["u2"].invalidated)
+        self.assertNotIn("u2", review.edits().pin)
+
+
 class CliTests(unittest.TestCase):
     def test_the_desktop_calls_change_the_file_and_print_the_view(self):
         with TemporaryDirectory() as folder:

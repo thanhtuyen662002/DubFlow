@@ -416,5 +416,21 @@ class NotEverythingNeedsReviewTests(unittest.TestCase):
         self.assertNotIn("claims", decisions[0].signals)
 
 
+class PinLeftOutTests(unittest.TestCase):  # #805 x #802: an independent review of the merged branch
+    def test_a_pin_an_exclusion_left_out_is_no_users_choice(self):
+        # u is pinned to the "1500 MILES" globe, and another exclusion recorded that footage (under another id, as a
+        # new split numbers it): the pin cannot play, the AI picks a map without the number, and the claim is checked
+        pool, found = map_shots("c505", "c509", "c514")
+        unit = align.Unit("u", MAP, 0, 2800, "narration")
+        edits = align.Edits(pin={"u": ["c509"]}, exclude={"x"}, exclude_ranges={"x": (("s1", 1_585_000, 1_590_000),)})
+        choices, decisions, _ = align.assign([unit], pool, found, PACING, forward_only=True, edits=edits)
+        decision = decisions[0]
+        self.assertNotIn("c509", [c.candidate.candidate_id for c in choices])
+        ready = not decision.coverage.get("needs_review") and not any(c.needs_review for c in choices)
+        self.assertFalse(ready, decision.to_dict())
+        self.assertIn("claims", decision.signals)
+        self.assertTrue(any("ghim" in n for n in decision.notes), decision.notes)
+
+
 if __name__ == "__main__":
     unittest.main()

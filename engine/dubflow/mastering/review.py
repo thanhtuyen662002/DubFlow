@@ -399,7 +399,8 @@ class Review:
             return
         current = self.units.get(unit_id, UnitDecision())
         decision = UnitDecision(current.approved, list(current.pin), list(current.exclude), "", current.later,
-                                current.source_missing, current.pieces, current.basis, dict(current.ranges))
+                                current.source_missing, current.pieces, current.basis,
+                                {i: [list(span) for span in spans] for i, spans in current.ranges.items()})  # its own copy: undo restores
         shown = list(units[unit_id].get("chosen") or [])
         kind = {"approve": "APPROVE", "exclude": "EXCLUDE", "later": "REVIEW_LATER", "missing": "MARK_SOURCE_MISSING",
                 "unapprove": "UNDO", "reset": "UNDO"}.get(action)
@@ -433,9 +434,9 @@ class Review:
                 raise ReviewError("exclude needs a shot")
             decision.exclude = list(dict.fromkeys([*decision.exclude, *wanted]))
             for i, span in self._spans(log, wanted).items():  # more footage for an id that now names other footage
-                spans = decision.ranges.setdefault(i, [])
+                spans = decision.ranges.get(i, [])
                 if span not in spans:
-                    spans[:] = [*spans, span][-MAX_SPANS:]
+                    decision.ranges[i] = [*spans, span][-MAX_SPANS:]
             affected = self._affected(pool, decision, wanted)
             pinned = sorted({other for other, d in self.units.items() if other != unit_id and not d.invalidated
                              for i in d.pin if i in affected})
@@ -624,6 +625,8 @@ class Review:
         # footage the plan used although the user left it out: nothing else was left (#805). The sentence whose
         # exclusion it is gets a conflict, never a silent reuse.
         reused = set(((log.get("exclusions") or {}).get("reused")) or ())
+        # what the plan left out for an exclusion: a pin on it no longer plays (#805), so it is no choice any more
+        left = (log.get("exclusions") or {}).get("left_out") or {}
         messages = []
         for unit_id, decision in list(self.units.items()):
             unit = units.get(unit_id)
@@ -642,6 +645,14 @@ class Review:
             if gone:
                 messages.append(self._void(unit_id, "shot_gone", "Cảnh đã chọn không còn trong nguồn (nguồn đã đổi); hãy chọn lại.",
                                            shots=gone))
+                continue
+            dropped = [i for i in decision.pin if i in left]
+            if dropped:
+                by = next((other for other, d in sorted(self.units.items()) if other != unit_id
+                           and self._covering(pool, d, dropped)), None)
+                where = f" ở câu {by[1:]}" if by else ""
+                messages.append(self._void(unit_id, "excluded", f"Cảnh bạn đã ghim bị loại trừ{where} nên không được dùng; "
+                                           "hãy chọn cảnh khác hoặc bỏ loại trừ.", shots=dropped, other=by))
                 continue
             clash = sorted(i for i in reused if self._covering(pool, decision, [i])) if reused else []
             if clash and (not decision.invalidated or decision.invalidated == ALL_EXCLUDED):

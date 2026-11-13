@@ -459,9 +459,10 @@ def _mastered(spec: Spec, visuals: Sequence[render.Visual], total_ms: int, work:
                 # the user's shots keep their ids: pinned, excluded and approved (P2-N5) are never split
                 locked = {i for ids in edits.pin.values() for i in ids} | set(edits.exclude) \
                     | {p[0] for pieces in edits.keep.values() for p in pieces}
-                ids = more.wanted(log["units"], align.usable_pool(edits, pool), evidence, (), limit=min(more.EXTRA_SHOTS, (describer.budget - describer.taken) // 2),
-                                  locked={i for i in locked if more.parent(i) == i},
-                                  again={more.parent(i) for i in locked if more.parent(i) != i})
+                again = {more.parent(i) for i in locked if more.parent(i) != i}
+                ids = more.wanted(log["units"], align.usable_pool(edits, pool, again=again), evidence, (),
+                                  limit=min(more.EXTRA_SHOTS, (describer.budget - describer.taken) // 2),
+                                  locked={i for i in locked if more.parent(i) == i}, again=again)
                 if ids:
                     video_of = {f"v{i + 1}": v.path for i, v in enumerate(visuals) if v.duration_ms is not None}
                     found, described = more.look_again(
