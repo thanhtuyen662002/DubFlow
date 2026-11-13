@@ -1,0 +1,1754 @@
+{
+ "version": "1.1.96-rc16",
+ "run": 43361381416,
+ "source_sha": "205e3ff0090aa05812b603a4d43be2114bded481",
+ "zip_sha256": "5945c88b246bd0bc29aa37b52f319c8eeb6b6d97953b898f136824401b292840",
+ "exe_sha256": "5d9c103655fd63fe9b552c5800228e0c7a9f21c4a372171ba3d61625922a5d0e",
+ "W1_cached": {
+  "verdict": "PASS",
+  "per_run": {
+   "rc12": {
+    "equal_plans": 20,
+    "parts": 22,
+    "different": [
+     "i1",
+     "i16"
+    ],
+    "saved": {
+     "run": "run-6206f16daf09",
+     "ground_truth_sha256": "afa979d239b6a68be03349308e233809efddc84cd2ed13e0d869913c51f66497",
+     "units_scored": 64,
+     "unmatched": [],
+     "unmatched_footage": [
+      0,
+      60
+     ],
+     "recall_at_1": [
+      17,
+      60
+     ],
+     "recall_at_3": [
+      28,
+      60
+     ],
+     "recall_at_5": [
+      31,
+      60
+     ],
+     "chosen_hit": [
+      25,
+      60
+     ],
+     "false_source_insufficient": [],
+     "serious_silent_misses": [],
+     "missing_flagged": [
+      4,
+      4
+     ],
+     "ready_precision": [
+      5,
+      5
+     ],
+     "ready_rate": [
+      5,
+      64
+     ],
+     "flagged_but_right": [
+      20,
+      60
+     ],
+     "flagged_and_wrong": [
+      35,
+      60
+     ],
+     "states": {
+      "MATCH_NOT_FOUND": 15,
+      "NEEDS_REVIEW": 44,
+      "READY": 5
+     }
+    },
+    "replayed": {
+     "run": "run-6206f16daf09",
+     "ground_truth_sha256": "afa979d239b6a68be03349308e233809efddc84cd2ed13e0d869913c51f66497",
+     "units_scored": 64,
+     "unmatched": [],
+     "unmatched_footage": [
+      0,
+      60
+     ],
+     "recall_at_1": [
+      18,
+      60
+     ],
+     "recall_at_3": [
+      29,
+      60
+     ],
+     "recall_at_5": [
+      32,
+      60
+     ],
+     "chosen_hit": [
+      26,
+      60
+     ],
+     "false_source_insufficient": [],
+     "serious_silent_misses": [],
+     "missing_flagged": [
+      4,
+      4
+     ],
+     "ready_precision": [
+      4,
+      4
+     ],
+     "ready_rate": [
+      4,
+      64
+     ],
+     "flagged_but_right": [
+      22,
+      60
+     ],
+     "flagged_and_wrong": [
+      34,
+      60
+     ],
+     "states": {
+      "MATCH_NOT_FOUND": 15,
+      "NEEDS_REVIEW": 45,
+      "READY": 4
+     }
+    },
+    "changed": [
+     {
+      "unit": "i1.u1",
+      "before": "READY/hit",
+      "after": "NEEDS_REVIEW/hit"
+     },
+     {
+      "unit": "i16.u1",
+      "before": "NEEDS_REVIEW/miss",
+      "after": "NEEDS_REVIEW/hit"
+     }
+    ],
+    "watch": {
+     "i1.u1": {
+      "state": "NEEDS_REVIEW",
+      "evidence": "MATCH_AVAILABLE",
+      "chosen": [
+       "i1-s1c100002"
+      ],
+      "chosen_hit": true,
+      "notes": [
+       "chưa thấy trong cảnh điều lời câu nói là hiển thị (giá lịch phim sử trị): cần kiểm tra"
+      ],
+      "claims": {
+       "display": true,
+       "verified": [],
+       "unverified": [
+        "giá lịch phim sử trị"
+       ],
+       "conflicts": []
+      }
+     },
+     "i1.u2": {
+      "state": "READY",
+      "evidence": "MATCH_AVAILABLE",
+      "chosen": [
+       "i1-s1c100011",
+       "i1-s1c100017"
+      ],
+      "chosen_hit": true,
+      "notes": [],
+      "claims": {
+       "display": true,
+       "verified": [
+        "The Battle of Russia"
+       ],
+       "unverified": [],
+       "conflicts": []
+      }
+     },
+     "i9.u1": {
+      "state": "NEEDS_REVIEW",
+      "evidence": "MATCH_AVAILABLE",
+      "chosen": [
+       "i9-s1c100300"
+      ],
+      "chosen_hit": true,
+      "notes": [
+       "chưa thấy trong cảnh điều lời câu nói là hiển thị (193.000.000 người): cần kiểm tra"
+      ],
+      "claims": {
+       "display": true,
+       "verified": [],
+       "unverified": [
+        "193.000.000 người"
+       ],
+       "conflicts": []
+      }
+     },
+     "i16.u1": {
+      "state": "NEEDS_REVIEW",
+      "evidence": "MATCH_AVAILABLE",
+      "chosen": [
+       "i16-s1c100509",
+       "i16-s1c100514"
+      ],
+      "chosen_hit": true,
+      "notes": [
+       "chỉ 81 % thời lượng câu có cảnh khớp lời (nguồn không đủ cảnh), phần còn lại dùng cảnh chung"
+      ],
+      "claims": {
+       "display": true,
+       "verified": [
+        "1.500 dặm"
+       ],
+       "unverified": [],
+       "conflicts": []
+      }
+     }
+    },
+    "wall_s": 3.7
+   },
+   "rc13": {
+    "equal_plans": 19,
+    "parts": 22,
+    "different": [
+     "i1",
+     "i9",
+     "i16"
+    ],
+    "saved": {
+     "run": "run-76080efb6da4",
+     "ground_truth_sha256": "afa979d239b6a68be03349308e233809efddc84cd2ed13e0d869913c51f66497",
+     "units_scored": 64,
+     "unmatched": [],
+     "unmatched_footage": [
+      0,
+      60
+     ],
+     "recall_at_1": [
+      20,
+      60
+     ],
+     "recall_at_3": [
+      31,
+      60
+     ],
+     "recall_at_5": [
+      33,
+      60
+     ],
+     "chosen_hit": [
+      26,
+      60
+     ],
+     "false_source_insufficient": [],
+     "serious_silent_misses": [
+      "i1.u2",
+      "i16.u1"
+     ],
+     "missing_flagged": [
+      4,
+      4
+     ],
+     "ready_precision": [
+      5,
+      7
+     ],
+     "ready_rate": [
+      7,
+      64
+     ],
+     "flagged_but_right": [
+      21,
+      60
+     ],
+     "flagged_and_wrong": [
+      32,
+      60
+     ],
+     "states": {
+      "MATCH_NOT_FOUND": 15,
+      "NEEDS_REVIEW": 42,
+      "READY": 7
+     }
+    },
+    "replayed": {
+     "run": "run-76080efb6da4",
+     "ground_truth_sha256": "afa979d239b6a68be03349308e233809efddc84cd2ed13e0d869913c51f66497",
+     "units_scored": 64,
+     "unmatched": [],
+     "unmatched_footage": [
+      0,
+      60
+     ],
+     "recall_at_1": [
+      22,
+      60
+     ],
+     "recall_at_3": [
+      31,
+      60
+     ],
+     "recall_at_5": [
+      33,
+      60
+     ],
+     "chosen_hit": [
+      28,
+      60
+     ],
+     "false_source_insufficient": [],
+     "serious_silent_misses": [],
+     "missing_flagged": [
+      4,
+      4
+     ],
+     "ready_precision": [
+      5,
+      5
+     ],
+     "ready_rate": [
+      5,
+      64
+     ],
+     "flagged_but_right": [
+      23,
+      60
+     ],
+     "flagged_and_wrong": [
+      32,
+      60
+     ],
+     "states": {
+      "MATCH_NOT_FOUND": 15,
+      "NEEDS_REVIEW": 44,
+      "READY": 5
+     }
+    },
+    "changed": [
+     {
+      "unit": "i1.u2",
+      "before": "READY/miss",
+      "after": "READY/hit"
+     },
+     {
+      "unit": "i9.u1",
+      "before": "READY/hit",
+      "after": "NEEDS_REVIEW/hit"
+     },
+     {
+      "unit": "i16.u1",
+      "before": "READY/miss",
+      "after": "NEEDS_REVIEW/hit"
+     }
+    ],
+    "watch": {
+     "i1.u1": {
+      "state": "READY",
+      "evidence": "MATCH_AVAILABLE",
+      "chosen": [
+       "i1-s1c100002"
+      ],
+      "chosen_hit": true,
+      "notes": [],
+      "claims": {
+       "display": true,
+       "verified": [
+        "giá lịch phim sử trị"
+       ],
+       "unverified": [],
+       "conflicts": []
+      }
+     },
+     "i1.u2": {
+      "state": "READY",
+      "evidence": "MATCH_AVAILABLE",
+      "chosen": [
+       "i1-s1c100011",
+       "i1-s1c100017"
+      ],
+      "chosen_hit": true,
+      "notes": [],
+      "claims": {
+       "display": true,
+       "verified": [
+        "The Battle of Russia"
+       ],
+       "unverified": [],
+       "conflicts": []
+      }
+     },
+     "i9.u1": {
+      "state": "NEEDS_REVIEW",
+      "evidence": "MATCH_AVAILABLE",
+      "chosen": [
+       "i9-s1c100300"
+      ],
+      "chosen_hit": true,
+      "notes": [
+       "chưa thấy trong cảnh điều lời câu nói là hiển thị (193.000.000 người): cần kiểm tra"
+      ],
+      "claims": {
+       "display": true,
+       "verified": [],
+       "unverified": [
+        "193.000.000 người"
+       ],
+       "conflicts": []
+      }
+     },
+     "i16.u1": {
+      "state": "NEEDS_REVIEW",
+      "evidence": "MATCH_AVAILABLE",
+      "chosen": [
+       "i16-s1c100509",
+       "i16-s1c100511"
+      ],
+      "chosen_hit": true,
+      "notes": [
+       "chỉ 81 % thời lượng câu có cảnh khớp lời (nguồn không đủ cảnh), phần còn lại dùng cảnh chung"
+      ],
+      "claims": {
+       "display": true,
+       "verified": [
+        "1.500 dặm"
+       ],
+       "unverified": [],
+       "conflicts": []
+      }
+     }
+    },
+    "wall_s": 3.2
+   },
+   "rc14": {
+    "equal_plans": 20,
+    "parts": 22,
+    "different": [
+     "i1",
+     "i16"
+    ],
+    "saved": {
+     "run": "run-b3e7c7967a6e",
+     "ground_truth_sha256": "afa979d239b6a68be03349308e233809efddc84cd2ed13e0d869913c51f66497",
+     "units_scored": 64,
+     "unmatched": [],
+     "unmatched_footage": [
+      0,
+      60
+     ],
+     "recall_at_1": [
+      20,
+      60
+     ],
+     "recall_at_3": [
+      24,
+      60
+     ],
+     "recall_at_5": [
+      28,
+      60
+     ],
+     "chosen_hit": [
+      23,
+      60
+     ],
+     "false_source_insufficient": [],
+     "serious_silent_misses": [],
+     "missing_flagged": [
+      4,
+      4
+     ],
+     "ready_precision": [
+      6,
+      6
+     ],
+     "ready_rate": [
+      6,
+      64
+     ],
+     "flagged_but_right": [
+      17,
+      60
+     ],
+     "flagged_and_wrong": [
+      37,
+      60
+     ],
+     "states": {
+      "MATCH_NOT_FOUND": 16,
+      "NEEDS_REVIEW": 42,
+      "READY": 6
+     }
+    },
+    "replayed": {
+     "run": "run-b3e7c7967a6e",
+     "ground_truth_sha256": "afa979d239b6a68be03349308e233809efddc84cd2ed13e0d869913c51f66497",
+     "units_scored": 64,
+     "unmatched": [],
+     "unmatched_footage": [
+      0,
+      60
+     ],
+     "recall_at_1": [
+      20,
+      60
+     ],
+     "recall_at_3": [
+      24,
+      60
+     ],
+     "recall_at_5": [
+      28,
+      60
+     ],
+     "chosen_hit": [
+      23,
+      60
+     ],
+     "false_source_insufficient": [],
+     "serious_silent_misses": [],
+     "missing_flagged": [
+      4,
+      4
+     ],
+     "ready_precision": [
+      6,
+      6
+     ],
+     "ready_rate": [
+      6,
+      64
+     ],
+     "flagged_but_right": [
+      17,
+      60
+     ],
+     "flagged_and_wrong": [
+      37,
+      60
+     ],
+     "states": {
+      "MATCH_NOT_FOUND": 16,
+      "NEEDS_REVIEW": 42,
+      "READY": 6
+     }
+    },
+    "changed": [],
+    "watch": {
+     "i1.u1": {
+      "state": "NEEDS_REVIEW",
+      "evidence": "MATCH_AVAILABLE",
+      "chosen": [
+       "i1-s1c100006"
+      ],
+      "chosen_hit": false,
+      "notes": [
+       "chưa thấy trong cảnh điều lời câu nói là hiển thị (giá lịch phim sử trị): cần kiểm tra"
+      ],
+      "claims": {
+       "display": true,
+       "verified": [],
+       "unverified": [
+        "giá lịch phim sử trị"
+       ],
+       "conflicts": []
+      }
+     },
+     "i1.u2": {
+      "state": "READY",
+      "evidence": "MATCH_AVAILABLE",
+      "chosen": [
+       "i1-s1c100011",
+       "i1-s1c100017"
+      ],
+      "chosen_hit": true,
+      "notes": [],
+      "claims": {
+       "display": true,
+       "verified": [
+        "The Battle of Russia"
+       ],
+       "unverified": [],
+       "conflicts": []
+      }
+     },
+     "i9.u1": {
+      "state": "NEEDS_REVIEW",
+      "evidence": "MATCH_AVAILABLE",
+      "chosen": [
+       "i9-s1c100300"
+      ],
+      "chosen_hit": true,
+      "notes": [
+       "chưa thấy trong cảnh điều lời câu nói là hiển thị (193.000.000 người): cần kiểm tra"
+      ],
+      "claims": {
+       "display": true,
+       "verified": [],
+       "unverified": [
+        "193.000.000 người"
+       ],
+       "conflicts": []
+      }
+     },
+     "i16.u1": {
+      "state": "NEEDS_REVIEW",
+      "evidence": "MATCH_AVAILABLE",
+      "chosen": [
+       "i16-s1c100509",
+       "i16-s1c100514"
+      ],
+      "chosen_hit": true,
+      "notes": [
+       "chỉ 81 % thời lượng câu có cảnh khớp lời (nguồn không đủ cảnh), phần còn lại dùng cảnh chung"
+      ],
+      "claims": {
+       "display": true,
+       "verified": [
+        "1.500 dặm"
+       ],
+       "unverified": [],
+       "conflicts": []
+      }
+     }
+    },
+    "wall_s": 3.1
+   },
+   "rc15": {
+    "equal_plans": 19,
+    "parts": 22,
+    "different": [
+     "i1",
+     "i9",
+     "i16"
+    ],
+    "saved": {
+     "run": "run-8f64b0a50e04",
+     "ground_truth_sha256": "afa979d239b6a68be03349308e233809efddc84cd2ed13e0d869913c51f66497",
+     "units_scored": 64,
+     "unmatched": [],
+     "unmatched_footage": [
+      0,
+      60
+     ],
+     "recall_at_1": [
+      21,
+      60
+     ],
+     "recall_at_3": [
+      27,
+      60
+     ],
+     "recall_at_5": [
+      29,
+      60
+     ],
+     "chosen_hit": [
+      25,
+      60
+     ],
+     "false_source_insufficient": [],
+     "serious_silent_misses": [
+      "i1.u1",
+      "i1.u2",
+      "i16.u1"
+     ],
+     "missing_flagged": [
+      4,
+      4
+     ],
+     "ready_precision": [
+      5,
+      8
+     ],
+     "ready_rate": [
+      8,
+      64
+     ],
+     "flagged_but_right": [
+      20,
+      60
+     ],
+     "flagged_and_wrong": [
+      32,
+      60
+     ],
+     "states": {
+      "MATCH_NOT_FOUND": 15,
+      "NEEDS_REVIEW": 41,
+      "READY": 8
+     }
+    },
+    "replayed": {
+     "run": "run-8f64b0a50e04",
+     "ground_truth_sha256": "afa979d239b6a68be03349308e233809efddc84cd2ed13e0d869913c51f66497",
+     "units_scored": 64,
+     "unmatched": [],
+     "unmatched_footage": [
+      0,
+      60
+     ],
+     "recall_at_1": [
+      23,
+      60
+     ],
+     "recall_at_3": [
+      28,
+      60
+     ],
+     "recall_at_5": [
+      30,
+      60
+     ],
+     "chosen_hit": [
+      27,
+      60
+     ],
+     "false_source_insufficient": [],
+     "serious_silent_misses": [],
+     "missing_flagged": [
+      4,
+      4
+     ],
+     "ready_precision": [
+      5,
+      5
+     ],
+     "ready_rate": [
+      5,
+      64
+     ],
+     "flagged_but_right": [
+      22,
+      60
+     ],
+     "flagged_and_wrong": [
+      33,
+      60
+     ],
+     "states": {
+      "MATCH_NOT_FOUND": 15,
+      "NEEDS_REVIEW": 44,
+      "READY": 5
+     }
+    },
+    "changed": [
+     {
+      "unit": "i1.u1",
+      "before": "READY/miss",
+      "after": "NEEDS_REVIEW/miss"
+     },
+     {
+      "unit": "i1.u2",
+      "before": "READY/miss",
+      "after": "READY/hit"
+     },
+     {
+      "unit": "i9.u1",
+      "before": "READY/hit",
+      "after": "NEEDS_REVIEW/hit"
+     },
+     {
+      "unit": "i16.u1",
+      "before": "READY/miss",
+      "after": "NEEDS_REVIEW/hit"
+     }
+    ],
+    "watch": {
+     "i1.u1": {
+      "state": "NEEDS_REVIEW",
+      "evidence": "MATCH_AVAILABLE",
+      "chosen": [
+       "i1-s1c100004"
+      ],
+      "chosen_hit": false,
+      "notes": [
+       "chưa thấy trong cảnh điều lời câu nói là hiển thị (giá lịch phim sử trị): cần kiểm tra"
+      ],
+      "claims": {
+       "display": true,
+       "verified": [],
+       "unverified": [
+        "giá lịch phim sử trị"
+       ],
+       "conflicts": []
+      }
+     },
+     "i1.u2": {
+      "state": "READY",
+      "evidence": "MATCH_AVAILABLE",
+      "chosen": [
+       "i1-s1c100011",
+       "i1-s1c100017"
+      ],
+      "chosen_hit": true,
+      "notes": [],
+      "claims": {
+       "display": true,
+       "verified": [
+        "The Battle of Russia"
+       ],
+       "unverified": [],
+       "conflicts": []
+      }
+     },
+     "i9.u1": {
+      "state": "NEEDS_REVIEW",
+      "evidence": "MATCH_AVAILABLE",
+      "chosen": [
+       "i9-s1c100300"
+      ],
+      "chosen_hit": true,
+      "notes": [
+       "chưa thấy trong cảnh điều lời câu nói là hiển thị (193.000.000 người): cần kiểm tra"
+      ],
+      "claims": {
+       "display": true,
+       "verified": [],
+       "unverified": [
+        "193.000.000 người"
+       ],
+       "conflicts": []
+      }
+     },
+     "i16.u1": {
+      "state": "NEEDS_REVIEW",
+      "evidence": "MATCH_AVAILABLE",
+      "chosen": [
+       "i16-s1c100509",
+       "i16-s1c100518"
+      ],
+      "chosen_hit": true,
+      "notes": [
+       "chỉ 81 % thời lượng câu có cảnh khớp lời (nguồn không đủ cảnh), phần còn lại dùng cảnh chung",
+       "cảnh hiển thị con số khác với lời câu (1.500 dặm): cần kiểm tra"
+      ],
+      "claims": {
+       "display": true,
+       "verified": [
+        "1.500 dặm"
+       ],
+       "unverified": [],
+       "conflicts": [
+        "1.500 dặm"
+       ]
+      }
+     }
+    },
+    "wall_s": 3.2
+   }
+  }
+ },
+ "W1_fresh": {
+  "verdict": "PASS",
+  "ready_precision": [
+   4,
+   4
+  ],
+  "review_rate": [
+   56,
+   60
+  ],
+  "flagged_but_right": [
+   20,
+   60
+  ],
+  "silent_misses": [
+   0,
+   60
+  ],
+  "units": {
+   "i1.u1": {
+    "chosen": [
+     "i1-s1c100004"
+    ],
+    "hit": false,
+    "state": "NEEDS_REVIEW"
+   },
+   "i1.u2": {
+    "chosen": [
+     "i1-s1c100011",
+     "i1-s1c100017"
+    ],
+    "hit": true,
+    "state": "READY"
+   },
+   "i16.u1": {
+    "chosen": [
+     "i16-s1c100509",
+     "i16-s1c100511"
+    ],
+    "hit": true,
+    "state": "NEEDS_REVIEW"
+   }
+  },
+  "review_queue": {
+   "i1.u1": "Cần xem lại (note: displayed claim unverified)",
+   "i1.u2": "Đạt",
+   "i16.u1": "Cần xem lại (81 % coverage)",
+   "final_qc": "REVIEW_PENDING; export asks 'Xuất bản cuối khi còn câu chưa duyệt?' (67 câu); declined"
+  }
+ },
+ "W2": {
+  "verdict": "PASS_WITH_DEVIATION",
+  "run": "run-18892c740ffb",
+  "draft_s": 255,
+  "excluded_shot": "i1-s1c2",
+  "pieces": [
+   "i1-s1c2f1",
+   "i1-s1c2f2",
+   "i1-s1c2f3"
+  ],
+  "clicked_on": "i1-s1c2f3 (unused)",
+  "rebuild_s": 13.0,
+  "rendered": [
+   "i1"
+  ],
+  "reused": 7,
+  "approvals_kept": "4/4",
+  "invalidated": 0,
+  "held_frame": 0,
+  "overlap_segments": 0,
+  "persisted_after_restart": true,
+  "undo_rebuild_s": 12.2,
+  "export_qc": "Kiểm tra cuối: đạt.",
+  "final_sha256": "9e3d5fb4963e2df7468a281bd9c91873213a393d777c67728006bcf7477a5e0",
+  "not_run": "0-6000 ms shot (not split in rc16)"
+ },
+ "W3": {
+  "verdict": "Gate B FAIL",
+  "run": "run-f6919b04ccb3",
+  "draft_s": 676,
+  "peak_ram_mb": 3438,
+  "score": {
+   "ground_truth_sha256": "afa979d239b6a68be03349308e233809efddc84cd2ed13e0d869913c51f66497",
+   "logs": 22,
+   "units_scored": 64,
+   "unmatched": [],
+   "with_footage": 60,
+   "missing_cases": 4,
+   "recall_at_5": 0.5167,
+   "chosen_hit": 0.4,
+   "false_source_insufficient": [],
+   "serious_silent_misses": [],
+   "missing_flagged": 4,
+   "states": {
+    "MATCH_NOT_FOUND": 15,
+    "NEEDS_REVIEW": 45,
+    "READY": 4
+   },
+   "evidence": {
+    "MATCH_AVAILABLE": 49,
+    "MATCH_NOT_FOUND": 15
+   }
+  },
+  "vision": {
+   "budget": 142,
+   "frames": 139,
+   "asked": 138,
+   "broad": 95,
+   "targeted": 44,
+   "multi_frame": 0
+  },
+  "held_frame": 0,
+  "tool": {
+   "score-rc16": [
+    {
+     "run": "run-f6919b04ccb3",
+     "ground_truth_sha256": "afa979d239b6a68be03349308e233809efddc84cd2ed13e0d869913c51f66497",
+     "units_scored": 64,
+     "unmatched": [],
+     "unmatched_footage": [
+      0,
+      60
+     ],
+     "recall_at_1": [
+      20,
+      60
+     ],
+     "recall_at_3": [
+      26,
+      60
+     ],
+     "recall_at_5": [
+      31,
+      60
+     ],
+     "chosen_hit": [
+      24,
+      60
+     ],
+     "false_source_insufficient": [],
+     "serious_silent_misses": [],
+     "missing_flagged": [
+      4,
+      4
+     ],
+     "ready_precision": [
+      4,
+      4
+     ],
+     "ready_rate": [
+      4,
+      64
+     ],
+     "flagged_but_right": [
+      20,
+      60
+     ],
+     "flagged_and_wrong": [
+      36,
+      60
+     ],
+     "states": {
+      "MATCH_NOT_FOUND": 15,
+      "NEEDS_REVIEW": 45,
+      "READY": 4
+     }
+    }
+   ],
+   "replay-rc16": {
+    "equal_plans": 22,
+    "parts": 22,
+    "different": [],
+    "saved": {
+     "run": "run-f6919b04ccb3",
+     "ground_truth_sha256": "afa979d239b6a68be03349308e233809efddc84cd2ed13e0d869913c51f66497",
+     "units_scored": 64,
+     "unmatched": [],
+     "unmatched_footage": [
+      0,
+      60
+     ],
+     "recall_at_1": [
+      20,
+      60
+     ],
+     "recall_at_3": [
+      26,
+      60
+     ],
+     "recall_at_5": [
+      31,
+      60
+     ],
+     "chosen_hit": [
+      24,
+      60
+     ],
+     "false_source_insufficient": [],
+     "serious_silent_misses": [],
+     "missing_flagged": [
+      4,
+      4
+     ],
+     "ready_precision": [
+      4,
+      4
+     ],
+     "ready_rate": [
+      4,
+      64
+     ],
+     "flagged_but_right": [
+      20,
+      60
+     ],
+     "flagged_and_wrong": [
+      36,
+      60
+     ],
+     "states": {
+      "MATCH_NOT_FOUND": 15,
+      "NEEDS_REVIEW": 45,
+      "READY": 4
+     }
+    },
+    "replayed": {
+     "run": "run-f6919b04ccb3",
+     "ground_truth_sha256": "afa979d239b6a68be03349308e233809efddc84cd2ed13e0d869913c51f66497",
+     "units_scored": 64,
+     "unmatched": [],
+     "unmatched_footage": [
+      0,
+      60
+     ],
+     "recall_at_1": [
+      20,
+      60
+     ],
+     "recall_at_3": [
+      26,
+      60
+     ],
+     "recall_at_5": [
+      31,
+      60
+     ],
+     "chosen_hit": [
+      24,
+      60
+     ],
+     "false_source_insufficient": [],
+     "serious_silent_misses": [],
+     "missing_flagged": [
+      4,
+      4
+     ],
+     "ready_precision": [
+      4,
+      4
+     ],
+     "ready_rate": [
+      4,
+      64
+     ],
+     "flagged_but_right": [
+      20,
+      60
+     ],
+     "flagged_and_wrong": [
+      36,
+      60
+     ],
+     "states": {
+      "MATCH_NOT_FOUND": 15,
+      "NEEDS_REVIEW": 45,
+      "READY": 4
+     }
+    }
+   },
+   "attribute-rc16": {
+    "run": "run-f6919b04ccb3",
+    "ground_truth_sha256": "afa979d239b6a68be03349308e233809efddc84cd2ed13e0d869913c51f66497",
+    "footage_units": 60,
+    "stages": {
+     "R3_NOT_LOOKED": 26,
+     "OK": 24,
+     "R5_RANKING": 3,
+     "R4_WEAK_MATCH": 2,
+     "R6_BEHIND_CURSOR": 3,
+     "R4_NO_SHARED_WORDS": 1,
+     "R2_UNUSABLE": 1
+    },
+    "review": {
+     "FLAGGED_MISS": 36,
+     "READY_HIT": 4,
+     "FLAGGED_HIT": 20
+    },
+    "unmatched": 0,
+    "multi_source_parts": []
+   },
+   "oracle-rc16": {
+    "saved": {
+     "run": "run-f6919b04ccb3",
+     "ground_truth_sha256": "afa979d239b6a68be03349308e233809efddc84cd2ed13e0d869913c51f66497",
+     "units_scored": 64,
+     "unmatched": [],
+     "unmatched_footage": [
+      0,
+      60
+     ],
+     "recall_at_1": [
+      20,
+      60
+     ],
+     "recall_at_3": [
+      26,
+      60
+     ],
+     "recall_at_5": [
+      31,
+      60
+     ],
+     "chosen_hit": [
+      24,
+      60
+     ],
+     "false_source_insufficient": [],
+     "serious_silent_misses": [],
+     "missing_flagged": [
+      4,
+      4
+     ],
+     "ready_precision": [
+      4,
+      4
+     ],
+     "ready_rate": [
+      4,
+      64
+     ],
+     "flagged_but_right": [
+      20,
+      60
+     ],
+     "flagged_and_wrong": [
+      36,
+      60
+     ],
+     "states": {
+      "MATCH_NOT_FOUND": 15,
+      "NEEDS_REVIEW": 45,
+      "READY": 4
+     }
+    },
+    "replayed": {
+     "run": "run-f6919b04ccb3",
+     "ground_truth_sha256": "afa979d239b6a68be03349308e233809efddc84cd2ed13e0d869913c51f66497",
+     "units_scored": 64,
+     "unmatched": [],
+     "unmatched_footage": [
+      0,
+      60
+     ],
+     "recall_at_1": [
+      20,
+      60
+     ],
+     "recall_at_3": [
+      26,
+      60
+     ],
+     "recall_at_5": [
+      31,
+      60
+     ],
+     "chosen_hit": [
+      24,
+      60
+     ],
+     "false_source_insufficient": [],
+     "serious_silent_misses": [],
+     "missing_flagged": [
+      4,
+      4
+     ],
+     "ready_precision": [
+      4,
+      4
+     ],
+     "ready_rate": [
+      4,
+      64
+     ],
+     "flagged_but_right": [
+      20,
+      60
+     ],
+     "flagged_and_wrong": [
+      36,
+      60
+     ],
+     "states": {
+      "MATCH_NOT_FOUND": 15,
+      "NEEDS_REVIEW": 45,
+      "READY": 4
+     }
+    },
+    "oracle_looked_only": {
+     "run": "run-f6919b04ccb3",
+     "ground_truth_sha256": "afa979d239b6a68be03349308e233809efddc84cd2ed13e0d869913c51f66497",
+     "units_scored": 64,
+     "unmatched": [],
+     "unmatched_footage": [
+      0,
+      60
+     ],
+     "recall_at_1": [
+      26,
+      60
+     ],
+     "recall_at_3": [
+      31,
+      60
+     ],
+     "recall_at_5": [
+      34,
+      60
+     ],
+     "chosen_hit": [
+      30,
+      60
+     ],
+     "false_source_insufficient": [],
+     "serious_silent_misses": [],
+     "missing_flagged": [
+      4,
+      4
+     ],
+     "ready_precision": [
+      11,
+      11
+     ],
+     "ready_rate": [
+      11,
+      64
+     ],
+     "flagged_but_right": [
+      19,
+      60
+     ],
+     "flagged_and_wrong": [
+      30,
+      60
+     ],
+     "states": {
+      "MATCH_NOT_FOUND": 11,
+      "NEEDS_REVIEW": 42,
+      "READY": 11
+     }
+    },
+    "oracle_all_hits": {
+     "run": "run-f6919b04ccb3",
+     "ground_truth_sha256": "afa979d239b6a68be03349308e233809efddc84cd2ed13e0d869913c51f66497",
+     "units_scored": 64,
+     "unmatched": [],
+     "unmatched_footage": [
+      0,
+      60
+     ],
+     "recall_at_1": [
+      55,
+      60
+     ],
+     "recall_at_3": [
+      56,
+      60
+     ],
+     "recall_at_5": [
+      56,
+      60
+     ],
+     "chosen_hit": [
+      55,
+      60
+     ],
+     "false_source_insufficient": [],
+     "serious_silent_misses": [],
+     "missing_flagged": [
+      4,
+      4
+     ],
+     "ready_precision": [
+      39,
+      39
+     ],
+     "ready_rate": [
+      39,
+      64
+     ],
+     "flagged_but_right": [
+      16,
+      60
+     ],
+     "flagged_and_wrong": [
+      5,
+      60
+     ],
+     "states": {
+      "MATCH_NOT_FOUND": 3,
+      "NEEDS_REVIEW": 22,
+      "READY": 39
+     }
+    }
+   },
+   "swap-rc16-rc15": {
+    "run": "run-f6919b04ccb3",
+    "donor": "run-8f64b0a50e04",
+    "replayed": {
+     "run": "run-f6919b04ccb3",
+     "ground_truth_sha256": "afa979d239b6a68be03349308e233809efddc84cd2ed13e0d869913c51f66497",
+     "units_scored": 64,
+     "unmatched": [],
+     "unmatched_footage": [
+      0,
+      60
+     ],
+     "recall_at_1": [
+      20,
+      60
+     ],
+     "recall_at_3": [
+      26,
+      60
+     ],
+     "recall_at_5": [
+      31,
+      60
+     ],
+     "chosen_hit": [
+      24,
+      60
+     ],
+     "false_source_insufficient": [],
+     "serious_silent_misses": [],
+     "missing_flagged": [
+      4,
+      4
+     ],
+     "ready_precision": [
+      4,
+      4
+     ],
+     "ready_rate": [
+      4,
+      64
+     ],
+     "flagged_but_right": [
+      20,
+      60
+     ],
+     "flagged_and_wrong": [
+      36,
+      60
+     ],
+     "states": {
+      "MATCH_NOT_FOUND": 15,
+      "NEEDS_REVIEW": 45,
+      "READY": 4
+     }
+    },
+    "with_donor_vision": {
+     "run": "run-f6919b04ccb3",
+     "ground_truth_sha256": "afa979d239b6a68be03349308e233809efddc84cd2ed13e0d869913c51f66497",
+     "units_scored": 64,
+     "unmatched": [],
+     "unmatched_footage": [
+      0,
+      60
+     ],
+     "recall_at_1": [
+      25,
+      60
+     ],
+     "recall_at_3": [
+      29,
+      60
+     ],
+     "recall_at_5": [
+      30,
+      60
+     ],
+     "chosen_hit": [
+      28,
+      60
+     ],
+     "false_source_insufficient": [],
+     "serious_silent_misses": [],
+     "missing_flagged": [
+      4,
+      4
+     ],
+     "ready_precision": [
+      6,
+      6
+     ],
+     "ready_rate": [
+      6,
+      64
+     ],
+     "flagged_but_right": [
+      22,
+      60
+     ],
+     "flagged_and_wrong": [
+      32,
+      60
+     ],
+     "states": {
+      "MATCH_NOT_FOUND": 13,
+      "NEEDS_REVIEW": 45,
+      "READY": 6
+     }
+    }
+   },
+   "variability": {
+    "runs": [
+     "run-6206f16daf09",
+     "run-76080efb6da4",
+     "run-b3e7c7967a6e",
+     "run-8f64b0a50e04",
+     "run-f6919b04ccb3"
+    ],
+    "looked_each": [
+     161,
+     158,
+     155,
+     154,
+     157
+    ],
+    "looked_in_all": 143,
+    "identical_text": 0,
+    "mean_term_jaccard_vs_first": 0.527,
+    "union_looked": 184
+   },
+   "pooled-rc16": {
+    "run": "run-f6919b04ccb3",
+    "donors": [
+     "run-6206f16daf09",
+     "run-76080efb6da4",
+     "run-b3e7c7967a6e",
+     "run-8f64b0a50e04"
+    ],
+    "shots_added": 77,
+    "replayed": {
+     "run": "run-f6919b04ccb3",
+     "ground_truth_sha256": "afa979d239b6a68be03349308e233809efddc84cd2ed13e0d869913c51f66497",
+     "units_scored": 64,
+     "unmatched": [],
+     "unmatched_footage": [
+      0,
+      60
+     ],
+     "recall_at_1": [
+      20,
+      60
+     ],
+     "recall_at_3": [
+      26,
+      60
+     ],
+     "recall_at_5": [
+      31,
+      60
+     ],
+     "chosen_hit": [
+      24,
+      60
+     ],
+     "false_source_insufficient": [],
+     "serious_silent_misses": [],
+     "missing_flagged": [
+      4,
+      4
+     ],
+     "ready_precision": [
+      4,
+      4
+     ],
+     "ready_rate": [
+      4,
+      64
+     ],
+     "flagged_but_right": [
+      20,
+      60
+     ],
+     "flagged_and_wrong": [
+      36,
+      60
+     ],
+     "states": {
+      "MATCH_NOT_FOUND": 15,
+      "NEEDS_REVIEW": 45,
+      "READY": 4
+     }
+    },
+    "pooled": {
+     "run": "run-f6919b04ccb3",
+     "ground_truth_sha256": "afa979d239b6a68be03349308e233809efddc84cd2ed13e0d869913c51f66497",
+     "units_scored": 64,
+     "unmatched": [],
+     "unmatched_footage": [
+      0,
+      60
+     ],
+     "recall_at_1": [
+      24,
+      60
+     ],
+     "recall_at_3": [
+      29,
+      60
+     ],
+     "recall_at_5": [
+      33,
+      60
+     ],
+     "chosen_hit": [
+      28,
+      60
+     ],
+     "false_source_insufficient": [],
+     "serious_silent_misses": [],
+     "missing_flagged": [
+      4,
+      4
+     ],
+     "ready_precision": [
+      5,
+      5
+     ],
+     "ready_rate": [
+      5,
+      64
+     ],
+     "flagged_but_right": [
+      23,
+      60
+     ],
+     "flagged_and_wrong": [
+      32,
+      60
+     ],
+     "states": {
+      "MATCH_NOT_FOUND": 15,
+      "NEEDS_REVIEW": 44,
+      "READY": 5
+     }
+    }
+   },
+   "hint-rc16-w15": {
+    "run": "run-f6919b04ccb3",
+    "window_s": 15.0,
+    "units": 60,
+    "unmatched": 0,
+    "hit_at_1": [
+     24,
+     60
+    ],
+    "hit_at_3": [
+     32,
+     60
+    ],
+    "mean_shots_in_window": 10.7
+   },
+   "hint-rc16-w45": {
+    "run": "run-f6919b04ccb3",
+    "window_s": 45.0,
+    "units": 60,
+    "unmatched": 0,
+    "hit_at_1": [
+     24,
+     60
+    ],
+    "hit_at_3": [
+     28,
+     60
+    ],
+    "mean_shots_in_window": 24.6
+   }
+  }
+ },
+ "W4": {
+  "verdict": "PASS",
+  "espresso_draft_s": 135,
+  "rerender_s": [
+   8.3,
+   7.8,
+   7.8
+  ],
+  "approvals_kept": "4/4",
+  "invalidated": 0,
+  "v1_sha256": "9afa62bcfb3ae46343d28f606b39a5d68db722c7285582c1112c7e9a1002c6d3",
+  "v1_identical": true,
+  "cancel": "CANCELLED",
+  "sync_W2": {
+   "measured": 7,
+   "unmeasured": 0,
+   "worst_ms": 33.3
+  },
+  "sync_W3": {
+   "measured": 21,
+   "unmeasured": 0,
+   "worst_ms": 0.0
+  },
+  "followup": {
+   "legacy_product": {
+    "verdict": "PASS",
+    "secs": 13,
+    "mastering_key": false,
+    "decode_errors": 0,
+    "duration_s": [
+     5.333,
+     5.33
+    ]
+   },
+   "dubbing_off": {
+    "verdict": "PASS",
+    "secs": 83,
+    "qc": "passed",
+    "av_diff_ms": 0.02,
+    "decode_errors": 0
+   },
+   "checkpoint_resume": {
+    "verdict": "PASS",
+    "cancelled_after_parts": [
+     "hook",
+     "intro",
+     "i1"
+    ],
+    "resume_s": 56.6,
+    "rendered": [
+     "i2",
+     "i3",
+     "i4",
+     "i5",
+     "outro"
+    ],
+    "reused": [
+     "hook",
+     "intro",
+     "i1"
+    ],
+    "final_state": "COMPLETED",
+    "decode_errors": 0
+   },
+   "final_revision": {
+    "verdict": "PASS",
+    "old_final": "kept, marked stale",
+    "export": "lần xuất 2",
+    "qc": "Kiểm tra cuối: đạt.",
+    "final_json_revision": 2
+   }
+  }
+ },
+ "W5": {
+  "verdict": "PASS with one P2 finding (Bán hàng accepts a symlinked source file)",
+  "scan": {
+   "files": 2917,
+   "claude": 0,
+   "gemini": 0,
+   "email": 0
+  },
+  "profile_path_files": 0,
+  "review_abs_paths": "0/9",
+  "sources_unchanged": "25/25",
+  "followup": {
+   "symlink_source_tonghop": "PASS refused",
+   "symlink_source_banhang": "FINDING P2 accepted (read-only)",
+   "junction_source_folder": "accepted in both (no source roots by design); sources unchanged",
+   "junction_output": "PASS refused in both; target empty",
+   "ipc": {
+    "verdict": "PASS",
+    "refused": "8/8",
+    "files_changed": 0
+   },
+   "filter_shell": "PASS literal text, 0 calc processes",
+   "schema": {
+    "v2": "read",
+    "v99": "refused, not overwritten",
+    "verdict": "PASS"
+   },
+   "scan": {
+    "files": 3567,
+    "claude": 0,
+    "gemini": 0,
+    "email": 0,
+    "profile_path_files": 0,
+    "review_abs_paths": "0/11"
+   }
+  }
+ },
+ "human_validation": "BLOCKED",
+ "peak_ram_mb": {
+  "W1_window": 3903,
+  "W2": 3250,
+  "W3": 3438
+ }
+}
