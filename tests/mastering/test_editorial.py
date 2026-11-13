@@ -532,6 +532,40 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(set(defs["candidate"]["properties"]["evidence"]["required"]), set(found["v1c1"].to_dict()))
         self.assertEqual(set(defs["edits"]["required"]), set(align.Edits().to_dict()))
 
+    def test_the_exclusions_entry_has_the_contract_keys(self):  # #805
+        top = json.loads((Path(__file__).resolve().parents[2] / "contracts" / "mastering" / "editorial-v1.json")
+                         .read_text(encoding="utf-8"))["properties"]["exclusions"]
+        pool, _ = product_world()
+        written = align.exclusion_log(align.exclusion(align.Edits(exclude={pool[0].candidate_id}), pool))["exclusions"]
+        self.assertEqual(set(top["required"]), set(written))
+        self.assertEqual(set(top["properties"]), set(written))
+        self.assertEqual(align.exclusion_log(align.exclusion(align.Edits(), pool)), {})
+
+
+class WholeShotExclusionTests(unittest.TestCase):  # #805
+    def test_a_whole_shot_leaves_out_its_pieces_and_a_recorded_range_outlives_the_ids(self):
+        pieces = [candidate(f"v1c3f{n}", "v1", 1000 * n, 1000 * n + 1000) for n in (1, 2, 3)]
+        other = candidate("v2c1", "v2", 0, 3000)
+        found = align.exclusion(align.Edits(exclude={"v1c3"}), [*pieces, other])
+        self.assertEqual(found.gone, {"v1c3f1", "v1c3f2", "v1c3f3"})
+        self.assertEqual(set(found.by.values()), {"v1c3"})
+        # a new split names the same footage otherwise: the range still leaves it out, footage outside it stays
+        renamed = [candidate("v1c8f1", "v1", 1000, 2500), candidate("v1c8f2", "v1", 2500, 4000),
+                   candidate("v1c9", "v1", 4000, 6000), other]
+        edits = align.Edits(exclude={"v1c3"}, exclude_ranges={"v1c3": (("v1", 1000, 4000),)})
+        self.assertEqual(align.exclusion(edits, renamed).gone, {"v1c8f1", "v1c8f2"})
+        # the same id on other footage is not what was left out
+        moved = [candidate("v1c3f1", "v1", 9000, 10_000), other]
+        self.assertEqual(align.exclusion(edits, moved).gone, set())
+        # a piece of a split shot leaves out only itself
+        self.assertEqual(align.exclusion(align.Edits(exclude={"v1c3f2"}), [*pieces, other]).gone, {"v1c3f2"})
+
+    def test_leaving_out_everything_is_reused_and_said_never_silent(self):
+        pool = [candidate("v1c1", "v1", 0, 2000), candidate("v1c2", "v1", 2000, 4000)]
+        found = align.exclusion(align.Edits(exclude={"v1c1", "v1c2"}), pool)
+        self.assertEqual((found.gone, found.reused), (set(), ["v1c1", "v1c2"]))
+        self.assertEqual(align.exclusion_log(found)["exclusions"]["reused"], ["v1c1", "v1c2"])
+
 
 @unittest.skipUnless(FFMPEG, "needs FFmpeg")
 class RealFramesTest(unittest.TestCase):

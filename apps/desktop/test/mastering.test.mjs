@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import {
   nextInQueue, queueSummary, startUnit, PRIORITY_LABELS,
-  coverageText, evidenceHelp, provenanceText, isLevel, unitNumber, levelText, masteringOf, needsExportConfirm, parseReview, reviewSummary, seconds, unitBadge,
+  coverageText, evidenceHelp, exclusionText, familyLines, provenanceText, wholeShotOf, isLevel, unitNumber, levelText, masteringOf, needsExportConfirm, parseReview, reviewSummary, seconds, unitBadge,
 } from "../src/features/mastering/model.ts";
 import { buildRequest } from "../src/features/product/model.ts";
 
@@ -32,6 +32,36 @@ assert.deepEqual(view.units[1].alternatives.map((shot) => shot.id), ["v1c4"]);  
 assert.deepEqual(view.summary, { READY: 1, MATCH_NOT_FOUND: 1 });
 assert.equal(view.warnings.length, 1);
 assert.equal(parseReview({ kind: "other", units: [] }), null);
+
+// #805: a piece knows its whole shot, an excluded shot says by which sentence, and "Bỏ cả cảnh gốc" lists what it leaves out
+{
+  const split = parseReview({
+    ...raw,
+    units: [{ ...raw.units[0], chosen: [{ id: "v1c3f2", source_id: "v1", start_ms: 5000, end_ms: 6000, parent: "v1c3", excluded: true, excluded_by: "s2" }] }],
+    shots: [{ id: "v1c3f1", source_id: "v1", start_ms: 4000, end_ms: 5000 }],
+    families: {
+      v1c3: { id: "v1c3", source_id: "v1", start_ms: 4000, end_ms: 7000, pieces: [
+        { id: "v1c3f1", start_ms: 4000, end_ms: 5000, used_by: ["s1"] }, { id: "v1c3f2", start_ms: 5000, end_ms: 6000, used_by: [] }, { bad: 1 }] },
+      v9: { id: "other", source_id: "v1", start_ms: 0, end_ms: 1, pieces: [] },  // a key that is not its id is dropped
+    },
+    exclusions: [{ id: "v1c3", by: "s2", whole: true, covers: ["v1c3f1", "v1c3f2"], reused: [] }, { by: "s1" }],
+  });
+  const piece = split.units[0].chosen[0];
+  assert.deepEqual([piece.parent, piece.excluded, piece.excluded_by], ["v1c3", true, "s2"]);
+  assert.deepEqual([split.shots[0].parent, split.shots[0].excluded, split.shots[0].excluded_by], ["v1c3f1", false, null]);
+  assert.deepEqual(Object.keys(split.families), ["v1c3"]);
+  assert.deepEqual(familyLines(split.families.v1c3), ["Đoạn 1 · 4,0 s–5,0 s · Câu 1 đang dùng", "Đoạn 2 · 5,0 s–6,0 s · chưa câu nào dùng"]);
+  assert.equal(split.exclusions.length, 1);
+  assert.equal(exclusionText(split.exclusions[0]), "Câu 2 đã loại cả cảnh gốc v1c3 (2 đoạn)");
+  assert.equal(exclusionText({ id: "v1c4", by: "i1.u3", whole: false, covers: ["v1c4"], reused: ["v1c4"] }),
+    "Câu 3 đã loại cảnh v1c4 · vẫn phải dùng vì không còn cảnh nào khác");
+  // "Bỏ cả cảnh gốc" is offered on every piece of a split shot, an unused alternative too, never on a whole shot
+  assert.equal(wholeShotOf(split, { id: "v1c3f1", parent: "v1c3" })?.id, "v1c3");
+  assert.equal(wholeShotOf(split, split.units[0].chosen[0])?.id, "v1c3");
+  assert.equal(wholeShotOf(split, { id: "v1c4", parent: "v1c4" }), null);
+  assert.equal(wholeShotOf(split, { id: "v1c9f1", parent: "v1c9" }), null);  // no family listed: nothing to confirm
+  assert.deepEqual([view.families, view.exclusions], [{}, []]);  // an older engine: nothing to show
+}
 
 // The badge is the user's word when there is one; the AI's verdict stays in the data.
 assert.equal(unitBadge(view.units[0]).text, "Đạt");

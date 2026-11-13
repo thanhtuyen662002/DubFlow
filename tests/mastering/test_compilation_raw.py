@@ -652,11 +652,15 @@ class MomentTest(unittest.TestCase):
         self.assertFalse(any(s.source.end > 24_000 for s in part.plan.segments),
                          [(s.role, s.source.start, s.source.end) for s in part.plan.segments])
         self.assertFalse([w for w in part.log["warnings"] if "đoạn bạn đã bỏ" in w])
-        # one shot only: kept whole, and the user is told
+        self.assertEqual(part.log["exclusions"]["left_out"], {"i1-s1c5": "i1-s1c5f2"})
+        self.assertEqual(part.log["exclusions"]["widened"], {"i1-s1c5": "i1-s1c5f2"})
+        self.assertEqual(part.log["exclusions"]["reused"], [])
+        # one shot only: used because nothing else is left, said in a warning and in the log, never silently (#805 B6)
         alone = planner.plan_part("i1", "item", spoken, 5600, m.Options("balanced", "entertainment"), lead_ms=200, gap_ms=300,
                                   footage=[source], candidates={"i1-s1": pool[:1]}, evidence=evidence, title="Con mèo nhảy lên bàn",
                                   inputs={"part": "0" * 64}, edits=align.Edits({}, {"i1-s1c1f2"}, set()))
-        self.assertTrue([w for w in alone.log["warnings"] if "đoạn bạn đã bỏ thuộc cảnh i1-s1c1" in w], alone.log["warnings"])
+        self.assertTrue([w for w in alone.log["warnings"] if "cảnh bạn đã loại (i1-s1c1)" in w], alone.log["warnings"])
+        self.assertEqual(alone.log["exclusions"]["reused"], ["i1-s1c1"])
         # a pinned shot that plays past the moment: the moment is chosen again after it, never from the excluded c5
         pinned = planner.plan_part("i1", "item", [spoken[0], ("Ai cũng bất ngờ.", 5000)], 8100,
                                    m.Options("balanced", "entertainment"), lead_ms=200, gap_ms=300, footage=[source],

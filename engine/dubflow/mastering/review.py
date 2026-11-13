@@ -29,10 +29,11 @@ import re
 from typing import Any, Iterable, Mapping, Sequence
 
 from . import align, evidence as ev
+from .candidates import Candidate
 from .frames import parent
 
-SCHEMA_VERSION = 2  # 2: review later, no suitable footage, the decision record, the queue position (1 still reads)
-READABLE_VERSIONS = (1, 2)
+SCHEMA_VERSION = 3  # 3: the footage each exclusion was made on (#805); 2: review later, no suitable footage, the decision
+READABLE_VERSIONS = (1, 2, 3)  # record, the queue position (1 and 2 still read)
 KIND = "editorial_review"
 GENERIC = ("hook", "cta", "intro", "outro")
 READY_CONFIDENCE = align.REVIEW_BELOW
@@ -54,6 +55,9 @@ USER_SOURCE_MISSING = "USER_SOURCE_MISSING"   # the user found no suitable foota
 # new plan voids is recorded by the system as INVALIDATED.
 DECISION_TYPES = ("APPROVE", "PIN", "EXCLUDE", "REPLACE", "REVIEW_LATER", "MARK_SOURCE_MISSING", "UNDO", "INVALIDATED")
 # Why a decision no longer holds (the conflict record of an INVALIDATED decision, P2-N5) and what the user can do.
+# the reason a sentence carries while footage it excluded had to be used (#805); its exclusions still apply
+ALL_EXCLUDED = ("Mọi cảnh còn lại đều đã bị loại nên cảnh bạn loại ở câu này vẫn phải dùng; hãy bỏ loại một cảnh hoặc "
+                "chọn cảnh khác.")
 CONFLICT_OPTIONS = {
     "sentence_removed": ("Bỏ qua: câu không còn trong kịch bản",),
     "sentence_changed": ("Duyệt lại câu với lời mới", "Chọn cảnh khác"),
@@ -64,6 +68,7 @@ CONFLICT_OPTIONS = {
     "timing_changed": ("Duyệt lại câu với thời lượng mới", "Chọn cảnh khác"),
     "shown_again": ("Duyệt lại cảnh chiếu lại", "Chọn cảnh khác"),
     "plan_changed": ("Duyệt lại cảnh mới", "Chọn cảnh khác"),
+    "all_excluded": ("Bỏ loại trừ cảnh", "Chọn cảnh khác"),
 }
 
 # The review queue (uncalibrated: the groups say what the planner and the checks flagged, not a measured risk)
@@ -175,9 +180,16 @@ class UnitDecision:
     # the material (the sentence and the sources' content, :func:`basis`). Absent in reviews saved before.
     pieces: list[list[Any]] | None = None
     basis: str = ""
+    # the footage each exclusion was made on (#805): excluded id → [[source id, start ms, end ms], …] (more than one
+    # when the id was excluded again after it came to name other footage), so a new split or trim that names the same
+    # footage otherwise still leaves it out. Absent in reviews saved before (v1, v2).
+    ranges: dict[str, list[list[Any]]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {"pin": list(self.pin), "exclude": list(self.exclude)}
+        kept = {i: [list(span) for span in r] for i, r in sorted(self.ranges.items()) if i in self.exclude}
+        if kept:
+            out["ranges"] = kept
         if self.approved is not None:
             out["approved"] = list(self.approved)
             if self.pieces is not None:
@@ -196,6 +208,57 @@ class UnitDecision:
     def empty(self) -> bool:
         return self.approved is None and not self.pin and not self.exclude and not self.invalidated \
             and not self.later and not self.source_missing
+
+
+MAX_SPANS = 8  # footage one excluded id may name (it is excluded again each time it names other footage)
+
+
+def _span(value: Any) -> bool:
+    return isinstance(value, list) and len(value) == 3 and type(value[0]) is str and 0 < len(value[0]) <= 64 \
+        and all(type(n) is int and n >= 0 for n in value[1:]) and value[2] > value[1]
+
+
+def _ranges(value: Any) -> dict[str, list[list[Any]]]:
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping) or len(value) > MAX_IDS or any(
+            type(k) is not str or not 0 < len(k) <= 64 or not isinstance(r, list) or not 0 < len(r) <= MAX_SPANS
+            or not all(_span(span) for span in r) for k, r in value.items()):
+        raise ReviewError("ranges must map shot ids to lists of [source, start, end]")
+    return {k: [list(span) for span in r] for k, r in value.items()}
+
+
+def families(log: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """Each shot split into pieces in this log (#805): the whole shot's id, source, range and its pieces, with the
+    sentences that use each piece."""
+    used: dict[str, list[str]] = {}
+    for unit in log.get("units") or ():
+        for cid in dict.fromkeys(unit.get("chosen") or ()):
+            used.setdefault(cid, []).append(unit["unit_id"])
+    out: dict[str, dict[str, Any]] = {}
+    for c in log.get("candidates") or ():
+        if not isinstance(c, Mapping) or not all(k in c for k in ("id", "source_id", "start_ms", "end_ms")):
+            continue
+        whole = parent(c["id"])
+        if whole == c["id"]:
+            continue
+        family = out.setdefault(whole, {"id": whole, "source_id": c["source_id"], "start_ms": c["start_ms"], "end_ms": c["end_ms"],
+                                        "pieces": []})
+        family["start_ms"], family["end_ms"] = min(family["start_ms"], c["start_ms"]), max(family["end_ms"], c["end_ms"])
+        family["pieces"].append({"id": c["id"], "start_ms": c["start_ms"], "end_ms": c["end_ms"], "used_by": used.get(c["id"], [])})
+    for family in out.values():
+        family["pieces"].sort(key=lambda p: (p["start_ms"], p["id"]))
+    return out
+
+
+def _log_candidates(log: Mapping[str, Any]) -> list[Candidate]:
+    out = []
+    for c in log.get("candidates") or ():
+        try:
+            out.append(Candidate.from_dict(c))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
 
 
 def _ids(value: Any, name: str) -> list[str]:
@@ -228,7 +291,7 @@ class Review:
         units: dict[str, UnitDecision] = {}
         for unit_id, raw in units_in.items():
             if type(unit_id) is not str or not 0 < len(unit_id) <= 32 or not isinstance(raw, Mapping) \
-                    or set(raw) - {"approved", "pin", "exclude", "invalidated", "later", "source_missing", "pieces", "basis"}:
+                    or set(raw) - {"approved", "pin", "exclude", "invalidated", "later", "source_missing", "pieces", "basis", "ranges"}:
                 raise ReviewError("a unit decision has unknown fields")
             approved = raw.get("approved")
             basis = raw.get("basis") or ""
@@ -237,7 +300,8 @@ class Review:
             units[unit_id] = UnitDecision(None if approved is None else _ids(approved, "approved"),
                                           _ids(raw.get("pin", []), "pin"), _ids(raw.get("exclude", []), "exclude"),
                                           str(raw.get("invalidated") or "")[:300], raw.get("later") is True,
-                                          raw.get("source_missing") is True, _pieces(raw.get("pieces")), basis)
+                                          raw.get("source_missing") is True, _pieces(raw.get("pieces")), basis,
+                                          _ranges(raw.get("ranges")))
         acknowledged = value.get("acknowledged") or []
         if not isinstance(acknowledged, list) or len(acknowledged) > 500 or any(type(v) is not str or len(v) != 16 for v in acknowledged):
             raise ReviewError("acknowledged must list warning ids")
@@ -273,6 +337,10 @@ class Review:
         out = align.Edits.from_dict(base.to_dict() if base else None)
         for unit_id, decision in sorted(self.units.items()):
             if decision.invalidated:
+                # a conflict over excluded footage the plan had to use keeps the exclusions: they are the user's word
+                # until the user changes it (#805: footage never comes back silently)
+                if decision.invalidated == ALL_EXCLUDED:
+                    self._add_exclusions(out, decision)
                 continue
             if decision.pin:
                 out.pin[unit_id] = list(decision.pin)
@@ -283,8 +351,21 @@ class Review:
                     if decision.pieces else [(i, -1, 0, False) for i in decision.approved]
                 if decision.basis:  # the words it was given on: no constraint for a sentence that is now another one
                     out.keep_words[unit_id] = decision.basis[:8]
-            out.exclude.update(decision.exclude)
+            self._add_exclusions(out, decision)
         return out
+
+    @staticmethod
+    def _add_exclusions(out: align.Edits, decision: UnitDecision) -> None:
+        out.exclude.update(decision.exclude)
+        for i, spans in decision.ranges.items():
+            if i in decision.exclude:
+                out.exclude_ranges[i] = tuple(dict.fromkeys([*out.exclude_ranges.get(i, ()),
+                                                              *((str(r[0]), int(r[1]), int(r[2])) for r in spans)]))
+
+    def exclusions_of(self) -> list[tuple[str, str]]:
+        """(sentence, excluded id) of every exclusion that applies (an all_excluded conflict keeps its own)."""
+        return [(u, e) for u, d in sorted(self.units.items()) if not d.invalidated or d.invalidated == ALL_EXCLUDED
+                for e in d.exclude]
 
     # --- changes (each one bumps the revision and can be undone) ---
 
@@ -300,17 +381,26 @@ class Review:
         ``focus`` only remembers the sentence the user is on: no revision, no undo step, no record."""
         units = {u["unit_id"]: u for u in log.get("units") or ()}
         known = {c["id"] for c in log.get("candidates") or ()}
+        whole = families(log)
         if unit_id not in units:
             raise ReviewError("unknown sentence")
         wanted = _ids(ids or [], "shots")
-        if any(i not in known for i in wanted):
+        # a whole shot split into pieces can be left out (or let back in) by its own id (#805); everything else names a
+        # shot of the log
+        allowed = known | set(whole) if action in ("exclude", "include") else known
+        if any(i not in allowed for i in wanted):
             raise ReviewError("unknown shot")
         if action == "focus":
             self.position = unit_id
             return
+        pool = _log_candidates(log)  # parsed once for every exclusion check of this action
+        if action == "include":
+            self._include(log, pool, unit_id, wanted, run=run, now=now)
+            return
         current = self.units.get(unit_id, UnitDecision())
         decision = UnitDecision(current.approved, list(current.pin), list(current.exclude), "", current.later,
-                                current.source_missing, current.pieces, current.basis)
+                                current.source_missing, current.pieces, current.basis,
+                                {i: [list(span) for span in spans] for i, spans in current.ranges.items()})  # its own copy: undo restores
         shown = list(units[unit_id].get("chosen") or [])
         kind = {"approve": "APPROVE", "exclude": "EXCLUDE", "later": "REVIEW_LATER", "missing": "MARK_SOURCE_MISSING",
                 "unapprove": "UNDO", "reset": "UNDO"}.get(action)
@@ -330,14 +420,30 @@ class Review:
         elif action == "pin":
             if not wanted:
                 raise ReviewError("pin needs a shot")
+            others = sorted({u for u, d in self.units.items() if u != unit_id and (not d.invalidated or d.invalidated == ALL_EXCLUDED)
+                             and set(wanted) & self._affected(pool, d, d.exclude)})
+            if others:
+                raise ReviewError(f"Cảnh này đã bị loại ở câu {others[0][1:]}; hãy bỏ loại trước khi dùng.")
             decision.pin = wanted
-            decision.exclude = [i for i in decision.exclude if i not in wanted]
+            # the newer choice: this sentence's own exclusions of that footage go (a piece pinned out of a shot it left out)
+            covering = {e for e in decision.exclude if set(wanted) & self._affected(pool, decision, [e])}
+            decision.exclude = [i for i in decision.exclude if i not in wanted and i not in covering]
             decision.approved = None
         elif action == "exclude":
             if not wanted:
                 raise ReviewError("exclude needs a shot")
             decision.exclude = list(dict.fromkeys([*decision.exclude, *wanted]))
-            decision.pin = [i for i in decision.pin if i not in wanted]
+            for i, span in self._spans(log, wanted).items():  # more footage for an id that now names other footage
+                spans = decision.ranges.get(i, [])
+                if span not in spans:
+                    decision.ranges[i] = [*spans, span][-MAX_SPANS:]
+            affected = self._affected(pool, decision, wanted)
+            pinned = sorted({other for other, d in self.units.items() if other != unit_id and not d.invalidated
+                             for i in d.pin if i in affected})
+            if pinned:
+                raise ReviewError(f"Câu {pinned[0][1:]} đang ghim cảnh này; hãy bỏ ghim ở câu đó trước.")
+            self._still_some_left(pool, unit_id, decision)
+            decision.pin = [i for i in decision.pin if i not in affected]
             decision.approved = None
         elif action == "reset":
             decision = UnitDecision()
@@ -358,18 +464,91 @@ class Review:
         self._change()
         self.units[unit_id] = decision
         self.position = unit_id
+        affected = self._affected(pool, decision, wanted) if action == "exclude" else set()
         self.record(log, unit_id, kind or "UNDO", wanted or (decision.approved or shown)[:1], run=run, now=now,
-                    detail=action if action in ("reset", "unapprove") or (action in ("later", "missing")
-                                                                       and not (decision.later or decision.source_missing))
-                    else "")
+                    detail="whole_shot" if action == "exclude" and any(i in whole for i in wanted) else
+                    action if action in ("reset", "unapprove") or (action in ("later", "missing")
+                                                                   and not (decision.later or decision.source_missing))
+                    else "", affected=affected if action == "exclude" else None)
+
+    # --- exclusions (#805) ---
+
+    def _spans(self, log: Mapping[str, Any], ids: Iterable[str]) -> dict[str, list[Any]]:
+        """The footage each id names in ``log``: its own range, or the span of a whole shot's pieces."""
+        rows = {c["id"]: c for c in log.get("candidates") or () if all(k in c for k in ("source_id", "start_ms", "end_ms"))}
+        whole = families(log)
+        out = {}
+        for i in ids:
+            if i in rows:
+                out[i] = [rows[i]["source_id"], int(rows[i]["start_ms"]), int(rows[i]["end_ms"])]
+            elif i in whole:
+                out[i] = [whole[i]["source_id"], int(whole[i]["start_ms"]), int(whole[i]["end_ms"])]
+        return out
+
+    def _edits_with(self, unit_id: str | None = None, decision: UnitDecision | None = None) -> align.Edits:
+        units = dict(self.units)
+        if unit_id is not None and decision is not None:
+            units[unit_id] = decision
+        probe = Review(units=units)
+        return probe.edits()
+
+    @staticmethod
+    def _affected(pool: Sequence[Candidate], decision: UnitDecision, ids: Iterable[str]) -> set[str]:
+        """The candidates of ``pool`` that the exclusions ``ids`` of ``decision`` leave out (or have to reuse)."""
+        ids = set(ids)
+        if not ids:
+            return set()
+        edits = align.Edits(exclude=ids, exclude_ranges={i: tuple((str(r[0]), int(r[1]), int(r[2])) for r in spans)
+                                                         for i, spans in decision.ranges.items() if i in ids})
+        found = align.exclusion(edits, pool)
+        return set(found.by) | set(found.widened) if not found.reused else set(found.reused)
+
+    def _covering(self, pool: Sequence[Candidate], decision: UnitDecision, shots: Iterable[str]) -> list[str]:
+        """The exclusions of ``decision`` that leave one of ``shots`` out (by name, or by their footage now)."""
+        shots = set(shots)
+        return [e for e in decision.exclude if e in shots or shots & self._affected(pool, decision, [e])]
+
+    def _still_some_left(self, pool: Sequence[Candidate], unit_id: str, decision: UnitDecision) -> None:
+        """Refuse an exclusion that would leave no usable footage at all (#805: a conflict, never a silent reuse)."""
+        usable = [c for c in pool if c.quality.usable] or list(pool)
+        if not usable:
+            return
+        found = align.exclusion(self._edits_with(unit_id, decision), usable)
+        if found.reused or len(found.gone) >= len(usable):
+            raise ReviewError("Không loại được: phần này sẽ không còn cảnh nào dùng được. Hãy bỏ loại một cảnh khác trước.")
+
+    def _include(self, log: Mapping[str, Any], pool: Sequence[Candidate], unit_id: str, ids: list[str], *, run: str,
+                 now: str | None) -> None:
+        """Let footage back in: every exclusion (of any sentence) that leaves one of ``ids`` out goes, as one change; a
+        sentence whose conflict was that footage had to be used is settled by it."""
+        if not ids:
+            raise ReviewError("include needs a shot")
+        changed = {other: found for other, d in sorted(self.units.items()) if (found := self._covering(pool, d, ids))}
+        if not changed:
+            raise ReviewError("Cảnh này không bị loại.")
+        self._change()
+        for other, found in changed.items():
+            d = self.units[other]
+            d.exclude = [e for e in d.exclude if e not in found]
+            d.ranges = {k: v for k, v in d.ranges.items() if k not in found}
+            if d.invalidated == ALL_EXCLUDED:  # the reason is saved with the decision (the conflict record is not)
+                d.invalidated = ""
+                self.conflicts.pop(other, None)
+        self.position = unit_id
+        for other, found in changed.items():
+            self.record(log, other, "UNDO", found, run=run, now=now, detail="include")
 
     def record(self, log: Mapping[str, Any], unit_id: str, kind: str, shots: list[str], *, run: str = "",
-               now: str | None = None, detail: str = "", reason: str = "", conflict: Mapping[str, Any] | None = None) -> None:
+               now: str | None = None, detail: str = "", reason: str = "", conflict: Mapping[str, Any] | None = None,
+               affected: Iterable[str] | None = None) -> None:
         """Append one decision as the Human Decision Contract records it."""
         units = {u["unit_id"]: u for u in log.get("units") or ()}
         candidates = {c["id"]: c for c in log.get("candidates") or ()}
         unit = units.get(unit_id) or {}
         shot = candidates.get(shots[0]) if shots else None
+        if shot is None and shots and shots[0] in families(log):  # a whole shot split into pieces: its span (#805)
+            family = families(log)[shots[0]]
+            shot = {"id": family["id"], "source_id": family["source_id"], "start_ms": family["start_ms"], "end_ms": family["end_ms"]}
         decision = self.units.get(unit_id)
         entry: dict[str, Any] = {
             "type": kind, "run_id": run[:120], "plan_revision": str(log.get("plan_id") or "")[:100],
@@ -381,6 +560,11 @@ class Review:
             "invalidation_reason": reason[:300] or None}
         if detail:
             entry["detail"] = detail
+        if len(shots) > 1 or detail == "include":
+            entry["shots"] = list(shots)[:MAX_IDS]
+        if affected is not None:  # what an exclusion leaves out of this plan, each with its footage (#805)
+            entry["affected"] = [[i, candidates[i]["start_ms"], candidates[i]["end_ms"]] for i in sorted(affected)
+                                 if i in candidates][:MAX_IDS]
         if conflict:
             entry["conflict"] = dict(conflict)
         self.records.append(entry)
@@ -436,6 +620,13 @@ class Review:
     def _reconcile(self, log: Mapping[str, Any]) -> list[str]:
         units = {u["unit_id"]: u for u in log.get("units") or ()}
         known = {c["id"] for c in log.get("candidates") or ()}
+        wholes = {parent(k) for k in known}
+        pool = _log_candidates(log)
+        # footage the plan used although the user left it out: nothing else was left (#805). The sentence whose
+        # exclusion it is gets a conflict, never a silent reuse.
+        reused = set(((log.get("exclusions") or {}).get("reused")) or ())
+        # what the plan left out for an exclusion: a pin on it no longer plays (#805), so it is no choice any more
+        left = (log.get("exclusions") or {}).get("left_out") or {}
         messages = []
         for unit_id, decision in list(self.units.items()):
             unit = units.get(unit_id)
@@ -445,12 +636,30 @@ class Review:
                 continue
             # a part of a shot left out (``c3f2``) while the shot is not split this time is still that shot's footage:
             # the exclusion stands (the plan leaves out the whole shot, P2-N22)
-            gone = [i for i in decision.pin if i not in known] + [i for i in decision.exclude
-                                                                   if i not in known and parent(i) not in known]
+            # ... and a whole shot left out by its own id, split into pieces this time, is still there (#805); so is
+            # footage an exclusion recorded, under whatever ids it has now
+            gone = [i for i in decision.pin if i not in known] + [
+                i for i in decision.exclude
+                if (not any(align._overlaps(c, [tuple(r) for r in decision.ranges[i]]) for c in pool) if i in decision.ranges and pool
+                    else i not in known and parent(i) not in known and i not in wholes)]
             if gone:
                 messages.append(self._void(unit_id, "shot_gone", "Cảnh đã chọn không còn trong nguồn (nguồn đã đổi); hãy chọn lại.",
                                            shots=gone))
                 continue
+            dropped = [i for i in decision.pin if i in left]
+            if dropped:
+                by = next((other for other, d in sorted(self.units.items()) if other != unit_id
+                           and self._covering(pool, d, dropped)), None)
+                where = f" ở câu {by[1:]}" if by else ""
+                messages.append(self._void(unit_id, "excluded", f"Cảnh bạn đã ghim bị loại trừ{where} nên không được dùng; "
+                                           "hãy chọn cảnh khác hoặc bỏ loại trừ.", shots=dropped, other=by))
+                continue
+            clash = sorted(i for i in reused if self._covering(pool, decision, [i])) if reused else []
+            if clash and (not decision.invalidated or decision.invalidated == ALL_EXCLUDED):
+                messages.append(self._void(unit_id, "all_excluded", ALL_EXCLUDED, shots=clash))
+                continue
+            if decision.invalidated == ALL_EXCLUDED:  # nothing excluded is used any more: the conflict is over
+                decision.invalidated = ""
             # each shot once, as an approval is stored: a shot the sentence shows twice is not another plan (rc12
             # W5: i1.u1 chose [c3f1, c3f1, c2f1] and its approval [c3f1, c2f1] was voided as plan_changed)
             chosen = list(dict.fromkeys(unit.get("chosen") or []))
@@ -497,10 +706,12 @@ class Review:
                 approved, decision.approved = list(decision.approved), None
                 edits = log.get("edits") or {}
                 candidates = {c["id"]: c for c in log.get("candidates") or ()}
-                excluded = [i for i in approved if i in set(edits.get("exclude") or ())
+                # what the plan left out (a whole shot, footage under a new id: #805), or what the edits name
+                left = (log.get("exclusions") or {}).get("left_out") or {}
+                excluded = [i for i in approved if i in left or i in set(edits.get("exclude") or ())
                             or (candidates.get(i) or {}).get("source_id") in set(edits.get("exclude_sources") or ())]
                 by = next((other for other, d in sorted(self.units.items()) if other != unit_id
-                           and set(excluded) & set(d.exclude)), None)
+                           and self._covering(pool, d, excluded)), None)
                 taken = {i: other for other, ids in sorted((edits.get("pin") or {}).items()) if other != unit_id
                          for i in ids if i in approved}
                 if excluded:
@@ -682,14 +893,26 @@ def view(log: Mapping[str, Any], plan: Mapping[str, Any] | None, review: Review,
     """What the review panel shows for one video: per sentence the chosen pieces, three alternatives, the planner's
     verdict and the user's decision; the warnings (read or not) and the sentences still unreviewed."""
     candidates = {c["id"]: c for c in log.get("candidates") or ()}
+    # what the user's exclusions leave out of this log's shots now, and which sentence did it (#805): the panel marks
+    # them, and lists for each exclusion what it covers, so no exclusion is wider than it shows
+    current = review.edits()
+    left = align.exclusion(current, _log_candidates(log)) if current.exclude else None
+    made = review.exclusions_of()
+    owner: dict[str, str] = {}
+    for u, e in made:
+        owner.setdefault(e, u)
+    split = families(log)
+    planned_reuse = set(((log.get("exclusions") or {}).get("reused")) or ())
 
     def shot(candidate_id: str) -> dict[str, Any] | None:
         c = candidates.get(candidate_id)
         if c is None:
             return None
+        why = left.by.get(candidate_id) if left else None
         return {"id": c["id"], "source_id": c["source_id"], "start_ms": c["start_ms"], "end_ms": c["end_ms"],
                 "keyframe": c.get("keyframe"), "summary": c.get("summary") or "", "usable": _usable(c),
-                "problems": list((c.get("quality") or {}).get("problems") or [])}
+                "problems": list((c.get("quality") or {}).get("problems") or []), "parent": parent(c["id"]),
+                "excluded": why is not None, "excluded_by": owner.get(why) if why else None}
 
     pieces: dict[str, list[dict[str, Any]]] = {}
     for segment in (plan or {}).get("segments") or ():
@@ -735,7 +958,13 @@ def view(log: Mapping[str, Any], plan: Mapping[str, Any] | None, review: Review,
             "accept_unreviewed": review.accept_unreviewed, "summary": log.get("review_summary") or {},
             # the review queue (its groups are not calibrated), where the user was, and every shot to choose from
             "queue": queue(units, review), "queue_calibrated": False, "position": review.position,
-            "shots": [s for s in (shot(c["id"]) for c in (log.get("candidates") or ())[:MAX_SHOTS]) if s and s["usable"]]}
+            "shots": [s for s in (shot(c["id"]) for c in (log.get("candidates") or ()) if _usable(c)) if s][:MAX_SHOTS],
+            "families": split,
+            "exclusions": [{"id": e, "by": u, "whole": e in split, "covers": sorted(i for i, why in left.by.items() if why == e),
+                            # what the plan used anyway (its log), or would have to (nothing else left)
+                            "reused": sorted({i for i in planned_reuse if left.by.get(i) == e}
+                                             | {i for i, why in left.reused_by.items() if why == e})}
+                           for u, e in made] if left else []}
 
 
 def path_for(work: Path, number: int) -> Path:
@@ -789,7 +1018,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("view")
     decide_p = sub.add_parser("decide")
     decide_p.add_argument("unit")
-    decide_p.add_argument("what", choices=["approve", "unapprove", "pin", "exclude", "reset", "later", "missing", "focus"])
+    decide_p.add_argument("what", choices=["approve", "unapprove", "pin", "exclude", "include", "reset", "later", "missing", "focus"])
     decide_p.add_argument("ids", nargs="*")
     sub.add_parser("undo")
     ack = sub.add_parser("ack")

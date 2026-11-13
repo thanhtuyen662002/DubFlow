@@ -42,6 +42,16 @@ class Choosing(unittest.TestCase):
         self.assertEqual(more.parent("v1c2f3"), "v1c2")
         self.assertEqual(more.parent("v1c2"), "v1c2")
 
+    def test_a_shot_left_out_whole_for_a_part_of_it_is_still_split_again(self):  # #805 review
+        from engine.dubflow.mastering import align
+        pool = [shot("v1c2", "v1", 0, 5000), shot("v1c3", "v1", 5000, 20000), shot("v1c4", "v1", 20000, 25000)]
+        evidence = {c.candidate_id: described(c.candidate_id, "cảnh") for c in pool}
+        edits = align.Edits(exclude={"v1c3f2"}, exclude_ranges={"v1c3f2": (("v1", 10000, 12000),)})
+        self.assertEqual(align.exclusion(edits, pool).widened, {"v1c3": "v1c3f2"})  # left out whole for now (P2-N22)
+        again = {more.parent("v1c3f2")}
+        self.assertEqual(more.wanted([], align.usable_pool(edits, pool, again=again), evidence, (), again=again), ["v1c3"])
+        self.assertNotIn("v1c3", [c.candidate_id for c in align.usable_pool(edits, pool)])  # otherwise it stays out
+
     def test_a_part_of_a_split_shot_is_never_split_again(self):
         # rc4 Windows check: a second look split i1-s1c3f2 into i1-s1c3f2f3, an id no decision could name
         pool = [shot("i1-s1c3f2", "s1", 0, 9000), shot("i1-s1c4", "s1", 9000, 17000)]

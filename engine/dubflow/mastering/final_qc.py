@@ -64,9 +64,32 @@ def pending(log: Mapping[str, Any], review: reviewing.Review) -> list[str]:
     for unit_id, pin in wanted.pin.items():
         if used.pin.get(unit_id) != pin:
             out.append(unit_id)
+    # footage the video shows that an exclusion now leaves out (#805): an id excluded again for the other footage it
+    # names now has the same id as before, so the ids alone do not tell; what the final shows does. Footage the plan
+    # had to use anyway (all excluded) is a conflict of its own, not a change waiting for a render.
+    pool = reviewing._log_candidates(log)
+    reused = set(((log.get("exclusions") or {}).get("reused")) or ())
+    shown = {i for u in log.get("units") or () for i in u.get("chosen") or ()} - reused
     for unit_id, decision in review.units.items():
-        if not decision.invalidated and any(i not in used.exclude for i in decision.exclude) and unit_id not in out:
+        if decision.invalidated or unit_id in out:
+            continue
+        if any(i not in used.exclude for i in decision.exclude) or (shown and review._covering(pool, decision, shown)):
             out.append(unit_id)
+    # an exclusion taken back after the render (#805): "Bỏ loại" names the sentence that let it back in; an undo or a
+    # reset does too, and anything still unaccounted for is never dropped
+    taken_back = used.exclude - wanted.exclude
+    for entry in reversed(review.records):
+        if not taken_back:
+            break
+        named = set(entry.get("shots") or ()) & taken_back if entry.get("detail") == "include" else set()
+        if named or entry.get("detail") in ("undo", "reset"):
+            if entry.get("speech_ref") and entry["speech_ref"] not in out:
+                out.append(entry["speech_ref"])
+            taken_back -= named or taken_back
+    if taken_back:
+        first = next((u["unit_id"] for u in log.get("units") or () if u.get("unit_id")), None)
+        if first and first not in out:
+            out.append(first)
     return out
 
 
