@@ -151,7 +151,7 @@ console.log("mastering tests passed");
   const unfiltered = qcRows(parseDubbingQc({ level: "balanced", loudness: false, notes: ["Âm lượng: giữ nguyên (đã gần mục tiêu)."],
     measured: { mix: { integrated: -16.2, true_peak: -2.0, lra: 6 } }, output_loudness: { integrated: -16.3, true_peak: -2.1, lra: 6 } }));
   const plain = unfiltered.find((row) => row.label === "Âm lượng");
-  assert.equal(plain.tone, "ok");
+  assert.equal(plain.tone, "info", "nothing was normalised: shown as a measurement");
   assert.match(plain.text, /^Giữ nguyên \(đã gần mục tiêu\)\. Đo bản xuất: −16,3 LUFS, đỉnh −2,1 dBTP sau AAC \(trần −1,5 dBTP: đạt\)$/);
   const fellBack = qcRows(parseDubbingQc({ level: "light", loudness: false, fallback: true, notes: ["Đã quay về âm thanh gốc (B1)"],
     measured: {}, output_loudness: { integrated: -14.0, true_peak: -0.4, lra: 8 } }));

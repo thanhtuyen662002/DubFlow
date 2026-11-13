@@ -83,7 +83,7 @@ export function qcRows(qc: DubbingQc): { label: string; text: string; tone: "ok"
       label: "Âm lượng",
       text: `${(note("Âm lượng:") ?? "Không chuẩn hóa").replace(/\.$/, "")}. Đo bản xuất: ${number(qc.after.integrated)} LUFS, đỉnh ${number(qc.after.true_peak)} dBTP sau AAC`
         + (over ? ` (vượt trần ${number(TRUE_PEAK_CEILING)} dBTP)` : ` (trần ${number(TRUE_PEAK_CEILING)} dBTP: đạt)`),
-      tone: over ? "warn" : "ok",
+      tone: over ? "warn" : "info", // nothing was normalised: a measurement, not a result of mastering
     });
   } else {
     rows.push({ label: "Âm lượng", text: note("Âm lượng:") ?? "Giữ nguyên.", tone: "info" });

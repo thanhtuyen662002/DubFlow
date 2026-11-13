@@ -853,7 +853,7 @@ def _output_loudness(config: WorkerConfig, video: Path) -> dict[str, Any] | None
     """What the viewer hears: the final MP4's audio after AAC, measured once for QC (mastering on only)."""
     try:
         measured = mastering_measure.loudness(config.ffmpeg_path, video)
-    except mastering_measure.MeasureError:
+    except (mastering_measure.MeasureError, ValueError):  # ValueError: a malformed loudnorm block (issue #715)
         return None
     return measured.to_dict() if measured else None
 

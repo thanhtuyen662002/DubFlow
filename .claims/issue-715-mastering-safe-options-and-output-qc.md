@@ -1,7 +1,7 @@
 DUBFLOW_PR_V1
 Issue: #715
 Lease-Owner: Claude/issue-715-mastering-safe-options-and-output-qc
-Lease-Heartbeat: 2026-11-13T06:48:07Z
+Lease-Heartbeat: 2026-11-13T06:56:32Z
 Tested-Base-SHA: 461aabb3121882314f8a7c468da8b4aa18358f62
 Conflict-Domains: mastering-options-write,mastering-output-qc,component-registry
 Expected-Paths: .claims/issue-715-mastering-safe-options-and-output-qc.md,apps/desktop/src-tauri/src/mastering.rs,engine/dubflow/worker/production_job.py,apps/desktop/src/features/mastering/qc.ts,apps/desktop/test/mastering.test.mjs,tests/production/worker/test_dubbing_mastering.py,scripts/ci/component_registry.json
@@ -52,3 +52,8 @@ Branch merged current Main 461aabb3121882314f8a7c468da8b4aa18358f62 (history-pre
 - Registry: three desktop mastering roots added to `mastering` only.
 
 Phase ledger: ASSIGNED=YES; STARTED=YES; CODED=YES; TESTED=LOCAL_PASS (hosted CI pending); INTEGRATED=NO; ACCEPTED=NO (Windows real-media smoke pending).
+
+## Follow-up (2026-11-13T06:56:32Z)
+- `_output_loudness` also catches ValueError (a malformed loudnorm block): the post-AAC measurement runs on every mastered export and must never fail it. Regression `test_a_malformed_loudnorm_block_is_none_and_never_fails_the_export` errors on the previous code.
+- Hậu kỳ card: when nothing was normalised, the measured row is "info" (a measurement, not a mastering result), "warn" over the true-peak ceiling.
+- Local: Python 16/16, UI mastering tests pass. Hosted CI on 2c32783a: PR Fast, PR Integration (61/61) and PR Desktop Editor Windows green; PR Documentary Windows hit an unrelated flaky `engine_run::tests::completed_needs_a_successful_exit` (shared temp-dir name), rerun.

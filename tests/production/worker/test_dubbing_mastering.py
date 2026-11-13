@@ -356,6 +356,16 @@ class OutputLoudnessTests(unittest.TestCase):
         with patch.object(worker.mastering_measure, "loudness", return_value=None):
             self.assertIsNone(worker._output_loudness(config, Path("final_vi.mp4")))
 
+    def test_a_malformed_loudnorm_block_is_none_and_never_fails_the_export(self):
+        """Issue #715: the post-AAC measurement now runs on every mastered export; a malformed print must not fail it."""
+        from types import SimpleNamespace
+        config = SimpleNamespace(ffmpeg_path=Path("ffmpeg"))
+        real = worker.mastering_measure.loudness
+        broken = b'[Parsed_loudnorm_0 @ 0] \n{"input_i" : "-16.1", "input_tp" : -2.0,, }\n'
+        with patch.object(worker.mastering_measure, "loudness",
+                          side_effect=lambda ffmpeg, video: real(ffmpeg, video, capture=lambda argv: (b"", broken))):
+            self.assertIsNone(worker._output_loudness(config, Path("final_vi.mp4")))
+
 
 if __name__ == "__main__":
     unittest.main()
