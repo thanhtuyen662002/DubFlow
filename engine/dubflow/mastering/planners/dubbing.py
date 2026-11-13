@@ -128,10 +128,15 @@ def with_trim(audio_filter: str | None, trim_db: float) -> str | None:
 def aac_note(trial: Mapping[str, Any]) -> str | None:
     """What the AAC trial changed, for the plan's notes. Its prefix is deliberately not "Âm lượng:" (that is the
     planner's own loudness note, which the card and the B1 fallback look up by that exact prefix)."""
-    trim, peak = float(trial.get("trim_db") or 0.0), trial.get("true_peak")
+    trim, peak, tries = float(trial.get("trim_db") or 0.0), trial.get("true_peak"), int(trial.get("tries") or 0)
     if peak is not None and peak > PEAK_DBTP:
-        return (f"Âm lượng sau AAC: đã giảm thêm {_vi(trim)} dB qua {trial.get('tries')} lần thử mã hóa nhưng đỉnh vẫn "
-                f"{_vi(peak)} dBTP, chưa đạt trần {_vi(PEAK_DBTP)} dBTP.")
+        if trim > 0:
+            done = f"đã giảm thêm {_vi(trim)} dB qua {tries} lần thử mã hóa nhưng đỉnh vẫn"
+        elif tries > 1:  # every trim was tried and discarded: none measured lower than the untrimmed mix
+            done = f"đã thử giảm {tries - 1} lần nhưng không lần nào hạ được đỉnh nên giữ bản chưa giảm; đỉnh vẫn"
+        else:
+            done = "đỉnh"
+        return f"Âm lượng sau AAC: {done} {_vi(peak)} dBTP, chưa đạt trần {_vi(PEAK_DBTP)} dBTP."
     if trim > 0:
         return f"Âm lượng sau AAC: giảm thêm {_vi(trim)} dB để đỉnh ≤ {_vi(PEAK_DBTP)} dBTP."
     return None

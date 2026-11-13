@@ -69,10 +69,11 @@ than its source cue (window widening, fast fit), the Vietnamese caption can drif
   and if none is under the ceiling the one with the lowest measured peak is kept. Only linear gain: no limiter,
   compressor, dynamic `loudnorm` or loudness-range change. The trial result is stored in the plan and the stage, so a
   resumed job does not encode again; a trial that cannot run leaves the plan as planned and never turns mastering
-  off. The final MP4 is still measured once after the render, and QC records `mastering.conformance` (passed,
+  off (the next run of the job tries the trial again instead of reusing that plan). The final MP4 is still measured once after the render, and QC records `mastering.conformance` (passed,
   corrected, failed, unmeasured, silent, not_applicable for the B1 fallback and Vietsub only); failed or unmeasured
   adds a non-informational warning (`MASTERING_TRUE_PEAK_OVER` / `MASTERING_TRUE_PEAK_UNMEASURED`) while `status`
   stays "passed" (the report is valid and the render succeeded). The B1 source sound is measured and warned, never
-  trimmed. Off is unchanged: no trial, no measurement, no new QC key. Recipe `dubbing-master-v4`.
+  trimmed; when the B1 or Vietsub-only export cannot be measured, the record says `unmeasured: true` (B1 also warns
+  `MASTERING_TRUE_PEAK_UNMEASURED`). Off is unchanged: no trial, no measurement, no new QC key. Recipe `dubbing-master-v4`.
 - The UI to choose levels and review suggestions is Phase 5; until then `mastering.json` is written by tests,
   the E2E harness or a power user.

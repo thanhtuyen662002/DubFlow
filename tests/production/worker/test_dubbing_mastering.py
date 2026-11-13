@@ -587,6 +587,16 @@ class AacTrueCeilingTests(unittest.TestCase):
                           job.conformance["trim_db"]), ("not_applicable", "B1", True, 0.0))
         self.assertFalse(any(note.startswith("Âm lượng") for note in job.qc["mastering"]["notes"]))
         self.assertFalse(any(w.startswith("MASTERING_TRUE_PEAK") for w in job.qc["warnings"]))
+        # the B1 export could not be measured: said in the record and the warnings, never read as a pass
+        job = AacJob("light", RC17_MIX, final=worker.mastering_measure.MeasureError("FFmpeg failed (1)"),
+                     b2_error=B2AudioError("TTS_FAILED", "forced")).run()
+        self.assertEqual(job.conformance, {"status": "not_applicable", "ceiling_dbtp": -1.5, "true_peak_dbtp": None,
+                                           "path": "B1", "trim_db": 0.0, "tries": 0, "ceiling_met": None,
+                                           "unmeasured": True})
+        unmeasured = [w for w in job.qc["warnings"] if w.startswith("MASTERING_TRUE_PEAK_UNMEASURED:")]
+        self.assertEqual(len(unmeasured), 1)
+        self.assertIn("(B1, âm thanh gốc, không chỉnh)", unmeasured[0])
+        self.assertEqual(job.qc["mastering"]["result"]["final_qc"], "warning")
 
     def test_a_vietsub_only_job_is_not_applicable_and_not_warned(self):
         from types import SimpleNamespace
@@ -639,6 +649,54 @@ class AacTrueCeilingTests(unittest.TestCase):
         self.assertEqual(again.plan, plan)
         self.assertEqual(again.conformance, conformance)
         self.assertEqual(again.conformance["status"], "corrected")
+
+    def test_a_trial_that_could_not_run_is_tried_again_on_the_next_run(self):
+        # a one-off failure (a timeout, a WAV briefly locked) must not leave the untrimmed plan cached for good
+        boom = worker.mastering_measure.MeasureError("FFmpeg timed out")
+        job = AacJob("light", RC17_MIX, trials=[boom, -1.31, -2.29], final=Loud(-17.71, -2.29, 7.4, -27.9, 0.1))
+        with job.running() as run:
+            first = job.result(run())
+            self.assertIsNone(first.plan["aac_trial"])
+            self.assertNotIn("volume=", first.plan["audio_filter"])
+            renders = len(job.renders)
+            again = job.result(run())
+            captures = len(job.captures)
+            job.result(run())  # once the trial has run, the plan is reused as before: no third trial
+        self.assertEqual(len(job.captures), captures)
+        self.assertEqual(again.plan["aac_trial"], {"first_true_peak": -1.31, "true_peak": -2.29, "trim_db": 0.49, "tries": 2})
+        self.assertTrue(again.plan["audio_filter"].endswith("volume=-0.49dB"))
+        self.assertEqual(len(job.renders), renders + 1, "the plan changed, so the export is rendered again")
+        self.assertEqual(job.rendered_audio[-1], b"RIFF-mastered:" + again.plan["audio_filter"].encode())
+        self.assertEqual(again.conformance["status"], "corrected")
+        self.assertEqual(job.trials, [])
+        self.assert_no_trial_leftovers(again)
+
+    def test_a_half_written_trimmed_mix_is_removed_and_the_planner_mix_kept(self):
+        class KilledTrim(AacJob):
+            def capture(self, argv):
+                if "pcm_s16le" in argv and "volume=" in argv[argv.index("-af") + 1]:
+                    self.captures.append(list(argv))
+                    Path(argv[-1]).write_bytes(b"half a trimmed mix")  # the .partial.wav, then the encode dies
+                    raise worker.mastering_measure.MeasureError("FFmpeg failed (1)")
+                return super().capture(argv)
+
+        job = KilledTrim("light", RC17_MIX, trials=[-1.31], final=Loud(-17.2, -1.31, 7.4, -27.4, 0.1)).run()
+        self.assertTrue(any(Path(argv[-1]).name == "final_mix_trim1.partial.wav" for argv in job.applies))
+        self.assert_no_trial_leftovers(job)
+        self.assertIsNone(job.plan["aac_trial"])
+        self.assertNotIn("volume=", job.plan["audio_filter"])
+        self.assertEqual(job.rendered_audio[-1], b"RIFF-mastered:" + job.plan["audio_filter"].encode())
+        self.assertFalse(any(w.startswith("MASTERING_SKIPPED") for w in job.qc["warnings"]))
+
+    def test_a_late_editable_link_fallback_updates_the_mastering_result(self):
+        job = AacJob("light", RC17_MIX, trials=[-1.31, -2.29], final=Loud(-17.71, -2.29, 7.4, -27.9, 0.1))
+        with patch.object(worker.os, "link", side_effect=OSError("exFAT")):
+            job.run()
+        self.assertTrue(any(w.startswith("EDITABLE_LINK_FALLBACK:") for w in job.qc["warnings"]))
+        self.assertTrue(job.qc["downgrade"])
+        self.assertEqual(job.qc["status"], "passed")
+        self.assertEqual(job.qc["mastering"]["result"],
+                         {"technical_render": "success", "mastering_conformance": "corrected", "final_qc": "warning"})
 
     def test_a_render_from_unchanged_input_gets_the_same_filter_and_trim(self):
         runs = [AacJob("light", RC17_MIX, trials=[-1.31, -1.40, -1.20, -1.62], final=Loud(-18.7, -1.62, 7.4, -28.9, 0.1)).run()
@@ -743,6 +801,8 @@ class AacConformanceUnitTests(unittest.TestCase):
             (("B1", None, loud(-0.4), None), "not_applicable", ["MASTERING_TRUE_PEAK_OVER"]),
             (("B1", None, loud(-3.0), None), "not_applicable", []),
             (("none", None, loud(-0.4), None), "not_applicable", []),
+            (("B1", None, None, "MeasureError: x"), "not_applicable", ["MASTERING_TRUE_PEAK_UNMEASURED"]),
+            (("none", None, None, "MeasureError: x"), "not_applicable", []),  # Vietsub only: recorded, not warned
         ]
         for arguments, status, codes in cases:
             with self.subTest(arguments=arguments):
@@ -752,6 +812,23 @@ class AacConformanceUnitTests(unittest.TestCase):
                 self.assertEqual(record["ceiling_dbtp"], -1.5)
                 self.assertEqual([w.split(":")[0] for w in warnings], codes)
                 self.assertFalse(any(w.startswith(worker.INFORMATIONAL_WARNINGS) for w in warnings))
+                if arguments[0] != "B2":
+                    self.assertEqual(record.get("unmeasured", False), arguments[3] is not None)
+                    if arguments[3] is not None:
+                        self.assertIsNone(record["ceiling_met"], "an unmeasured export is never a pass")
+
+    def test_an_over_warning_says_what_the_trial_did(self):
+        def warning(trial):
+            warnings = []
+            worker._mastering_conformance("B2", trial, {"true_peak": -1.31}, None, warnings)
+            (only,) = warnings
+            return only
+        self.assertTrue(warning({"trim_db": 0.49, "tries": 4}).endswith("(trimmed 0.49 dB over 4 trial encodes)"))
+        # all tries used and the untrimmed attempt measured lowest: the trims were tried and discarded, not "0 dB"
+        kept = warning({"first_true_peak": -1.31, "true_peak": -1.31, "trim_db": 0.0, "tries": 4})
+        self.assertTrue(kept.endswith("(no trim lowered the peak over 4 trial encodes; kept untrimmed)"), kept)
+        self.assertNotIn("trimmed 0.00", kept)
+        self.assertTrue(warning(None).endswith("(no AAC trial result)"))
 
 
 FFMPEG = os.environ.get("DUBFLOW_TEST_FFMPEG") or shutil.which("ffmpeg")

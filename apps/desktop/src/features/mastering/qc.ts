@@ -18,6 +18,8 @@ export type Conformance = {
   trimDb: number;
   tries: number;
   ceilingMet: boolean | null;
+  /** B1 / Vietsub only: the export could not be measured (B2 says so with status "unmeasured"). */
+  unmeasured: boolean;
 };
 
 const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
@@ -38,7 +40,10 @@ function conformance(value: unknown): Conformance | null {
   if ((status === "not_applicable") === (path === "B2")) return null;
   if (judged && (truePeak === null || (truePeak > TRUE_PEAK_CEILING) !== (status === "failed"))) return null;
   if (status === "corrected" && item.trim_db === 0) return null;
-  return { status, path, truePeak, trimDb: item.trim_db, tries: item.tries as number, ceilingMet };
+  if (item.unmeasured !== undefined && typeof item.unmeasured !== "boolean") return null;
+  const unmeasured = item.unmeasured === true;
+  if (unmeasured && (path === "B2" || truePeak !== null || ceilingMet !== null)) return null;
+  return { status, path, truePeak, trimDb: item.trim_db, tries: item.tries as number, ceilingMet, unmeasured };
 }
 
 export type DubbingQc = {
@@ -106,9 +111,11 @@ export function qcRows(qc: DubbingQc): { label: string; text: string; tone: "ok"
   const failed = check?.status === "failed";
   const afterAac = check?.status === "corrected"
     ? `. Đã giảm thêm ${number(check.trimDb)} dB sau AAC để đỉnh ≤ ${ceiling}`
-    : failed ? `. Không đạt trần ${ceiling} sau AAC` + (check.trimDb > 0 ? ` dù đã giảm thêm ${number(check.trimDb)} dB qua ${check.tries} lần thử mã hóa` : "")
+    : failed ? `. Không đạt trần ${ceiling} sau AAC` + (check.trimDb > 0 ? ` dù đã giảm thêm ${number(check.trimDb)} dB qua ${check.tries} lần thử mã hóa`
+      // every trim was tried and none measured lower: the untrimmed mix was kept
+      : check.tries > 1 ? ` dù đã thử giảm ${check.tries - 1} lần (không lần nào hạ được đỉnh nên giữ bản chưa giảm)` : "")
     : "";
-  const unmeasured = check?.status === "unmeasured";
+  const unmeasured = check?.status === "unmeasured" || check?.unmeasured === true;
   if (qc.loudness && qc.after) {
     const over = qc.after.true_peak > TRUE_PEAK_CEILING || failed;
     rows.push({
@@ -138,7 +145,9 @@ export function qcRows(qc: DubbingQc): { label: string; text: string; tone: "ok"
       tone: over ? "warn" : "info", // nothing was normalised: a measurement, not a result of mastering
     });
   } else if (unmeasured) {
-    rows.push({ label: "Âm lượng", text: `${(note("Âm lượng:") ?? "Giữ nguyên").replace(/\.$/, "")}; không đo được sau AAC nên chưa xác nhận trần ${ceiling}.`, tone: "warn" });
+    const kept = check?.path === "B1" ? "Âm thanh gốc (B1), không được chỉnh" : (note("Âm lượng:") ?? "Giữ nguyên").replace(/\.$/, "");
+    // Vietsub only: mastering does not touch the sound, so an unmeasured export is said, not flagged
+    rows.push({ label: "Âm lượng", text: `${kept}; không đo được sau AAC nên chưa xác nhận trần ${ceiling}.`, tone: check?.path === "none" ? "info" : "warn" });
   } else {
     rows.push({ label: "Âm lượng", text: note("Âm lượng:") ?? "Giữ nguyên.", tone: "info" });
   }

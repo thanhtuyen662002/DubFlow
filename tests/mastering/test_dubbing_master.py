@@ -85,6 +85,14 @@ class DecisionTests(unittest.TestCase):
         self.assertFalse(note.startswith("Âm lượng:"))  # the planner's note (card and B1 fallback look it up)
         failed = dubbing.aac_note({"first_true_peak": -1.31, "true_peak": -1.40, "trim_db": 0.49, "tries": 4})
         self.assertIn("chưa đạt trần −1,5 dBTP", failed)
+        self.assertEqual(failed, "Âm lượng sau AAC: đã giảm thêm 0,5 dB qua 4 lần thử mã hóa nhưng đỉnh vẫn −1,4 dBTP, "
+                                 "chưa đạt trần −1,5 dBTP.")
+        # every trim tried and discarded (the untrimmed mix measured lowest): never "giảm thêm 0,0 dB"
+        kept = dubbing.aac_note({"first_true_peak": -1.31, "true_peak": -1.31, "trim_db": 0.0, "tries": 4})
+        self.assertEqual(kept, "Âm lượng sau AAC: đã thử giảm 3 lần nhưng không lần nào hạ được đỉnh nên giữ bản chưa "
+                               "giảm; đỉnh vẫn −1,3 dBTP, chưa đạt trần −1,5 dBTP.")
+        self.assertEqual(dubbing.aac_note({"first_true_peak": -1.31, "true_peak": -1.31, "trim_db": 0.0, "tries": 1}),
+                         "Âm lượng sau AAC: đỉnh −1,3 dBTP, chưa đạt trần −1,5 dBTP.")
         self.assertIsNone(dubbing.aac_note({"first_true_peak": -2.6, "true_peak": -2.6, "trim_db": 0.0, "tries": 1}))
         self.assertIsNone(self.plan("light").aac_trial)
         self.assertIn("aac_trial", self.plan("light").to_dict())

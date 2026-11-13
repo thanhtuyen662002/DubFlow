@@ -942,7 +942,8 @@ def _mastering_conformance(path: str, trial: Mapping[str, Any] | None, output: M
     """The final MP4's true peak against the −1.5 dBTP ceiling after AAC (issue #821), from the one post-render
     measurement. ``path``: "B2" (the mastered dubbed mix is heard), "B1" (fell back to the source sound, never
     trimmed) or "none" (Vietsub only). Appends MASTERING_TRUE_PEAK_OVER / _UNMEASURED to ``warnings`` when the output
-    misses the ceiling or could not be measured; neither is informational, so the job reports its warnings."""
+    misses the ceiling or could not be measured; neither is informational, so the job reports its warnings.
+    On B1 and Vietsub only a failed measurement adds ``unmeasured: true`` (``ceiling_met`` stays None, never a pass)."""
     ceiling = dubbing_master.PEAK_DBTP
     peak = output["true_peak"] if output else None
     over = peak is not None and peak > ceiling
@@ -950,9 +951,14 @@ def _mastering_conformance(path: str, trial: Mapping[str, Any] | None, output: M
     if path != "B2":
         # the source sound is kept as it is: measured and recorded, never trimmed
         record.update(status="not_applicable", trim_db=0.0, tries=0, ceiling_met=None if peak is None else not over)
+        if error is not None:
+            record["unmeasured"] = True
         if path == "B1" and over:
             warnings.append(f"MASTERING_TRUE_PEAK_OVER: {peak:.2f} dBTP > {ceiling:.1f} dBTP after AAC "
                             "(B1, âm thanh gốc, không chỉnh)")
+        elif path == "B1" and error is not None:
+            warnings.append(f"MASTERING_TRUE_PEAK_UNMEASURED: the final MP4 could not be measured after AAC ({error[:120]}); "
+                            f"the {ceiling:.1f} dBTP ceiling is not confirmed (B1, âm thanh gốc, không chỉnh)")
         return {"status": record.pop("status"), **record}
     trim = float((trial or {}).get("trim_db") or 0.0)
     tries = int((trial or {}).get("tries") or 0)
@@ -965,8 +971,13 @@ def _mastering_conformance(path: str, trial: Mapping[str, Any] | None, output: M
         status = "silent"
     elif over:
         status = "failed"
-        warnings.append(f"MASTERING_TRUE_PEAK_OVER: {peak:.2f} dBTP > {ceiling:.1f} dBTP after AAC "
-                        f"(trimmed {trim:.2f} dB over {tries} trial encodes)")
+        if trim > 0:
+            done = f"trimmed {trim:.2f} dB over {tries} trial encodes"
+        elif tries > 1:  # every trim was tried and none measured lower than the untrimmed mix
+            done = f"no trim lowered the peak over {tries} trial encodes; kept untrimmed"
+        else:
+            done = "no AAC trial result"
+        warnings.append(f"MASTERING_TRUE_PEAK_OVER: {peak:.2f} dBTP > {ceiling:.1f} dBTP after AAC ({done})")
     else:
         status = "corrected" if trim > 0 else "passed"
     return {"status": status, **record}
@@ -1023,6 +1034,10 @@ def _dubbing_mastering(options: MasteringOptions, config: WorkerConfig, probe: M
         if stage.get("input_hash") == identity and plan_path.is_file():
             document = json.loads(plan_path.read_text(encoding="utf-8"))
             if document.get("audio_filter") and not (mastered.is_file() and _sha256(mastered) == stage.get("mastered_sha256")):
+                document = None
+            elif audio_path is not None and document.get("aac_trial") is None:
+                # the AAC trial could not run last time (a timeout, a file briefly locked): try it again rather than
+                # keep an untrimmed plan for good (issue #821)
                 document = None
         if document is None:
             emitter.progress(0.80, "Đang đo âm lượng và hình ảnh để hậu kỳ")
