@@ -7,7 +7,7 @@
 import { confirmDialog } from "../../shell/confirm.ts";
 import {
   coverageText, evidenceHelp, exclusionText, familyLines, nextInQueue, parseReview, PRIORITY_LABELS, provenanceText, queueSummary, seconds, startUnit, STATE_LABELS,
-  unitBadge, unitNumber, type ReviewUnit, type ReviewView, type Shot,
+  unitBadge, unitNumber, wholeShotOf, type ReviewUnit, type ReviewView, type Shot,
 } from "./model.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
@@ -205,8 +205,8 @@ export function openReviewPanel(invoke: Invoke, target: ReviewTarget): Promise<v
 
   /** "Bỏ cả cảnh gốc": the whole shot a piece was cut from, after the user has seen every piece it leaves out. */
   function wholeButton(unit: ReviewUnit, shot: Shot): HTMLButtonElement | null {
-    const whole = view?.families[shot.parent];
-    if (shot.parent === shot.id || !whole) return null;
+    const whole = view ? wholeShotOf(view, shot) : null;
+    if (!whole) return null;
     const drop = button("Bỏ cả cảnh gốc", "btn danger", `Không dùng mọi đoạn cắt từ cảnh gốc ${whole.id} ${SCOPE}`);
     drop.addEventListener("click", () => {
       void confirmDialog({
@@ -220,6 +220,12 @@ export function openReviewPanel(invoke: Invoke, target: ReviewTarget): Promise<v
       });
     });
     return drop;
+  }
+
+  /** A piece of a split shot, used or not, also offers "Bỏ cả cảnh gốc" (#805 B1: the unused f1 of rc15 W2). */
+  function withWhole(actions: HTMLElement[], unit: ReviewUnit, shot: Shot): HTMLElement[] {
+    const whole = wholeButton(unit, shot);
+    return whole ? [...actions, whole] : actions;
   }
 
   function unitItem(unit: ReviewUnit): HTMLElement {
@@ -285,7 +291,7 @@ export function openReviewPanel(invoke: Invoke, target: ReviewTarget): Promise<v
       use.addEventListener("click", () => void act({ action: "decide", unit: unit.unit_id, what: "pin", ids: [shot.id] },
         "Đã chọn cảnh. Bấm “Render lại video này” để dựng lại."));
       others.append(shotCard(shot, typeof shot.score === "number" ? `Phương án · điểm ${shot.score}` : "Phương án",
-        [use, excludeButton(unit, shot)]));
+        withWhole([use, excludeButton(unit, shot, shot.parent !== shot.id ? "Bỏ đoạn này" : "Bỏ cảnh này")], unit, shot)));
     }
     const altHead = el("p", "mreview-label", unit.alternatives.length ? "Cảnh thay thế" : "Không còn cảnh thay thế");
     item.append(top, text, why, facts, actions, chosen, altHead, others);
@@ -296,7 +302,8 @@ export function openReviewPanel(invoke: Invoke, target: ReviewTarget): Promise<v
         const use = button("Dùng cảnh này", "btn primary", "Ghim cảnh này cho câu; render lại để thấy kết quả");
         use.addEventListener("click", () => void act({ action: "decide", unit: unit.unit_id, what: "pin", ids: [shot.id] },
           "Đã chọn cảnh. Bấm render lại để dựng lại."));
-        every.append(shotCard(shot, "Cảnh đã nhập", [use, excludeButton(unit, shot)]));
+        every.append(shotCard(shot, "Cảnh đã nhập",
+          withWhole([use, excludeButton(unit, shot, shot.parent !== shot.id ? "Bỏ đoạn này" : "Bỏ cảnh này")], unit, shot)));
       }
       item.append(el("p", "mreview-label", every.childElementCount ? "Mọi cảnh đã nhập" : "Không còn cảnh nào khác trong footage đã nhập"),
         el("p", "hint", "Cần cảnh mới: thêm clip ở trang tạo video rồi tạo lại; hoặc bấm “Không có cảnh phù hợp”."), every);

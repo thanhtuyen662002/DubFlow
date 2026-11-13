@@ -168,6 +168,14 @@ function exclusion(value: unknown): Exclusion | null {
   return { id: item.id, by: item.by, whole: item.whole === true, covers: strings(item.covers, 300), reused: strings(item.reused, 300) };
 }
 
+/** The whole shot a piece was cut from, when "Bỏ cả cảnh gốc" applies to it: any piece of a split shot, in use, an
+ * alternative or in the list of every shot (#805: rc15 W2's unused f1 only showed as an alternative). */
+export function wholeShotOf(view: Pick<ReviewView, "families">, shot: Pick<Shot, "id" | "parent">): Family | null {
+  if (shot.parent === shot.id) return null;
+  const whole = view.families[shot.parent];
+  return whole && whole.pieces.some((piece) => piece.id === shot.id) ? whole : null;
+}
+
 /** What "Bỏ cả cảnh gốc" will leave out, said before it is done: each piece, its time in the source, and the
  * sentences using it now (#805). */
 export function familyLines(whole: Family): string[] {

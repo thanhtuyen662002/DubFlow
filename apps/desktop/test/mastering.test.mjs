@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import {
   nextInQueue, queueSummary, startUnit, PRIORITY_LABELS,
-  coverageText, evidenceHelp, exclusionText, familyLines, provenanceText, isLevel, unitNumber, levelText, masteringOf, needsExportConfirm, parseReview, reviewSummary, seconds, unitBadge,
+  coverageText, evidenceHelp, exclusionText, familyLines, provenanceText, wholeShotOf, isLevel, unitNumber, levelText, masteringOf, needsExportConfirm, parseReview, reviewSummary, seconds, unitBadge,
 } from "../src/features/mastering/model.ts";
 import { buildRequest } from "../src/features/product/model.ts";
 
@@ -55,6 +55,11 @@ assert.equal(parseReview({ kind: "other", units: [] }), null);
   assert.equal(exclusionText(split.exclusions[0]), "Câu 2 đã loại cả cảnh gốc v1c3 (2 đoạn)");
   assert.equal(exclusionText({ id: "v1c4", by: "i1.u3", whole: false, covers: ["v1c4"], reused: ["v1c4"] }),
     "Câu 3 đã loại cảnh v1c4 · vẫn phải dùng vì không còn cảnh nào khác");
+  // "Bỏ cả cảnh gốc" is offered on every piece of a split shot, an unused alternative too, never on a whole shot
+  assert.equal(wholeShotOf(split, { id: "v1c3f1", parent: "v1c3" })?.id, "v1c3");
+  assert.equal(wholeShotOf(split, split.units[0].chosen[0])?.id, "v1c3");
+  assert.equal(wholeShotOf(split, { id: "v1c4", parent: "v1c4" }), null);
+  assert.equal(wholeShotOf(split, { id: "v1c9f1", parent: "v1c9" }), null);  // no family listed: nothing to confirm
   assert.deepEqual([view.families, view.exclusions], [{}, []]);  // an older engine: nothing to show
 }
 
