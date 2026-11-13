@@ -280,11 +280,15 @@ class Check:
         return {"verified": list(self.verified), "unverified": list(self.unverified), "conflicts": list(self.conflicts)}
 
 
+VISUAL = frozenset({"vision", "ocr"})  # what was seen in the frame: the only proof of what it displays
+
+
 def content_text(found: ev.Evidence | None) -> str:
-    """What the content evidence of a shot says (vision, transcript, the user's notes; never a file name)."""
+    """What was *seen* in a shot (the vision answer, text read off the frame). Never the source's speech: a narrator
+    saying "1500 miles" over a map does not put the number on it; never a clip-wide note or a file name."""
     if found is None:
         return ""
-    return " \n ".join(item.text for item in found.items if item.origin in ev.CONTENT_ORIGINS and item.text)
+    return " \n ".join(item.text for item in found.items if item.text and ev.provenance(item.origin, item.detail) in VISUAL)
 
 
 def check(claims: Claims, text: str) -> Check:
@@ -296,9 +300,9 @@ def check(claims: Claims, text: str) -> Check:
     for wanted in claims.quantities:
         label = wanted.spoken()
         same_value = [q for q in shown if q.value == wanted.value]
-        # a bare number in the evidence stands for the amount only when it is distinctive ("1500" for 1 500 dặm,
-        # never a "3" for 3 dặm)
-        if any(wanted.unit is None or q.unit == wanted.unit or (q.unit is None and q.value >= DISTINCT_FROM) for q in same_value):
+        # an amount with a unit is shown only with that unit ("1500 MILES" for 1 500 dặm; a bare "1500" is not)
+        # (a year is the number itself: "1941" on a chart shows the year 1941)
+        if any(wanted.unit in (None, "year") or q.unit == wanted.unit for q in same_value):
             out.verified.append(label)
         elif wanted.base and wanted.unit not in _COUNTED and any(q.base == wanted.base for q in shown):
             out.conflicts.append(label)  # the picture states another amount of the same kind (500 000 dặm vuông)
@@ -307,7 +311,7 @@ def check(claims: Claims, text: str) -> Check:
     folded = _folded(text)
     for phrase in claims.phrases:
         words = [w for w in ev.fold(phrase).split() if w not in _FUNCTION_EN or len(ev.fold(phrase).split()) <= 2]
-        if words and (f" {' '.join(ev.fold(phrase).split())} " in folded or all(f" {w} " in folded for w in words)):
+        if words and (f" {' '.join(ev.fold(phrase).split())} " in folded or _in_order(words, folded.split())):
             out.verified.append(phrase)
         else:
             out.unverified.append(phrase)
@@ -320,6 +324,27 @@ def check(claims: Claims, text: str) -> Check:
         else:
             out.unverified.append(label)
     return out
+
+
+PHRASE_GAP = 2  # words that may come between two words of a title in the evidence ("THE BATTLE OF RUSSIA", a line break)
+
+
+def _in_order(words: list[str], tokens: list[str]) -> bool:
+    """Whether ``words`` appear in ``tokens`` in order, each at most PHRASE_GAP words after the one before: a title
+    written on the frame, not "battle" and "Russia" mentioned apart."""
+    for start, token in enumerate(tokens):
+        if token != words[0]:
+            continue
+        at, ok = start, True
+        for word in words[1:]:
+            ahead = tokens[at + 1:at + 2 + PHRASE_GAP]
+            if word not in ahead:
+                ok = False
+                break
+            at = at + 1 + ahead.index(word)
+        if ok:
+            return True
+    return False
 
 
 @functools.lru_cache(maxsize=8192)

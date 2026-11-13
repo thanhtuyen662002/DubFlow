@@ -219,6 +219,30 @@ class ReviewFindingsTests(unittest.TestCase):
         self.assertLessEqual(len(label), 200)
 
 
+class LeadFindingsTests(unittest.TestCase):
+    """A4: what the Lead's review of #808 found."""
+
+    def test_speech_is_no_proof_of_what_the_frame_shows(self):
+        spoken = ev.Evidence("t")
+        spoken.add(ev.Item("transcript", 900, "Quân Đức tiến một nghìn năm trăm dặm, 1500 miles", (), "phụ đề nguồn"))
+        spoken.add(ev.Item("vision", 850, "Bản đồ châu Âu có mũi tên", (), "AI test"))
+        self.assertEqual(said.check(said.of(MAP), said.content_text(spoken)).verified, [])
+        read = ev.Evidence("o")
+        read.add(ev.Item("transcript", 900, "1500 MILES", (), "OCR chữ trên hình"))
+        self.assertEqual(said.check(said.of(MAP), said.content_text(read)).verified, ["1.500 dặm"])
+
+    def test_a_bare_number_does_not_prove_an_amount_with_a_unit(self):
+        self.assertEqual(said.check(said.of(MAP), "Bản đồ có số 1500 ở góc").verified, [])
+        self.assertEqual(said.check(said.of("Biểu đồ ghi năm 1941"), "chart 1941").verified, ["năm 1941"])
+
+    def test_a_title_is_its_words_in_order(self):
+        stated = said.of(TITLE)
+        self.assertEqual(said.check(stated, "THE BATTLE OF RUSSIA; WHY WE FIGHT").verified, ["The Battle of Russia"])
+        self.assertEqual(said.check(stated, "THE BATTLE\nOF RUSSIA").verified, ["The Battle of Russia"])
+        self.assertEqual(said.check(stated, "Russia map; the battle lines of the front").verified, [])
+        self.assertEqual(said.check(stated, "battle scene, soldiers, snow; flag of Russia").verified, [])
+
+
 class TitleTests(unittest.TestCase):
     """A1 i1.u2."""
 
