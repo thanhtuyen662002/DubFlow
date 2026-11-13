@@ -357,7 +357,7 @@ def _mastered(spec: Spec, visuals: Sequence[render.Visual], total_ms: int, work:
     """
     from dataclasses import replace
     from engine.dubflow.mastering import analysis as scene, candidates as shots, plan as mastering_plan
-    from engine.dubflow.mastering import frames as more
+    from engine.dubflow.mastering import align, frames as more
     from engine.dubflow.mastering import vision as seeing
     from engine.dubflow.mastering.candidates import duplicate_groups
     from engine.dubflow.mastering.planners import product as planner
@@ -380,7 +380,7 @@ def _mastered(spec: Spec, visuals: Sequence[render.Visual], total_ms: int, work:
         # the user's review (pins and exclusions in review-<n>.json) on top of the edits the spec carries
         edits = decisions.edits(editorial.edits)
         wanted = planner.inputs([v.path for v in visuals], total_ms, options, spoken=spoken, template=spec.template,
-                                editorial={**editorial.digest_input(), "edits": edits.to_dict(), "facts": facts,
+                                editorial={**editorial.digest_input(), "edits": edits.to_dict(), **align.ranges_digest_input(edits), "facts": facts,
                                            "vision": vision is not None})
         saved = mastering_plan.load_matching(path, workflow=planner.WORKFLOW, options=options, planner_version=planner.VERSION,
                                              inputs=wanted)
@@ -443,9 +443,7 @@ def _mastered(spec: Spec, visuals: Sequence[render.Visual], total_ms: int, work:
             if vision_report is not None and describer.budget - describer.taken > 0:
                 # Targeted look: unseen shots that may show what an uncovered sentence says, then plan again.
                 # never a look at footage the user left out (#805): the frames go to shots that can still be used
-                from engine.dubflow.mastering import align
-                gone = align.left_out(edits, pool)
-                ids = seeing.targets(log["units"], [c for c in pool if c.candidate_id not in gone], evidence, looked,
+                ids = seeing.targets(log["units"], align.usable_pool(edits, pool), evidence, looked,
                                      describer.budget - describer.taken, forward_only=False)
                 if ids:
                     by_id = {c.candidate_id: c for c in pool}
@@ -461,9 +459,7 @@ def _mastered(spec: Spec, visuals: Sequence[render.Visual], total_ms: int, work:
                 # the user's shots keep their ids: pinned, excluded and approved (P2-N5) are never split
                 locked = {i for ids in edits.pin.values() for i in ids} | set(edits.exclude) \
                     | {p[0] for pieces in edits.keep.values() for p in pieces}
-                from engine.dubflow.mastering import align
-                gone = align.left_out(edits, pool)
-                ids = more.wanted(log["units"], [c for c in pool if c.candidate_id not in gone], evidence, (), limit=min(more.EXTRA_SHOTS, (describer.budget - describer.taken) // 2),
+                ids = more.wanted(log["units"], align.usable_pool(edits, pool), evidence, (), limit=min(more.EXTRA_SHOTS, (describer.budget - describer.taken) // 2),
                                   locked={i for i in locked if more.parent(i) == i},
                                   again={more.parent(i) for i in locked if more.parent(i) != i})
                 if ids:

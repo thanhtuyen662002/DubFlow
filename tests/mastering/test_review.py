@@ -232,7 +232,7 @@ class WholeShotExclusionTests(unittest.TestCase):  # #805
         review = rv.Review()
         review.decide(the_log, "u1", "exclude", ["c3"])
         self.assertEqual(review.edits().exclude, {"c3"})
-        self.assertEqual(review.edits().exclude_ranges, {"c3": ("v1", 4000, 7000)})  # the footage, not the id only
+        self.assertEqual(review.edits().exclude_ranges, {"c3": (("v1", 4000, 7000),)})  # the footage, not the id only
         self.assertEqual(self.left(review, the_log), {"c3f1", "c3f2", "c3f3"})
         entry = review.records[-1]
         self.assertEqual((entry["type"], entry["detail"]), ("EXCLUDE", "whole_shot"))
@@ -283,9 +283,9 @@ class WholeShotExclusionTests(unittest.TestCase):  # #805
         review.decide(the_log, "u1", "exclude", ["c3"])
         saved = json.loads(json.dumps(review.to_dict()))
         self.assertEqual(saved["schema_version"], 3)
-        self.assertEqual(saved["units"]["u1"]["ranges"], {"c3": ["v1", 4000, 7000]})
+        self.assertEqual(saved["units"]["u1"]["ranges"], {"c3": [["v1", 4000, 7000]]})
         reopened = rv.Review.from_dict(saved)
-        self.assertEqual(reopened.edits().exclude_ranges, {"c3": ("v1", 4000, 7000)})
+        self.assertEqual(reopened.edits().exclude_ranges, {"c3": (("v1", 4000, 7000),)})
         self.assertEqual(self.left(reopened, the_log), {"c3f1", "c3f2", "c3f3"})
         # "Bỏ loại" from any piece lets the whole shot back in, as one change
         before = reopened.revision
@@ -304,7 +304,7 @@ class WholeShotExclusionTests(unittest.TestCase):  # #805
         del old["units"]["u1"]["ranges"]
         self.assertEqual(rv.Review.from_dict(old).edits().exclude, {"c3"})
         bad = json.loads(json.dumps(saved))
-        bad["units"]["u1"]["ranges"] = {"c3": ["v1", 7000, 4000]}
+        bad["units"]["u1"]["ranges"] = {"c3": [["v1", 7000, 4000]]}
         with self.assertRaises(rv.ReviewError):
             rv.Review.from_dict(bad)
 
@@ -333,8 +333,48 @@ class WholeShotExclusionTests(unittest.TestCase):  # #805
         self.assertEqual(len(messages), 1)
         self.assertEqual(review.conflicts["u1"]["cause"], "all_excluded")
         self.assertEqual(review.conflicts["u1"]["options"][0], "Bỏ loại trừ cảnh")
-        review.decide(used, "u1", "include", ["c3"])
+        # the conflict keeps the sentence's exclusions in force and on the panel: excluded footage never comes back
+        self.assertEqual(review.edits().exclude, {"c3"})
+        self.assertEqual([(e["id"], e["by"], e["reused"]) for e in rv.view(used, None, review)["exclusions"]], [("c3", "u1", ["c3f1"])])
+        # "Bỏ loại" settles it, also as the panel does it: a fresh process that loads the saved file
+        saved = rv.Review.from_dict(json.loads(json.dumps(review.to_dict())))
+        saved.decide(used, "u1", "include", ["c3"])
+        self.assertFalse(saved.units["u1"].invalidated)
+        self.assertEqual(saved.edits().exclude, set())
+        # and a plan that no longer has to use it ends the conflict
+        review.reconcile(the_log)
         self.assertFalse(review.units["u1"].invalidated)
+
+    def test_an_id_excluded_again_on_other_footage_leaves_out_both(self):
+        first = split_log()
+        review = rv.Review()
+        review.decide(first, "u1", "exclude", ["c2"])  # c2 = 2000–4000
+        renumbered = json.loads(json.dumps(first))
+        for c in renumbered["candidates"]:
+            if c["id"] == "c2":
+                c["start_ms"], c["end_ms"] = 9000, 11_000  # the id now names other footage...
+        renumbered["candidates"].append(footage("c8", 2000, 4000))  # ...and the old footage is another id
+        self.assertEqual(self.left(review, renumbered), {"c8"})
+        review.decide(renumbered, "u1", "exclude", ["c2"])
+        self.assertEqual(review.units["u1"].ranges["c2"], [["v1", 2000, 4000], ["v1", 9000, 11_000]])
+        self.assertEqual(self.left(review, renumbered), {"c2", "c8"})
+
+    def test_an_id_on_mostly_other_footage_is_not_left_out(self):
+        review = rv.Review()
+        review.decide(split_log(), "u1", "exclude", ["c2"])  # 2000–4000
+        shifted = split_log()
+        for c in shifted["candidates"]:
+            if c["id"] == "c2":
+                c["start_ms"], c["end_ms"] = 3900, 8000  # 100 ms in common
+        self.assertNotIn("c2", self.left(review, shifted))
+
+    def test_the_recorded_footage_is_part_of_the_plan_identity(self):
+        from engine.dubflow.mastering import align
+        self.assertEqual(align.ranges_digest_input(align.Edits()), {})
+        one = align.Edits(exclude={"c2"}, exclude_ranges={"c2": (("v1", 0, 2000),)})
+        other = align.Edits(exclude={"c2"}, exclude_ranges={"c2": (("v1", 4000, 6000),)})
+        self.assertEqual(one.to_dict(), other.to_dict())
+        self.assertNotEqual(align.ranges_digest_input(one), align.ranges_digest_input(other))
 
 
 class CliTests(unittest.TestCase):

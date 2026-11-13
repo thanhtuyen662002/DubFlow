@@ -366,7 +366,8 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
             edits = decisions.edits(resolved.editorial.edits.get(part_id))
             inputs = {s: m.file_identity(footage[s].path, scene.RECIPE) for s in source_ids}
             inputs["part"] = m.digest_json({"spoken": spoken, "kind": kind, "title": title, "keep": keep,
-                                            "editorial": {**resolved.editorial.digest_input(part_id), "edits": edits.to_dict()},
+                                            "editorial": {**resolved.editorial.digest_input(part_id), "edits": edits.to_dict(),
+                                                          **align.ranges_digest_input(edits)},
                                             # what the AI saw, not how many frames it was asked this run (cached answers)
                                             "vision": None if vision_report is None else
                                             {k: vision_report[k] for k in ("provider", "model", "budget")},
@@ -392,8 +393,7 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
             if room > 0:
                 # Targeted look: shots not yet seen that may show what an uncovered sentence says; plan again with them.
                 # never a look at footage the user left out (#805): the frames go to shots that can still be used
-                gone = align.left_out(edits, part_pools[part_id]) if edits is not None else set()
-                ids = seeing.targets(made.log["units"], [c for c in part_pools[part_id] if c.candidate_id not in gone], evidence, looked,
+                ids = seeing.targets(made.log["units"], align.usable_pool(edits, part_pools[part_id]), evidence, looked,
                                      min(room, max(TARGETED_PER_PART, room // 2)), forward_only=True)
                 if ids:
                     status.write(message=f"{context}AI xem thêm cảnh cho câu chưa đủ hình ({index}/{len(parts)})…")
@@ -421,8 +421,7 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
                 # the user's shots keep their ids: pinned, excluded and approved (P2-N5) are never split
                 locked = ({i for ids in edits.pin.values() for i in ids} | set(edits.exclude)
                           | {p[0] for pieces in edits.keep.values() for p in pieces}) if edits is not None else set()
-                gone = align.left_out(edits, part_pools[part_id]) if edits is not None else set()
-                part_pool = [c for c in part_pools[part_id] if c.candidate_id not in gone]
+                part_pool = align.usable_pool(edits, part_pools[part_id])
                 ids = more.wanted(made.log["units"], part_pool, evidence, sampled, limit=min(more.EXTRA_SHOTS, room // 2),
                                   forward_only=True, locked={i for i in locked if more.parent(i) == i},
                                   again={more.parent(i) for i in locked if more.parent(i) != i})

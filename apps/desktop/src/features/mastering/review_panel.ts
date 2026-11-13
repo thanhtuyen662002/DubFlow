@@ -187,9 +187,11 @@ export function openReviewPanel(invoke: Invoke, target: ReviewTarget): Promise<v
   const SCOPE = target.part ? "ở mọi câu của phần này" : "ở mọi câu của video này";
 
   /** "Bỏ loại": every exclusion that leaves this shot out goes, as one change (undo brings it back). */
-  function includeButton(shot: Shot, unitId = shot.excluded_by ?? ""): HTMLButtonElement {
+  function includeButton(shot: Shot): HTMLButtonElement {
+    // the sentence that made the exclusion; any sentence will do (the engine lets the footage back in for all of them)
+    const unitId = shot.excluded_by ?? view?.exclusions.find((item) => item.covers.includes(shot.id))?.by ?? (current || view?.units[0]?.unit_id || "");
     const back = button("Bỏ loại", "btn", `Dùng lại cảnh này ${SCOPE}`);
-    back.addEventListener("click", () => void act({ action: "decide", unit: unitId || current, what: "include", ids: [shot.id] },
+    back.addEventListener("click", () => void act({ action: "decide", unit: unitId, what: "include", ids: [shot.id] },
       "Đã bỏ loại. Render lại để dùng lại cảnh này."));
     return back;
   }

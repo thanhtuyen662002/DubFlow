@@ -142,10 +142,11 @@ class Edits:
     # the sentence each approval was given on (:func:`words_digest`): an approval of a sentence whose words changed
     # (a line added above shifts every unit id) is no constraint, it was given to other words. Not in ``to_dict``.
     keep_words: dict[str, str] = field(default_factory=dict)
-    # the footage each exclusion was made on (#805): excluded id → (source id, start ms, end ms) as the log listed it
-    # when the user left it out. A new split numbers its pieces again and a new trim numbers its shots again; the
-    # footage, not the id, is what was left out. Not in ``to_dict`` (the ids are).
-    exclude_ranges: dict[str, tuple[str, int, int]] = field(default_factory=dict)
+    # the footage each exclusion was made on (#805): excluded id → the spans (source id, start ms, end ms) the id named
+    # when the user left it out (an id excluded again after a renumbering names more footage). A new split numbers its
+    # pieces again and a new trim numbers its shots again; the footage, not the id, is what was left out. Not in
+    # ``to_dict`` (the ids are): a plan's identity adds them (:func:`ranges_digest_input`).
+    exclude_ranges: dict[str, tuple[tuple[str, int, int], ...]] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, value: Any) -> "Edits":
@@ -400,23 +401,45 @@ class Exclusion:
     by: dict[str, str]                # candidate id → the exclusion (an id, or a source id) that leaves it out
     widened: dict[str, str]           # an unsplit shot left out for a part of it the user named (P2-N22) → that part
     reused: list[str]                 # excluded footage used anyway: nothing else was left (a conflict, never silent)
+    reused_by: dict[str, str] = field(default_factory=dict)  # each of ``reused`` → the exclusion that names it
 
 
-def _within(candidate: Candidate, span: tuple[str, int, int]) -> bool:
-    """Whether at least half of ``candidate`` lies in the recorded footage ``span`` (same source)."""
-    source, start, end = span
-    if candidate.source_id != source:
-        return False
-    inside = min(end, candidate.end_ms) - max(start, candidate.start_ms)
-    return inside > 0 and inside * 2 >= candidate.length_ms
+Span = tuple[str, int, int]
 
 
-def _overlaps(candidate: Candidate, span: tuple[str, int, int] | None) -> bool:
-    """Whether ``candidate`` shares footage with ``span`` (always, when no footage was recorded: an older review)."""
-    if span is None:
+def _within(candidate: Candidate, spans: Sequence[Span] | None) -> bool:
+    """Whether at least half of ``candidate`` lies in one of the recorded footage ``spans`` (same source); always
+    when nothing was recorded (a review saved before #805 names ids only)."""
+    if spans is None:
         return True
-    source, start, end = span
-    return candidate.source_id == source and min(end, candidate.end_ms) > max(start, candidate.start_ms)
+    for source, start, end in spans:
+        inside = min(end, candidate.end_ms) - max(start, candidate.start_ms)
+        if candidate.source_id == source and inside > 0 and inside * 2 >= candidate.length_ms:
+            return True
+    return False
+
+
+def _overlaps(candidate: Candidate, spans: Sequence[Span] | None) -> bool:
+    """Whether ``candidate`` shares any footage with ``spans`` (always, when nothing was recorded)."""
+    if spans is None:
+        return True
+    return any(candidate.source_id == source and min(end, candidate.end_ms) > max(start, candidate.start_ms)
+               for source, start, end in spans)
+
+
+def ranges_digest_input(edits: Edits) -> dict[str, Any]:
+    """The recorded footage of the exclusions, for a plan's identity (empty when there is none, so a plan without it
+    keeps the identity it had): the same ids on other footage are another plan."""
+    kept = {i: [list(span) for span in spans] for i, spans in sorted(edits.exclude_ranges.items()) if i in edits.exclude}
+    return {"exclude_ranges": kept} if kept else {}
+
+
+def usable_pool(edits: Edits | None, pool: Sequence[Candidate]) -> list[Candidate]:
+    """``pool`` without what the user's exclusions leave out: what a targeted look or extra frames may spend on."""
+    if edits is None:
+        return list(pool)
+    gone = left_out(edits, pool)
+    return [c for c in pool if c.candidate_id not in gone]
 
 
 def exclusion(edits: Edits, candidates: Sequence[Candidate]) -> Exclusion:
@@ -433,20 +456,20 @@ def exclusion(edits: Edits, candidates: Sequence[Candidate]) -> Exclusion:
     covers everything, nothing is left out: ``reused`` lists that footage and the plan says so (a conflict for the
     user to settle, never a silent reuse)."""
     excluded = set(edits.exclude)
-    recorded = {i: span for i, span in edits.exclude_ranges.items() if i in excluded}
+    recorded = {i: tuple(spans) for i, spans in edits.exclude_ranges.items() if i in excluded}
     spans = sorted(recorded.items())
     by: dict[str, str] = {}
     for c in candidates:
         cid = c.candidate_id
-        # an id names footage only where it still is that footage: a shot renumbered onto other footage is not it
-        if cid in excluded and _overlaps(c, recorded.get(cid)):
+        # an id names footage only where it still is mostly that footage: a shot renumbered onto other footage is not it
+        if cid in excluded and _within(c, recorded.get(cid)):
             by[cid] = cid
-        elif parent(cid) in excluded and _overlaps(c, recorded.get(parent(cid))):
+        elif parent(cid) in excluded and _within(c, recorded.get(parent(cid))):
             by[cid] = parent(cid)
         elif c.source_id in edits.exclude_sources:
             by[cid] = c.source_id
         else:
-            reason = next((i for i, span in spans if _within(c, span)), None)
+            reason = next((i for i, mine in spans if _within(c, mine)), None)
             if reason is not None:
                 by[cid] = reason
     widened = {c.candidate_id: piece for piece in sorted(excluded) for c in candidates
@@ -456,8 +479,8 @@ def exclusion(edits: Edits, candidates: Sequence[Candidate]) -> Exclusion:
     if len(named | set(widened)) < len(candidates):
         return Exclusion(named | set(widened), {**by, **widened}, widened, [])
     if len(named) < len(candidates):
-        return Exclusion(named, by, {}, sorted(widened))
-    return Exclusion(set(), {}, {}, sorted(named))
+        return Exclusion(named, by, {}, sorted(widened), dict(sorted(widened.items())))
+    return Exclusion(set(), {}, {}, sorted(named), dict(sorted(by.items())))
 
 
 def exclusion_log(left: Exclusion | None) -> dict[str, Any]:

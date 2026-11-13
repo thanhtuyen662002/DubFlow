@@ -75,14 +75,19 @@ plan, and `READY` is not `USER_APPROVED`. The panel's view adds per unit
 `position` and `shots` (every usable shot).
 
 Version 3 (#805, whole-shot exclusion) adds, per unit, `ranges`: for each
-excluded id, the footage it named when the user left it out (`[source id,
-start ms, end ms]`; a whole shot split into pieces may be excluded by its own
-id, and its range spans the pieces). The planner leaves out a shot named, every
-piece of a whole shot named, and any shot at least half inside a recorded
-range, whatever it is called now; an id renumbered onto other footage is not
-left out, and the decision says the footage is gone. An exclusion that would
-leave a part no usable footage is refused; footage used anyway is listed in the
-log's `exclusions.reused` and the sentence gets an `all_excluded` conflict.
+excluded id, the footage it named when the user left it out (a list of
+`[source id, start ms, end ms]`, more than one when the id was excluded again
+after it came to name other footage; a whole shot split into pieces may be
+excluded by its own id, and its range spans the pieces). The planner leaves out
+a shot named or every piece of a whole shot named while at least half of it is
+in the recorded footage, and any shot at least half inside a recorded range,
+whatever it is called now; an id renumbered onto other footage is not left out,
+and when none of the footage is left the decision says it is gone. The recorded
+footage is part of a plan's identity. An exclusion that would leave a part no
+usable footage is refused; footage used anyway is listed in the log's
+`exclusions.reused` and the sentence gets an `all_excluded` conflict, which
+keeps its exclusions in force until the user lets the footage back in or a
+plan no longer needs it.
 The action `include` ("Bỏ loại") removes every exclusion that leaves the
 given shots out, as one change (record `UNDO`, `detail: include`, `shots`). An
 `EXCLUDE` record of a whole shot has `detail: whole_shot` and `affected`

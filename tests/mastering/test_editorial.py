@@ -552,7 +552,7 @@ class WholeShotExclusionTests(unittest.TestCase):  # #805
         # a new split names the same footage otherwise: the range still leaves it out, footage outside it stays
         renamed = [candidate("v1c8f1", "v1", 1000, 2500), candidate("v1c8f2", "v1", 2500, 4000),
                    candidate("v1c9", "v1", 4000, 6000), other]
-        edits = align.Edits(exclude={"v1c3"}, exclude_ranges={"v1c3": ("v1", 1000, 4000)})
+        edits = align.Edits(exclude={"v1c3"}, exclude_ranges={"v1c3": (("v1", 1000, 4000),)})
         self.assertEqual(align.exclusion(edits, renamed).gone, {"v1c8f1", "v1c8f2"})
         # the same id on other footage is not what was left out
         moved = [candidate("v1c3f1", "v1", 9000, 10_000), other]
