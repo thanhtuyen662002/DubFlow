@@ -76,6 +76,15 @@ export function qcRows(qc: DubbingQc): { label: string; text: string; tone: "ok"
     });
   } else if (qc.loudness) {
     rows.push({ label: "Âm lượng", text: `Đã chuẩn hóa từ ${before}; không đo lại được sau khi xuất.`, tone: "warn" });
+  } else if (qc.after) {
+    // issue #715: no normalisation was applied (none needed, or the B1 fallback), but the final video was measured
+    const over = qc.after.true_peak > TRUE_PEAK_CEILING;
+    rows.push({
+      label: "Âm lượng",
+      text: `${(note("Âm lượng:") ?? "Không chuẩn hóa").replace(/\.$/, "")}. Đo bản xuất: ${number(qc.after.integrated)} LUFS, đỉnh ${number(qc.after.true_peak)} dBTP sau AAC`
+        + (over ? ` (vượt trần ${number(TRUE_PEAK_CEILING)} dBTP)` : ` (trần ${number(TRUE_PEAK_CEILING)} dBTP: đạt)`),
+      tone: over ? "warn" : "ok",
+    });
   } else {
     rows.push({ label: "Âm lượng", text: note("Âm lượng:") ?? "Giữ nguyên.", tone: "info" });
   }

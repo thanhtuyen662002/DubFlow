@@ -540,7 +540,10 @@
         "engine/dubflow/docu/shots.py",
         "engine/dubflow/product/job.py",
         "tests/mastering",
-        "fixtures/mastering"
+        "fixtures/mastering",
+        "apps/desktop/src-tauri/src/mastering.rs",
+        "apps/desktop/src/features/mastering",
+        "apps/desktop/test/mastering.test.mjs"
       ],
       "commands": [
         ["python", "-B", "-m", "unittest", "discover", "-s", "tests/mastering", "-t", ".", "-p", "test_*.py"]

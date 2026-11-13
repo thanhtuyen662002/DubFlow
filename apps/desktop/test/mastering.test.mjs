@@ -147,6 +147,22 @@ console.log("mastering tests passed");
   assert.equal(ok.find((row) => row.label === "Âm lượng").tone, "ok");
   const back = qcRows(parseDubbingQc({ level: "light", loudness: false, fallback: true, notes: ["Đã quay về âm thanh gốc (B1)"], measured: {} }));
   assert.ok(back.some((row) => row.label === "Quay về"));
+  // issue #715: the post-AAC measurement shows even when no normalisation was applied (none needed, or B1)
+  const unfiltered = qcRows(parseDubbingQc({ level: "balanced", loudness: false, notes: ["Âm lượng: giữ nguyên (đã gần mục tiêu)."],
+    measured: { mix: { integrated: -16.2, true_peak: -2.0, lra: 6 } }, output_loudness: { integrated: -16.3, true_peak: -2.1, lra: 6 } }));
+  const plain = unfiltered.find((row) => row.label === "Âm lượng");
+  assert.equal(plain.tone, "ok");
+  assert.match(plain.text, /^Giữ nguyên \(đã gần mục tiêu\)\. Đo bản xuất: −16,3 LUFS, đỉnh −2,1 dBTP sau AAC \(trần −1,5 dBTP: đạt\)$/);
+  const fellBack = qcRows(parseDubbingQc({ level: "light", loudness: false, fallback: true, notes: ["Đã quay về âm thanh gốc (B1)"],
+    measured: {}, output_loudness: { integrated: -14.0, true_peak: -0.4, lra: 8 } }));
+  assert.ok(fellBack.some((row) => row.label === "Quay về"), "the B1 explanation stays");
+  const loudB1 = fellBack.find((row) => row.label === "Âm lượng");
+  assert.equal(loudB1.tone, "warn");
+  assert.match(loudB1.text, /^Không chuẩn hóa\. Đo bản xuất: −14,0 LUFS, đỉnh −0,4 dBTP sau AAC \(vượt trần/);
+  // no measurement and no normalisation: unchanged
+  assert.equal(back.find((row) => row.label === "Âm lượng").text, "Giữ nguyên.");
+  // mastering off: no card at all
+  assert.equal(parseDubbingQc({ loudness: false, output_loudness: { integrated: -16, true_peak: -2, lra: 5 } }), null);
 }
 
 // Queue: a job keeps its level; off is no value; unknown levels are refused.

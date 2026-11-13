@@ -1,8 +1,8 @@
 DUBFLOW_PR_V1
 Issue: #715
 Lease-Owner: Claude/issue-715-mastering-safe-options-and-output-qc
-Lease-Heartbeat: 2026-11-12T16:54:30Z
-Tested-Base-SHA: f46723aa93553da321e480e6cc0d6e62b6d9a08e
+Lease-Heartbeat: 2026-11-13T06:48:07Z
+Tested-Base-SHA: 461aabb3121882314f8a7c468da8b4aa18358f62
 Conflict-Domains: mastering-options-write,mastering-output-qc,component-registry
 Expected-Paths: .claims/issue-715-mastering-safe-options-and-output-qc.md,apps/desktop/src-tauri/src/mastering.rs,engine/dubflow/worker/production_job.py,apps/desktop/src/features/mastering/qc.ts,apps/desktop/test/mastering.test.mjs,tests/production/worker/test_dubbing_mastering.py,scripts/ci/component_registry.json
 Required-CI: PR Fast + PR Integration full 61/61 + PR Desktop Editor Windows
@@ -42,3 +42,13 @@ No product implementation or tests have been performed by the Lead. If Claude ca
 
 ## Phase ledger at lease creation
 ASSIGNED=YES; STARTED=YES (valid Draft lease created; implementation not yet started); CODED=NO; TESTED=NOT_RUN; INTEGRATED=NO; ACCEPTED=NO.
+
+## Implementation checkpoint (2026-11-13T06:48:07Z)
+Branch merged current Main 461aabb3121882314f8a7c468da8b4aa18358f62 (history-preserving merge). Implemented on the seven allowed paths only:
+- mastering.rs: options written through an exclusively created unique temp (`create_new`, `.mastering.json.<pid>-<n>-<nanos>.tmp`), renamed into place; an occupied name (file, hard link, symlink, another writer's temp) is skipped, never opened; only this call's temp is removed. Regressions: planted hard link (and symlink where allowed) at the old predictable name, occupied candidates, all-occupied failure, candidate outside the folder, 8 concurrent writers.
+- production_job.py: post-AAC output loudness measured whenever mastering is on and the output has audio (B2 without filter, B1 fallback); `loudness` still means a filter was applied; a failed measurement is null.
+- qc.ts: the post-AAC measurement is shown when available even without normalisation; mastering off has no card; the B1 row stays.
+- Tests: Rust 11/11 mastering, Python 15/15 test_dubbing_mastering (3 fail on the old code), UI mastering.test.mjs (fails on the old qc.ts). The old B1 `output_loudness is None` assertion was deliberately changed to the measured value.
+- Registry: three desktop mastering roots added to `mastering` only.
+
+Phase ledger: ASSIGNED=YES; STARTED=YES; CODED=YES; TESTED=LOCAL_PASS (hosted CI pending); INTEGRATED=NO; ACCEPTED=NO (Windows real-media smoke pending).
