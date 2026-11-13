@@ -6,6 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
+from engine.dubflow.mastering import claims as said
 from engine.dubflow.mastering import final_qc as qc
 from engine.dubflow.mastering import review as rv
 
@@ -257,6 +258,44 @@ class ClaimTests(unittest.TestCase):  # #817
         self.assertNotIn("câu 13", check["detail"])
         self.assertTrue(check["detail"].endswith("câu 12 và 3 câu khác"), check["detail"])
         self.assertLessEqual(len(check["detail"]), 400)  # what the desktop shows of a detail
+
+    def test_the_result_carries_every_critical_sentence_for_a_machine(self):
+        # the line names twelve (what the desktop can show); the result lists all fifteen, over two parts
+        def part(first: int, last: int):
+            units = []
+            for n in range(first, last + 1):
+                u = unit(f"u{n}", matched=1, status="partial", needs_review=True, chosen=("c1",))
+                u["signals"] = {"claims": dict(POPULATION_CLAIM)}
+                units.append(u)
+            made = log(units, [cand("c1", text="biểu đồ"), cand("c2", text="cánh đồng")])
+            rv.annotate(made)
+            review = rv.Review()
+            review.set_accept_unreviewed(True)
+            segments = [(f"u{n}", 0, 400, k * 400, (k + 1) * 400, "primary") for k, n in enumerate(range(first, last + 1))]
+            return made, plan_dict(segments, duration=400 * (last - first + 1)), review
+        first, second = part(1, 9), part(1, 6)
+        settled = second[0]["units"][5]["unit_id"]
+        second[2].decide(second[0], settled, "approve")  # the user's word: not critical, named apart
+        check = self.checks([("i1", *first), ("i2", *second)])["claims"]
+        self.assertTrue(check["detail"].startswith("14 câu chưa xử lý"), check["detail"])
+        self.assertIn("và 2 câu khác", check["detail"])
+        self.assertEqual([(u["part"], u["unit_id"]) for u in check["units"]],
+                         [("i1", f"u{n}") for n in range(1, 10)] + [("i2", f"u{n}") for n in range(1, 6)])
+        self.assertEqual(check["units"][0], {"part": "i1", "unit_id": "u1", "number": "1", "claims": [
+            {"label": label, "status": status} for label, status in said.statuses(POPULATION_CLAIM)
+            if status in (said.CONTRADICTED, said.UNVERIFIED)]})
+        self.assertTrue(check["units"][0]["claims"])
+        self.assertEqual([(u["part"], u["unit_id"]) for u in check["user_accepted"]], [("i2", settled)])
+        out = qc.result([qc._check("render", "", True), check], "COMPLETED")
+        self.assertFalse(out["passed"])
+        self.assertEqual(out["critical_units"], check["units"])
+        self.assertEqual(len(out["critical_units"]), 14)
+        json.dumps(out)  # plain data
+        # nothing critical: the lists are there and empty, never absent
+        made, review = settled_world()
+        clean = {c["id"]: c for c in qc.check_parts([("video 1", made, plan_dict(GOOD), review)])}["claims"]
+        self.assertEqual((clean["ok"], clean["units"], clean["user_accepted"]), (True, [], []))
+        self.assertEqual(qc.result([clean], "COMPLETED")["critical_units"], [])
 
     def test_twelve_are_listed_without_a_tail(self):
         names = [f"câu {n}" for n in range(1, 13)]

@@ -685,3 +685,137 @@ class StatusTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TiedFigureTests(unittest.TestCase):
+    """The review of #817: a population word, or a people unit, ties a figure only where it reads as its count."""
+
+    def unconfirmed(self, sentence: str, evidence: str) -> None:
+        self.assertEqual(verdict(sentence, evidence)[0], [], evidence)
+        self.assertNotIn(said.CONFIRMED, [s for _, s in said.statuses(
+            {"display": True, **said.check(said.of(sentence), evidence).to_dict()})], evidence)
+
+    def test_a_word_after_the_figure_is_its_unit_not_people(self):
+        # base 74c16d0 left all of these UNVERIFIED: the figure counts feet, hectares, vehicles, households
+        for evidence in ("POPULATION 1500 FEET", "DÂN SỐ 1500 HA", "POPULATION 1500 ACRES", "NGƯỜI 1500 XE",
+                         "POPULATION 1500 HOUSEHOLDS", "dân số 1500 hộ", "POPULATION 1500 PER SQ MI",
+                         "POPULATION 1500/HA", "POPULATION 1500 (FEET)", "dân số 1500 căn nhà"):
+            self.unconfirmed(HEADS, evidence)
+            self.assertEqual(verdict(HEADS, evidence)[2:], ([], []), evidence)  # nor another count of people
+        self.unconfirmed(HEADS, "POPULATION 1500 300")  # another figure after it: not in the list of what may follow
+        self.unconfirmed(POPULATION, "POPULATION 193,000,000 ACRES")
+        self.unconfirmed(POPULATION, "dân số 193 triệu hộ")
+
+    def test_what_may_follow_a_population_figure(self):
+        # nothing, punctuation, a year, a link to a year, "and", a people word
+        for evidence in ("POPULATION 1500", "POPULATION 1500.", "POPULATION 1500, AREA 300 KM2", "POPULATION 1500 (1941)",
+                         "POPULATION 1500 IN 1941", "dân số 1500 năm 1941", "dân số 1500 vào năm 1941", "POPULATION 1500 - 1941",
+                         "DÂN SỐ 1500 VÀ DIỆN TÍCH 300 KM2", "POPULATION 1500 AND AREA 300", "POPULATION 1500 (PEOPLE)",
+                         "POPULATION 1500 INHABITANTS", "POPULATION 1500\nFEET ABOVE SEA LEVEL 300"):
+            self.assertEqual(verdict(HEADS, evidence), (["1.500 người"], [], [], []), evidence)
+        for evidence in ("POPULATION 1500 IN FEET", "POPULATION 1500 BY ROAD"):  # a link word only before a year
+            self.unconfirmed(HEADS, evidence)
+
+    def test_a_population_word_in_another_sentence_ties_nothing(self):
+        for evidence in ("Biểu đồ về dân số. 1500", "A chart of the population. 1500", "Who are these people? 1500",
+                         "Đông người! 1500", "POPULATION… 1500", "dân số là: 1500", "population of: 1500"):
+            self.unconfirmed(HEADS, evidence)
+            self.assertEqual(verdict(HEADS, evidence)[2:], ([], []), evidence)
+        self.unconfirmed(POPULATION, "Bản đồ dân số. 193,000,000")
+        # a colon right after the population word, or after its year, is a caption (the figure is the population)
+        for evidence in ("POPULATION: 1500", "Dân số: 1.500", "Population (1941): 1,500", "POPULATION 1941: 1500",
+                         "dân số năm 1941: 1500", "NGƯỜI: 1500"):
+            self.assertEqual(verdict(HEADS, evidence), (["1.500 người"], [], [], []), evidence)
+        for evidence in ("POPULATION: 193,000,000", "Population (1941): 193,000,000", "dân số: 193.000.000 (năm 1941)",
+                         "USSR population 1941: 193 million"):
+            self.assertEqual(verdict(POPULATION, evidence), (["193.000.000 người"], [], [], []), evidence)
+
+    def test_spaced_groups_are_not_joined_after_a_label(self):
+        for evidence in ("Hình 1 500 người", "Ảnh 1 500 người", "Bảng 1 500 người", "Biểu đồ 1 500 người", "Phần 1 500 người",
+                         "Figure 1 500 people", "Fig. 1 500 people", "Table 1 500 people", "Part 1 500 people",
+                         "Số 1 500 người", "Lô số 1 500 người", "No. 1 500 people"):
+            self.unconfirmed(HEADS, evidence)
+            self.assertNotIn(1500, [q.value for q in said.quantities(evidence)], evidence)
+        self.assertEqual(said.quantities("Hình 1 500 người"), [said.Quantity(1), said.Quantity(500, "people", "people")])
+        # "dân số", "tổng số", "quân số" name an amount: the groups after them are one figure
+        for evidence in ("dân số 1 500", "Dân số: 1 500", "tổng số 1 500 người", "quân số 1 500 lính", "con số 1 500 người"):
+            self.assertEqual(verdict(HEADS, evidence)[0], ["1.500 người"], evidence)
+
+    def test_a_price_per_head_is_no_count(self):
+        for evidence in ("1.500 đồng/người", "1.500đ/người", "$1500 / người", "1500 USD/người", "1.500 đồng một người",
+                         "giá 1.500 đồng một người", "1500đ người", "€1500 people", "1500 VND/người", "1500/người",
+                         "1.500 đồng/lính", "$1500 per people"):
+            self.unconfirmed(HEADS, evidence)
+            self.assertEqual(verdict(HEADS, evidence)[2:], ([], []), evidence)
+
+    def test_a_density_is_no_count(self):
+        for evidence in ("1500 người/km2", "1500 people per sq mi", "POPULATION 1500 PEOPLE PER SQ MI", "1500 người / km²",
+                         "1500 người mỗi km vuông", "1500 people/sq mi", "1500 lính/km", "1500 inhabitants per sq mi",
+                         "1500 dân/km2", "POPULATION 1500 (PEOPLE PER SQ MI)", "DENSITY: 1500 INHABITANTS/KM2"):
+            self.unconfirmed(HEADS, evidence)
+            self.assertEqual(verdict(HEADS, evidence)[2:], ([], []), evidence)
+        self.unconfirmed("Biểu đồ có 1500 máy bay.", "1500 máy bay/ngày")
+        self.unconfirmed("Biểu đồ có 1500 xe tăng.", "1500 tanks per month")
+        self.assertEqual(verdict(HEADS, "1500 người trên quảng trường")[0], ["1.500 người"])
+        self.assertEqual(verdict(HEADS, "1500 người, mỗi người một lá cờ")[0], ["1.500 người"])
+
+    def test_a_date_is_no_count(self):
+        for year, evidence in ((1941, "1941, người dân Liên Xô"), (1941, "22/6/1941: người Đức tấn công"),
+                               (1941, "22/6/1941 người Đức tấn công"), (1941, "JUNE 22, 1941 PEOPLE OF RUSSIA"),
+                               (1941, "JUNE 1941 PEOPLE OF RUSSIA"), (1941, "22 June 1941 people of Russia"),
+                               (1941, "tháng 6 1941 người Đức tấn công"), (1941, "1941: người Đức tấn công"),
+                               (1500, "1500, người dân"), (1500, "22/6/1500 người"), (1500, "Jun 1500 people")):
+            sentence = f"Biểu đồ ghi {year} người."
+            self.assertEqual([q.unit for q in said.of(sentence).quantities], ["people"], sentence)
+            self.unconfirmed(sentence, evidence)
+            self.assertNotIn("people", [q.unit for q in said.quantities(evidence) if q.value == year], evidence)
+
+    def test_a_people_word_after_other_text_is_no_unit(self):
+        for evidence in ("Lô số 1500 - người bán hàng", "Lô số 1500 người bán hàng", "Trên bảng ghi 1500. Người đi bộ qua đường",
+                         "1500\nngười", "1500; người", "1500: người", "1500 (xem trang sau) người", "1500 (người)", "1500/người", "1500 -người", "No 1500 people",
+                         "Mã 1500 người", "Number 1500 people", "trang 1500 người", "1500! People run", "1500 – người",
+                         "1500. Residents leave", "1500, inhabitants"):
+            self.unconfirmed(HEADS, evidence)
+            self.assertEqual(verdict(HEADS, evidence)[2:], ([], []), evidence)
+
+    def test_people_counts_still_confirm(self):
+        for sentence, evidence in ((POPULATION, "193.000.000 người"), (POPULATION, "193,000,000 PEOPLE"),
+                                   (POPULATION, "193 triệu người"), (POPULATION, "193 triệu dân"), (HEADS, "sau 3 tháng 1500 người đã chết"), (POPULATION, "193 MILLION PEOPLE"),
+                                   (POPULATION, "USSR: 193,000,000 people in 1941"),
+                                   (HEADS, "1.500 người"), (HEADS, "1,500 people"), (HEADS, "1500 người"),
+                                   (HEADS, "tổng số 1500 người"), (HEADS, "quân số 1500 người"), (HEADS, "Có 1.500 người dân ở đây"),
+                                   (HEADS, "Ảnh: 1500 người biểu tình"), (HEADS, "1941: 1500 người"), (HEADS, "(1500 người)"),
+                                   ("Biểu đồ ghi 1500 lính.", "1500 lính"), ("Biểu đồ ghi 1500 lính.", "1,500 SOLDIERS"),
+                                   ("Biểu đồ ghi 1500 lính.", "1500 binh sĩ"), ("Biểu đồ ghi 1500 lính.", "1,500 men")):
+            self.assertEqual(verdict(sentence, evidence), ([said.of(sentence).quantities[0].spoken()], [], [], []), evidence)
+        self.assertEqual(verdict("Biểu đồ ghi 193 triệu dân.", "POPULATION 193,000,000")[0], ["193.000.000"])
+        self.assertEqual(verdict("Biểu đồ ghi 193 triệu dân.", "193 triệu dân")[0], ["193.000.000"])
+        self.assertEqual(said.of("Biểu đồ ghi 193 triệu dân.").quantities, (said.Quantity(193_000_000, None, None, "people"),))
+
+    def test_planes_and_tanks_follow_the_same_rule(self):
+        planes, tanks = "Biểu đồ có 1500 máy bay.", "Biểu đồ có 1500 xe tăng."
+        for evidence in ("1500 máy bay", "1,500 PLANES", "1500 chiếc máy bay", "1.500 aircraft"):
+            self.assertEqual(verdict(planes, evidence), (["1.500 máy bay"], [], [], []), evidence)
+        for evidence in ("1500 xe tăng", "1,500 TANKS", "1500 chiếc xe tăng"):
+            self.assertEqual(verdict(tanks, evidence), (["1.500 xe tăng"], [], [], []), evidence)
+        for evidence in ("1.500 đồng/máy bay", "$1500 / máy bay", "1500, máy bay Đức", "1500. Máy bay cất cánh", "1500: planes",
+                         "Lô số 1500 máy bay", "No. 1500 planes", "22/6/1500 máy bay", "June 1500 planes", "1500\nmáy bay",
+                         "1500, chiếc máy bay"):
+            self.unconfirmed(planes, evidence)
+        for evidence in ("1.500 đồng/xe tăng", "$1500 / tanks", "1500, xe tăng Đức", "1500. Tanks advance", "No. 1500 tanks",
+                         "June 1500 tanks", "1500\nxe tăng"):
+            self.unconfirmed(tanks, evidence)
+
+    def test_a_narrated_price_or_date_states_no_count(self):
+        for sentence in ("Bảng giá ghi 1.500 đồng một người.", "Bảng giá ghi 1.500 đồng/người.", "Bảng ghi giá 1.500đ/người.",
+                         "Biểu đồ ghi ngày 22/6/1941: người Đức tấn công.", "Dòng chữ ghi lô số 1500 - người bán hàng.",
+                         "Bảng ghi 1941, người dân bỏ chạy.", "Bảng ghi $1500 / máy bay."):
+            stated = said.of(sentence)
+            self.assertEqual([q for q in stated.quantities if q.unit in ("people", "planes", "tanks") or q.measure], [], sentence)
+        # the figure is still a number the picture must show, as before #817
+        self.assertEqual(said.of("Bảng giá ghi 1.500 đồng một người.").quantities, (said.Quantity(1500),))
+        # a narrated count of people stays one, also when words follow the figure: only "1500 người" on the frame shows it
+        for sentence in ("Biểu đồ dân số 1500 tăng nhanh.", "Biểu đồ dân số 1500"):
+            self.assertEqual(said.check(said.of(sentence), "1500 MILES").verified, [], sentence)
+            self.assertEqual(said.check(said.of(sentence), "1500").verified, [], sentence)
+            self.assertEqual(said.check(said.of(sentence), "POPULATION 1500").verified, ["1.500"], sentence)

@@ -15,7 +15,9 @@ when FFmpeg is given, measures the output itself:
 * ``claims``: no sentence the queue calls critical left unsettled, accepted or not, is shown as if it were checked:
   every one is counted and listed by number (the first ``LISTED``, then how many more), every time. A sentence about
   something displayed whose shots contradict or do not show it is critical (#817); one the user settled by hand
-  passes and is named as the user's acceptance, its claim still unconfirmed.
+  passes and is named as the user's acceptance, its claim still unconfirmed. The line is for a person and bounded;
+  the check's ``units`` (the result's ``critical_units``) and ``user_accepted`` list every such sentence for a
+  machine: ``{"part", "unit_id", "number", "claims": [{"label", "status"}]}`` (the claims still unresolved).
 
 The result's ``state`` maps the workflow states: ``RENDERING``, ``RENDER_PENDING`` (decisions not rendered yet),
 ``REVIEW_PENDING``, ``FINAL_QC_FAILED`` or ``READY_TO_FINALIZE``. ``Finalized``/``Stale Final`` are the host's (it
@@ -101,6 +103,12 @@ def check_parts(parts: Sequence[tuple[str, Mapping[str, Any] | None, Mapping[str
                 ) -> list[dict[str, Any]]:
     """The content checks over every (part id, decision log, plan dict, review) of the video."""
     timeline, waiting, open_units, critical, user_accepted = [], [], [], [], []
+    critical_units: list[dict[str, Any]] = []  # every one, for a machine: the line names only the first LISTED
+    accepted_units: list[dict[str, Any]] = []
+
+    def entry(unit: Mapping[str, Any]) -> dict[str, Any]:
+        return {"part": part, "unit_id": unit["unit_id"], "number": reviewing_number(unit["unit_id"]),
+                "claims": [dict(c) for c in unit.get("claims") or () if c["status"] in (claims.CONTRADICTED, claims.UNVERIFIED)]}
     accepted = True
     for part, log, plan_dict, review in parts:
         label = f"{part}: " if len(parts) > 1 else ""
@@ -122,12 +130,14 @@ def check_parts(parts: Sequence[tuple[str, Mapping[str, Any] | None, Mapping[str
             open_units += [f"{label}câu {reviewing_number(u)}" for u in shown["unreviewed"]]
             accepted = accepted and review.accept_unreviewed
         critical += [f"{label}câu {reviewing_number(u['unit_id'])}" for u in shown["units"] if u.get("priority") == reviewing.CRITICAL]
+        critical_units += [entry(u) for u in shown["units"] if u.get("priority") == reviewing.CRITICAL]
         # a displayed claim the shots do not show that the user settled (approved, no suitable footage): the user's
         # word, said so; the claim is not counted as confirmed. A pinned sentence has no claim left once replanned: the
         # planner checks none on the user's own shot
-        user_accepted += [f"{label}câu {reviewing_number(u['unit_id'])}" for u in shown["units"]
-                          if u.get("priority") is None and u.get("decision")
-                          and any(c["status"] in (claims.CONTRADICTED, claims.UNVERIFIED) for c in u.get("claims") or ())]
+        settled = [u for u in shown["units"] if u.get("priority") is None and u.get("decision")
+                   and any(c["status"] in (claims.CONTRADICTED, claims.UNVERIFIED) for c in u.get("claims") or ())]
+        user_accepted += [f"{label}câu {reviewing_number(u['unit_id'])}" for u in settled]
+        accepted_units += [entry(u) for u in settled]
     checks = [
         _check("timeline", "Dòng thời gian", not timeline, "; ".join(timeline[:8]) or "không có khoảng trống, chồng lấn, đoạn âm hay khung đứng"),
         _check("pending", "Lựa chọn đã render", not waiting,
@@ -142,7 +152,8 @@ def check_parts(parts: Sequence[tuple[str, Mapping[str, Any] | None, Mapping[str
         else "không còn mục nghiêm trọng"
     if user_accepted:
         detail += "; cảnh chưa xác nhận điều câu nói, người dùng đã chấp nhận: " + listed(user_accepted, ACCEPTED_LISTED)
-    checks.append(_check("claims", "Mục nghiêm trọng", not critical, detail))
+    checks.append({**_check("claims", "Mục nghiêm trọng", not critical, detail),
+                   "units": critical_units, "user_accepted": accepted_units})
     return checks
 
 
@@ -207,7 +218,9 @@ def result(checks: list[dict[str, Any]], status_state: str | None) -> dict[str, 
     else:
         state = "READY_TO_FINALIZE"
     return {"schema_version": 1, "kind": "final_qc", "state": state, "passed": state == "READY_TO_FINALIZE",
-            "checks": checks, "unmeasured": [c["id"] for c in checks if c["ok"] is None]}
+            "checks": checks, "unmeasured": [c["id"] for c in checks if c["ok"] is None],
+            # every critical sentence, none dropped: the "claims" line names the first LISTED and counts the rest
+            "critical_units": list(by.get("claims", {}).get("units") or ())}
 
 
 def _load_review(path: Path) -> reviewing.Review:
