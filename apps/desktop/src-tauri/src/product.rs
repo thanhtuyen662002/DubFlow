@@ -39,6 +39,102 @@ fn local_file(value: &str, extensions: &[&str]) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+/// Why a file the user chose as a source is refused (Issue #816). Bán hàng and Tổng hợp use the same rule
+/// ([`check_source`]); each names the file its own way ([`SourceRefusal::message`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SourceRefusal {
+    /// Not absolute, or a `.` or `..` part.
+    BadPath,
+    /// Not one of the formats asked for.
+    Unsupported,
+    /// Nothing there (or it cannot be read).
+    Missing,
+    /// A symlink, a junction or anything else that is not a regular file (a folder).
+    NotPlain,
+    /// A folder on the way to it is a symlink or junction (or cannot be read to show it is not).
+    LinkedFolder,
+}
+
+impl SourceRefusal {
+    /// The Vietnamese message for a source called `kind` ("Video nguồn", "Ảnh", "Nhạc nền"…) whose file is `name`.
+    /// For "Video nguồn" these are Tổng hợp's own texts, unchanged.
+    pub(crate) fn message(self, kind: &str, name: &str) -> String {
+        let lower = kind.to_lowercase();
+        fail(match self {
+            Self::BadPath => format!("Đường dẫn {lower} không hợp lệ: {name}"),
+            Self::Unsupported => format!("Không mở được file: {name}"),
+            Self::Missing => format!("Không tìm thấy {lower}: {name}"),
+            Self::NotPlain => format!("{kind} phải là tệp thật trên máy, không phải lối tắt: {name}"),
+            Self::LinkedFolder => format!("{kind} nằm trong thư mục là lối tắt (symlink/junction), hãy chọn tệp ở vị trí thật: {name}"),
+        })
+    }
+}
+
+/// A redirect to somewhere else: a symlink, or on Windows a junction, mount point or other name-surrogate reparse point
+/// (Rust std reports all of those as symlinks). Unlike `edit::is_link` (any reparse attribute, still used for folders),
+/// a reparse point that is not a name surrogate is the file itself, not a way to another one: OneDrive Files-On-Demand
+/// placeholders and deduplicated files carry one, and a user's OneDrive video must keep working as a source.
+pub(crate) fn is_redirect(metadata: &fs::Metadata) -> bool {
+    metadata.file_type().is_symlink()
+}
+
+/// The one source rule (Issue #816) for every file the user chooses as a source in Bán hàng (photos, clips, music, a
+/// background to keep, a photo to preview) and Tổng hợp (source videos, music):
+/// - the path is absolute, made only of a prefix, a root and plain names: no `.` or `..` part, read on the text itself
+///   (`Path::components` hides an inner `.`), so the path stored in the spec is the file the user picked;
+/// - it has one of `extensions`;
+/// - the path itself (not what it points to) is a regular file: never a symlink or junction;
+/// - no folder on the way to it is a symlink or junction, so the file is where its path says it is.
+///
+/// A hard link is accepted: it is the file itself, with no other place it leads to (dedup and backup tools leave them).
+/// There is no containment or prefix rule: a real file anywhere on the machine stays allowed.
+///
+/// The disk is read on every call and nothing is kept, so a later call sees a file that was swapped since. The worker
+/// checks again when it loads the spec (`product/job.py::_plain_file`); FFmpeg opens the file by path after that, and
+/// that last window cannot be closed (it is the user's own folder, outside the threat model).
+pub(crate) fn check_source(path: &Path, extensions: &[&str]) -> Result<(), SourceRefusal> {
+    use std::path::Component;
+    let text = path.as_os_str().to_string_lossy();
+    if !path.is_absolute()
+        || text.split(std::path::is_separator).any(|part| part == "." || part == "..")
+        || !path.components().all(|part| matches!(part, Component::Prefix(_) | Component::RootDir | Component::Normal(_))) {
+        return Err(SourceRefusal::BadPath);
+    }
+    if !has_extension(path, extensions) {
+        return Err(SourceRefusal::Unsupported);
+    }
+    let metadata = fs::symlink_metadata(path).map_err(|_| SourceRefusal::Missing)?;
+    if is_redirect(&metadata) || !metadata.is_file() {
+        return Err(SourceRefusal::NotPlain);
+    }
+    // A folder that cannot be read cannot be shown to be a plain folder: refused like a link.
+    if !path.ancestors().skip(1).all(|folder| fs::symlink_metadata(folder).is_ok_and(|metadata| !is_redirect(&metadata))) {
+        return Err(SourceRefusal::LinkedFolder);
+    }
+    Ok(())
+}
+
+/// [`check_source`] on a value from the UI, with the message for a source called `kind`; the path is returned as given.
+pub(crate) fn plain_source_file(value: &str, kind: &str, extensions: &[&str]) -> Result<PathBuf, String> {
+    let path = PathBuf::from(value);
+    check_source(&path, extensions).map_err(|refusal| refusal.message(kind, &source_name(&path)))?;
+    Ok(path)
+}
+
+/// A source's file name for messages.
+pub(crate) fn source_name(path: &Path) -> String {
+    path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
+/// A request's photos and clips by the one source rule: a clip is a "Video nguồn", as in Tổng hợp.
+fn product_visuals(values: &[String]) -> Result<Vec<PathBuf>, String> {
+    let extensions = [&IMAGE_EXTENSIONS[..], &CLIP_EXTENSIONS[..]].concat();
+    values.iter().map(|value| {
+        let kind = if has_extension(Path::new(value), &CLIP_EXTENSIONS) { "Video nguồn" } else { "Ảnh" };
+        plain_source_file(value, kind, &extensions)
+    }).collect()
+}
+
 /// Photos, photos and clips, or music, from the file dialog.
 #[tauri::command]
 pub fn pick_product_files(kind: String) -> Result<Vec<String>, String> {
@@ -57,7 +153,7 @@ pub fn pick_product_files(kind: String) -> Result<Vec<String>, String> {
 /// at full detail), or a smaller thumbnail. Raw bytes avoid a JSON number array.
 #[tauri::command]
 pub async fn product_image(path: String, max_side: Option<u32>) -> Result<tauri::ipc::Response, String> {
-    let image = local_file(&path, &IMAGE_EXTENSIONS)?;
+    let image = plain_source_file(&path, "Ảnh", &IMAGE_EXTENSIONS)?;
     let side = max_side.unwrap_or(1568).clamp(64, 1568);
     let ffmpeg = version_root()?.join("runtime").join("media").join("ffmpeg.exe");
     let mut command = Command::new(&ffmpeg);
@@ -207,10 +303,11 @@ pub fn product_render(request: ProductRequest) -> Result<String, String> {
     if !(0.0..=1.0).contains(&request.music_volume) {
         return Err(fail("Âm lượng nhạc nền không hợp lệ"));
     }
-    let visuals = visuals.iter()
-        .map(|value| local_file(value, &[&IMAGE_EXTENSIONS[..], &CLIP_EXTENSIONS[..]].concat()))
-        .collect::<Result<Vec<_>, _>>()?;
-    let music = request.music.as_deref().map(|value| local_file(value, &MUSIC_EXTENSIONS)).transpose()?;
+    // Issue #816: the same source rule as Tổng hợp, before any run folder is made (a refused file makes no run). The
+    // spec keeps the checked paths; the worker checks them again when it reads the spec.
+    let visuals = product_visuals(&visuals)?;
+    let music = request.music.as_deref().map(|value| plain_source_file(value, "Nhạc nền", &MUSIC_EXTENSIONS)).transpose()?;
+    // The background the UI sends is a library entry, the app's own copy (`product_background_add` checked the user's file).
     let background = request.background.as_deref().map(|value| local_file(value, &IMAGE_EXTENSIONS)).transpose()?;
     let reuse = request.reuse_audio_from.as_deref().map(product_dir).transpose()?;
     let beside_reuse = reuse.as_deref().and_then(|dir| dir.ancestors().find(|part| part.file_name().is_some_and(|name| name == "DubFlow Output")))
@@ -597,7 +694,8 @@ pub fn product_backgrounds() -> Result<Vec<LibraryBackground>, String> {
 /// Keep a picked image in the library (once per distinct image) and return it.
 #[tauri::command]
 pub async fn product_background_add(path: String) -> Result<LibraryBackground, String> {
-    let source = local_file(&path, &IMAGE_EXTENSIONS)?;
+    // its bytes are copied into the library: the user's real file, never what a link leads to (Issue #816)
+    let source = plain_source_file(&path, "Ảnh nền", &IMAGE_EXTENSIONS)?;
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = LIBRARY.lock().map_err(|_| fail("Kho ảnh nền đang bận"))?;
         add_to_library(&library_dir()?, &source, measure_image)
@@ -722,6 +820,154 @@ pub(crate) mod tests {
             assert!(chosen_base(&save_alias.to_string_lossy()).is_err(), "a save folder that is a link");
         }
         assert!(chosen_base("relative\\folder").is_err());
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    fn source_base(name: &str) -> PathBuf {
+        let base = std::env::temp_dir().join(format!("dubflow-source-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        base
+    }
+
+    /// A file symlink: a plain symlink on unix; on Windows it needs Developer Mode or an elevated process, so false
+    /// (and the caller skips, saying so) when the system refuses.
+    pub(crate) fn link_file(target: &Path, link: &Path) -> bool {
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_file(target, link);
+        #[cfg(unix)]
+        let made = std::os::unix::fs::symlink(target, link);
+        if let Err(error) = &made {
+            eprintln!("skipped: this system does not let the test make a file symlink ({error})");
+        }
+        made.is_ok()
+    }
+
+    fn refusal(path: &Path, kind: &str) -> String {
+        plain_source_file(&path.to_string_lossy(), kind, &CLIP_EXTENSIONS).unwrap_err()
+    }
+
+    #[test]
+    fn a_real_file_anywhere_is_a_source_and_a_hard_link_too() {
+        // Issue #816: no containment rule, a real file in the temp folder (outside any DubFlow Output) is the user's file
+        let base = source_base("real");
+        let clip = base.join("a.mp4");
+        fs::write(&clip, b"clip").unwrap();
+        assert_eq!(plain_source_file(&clip.to_string_lossy(), "Video nguồn", &CLIP_EXTENSIONS).unwrap(), clip);
+        // a hard link is the file itself (no privilege needed on NTFS or unix)
+        let hard = base.join("hard.mp4");
+        fs::hard_link(&clip, &hard).unwrap();
+        assert!(plain_source_file(&hard.to_string_lossy(), "Video nguồn", &CLIP_EXTENSIONS).is_ok());
+        assert_eq!(product_visuals(&[clip.to_string_lossy().into_owned(), hard.to_string_lossy().into_owned()]).unwrap(), [clip.clone(), hard]);
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn traversal_relative_missing_folders_and_other_formats_are_refused() {
+        let base = source_base("bad");
+        let clip = base.join("a.mp4");
+        fs::write(&clip, b"clip").unwrap();
+        fs::create_dir_all(base.join("sub")).unwrap();
+        // `sub/../a.mp4` names a file that exists: only the `..` refuses it
+        let traversal = base.join("sub").join("..").join("a.mp4");
+        assert!(traversal.is_file());
+        assert_eq!(refusal(&traversal, "Video nguồn"), "Đường dẫn video nguồn không hợp lệ: a.mp4");
+        assert_eq!(refusal(Path::new("a.mp4"), "Video nguồn"), "Đường dẫn video nguồn không hợp lệ: a.mp4");
+        assert_eq!(check_source(&PathBuf::from(format!("{}{}.{}a.mp4", base.display(), std::path::MAIN_SEPARATOR, std::path::MAIN_SEPARATOR)), &CLIP_EXTENSIONS),
+                   Err(SourceRefusal::BadPath), "a `.` part, read on the text");
+        assert_eq!(refusal(&base.join("missing.mp4"), "Video nguồn"), "Không tìm thấy video nguồn: missing.mp4");
+        fs::create_dir_all(base.join("folder.mp4")).unwrap();
+        assert_eq!(refusal(&base.join("folder.mp4"), "Video nguồn"), "Video nguồn phải là tệp thật trên máy, không phải lối tắt: folder.mp4");
+        fs::write(base.join("a.flv"), b"clip").unwrap();
+        assert_eq!(refusal(&base.join("a.flv"), "Video nguồn"), "Không mở được file: a.flv");
+        assert_eq!(product_visuals(&[traversal.to_string_lossy().into_owned()]).unwrap_err(), "Đường dẫn video nguồn không hợp lệ: a.mp4");
+        let photo = base.join("sub").join("..").join("b.jpg");
+        fs::write(base.join("b.jpg"), b"jpg").unwrap();
+        assert_eq!(product_visuals(&[photo.to_string_lossy().into_owned()]).unwrap_err(), "Đường dẫn ảnh không hợp lệ: b.jpg");
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_linked_photo_clip_or_music_is_refused() {
+        let base = source_base("link");
+        let (clip, photo, music) = (base.join("a.mp4"), base.join("a.jpg"), base.join("a.mp3"));
+        for file in [&clip, &photo, &music] {
+            fs::write(file, b"real").unwrap();
+        }
+        if !link_file(&clip, &base.join("clip-link.mp4")) {
+            let _ = fs::remove_dir_all(&base);
+            return;
+        }
+        assert!(link_file(&photo, &base.join("photo-link.jpg")) && link_file(&music, &base.join("music-link.mp3")));
+        assert_eq!(product_visuals(&[clip.to_string_lossy().into_owned(), base.join("clip-link.mp4").to_string_lossy().into_owned()]).unwrap_err(),
+                   "Video nguồn phải là tệp thật trên máy, không phải lối tắt: clip-link.mp4", "Tổng hợp's text for a clip");
+        assert_eq!(product_visuals(&[base.join("photo-link.jpg").to_string_lossy().into_owned()]).unwrap_err(),
+                   "Ảnh phải là tệp thật trên máy, không phải lối tắt: photo-link.jpg");
+        assert_eq!(plain_source_file(&base.join("music-link.mp3").to_string_lossy(), "Nhạc nền", &MUSIC_EXTENSIONS).unwrap_err(),
+                   "Nhạc nền phải là tệp thật trên máy, không phải lối tắt: music-link.mp3");
+        assert_eq!(fs::read(&clip).unwrap(), b"real", "the source is only read");
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_file_below_a_linked_folder_is_refused() {
+        let base = source_base("folder");
+        let real = base.join("real");
+        fs::create_dir_all(real.join("deeper")).unwrap();
+        fs::write(real.join("a.mp4"), b"clip").unwrap();
+        fs::write(real.join("deeper").join("b.jpg"), b"jpg").unwrap();
+        let alias = base.join("alias");
+        let linked = link_dir(&real, &alias);
+        #[cfg(windows)]
+        assert!(linked, "junctions need no privilege on Windows");
+        if linked {
+            assert!(alias.join("a.mp4").is_file(), "the file is reachable through the link");
+            assert_eq!(refusal(&alias.join("a.mp4"), "Video nguồn"),
+                       "Video nguồn nằm trong thư mục là lối tắt (symlink/junction), hãy chọn tệp ở vị trí thật: a.mp4");
+            assert_eq!(product_visuals(&[alias.join("deeper").join("b.jpg").to_string_lossy().into_owned()]).unwrap_err(),
+                       "Ảnh nằm trong thư mục là lối tắt (symlink/junction), hãy chọn tệp ở vị trí thật: b.jpg", "any folder on the way");
+        }
+        // the same file at its real place is the user's file
+        assert!(plain_source_file(&real.join("a.mp4").to_string_lossy(), "Video nguồn", &CLIP_EXTENSIONS).is_ok());
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn the_rule_reads_the_disk_on_every_call() {
+        // S6 (TOCTOU): nothing is cached, so a file swapped after a check is seen by the next one
+        let base = source_base("swap");
+        let clip = base.join("a.mp4");
+        fs::write(&clip, b"clip").unwrap();
+        let value = clip.to_string_lossy().into_owned();
+        assert!(plain_source_file(&value, "Video nguồn", &CLIP_EXTENSIONS).is_ok());
+        fs::remove_file(&clip).unwrap();
+        fs::create_dir(&clip).unwrap();
+        assert_eq!(check_source(&clip, &CLIP_EXTENSIONS), Err(SourceRefusal::NotPlain), "now a folder");
+        fs::remove_dir(&clip).unwrap();
+        fs::write(base.join("other.mp4"), b"other").unwrap();
+        if link_file(&base.join("other.mp4"), &clip) {
+            assert_eq!(check_source(&clip, &CLIP_EXTENSIONS), Err(SourceRefusal::NotPlain), "now a link");
+        }
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_photo_preview_or_a_background_to_keep_follows_the_rule() {
+        // R2: product_image accepted `..`, links and junctions; product_background_add copied a link's target
+        let base = source_base("preview");
+        fs::create_dir_all(base.join("sub")).unwrap();
+        fs::write(base.join("a.jpg"), b"jpg").unwrap();
+        let traversal = base.join("sub").join("..").join("a.jpg").to_string_lossy().into_owned();
+        let preview = tauri::async_runtime::block_on(product_image(traversal.clone(), None)).err();
+        assert_eq!(preview.as_deref(), Some("Đường dẫn ảnh không hợp lệ: a.jpg"));
+        let keep = tauri::async_runtime::block_on(product_background_add(traversal)).err();
+        assert_eq!(keep.as_deref(), Some("Đường dẫn ảnh nền không hợp lệ: a.jpg"));
+        let alias = base.join("alias");
+        if link_dir(&base.join("sub"), &alias) {
+            fs::write(base.join("sub").join("b.jpg"), b"jpg").unwrap();
+            let preview = tauri::async_runtime::block_on(product_image(alias.join("b.jpg").to_string_lossy().into_owned(), None)).err();
+            assert_eq!(preview.as_deref(), Some("Ảnh nằm trong thư mục là lối tắt (symlink/junction), hãy chọn tệp ở vị trí thật: b.jpg"));
+        }
         let _ = fs::remove_dir_all(&base);
     }
 
