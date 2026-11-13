@@ -32,6 +32,7 @@ import math
 import re
 from typing import Any, Iterable, Mapping, Sequence
 
+from . import claims as said
 from . import entities as names
 from . import evidence as ev
 from .candidates import Candidate
@@ -366,8 +367,14 @@ def _text_card(found: ev.Evidence | None) -> bool:
 
 
 def about_text(unit: Unit) -> bool:
-    """Whether a sentence speaks of something written (a price, a code, a title): a text card can show it."""
-    return bool(_TEXT_TOPIC.search(ev.fold(ev.numbers(unit.text))))
+    """Whether a sentence speaks of something written (a price, a code, a title): a text card can show it. A number
+    spelled in words is a number too ("một nghìn năm trăm dặm", #802: the map that shows "1500 MILES" was held back
+    as a card from the sentence that names it), when the sentence speaks of something displayed (a map, a line of text):
+    a spoken "ba mươi giây" in an opening names no frame to show, as before."""
+    if _TEXT_TOPIC.search(ev.fold(ev.numbers(unit.text))):
+        return True
+    stated = said.of(unit.text)
+    return stated.display and stated.any
 
 
 def _length_fit(candidate_ms: int, wanted_ms: int) -> int:
@@ -379,6 +386,11 @@ GOOD_COVERAGE = 900  # ‰ of a sentence's time on footage that illustrates it b
 LOSS_PENALTY = 450  # forward only: taking a shot that removes the only footage of a sentence still to come
 HELD_PENALTY = 2000  # forward only: neutral footage that leaves the sentences short of footage; a held frame blocks export
 MATCH_FULL = 500  # relevance at which a match counts as complete for the confidence
+VERIFIED_BONUS = 150  # a shot whose evidence shows a number, title or stated words of the sentence (#802)
+# ... and twice that for a sentence about something displayed (a map, a card, a line of text): there the shown fact is
+# what the sentence is about, worth as much as a text card is worth against a sentence not about words (CARD_PENALTY)
+DISPLAYED_BONUS = 300
+CONTRADICTED_PENALTY = 300  # a shot showing another amount of the same kind (500 000 square miles for 1 500 miles)
 PIECE_FLOOR = SHORT_FLOOR  # ms a new piece takes at least when the sentence's rest is shorter (others give way)
 SKIP_PENALTY = 200  # forward only: passing over all the footage there is to spare (half for footage that illustrates)
 
@@ -610,6 +622,21 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
                               if not any(cid in accepts[v.unit_id] and mine[(v.unit_id, cid)][0] >= 2 * mine[(u.unit_id, cid)][0]
                                          and strength(v.unit_id, cid) > strength(u.unit_id, cid)
                                          for v in found_units if v.unit_id != u.unit_id)}
+    # what a sentence says is displayed (a number with its unit, a title, what a card states) is a fact the shot must
+    # show, not a kind of picture (#802): a shot whose evidence shows it illustrates the sentence whatever other words
+    # it shares, and one showing another amount of the same kind does not, however many words it shares ("bản đồ",
+    # "đánh dấu", "dặm" on a map of 500 000 square miles for "1 500 dặm")
+    stated = {u.unit_id: said.of(u.text) for u in found_units}
+    shown_text = {c.candidate_id: said.content_text(evidence.get(c.candidate_id)) for c in usable}
+    checked: dict[tuple[str, str], said.Check] = {}
+    for u in found_units:
+        if stated[u.unit_id].any and mode == "content":
+            for c in usable:
+                result = checked[(u.unit_id, c.candidate_id)] = said.check(stated[u.unit_id], shown_text[c.candidate_id])
+                if result.conflicts and stated[u.unit_id].display:
+                    accepts[u.unit_id].discard(c.candidate_id)
+                elif result.verified and not (scorer.card[c.candidate_id] and not about_text(u)):
+                    accepts[u.unit_id].add(c.candidate_id)
     units_by_id = {u.unit_id: u for u in found_units}
     positions = {u.unit_id: i for i, u in enumerate(found_units)}
     # check A (hook stealing): the shot a later sentence is about is that sentence's, not the opening's: an opening
@@ -708,9 +735,14 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
         trusted = max([i.confidence * ev.TRUST[i.origin] // 1000 for i in info.items if i.origin in ev.CONTENT_ORIGINS] or [0]) \
             if info else 0
         relevance = scorer.content_relevance(unit, candidate, relevance)
-        if relevance <= 0:  # no word of the sentence in what is known of the shot: role fit at most
+        claim = checked.get((unit.unit_id, candidate.candidate_id))
+        # a shot whose evidence shows every number, title or stated words the sentence says is displayed matches it
+        # fully, however few other words they share (the globe with "1500 MILES"); still bounded by its trust
+        proven = claim is not None and stated[unit.unit_id].display and bool(claim.verified) \
+            and not claim.unverified and not claim.conflicts
+        if relevance <= 0 and not proven:  # no word of the sentence in what is known of the shot: role fit at most
             return min(SIGNALS_ONLY_CAP, 250 + fit // 4)
-        match = min(1000, relevance * 1000 // MATCH_FULL)
+        match = 1000 if proven else min(1000, relevance * 1000 // MATCH_FULL)
         return trusted * (600 + 400 * match // 1000) // 1000
 
     ahead_now = 0
@@ -728,6 +760,12 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
         card = scorer.card[candidate.candidate_id] and not about_text(unit)
         if card:
             total -= CARD_PENALTY  # moving letters are not an opening, and not what the sentence shows
+        claim = checked.get((unit.unit_id, candidate.candidate_id))
+        if claim is not None:
+            if claim.verified:
+                total += DISPLAYED_BONUS if stated[unit.unit_id].display else VERIFIED_BONUS
+            if claim.conflicts and stated[unit.unit_id].display:
+                total -= CONTRADICTED_PENALTY
         if unit.function == "hook" and not card:
             total += min(60, candidate.motion // 4) + (info.hook // 10 if info else 0)
         elif unit.function == "narration":
@@ -762,6 +800,10 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
             reasons.append(f"khớp lời “{', '.join(matched)}” ({', '.join(origins[:2]) or 'mô tả'})")
         if label:
             reasons.append(f"cảnh {ev.LABEL_NAMES_VI.get(label, label)} hợp câu {unit.function}")
+        if claim is not None and claim.verified:
+            reasons.append("cảnh có điều lời câu nói: " + ", ".join(claim.verified[:3]))
+        if claim is not None and claim.conflicts and stated[unit.unit_id].display:
+            reasons.append("cảnh hiển thị con số khác lời câu: " + ", ".join(claim.conflicts[:3]))
         if not candidate.quality.usable:
             reasons.append("chất lượng thấp: " + "; ".join(candidate.quality.problems))
         return total, max(0, min(1000, confidence_of(unit, candidate, relevance, fit))), reasons
@@ -1122,8 +1164,25 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
             decision.notes.append("câu mở đầu/kết dùng cảnh của một câu phía sau (nguồn không còn cảnh khác): cần kiểm tra")
             coverage["needs_review"] = True
 
+        # what the sentence says is displayed must be in the chosen shots: a sentence about a map, a card or a line of
+        # text whose shots show none of its number, title or stated words, or a shot showing another amount of the same
+        # kind, is never READY on shared words alone (#802). A pin is the user's choice and says so already.
+        claim_result = None
+        unproven = False
+        if stated[unit.unit_id].any and mode == "content" and not pinned_by_user:
+            per_piece = [checked.get((unit.unit_id, c.candidate.candidate_id)) or said.Check() for c in mine]
+            claim_result = said.merged(per_piece)
+            contradicted = [v for piece in per_piece for v in piece.conflicts]
+            # only a sentence about something displayed: a number spoken over a scene names no figure the shot must show
+            unproven = stated[unit.unit_id].display and bool(contradicted or claim_result.unverified or claim_result.conflicts)
+            if contradicted and not claim_result.conflicts:
+                claim_result.conflicts = list(dict.fromkeys(contradicted))
+            if unproven:
+                decision.notes.append(said.note(claim_result))
+                coverage["needs_review"] = True
+
         def flag(c: Choice) -> bool:
-            if not c.candidate.quality.usable or mode != "content" or spoiler:
+            if not c.candidate.quality.usable or mode != "content" or spoiler or unproven:
                 return True
             if generic:
                 # its pieces carry the flag too: the plan and the checks read the pieces (rc5: still silent on rc4 data)
@@ -1133,6 +1192,8 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
         decision.signals = _signals(unit, mine, accept, best, milli, coverage["needs_review"], mode, evidence,
                                     lambda c: scorer.content_relevance(unit, c, relevance_of[(unit.unit_id, c.candidate_id)][0]),
                                     still_ids)
+        if claim_result is not None:
+            decision.signals["claims"] = {"display": stated[unit.unit_id].display, **claim_result.to_dict()}
     choices = [c for u in found_units for c in by_unit.get(u.unit_id, [])]
     return choices, [decisions[u.unit_id] for u in found_units], mode
 

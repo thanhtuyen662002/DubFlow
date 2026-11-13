@@ -125,7 +125,13 @@
             "review_risk": {"type": "object", "additionalProperties": false, "required": ["min_confidence", "flagged_pieces", "needs_review"],
                             "properties": {"min_confidence": {"type": "integer", "minimum": 0, "maximum": 1000},
                                            "flagged_pieces": {"type": "integer", "minimum": 0},
-                                           "needs_review": {"type": "boolean"}}}}}
+                                           "needs_review": {"type": "boolean"}}},
+            "claims": {"description": "Only for a sentence that states a number, a written title or a card's words (#802): whether it speaks of something displayed, and which of those claims the chosen shots' content evidence shows, leaves unshown or contradicts. Absent otherwise and in older logs.",
+                       "type": "object", "additionalProperties": false, "required": ["display", "verified", "unverified", "conflicts"],
+                       "properties": {"display": {"type": "boolean"},
+                                      "verified": {"type": "array", "maxItems": 50, "items": {"type": "string", "maxLength": 200}},
+                                      "unverified": {"type": "array", "maxItems": 50, "items": {"type": "string", "maxLength": 200}},
+                                      "conflicts": {"type": "array", "maxItems": 50, "items": {"type": "string", "maxLength": 200}}}}}}
       }
     },
     "candidate": {
