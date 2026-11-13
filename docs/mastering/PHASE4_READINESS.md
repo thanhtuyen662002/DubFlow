@@ -1,6 +1,33 @@
 # DubFlow — Sẵn sàng cho Phase 4 (Phim tài liệu): GO / NO-GO
 
-Epic #637 · 2026-11-12 · cập nhật sau chỉ thị "DUBFLOW — GATE S FINAL CLOSURE" · main sau #763 (bản kiểm cuối: 1.1.96-rc7 = `7acd262`, candidate, `publish=false`)
+Epic #637 · cập nhật mới nhất 2026-11-13 (chỉ thị "Assisted Safety Hotfix & Long-Form Retrieval Feasibility", bản kiểm cuối 1.1.96-rc16 = `205e3ff`, candidate, `publish=false`, main sau #813). Phần "Quyết định (Gate S final closure)" bên dưới giữ nguyên từ 2026-11-12 (rc7 = `7acd262`).
+
+## Cập nhật 2026-11-13: chỉ thị "Assisted Safety Hotfix & Long-Form Retrieval Feasibility"
+
+Bản kiểm cuối: **1.1.96-rc16** (`205e3ff`, release run 43361381416, candidate, `publish=false`), Windows, chỉ CPU. Không phát hành stable. Mỗi hàng là một kết quả riêng; Feasibility không gộp với Production Gate.
+
+| Gate | Status | Bằng chứng |
+|---|---|---|
+| #802 Semantic Safety | **PASS** | [ASSISTED_SAFETY_HOTFIX_REPORT.md](ASSISTED_SAFETY_HOTFIX_REPORT.md): bỏ sót không báo 5 → 0 trên bằng chứng rc12–rc15; vision mới rc16: READY 4/4, bỏ sót không báo 0/60, phải duyệt 56/60; 3 cảnh báo thừa mới (i1.u1 rc12, i9.u1 rc13 và rc15). PR #808 |
+| #805 Exclusion Correctness | **PASS** | [WHOLE_SHOT_EXCLUSION_REPORT.md](WHOLE_SHOT_EXCLUSION_REPORT.md): W2 "Bỏ cả cảnh gốc" từ một mảnh chưa dùng; kế hoạch i1 không có đoạn nào chồng 6–12 s, video giải mã 0 lỗi, các khung trích ra đều ngoài 6–12 s; giữ 4/4 duyệt; còn sau khi đóng/mở; hoàn tác rồi dựng lại về đúng bản nháp. Sai lệch: chạy trên `i1-s1c2` vì rc16 không chia cảnh 0–6 s. PR #811 |
+| Long-Form Retrieval Feasibility | **PASS** | [LONG_FORM_RETRIEVAL_FEASIBILITY_REPORT.md](LONG_FORM_RETRIEVAL_FEASIBILITY_REPORT.md): 36/36 câu trượt được gán tầng; nút thắt R3 (thu bằng chứng) 26/36; oracle thu + hiểu 56/60 so với oracle chỉ hiểu 34/60; replay 22/22. PR #810 |
+| Long-Form Production Gate B | **FAIL** | rc16 recall@5 31/60 (51,7 %) trên tập phát triển W3; chưa có tập nghiệm thu độc lập (yêu cầu ≥ 85 % trên tập độc lập); 0 bỏ sót không báo, 0 SOURCE_INSUFFICIENT sai, HELD_FRAME 0 |
+| Existing Localized Replanning Gate A | **PASS** | W2 rc16: dựng 1 phần, dùng lại 7, 0 INVALIDATED; W4 ghim/bỏ/thay 8,3 / 7,8 / 7,8 s, giữ 4/4 |
+| Existing A/V Sync Gate C | **PASS** | sync_probe rc16: W2 7/7 chỗ nối, tệ nhất 33,3 ms; W3 21/21, 0 ms |
+| Human Validation Gate D | **BLOCKED** | không có người tham gia; tự động hoá CDP không tính là người duyệt |
+| Documentary Assisted Pilot Entry | **NOT READY** | Gate B FAIL và Gate D BLOCKED |
+| Documentary Auto (Gate S) | **FAIL → NO-GO**, không đổi | Gate S thật `--replay` giống từng byte trước và sau #808 và #813 ([ASSISTED_SAFETY_HOTFIX_REPORT.md §7](ASSISTED_SAFETY_HOTFIX_REPORT.md)) |
+
+Windows E2E trên rc16: W1 **PASS**, W2 **PASS** (có sai lệch ghi ở trên), W3 **FAIL** (Gate B), W4 **PASS**, W5 **PASS** với một phát hiện P2 (Bán hàng nhận file nguồn là symlink, chỉ đọc; Tổng hợp từ chối, #816). Human validation **BLOCKED**. Báo cáo đã che dữ liệu: [assisted-e2e/rc16](assisted-e2e/rc16/report-rc16.md).
+
+- W4: Bán hàng Legacy và lồng tiếng với mastering "Tắt" chạy xong, giải mã 0 lỗi; Tổng hợp v1 trùng từng byte (`9afa62bc…c6d3`); huỷ cho CANCELLED rồi chạy lại dùng lại 3 phần đã xong; bản cuối có revision (lần xuất 2, "Kiểm tra cuối: đạt.").
+- W5: IPC 8/8 lời gọi sai bị từ chối, 0 file đổi; thư mục kết quả là junction bị từ chối ở cả hai luồng; chuỗi filter/shell hiện nguyên văn; review v2 đọc được, v99 bị từ chối và không bị ghi đè; quét 3 567 file: claude 0 / gemini 0 / email 0, đường dẫn hồ sơ 0.
+
+Hiệu năng (rc15 → rc16, Windows CPU): bản nháp W1 166 → 135 s, W2 255 → 255 s, W3 721 → 676 s; dựng lại W2 sau một thao tác 12,7 → 13,0 s (hoàn tác 12,2 s); RAM đỉnh W2 3250 MB, W3 3438 MB, W1 3903 MB (cửa sổ đo gồm cả tổng hợp v1 và lần huỷ). Vision W3: 142 khung ngân sách, 138 câu hỏi gửi đi.
+
+Đã merge sau rc16: PR #813 (#812, thứ tự từ trong ghi chú duyệt, chỉ hiển thị). Còn mở: #816 (P2-N26), #817 (P2-N27: i9.u1 và dòng khẳng định của Kiểm tra cuối), #818 (P3-N28), P3-N21, #765. Đề xuất tiếp theo: thu bằng chứng có mục tiêu cho phim dài (Phương án B), issue #815, cần ADR trước khi viết code, xem [LONG_FORM_RETRIEVAL_FEASIBILITY_REPORT.md §17](LONG_FORM_RETRIEVAL_FEASIBILITY_REPORT.md).
+
+**Phase 4 vẫn NO-GO.** Gate S vẫn FAIL; không có code Phase 4.
 
 ## Cập nhật 2026-11-12: chỉ thị "Assisted Production Stabilization & Documentary Pilot Entry Gates"
 
