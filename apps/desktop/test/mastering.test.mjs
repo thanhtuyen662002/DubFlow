@@ -163,7 +163,58 @@ console.log("mastering tests passed");
   assert.equal(back.find((row) => row.label === "Âm lượng").text, "Giữ nguyên.");
   // mastering off: no card at all
   assert.equal(parseDubbingQc({ loudness: false, output_loudness: { integrated: -16, true_peak: -2, lra: 5 } }), null);
+  // a report from before issue #821 has no conformance: the rows above are unchanged by it
+  assert.equal(qc.conformance, null);
 }
+
+// Issue #821: the engine's own post-AAC conformance (ceiling −1.5 dBTP) is read strictly and shown in the Âm lượng row.
+{
+  const { parseDubbingQc, qcRows } = await import("../src/features/mastering/qc.ts");
+  const card = (conformance, extra = {}) => parseDubbingQc({
+    level: "balanced", loudness: true, notes: ["Âm lượng: −15,4 → −17,2 LUFS."], measured: { mix: { integrated: -15.4, true_peak: -0.7, lra: 7.6 } },
+    output_loudness: { integrated: -17.7, true_peak: -2.3, lra: 7.4 }, conformance, ...extra });
+  const row = (qc) => qcRows(qc).find((item) => item.label === "Âm lượng");
+  const corrected = { status: "corrected", ceiling_dbtp: -1.5, true_peak_dbtp: -2.3, trim_db: 0.49, tries: 2, path: "B2" };
+  assert.deepEqual(card(corrected).conformance, { status: "corrected", path: "B2", truePeak: -2.3, trimDb: 0.49, tries: 2, ceilingMet: null });
+  // strict: unknown states, another ceiling, bad numbers or a record that contradicts itself are dropped
+  for (const bad of [{ ...corrected, status: "ok" }, { ...corrected, path: "B3" }, { ...corrected, ceiling_dbtp: -1 },
+    { ...corrected, trim_db: -0.5 }, { ...corrected, trim_db: "0.5" }, { ...corrected, tries: 1.5 }, { ...corrected, trim_db: 0 },
+    { ...corrected, true_peak_dbtp: -1.2 }, { ...corrected, path: "B1" }, { ...corrected, status: "not_applicable" },
+    { ...corrected, ceiling_met: "yes" }, [corrected], "corrected", null]) {
+    assert.equal(card(bad).conformance, null, JSON.stringify(bad));
+  }
+  const fixed = row(card(corrected));
+  assert.equal(fixed.tone, "ok");
+  assert.match(fixed.text, /\(trần −1,5 dBTP: đạt\)\. Đã giảm thêm 0,5 dB sau AAC để đỉnh ≤ −1,5 dBTP$/);
+  // the trim alone (the mix needed no normalisation): loudness is true and the planner's "giữ nguyên" is not shown
+  const trimOnly = row(parseDubbingQc({ level: "light", loudness: true, notes: ["Âm lượng: đã đạt −16,2 LUFS, đỉnh −3,0 dBTP; giữ nguyên."],
+    measured: { mix: { integrated: -16.2, true_peak: -3.0, lra: 6 } }, output_loudness: { integrated: -16.8, true_peak: -2.0, lra: 6 },
+    conformance: { ...corrected, true_peak_dbtp: -2.0, trim_db: 0.6 } }));
+  assert.match(trimOnly.text, /Đã giảm thêm 0,6 dB sau AAC/);
+  assert.doesNotMatch(trimOnly.text, /giữ nguyên/i);
+  const failed = row(card({ status: "failed", ceiling_dbtp: -1.5, true_peak_dbtp: -1.4, trim_db: 0.49, tries: 4, path: "B2" },
+    { output_loudness: { integrated: -17.7, true_peak: -1.4, lra: 7.4 } }));
+  assert.equal(failed.tone, "warn");
+  assert.match(failed.text, /vượt trần −1,5 dBTP\)\. Không đạt trần −1,5 dBTP sau AAC dù đã giảm thêm 0,5 dB qua 4 lần thử mã hóa/);
+  const unmeasured = row(card({ status: "unmeasured", ceiling_dbtp: -1.5, true_peak_dbtp: null, trim_db: 0, tries: 0, path: "B2" },
+    { output_loudness: null }));
+  assert.equal(unmeasured.tone, "warn");
+  assert.match(unmeasured.text, /không đo được sau AAC nên chưa xác nhận trần −1,5 dBTP/);
+  const plainUnmeasured = row(parseDubbingQc({ level: "light", loudness: false, notes: ["Âm lượng: đã đạt −16,2 LUFS; giữ nguyên."], measured: {},
+    conformance: { status: "unmeasured", ceiling_dbtp: -1.5, true_peak_dbtp: null, trim_db: 0, tries: 1, path: "B2" } }));
+  assert.equal(plainUnmeasured.tone, "warn");
+  assert.match(plainUnmeasured.text, /^Đã đạt −16,2 LUFS; giữ nguyên; không đo được sau AAC/);
+  const b1 = row(parseDubbingQc({ level: "light", loudness: false, fallback: true, notes: ["Đã quay về âm thanh gốc (B1)"], measured: {},
+    output_loudness: { integrated: -14.0, true_peak: -0.4, lra: 8 },
+    conformance: { status: "not_applicable", ceiling_dbtp: -1.5, true_peak_dbtp: -0.4, trim_db: 0, tries: 0, path: "B1", ceiling_met: false } }));
+  assert.equal(b1.tone, "warn");
+  assert.match(b1.text, /vượt trần −1,5 dBTP\)\. Đây là âm thanh gốc \(B1\), không được chỉnh$/);
+  const passed = row(card({ status: "passed", ceiling_dbtp: -1.5, true_peak_dbtp: -2.3, trim_db: 0, tries: 1, path: "B2" }));
+  assert.equal(passed.tone, "ok");
+  assert.match(passed.text, /\(trần −1,5 dBTP: đạt\)$/);
+  assert.doesNotMatch(passed.text, /giảm thêm/);
+}
+console.log("aac conformance ok");
 
 // Queue: a job keeps its level; off is no value; unknown levels are refused.
 {
