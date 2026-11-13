@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import subprocess
 import sys
@@ -102,7 +104,7 @@ def _redirect(info: os.stat_result) -> bool:
     return bool(getattr(info, "st_file_attributes", 0) & _REPARSE_POINT and getattr(info, "st_reparse_tag", 0) & _NAME_SURROGATE)
 
 
-def _plain_file(value: Any, suffixes: frozenset[str], name: str, folders: int | None = None) -> Path:
+def _plain_file(value: Any, suffixes: frozenset[str], name: str) -> Path:
     """A file the user chose as a source, by the desktop's one source rule (Issue #816, ``product.rs::check_source``).
 
     Checked again here, when the worker reads the spec, because a re-render, a Mẫu run or an older spec reaches the
@@ -110,8 +112,8 @@ def _plain_file(value: Any, suffixes: frozenset[str], name: str, folders: int | 
     - an absolute path with no ``.`` or ``..`` part (read on the text: ``Path`` hides an inner ``.``);
     - one of ``suffixes``;
     - the path itself is a regular file, never a symlink or junction;
-    - no folder on the way to it is a symlink or junction; with ``folders``, only that many folders up from the file
-      (a library background is the app's own copy, and the data folder above its library may be a junction).
+    - no folder on the way to it is a symlink or junction, all the way up. The one exception is not made here: a
+      background proven to be the app's own library copy (``_library_file``).
     A hard link is the file itself and is accepted; a real file anywhere on the machine is allowed (no containment rule).
     The messages are the desktop's, so the user reads the same reason from both.
 
@@ -135,7 +137,7 @@ def _plain_file(value: Any, suffixes: frozenset[str], name: str, folders: int | 
         raise ProductError(f"Không tìm thấy {name}: {path.name}") from None
     if _redirect(info) or not stat.S_ISREG(info.st_mode):
         raise ProductError(f"{kind} phải là tệp thật trên máy, không phải lối tắt: {path.name}")
-    for folder in path.parents[:folders]:
+    for folder in path.parents:
         try:
             linked = _redirect(os.lstat(folder))
         except (OSError, ValueError):
@@ -143,6 +145,71 @@ def _plain_file(value: Any, suffixes: frozenset[str], name: str, folders: int | 
         if linked:
             raise ProductError(f"{kind} nằm trong thư mục là lối tắt (symlink/junction), hãy chọn tệp ở vị trí thật: {path.name}")
     return path
+
+
+# The desktop's background library (``product.rs``): ``<sha256>.<extension>`` files beside ``index.json``.
+_LIBRARY_NAME = re.compile(r"([0-9a-f]{64})\.(jpg|jpeg|png|webp|bmp)")
+_LIBRARY_INDEX = "index.json"
+_LIBRARY_INDEX_LIMIT = 4 * 1024 * 1024
+MAX_BACKGROUND_BYTES = 40 * 1024 * 1024
+
+
+def _library_file(value: Any, library: Path | None) -> Path | None:
+    """``value`` as a background of the desktop's library, when it is proven to be the app's own copy; else None.
+
+    The same proof as the desktop's ``library_file`` (Issue #816), against the library folder the desktop names on the
+    command line (``--library-dir``; never a folder the spec names, which sits in the user's folder):
+    - an absolute path with no ``.`` or ``..`` part, named ``<sha256>.<extension>``;
+    - directly in ``library``, compared part by part and exactly (another spelling of that folder is not recognised and
+      follows the user's rule, the safe direction), a plain folder: there, a folder, no link or reparse point;
+    - the path itself is a regular file, never a link, no larger than the library takes;
+    - the library's index lists it, and its bytes hash to its name: still the image the app copied.
+
+    Only such a copy skips the folders above the library, because the data folder may itself be reached through a
+    junction. Every other background, also one merely named like an entry, is a file of the user's (``_plain_file``).
+    """
+    if library is None or type(value) is not str or not value or len(value) > 1024 or "\x00" in value:
+        return None
+    path = Path(value)
+    parts = value.replace("\\", "/").split("/") if os.name == "nt" else value.split("/")
+    name = _LIBRARY_NAME.fullmatch(path.name)
+    if name is None or not path.is_absolute() or not library.is_absolute() or any(part in (".", "..") for part in parts):
+        return None
+    if path.parent.parts != library.parts:
+        return None
+    try:
+        folder, info = os.lstat(library), os.lstat(path)
+    except (OSError, ValueError):
+        return None
+    if not stat.S_ISDIR(folder.st_mode) or stat.S_ISLNK(folder.st_mode) or getattr(folder, "st_file_attributes", 0) & _REPARSE_POINT:
+        return None
+    if _redirect(info) or not stat.S_ISREG(info.st_mode) or info.st_size > MAX_BACKGROUND_BYTES:
+        return None
+    try:
+        index = library / _LIBRARY_INDEX
+        if os.lstat(index).st_size > _LIBRARY_INDEX_LIMIT:
+            return None
+        items = json.loads(index.read_bytes().decode("utf-8"))["items"]
+        listed = any(type(item) is dict and item.get("id") == name[1] and item.get("extension") == name[2] for item in items)
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if not listed:
+        return None
+    # the bytes are read last, and only for a file the index names; never past the library's size limit
+    digest, left = hashlib.sha256(), MAX_BACKGROUND_BYTES + 1
+    try:
+        with open(path, "rb") as handle:
+            while left > 0 and (block := handle.read(min(left, 1024 * 1024))):
+                digest.update(block)
+                left -= len(block)
+    except OSError:
+        return None
+    return path if left > 0 and digest.hexdigest() == name[1] else None
+
+
+def _background(value: Any, library: Path | None) -> Path:
+    """A spec's background: the app's own library copy (``_library_file``), or a file of the user's by the whole rule."""
+    return _library_file(value, library) or _plain_file(value, render.IMAGE_SUFFIXES, "ảnh nền")
 
 
 def _picked_music(value: Any) -> Path:
@@ -161,7 +228,9 @@ def _visual(value: Any) -> Path:
     return _plain_file(value, render.IMAGE_SUFFIXES | render.VIDEO_SUFFIXES, "video nguồn" if clip else "ảnh")
 
 
-def load_spec(path: Path) -> Spec:
+def load_spec(path: Path, library: Path | None = None) -> Spec:
+    """Read and check a render request. ``library`` is the desktop's background library folder (``--library-dir``):
+    without it no background is taken for the app's own copy, and each follows the whole source rule."""
     try:
         data = path.read_bytes()
         if len(data) > SPEC_LIMIT:
@@ -228,8 +297,7 @@ def load_spec(path: Path) -> Spec:
         visuals=tuple(_visual(item) for item in visuals),
         music=None if music is None else _plain_file(music, render.MUSIC_SUFFIXES, "nhạc nền"),
         music_volume=float(volume),
-        # a library background (the desktop's `library_file`): the app's own copy, so only its library folder is looked at
-        background=None if value.get("background") is None else _plain_file(value["background"], render.IMAGE_SUFFIXES, "ảnh nền", 1),
+        background=None if value.get("background") is None else _background(value["background"], library),
         template=template,
         speed=float(speed),
         features=tuple(text for text in (" ".join(_string(item, "Điểm nổi bật", MAX_FEATURE_CHARS).split()) for item in features) if text),

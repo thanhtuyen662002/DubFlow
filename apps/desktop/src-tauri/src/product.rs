@@ -146,11 +146,16 @@ fn product_visuals(values: &[String]) -> Result<Vec<PathBuf>, String> {
     }).collect()
 }
 
-/// A background kept in the library (`library`, see [`add_to_library`]): `<sha256>.<extension>` directly in a library
-/// folder that is a plain folder, the file itself a regular file (never a link). It is the app's own copy, made from a
-/// file the user's own source rule accepted, so the folders above the library are not looked at: the data folder may
-/// itself be reached through a junction (an install root on another drive), and its backgrounds must still preview and
-/// render.
+/// A background kept in the library (`library`, see [`add_to_library`]), proven to be the app's own copy:
+/// - its name is `<sha256>.<extension>` and it sits directly in `library`, a plain folder (never a link);
+/// - the file itself is a regular file (never a link), no larger than the library takes;
+/// - the library's index lists it ([`read_library`]): the app put it there;
+/// - its bytes hash to its name ([`file_id`]): it is still the image the app copied, not a file given that name.
+///
+/// Only such a copy skips the folders above the library: the data folder may itself be reached through a junction (an
+/// install root on another drive), and its backgrounds must still preview and render. Anything else, also a file that
+/// is merely named like an entry, is a file of the user's and follows the whole source rule. The worker proves the same
+/// before it reads one (`product/job.py::_library_file`, given `--library-dir`).
 ///
 /// The folder is compared part by part with the library's own spelling, exactly: the UI lists these paths from that
 /// same spelling (`product_backgrounds`). Another spelling of the same folder (on Windows another letter case, an 8.3
@@ -161,8 +166,33 @@ fn library_file(library: &Path, value: &str) -> Option<PathBuf> {
     let path = PathBuf::from(value);
     let (id, extension) = path.file_name()?.to_str()?.split_once('.')?;
     let known = background_id(id).is_ok() && IMAGE_EXTENSIONS.contains(&extension);
-    let regular = fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.is_file() && !is_redirect(&metadata));
-    (known && plain_path(&path) && path.parent() == Some(library) && plain_dir(library) && regular).then_some(path)
+    let regular = fs::symlink_metadata(&path)
+        .is_ok_and(|metadata| metadata.is_file() && !is_redirect(&metadata) && metadata.len() <= MAX_BACKGROUND_BYTES);
+    if !(known && plain_path(&path) && path.parent() == Some(library) && plain_dir(library) && regular) {
+        return None;
+    }
+    let listed = read_library(library).iter().any(|entry| entry.id == id && entry.extension == extension);
+    // the bytes are read last, and only for a file the index names (at most `MAX_BACKGROUND_BYTES`)
+    (listed && file_id(&path).is_some_and(|found| found == id)).then_some(path)
+}
+
+/// The library id a file's bytes give: their SHA-256 in lowercase hex, as [`add_to_library`] names its copies. Read in
+/// pieces, never past `MAX_BACKGROUND_BYTES` (a file that grew since it was looked at has no id).
+fn file_id(path: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut hasher = Sha256::new();
+    let mut input = fs::File::open(path).ok()?.take(MAX_BACKGROUND_BYTES + 1);
+    let mut buffer = vec![0u8; 64 * 1024];
+    let mut total = 0u64;
+    loop {
+        let count = input.read(&mut buffer).ok()?;
+        if count == 0 {
+            break;
+        }
+        total += count as u64;
+        hasher.update(&buffer[..count]);
+    }
+    (total <= MAX_BACKGROUND_BYTES).then(|| format!("{:x}", hasher.finalize()))
 }
 
 /// An image the UI names that is either a library background ([`library_file`]) or a file of the user's, by the one
@@ -416,6 +446,11 @@ fn spawn_product(root: &Path, spec_path: &Path, output: &Path, cpu_only: bool, k
         .arg("--ffmpeg").arg(media.join("ffmpeg.exe"))
         .arg("--ffprobe").arg(media.join("ffprobe.exe"))
         .stdin(Stdio::null());
+    // The worker proves a library background against this folder (Issue #816); it is never read from the spec, which
+    // sits in the user's folder. Without it every background follows the whole source rule.
+    if let Ok(library) = library_dir() {
+        command.arg("--library-dir").arg(library);
+    }
     let work = output.join(".dubflow-work");
     let (stdout, stderr) = crate::engine_run::engine_output(&work);
     command.stdout(stdout).stderr(stderr);
@@ -1141,9 +1176,13 @@ pub(crate) mod tests {
         let library = data.join("backgrounds");
         fs::create_dir_all(&library).unwrap();
         fs::create_dir_all(base.join("sub")).unwrap();
-        let id = "a".repeat(64);
+        // a real entry, made the way the app makes one: named by its bytes and listed in the index
+        let picked = base.join("picked.png");
+        fs::write(&picked, b"png").unwrap();
+        let id = add_to_library(&library, &picked, |_| Ok((1, 1))).unwrap().id;
+        assert_eq!(id, format!("{:x}", Sha256::digest(b"png")));
         let kept = library.join(format!("{id}.png"));
-        fs::write(&kept, b"png").unwrap();
+        assert_eq!(fs::read(&kept).unwrap(), b"png");
         let clip = base.join("a.mp4");
         fs::write(&clip, b"clip").unwrap();
         let render = |background: &Path| product_sources(&[text(&clip)], None, Some(&text(background)), Some(&library)).map(|sources| sources.2);
@@ -1182,6 +1221,32 @@ pub(crate) mod tests {
             assert_eq!(render(&base.join("own-link.png")).unwrap_err(), "Ảnh nền phải là tệp thật trên máy, không phải lối tắt: own-link.png");
             fs::remove_file(&entry).unwrap();
         }
+        // Issue #816 review: a name like an entry's is not the proof. A file put in the library folder under such a name
+        // (the index does not list it), with or without the bytes its name promises, is a file of the user's
+        let named = library.join(format!("{}.png", "d".repeat(64)));
+        fs::write(&named, b"not what the name says").unwrap();
+        let placed = library.join(format!("{:x}.png", Sha256::digest(b"placed")));
+        fs::write(&placed, b"placed").unwrap();
+        for forged in [&named, &placed] {
+            assert!(library_file(&library, &text(forged)).is_none(), "the index does not list it");
+            assert_eq!(render(forged).unwrap(), Some(forged.clone()), "a real file below real folders: the user's rule accepts it");
+        }
+        assert_eq!(file_id(&placed), Some(format!("{:x}", Sha256::digest(b"placed"))));
+        assert_eq!(file_id(&base.join("missing.png")), None);
+        // ...and an entry the index lists whose bytes were changed is no longer the app's copy
+        let second = base.join("second.png");
+        fs::write(&second, b"second").unwrap();
+        let changed_id = add_to_library(&library, &second, |_| Ok((1, 1))).unwrap().id;
+        let changed = library.join(format!("{changed_id}.png"));
+        assert_eq!(library_file(&library, &text(&changed)), Some(changed.clone()), "the app's copy as it was made");
+        fs::write(&changed, b"other bytes").unwrap();
+        assert!(read_library(&library).iter().any(|entry| entry.id == changed_id), "still listed");
+        assert!(library_file(&library, &text(&changed)).is_none(), "its bytes are not its name's");
+        // an index that lists the name under another extension does not list this file
+        let other = library.join(format!("{id}.jpg"));
+        fs::write(&other, b"png").unwrap();
+        assert!(library_file(&library, &text(&other)).is_none(), "listed as .png, not .jpg");
+        assert_eq!(library_file(&library, &text(&kept)), Some(kept.clone()), "the real entry is still one");
         let alias = base.join("alias");
         let linked = link_dir(&data, &alias);
         #[cfg(windows)]
@@ -1191,6 +1256,16 @@ pub(crate) mod tests {
             let (library, kept) = (alias.join("backgrounds"), alias.join("backgrounds").join(format!("{id}.png")));
             assert_eq!(library_or_source(Some(&library), &text(&kept), "Ảnh").unwrap(), kept);
             assert_eq!(product_sources(&[text(&clip)], None, Some(&text(&kept)), Some(&library)).unwrap().2, Some(kept.clone()));
+            // ...only for the app's proven copies: a file named like one, a file placed under its own hash, a listed
+            // entry with other bytes and a like-named file outside the library are all below a link
+            let below = |name: &str| format!("Ảnh nền nằm trong thư mục là lối tắt (symlink/junction), hãy chọn tệp ở vị trí thật: {name}");
+            for forged in [&named, &placed, &changed, &other] {
+                let name = source_name(forged);
+                assert_eq!(product_sources(&[text(&clip)], None, Some(&text(&library.join(&name))), Some(&library)).unwrap_err(), below(&name));
+            }
+            fs::write(data.join(format!("{id}.png")), b"png").unwrap();
+            assert_eq!(product_sources(&[text(&clip)], None, Some(&text(&alias.join(format!("{id}.png")))), Some(&library)).unwrap_err(),
+                       below(&format!("{id}.png")), "the right name and bytes, but not in the library");
             // ...but not when the library is not given, and a user's photo there is below a link
             assert_eq!(library_or_source(None, &text(&kept), "Ảnh").unwrap_err(),
                        format!("Ảnh nằm trong thư mục là lối tắt (symlink/junction), hãy chọn tệp ở vị trí thật: {id}.png"));

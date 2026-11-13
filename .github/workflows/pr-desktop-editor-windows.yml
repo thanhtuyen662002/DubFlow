@@ -28,6 +28,7 @@ on:
       - engine/dubflow/separation/outdir.py
       - tests/separation/test_editor_cli.py
       - engine/dubflow/product/job.py
+      - engine/dubflow/product/__main__.py
       - tests/product/test_status_write.py
       - engine/dubflow/compilation/job.py
       - engine/dubflow/compilation/program.py
@@ -54,6 +55,7 @@ on:
       - engine/dubflow/separation/outdir.py
       - tests/separation/test_editor_cli.py
       - engine/dubflow/product/job.py
+      - engine/dubflow/product/__main__.py
       - tests/product/test_status_write.py
       - engine/dubflow/compilation/job.py
       - engine/dubflow/compilation/program.py
@@ -185,9 +187,9 @@ jobs:
           $text = Get-Content -LiteralPath $log -Raw
           if ($text -match '\.\.\. skipped') { throw 'Source-rule tests skipped some cases (a junction or a symlink could not be made)' }
           $junctions = [regex]::Matches($text, '(?m)^test_\S+ \(tests\.product\.test_source_rule\.JunctionTests\.\S+\) \.\.\. ok').Count
-          if ($junctions -ne 5) { throw "Expected 5 junction tests to pass against a real junction, saw $junctions" }
+          if ($junctions -ne 6) { throw "Expected 6 junction tests to pass against a real junction, saw $junctions" }
           if ($text -notmatch '(?m)^Ran (\d+) tests? in ') { throw 'Source-rule test count missing' }
-          Write-Host "Source-rule tests passed on Windows: $($Matches[1]) (5 against a real junction), none skipped"
+          Write-Host "Source-rule tests passed on Windows: $($Matches[1]) (6 against a real junction), none skipped"
 
       - name: Run the custom beep-sound decode test against real FFmpeg
         shell: pwsh

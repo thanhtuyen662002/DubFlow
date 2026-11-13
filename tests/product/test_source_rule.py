@@ -43,6 +43,20 @@ def junction(target: Path, link: Path, test: unittest.TestCase) -> None:
     test.addCleanup(lambda: os.path.lexists(link) and os.rmdir(link))  # removes the junction only, never its target
 
 
+def library_entry(library: Path, data: bytes, extension: str = "png", *, listed: bool = True) -> Path:
+    """A background as the desktop's `add_to_library` keeps one: `<sha256>.<extension>`, listed in `index.json`."""
+    library.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256(data).hexdigest()
+    path = library / f"{digest}.{extension}"
+    path.write_bytes(data)
+    index = library / "index.json"
+    items = json.loads(index.read_text(encoding="utf-8"))["items"] if index.exists() else []
+    if listed:
+        items.insert(0, {"id": digest, "extension": extension, "name": f"picked.{extension}", "width": 1, "height": 1})
+    index.write_text(json.dumps({"schema_version": 1, "items": items}), encoding="utf-8")
+    return path
+
+
 class Fixture(unittest.TestCase):
     def setUp(self) -> None:
         self.directory = TemporaryDirectory()
@@ -118,9 +132,9 @@ class SpecFixture(Fixture):
         path.write_text(json.dumps(value), encoding="utf-8")
         return path
 
-    def assert_refused(self, spec: Path, message: str) -> None:
+    def assert_refused(self, spec: Path, message: str, library: Path | None = None) -> None:
         with self.assertRaises(job.ProductError) as caught:
-            job.load_spec(spec)
+            job.load_spec(spec) if library is None else job.load_spec(spec, library)
         self.assertEqual(caught.exception.message, message)
 
 
@@ -168,28 +182,145 @@ class SpecTests(SpecFixture):
         self.assert_refused(self.write_spec(visuals=[os.path.join(str(self.root), "sub", "..", "a.mp4")]),
                             "Đường dẫn video nguồn không hợp lệ: a.mp4")
 
-    def test_a_background_is_a_plain_file_in_a_plain_folder(self):
-        # Issue #816 review: the background followed links and `..`. It is a library copy, the app's own file, so only its
-        # library folder is looked at: the data folder above it may be reached through a junction.
+    def test_a_background_is_the_apps_library_copy_or_a_real_file_of_the_users(self):
+        # Issue #816 review: the background followed links and `..`. A library copy is the app's own file, so the folders
+        # above its library are not looked at (the data folder may be reached through a junction): only for a copy that
+        # is proven to be the app's, against the library folder the desktop names (`--library-dir`).
         library = self.root / "data" / "backgrounds"
-        library.mkdir(parents=True)
-        kept = library / f"{'a' * 64}.png"
-        kept.write_bytes(b"png")
-        self.assertEqual(job.load_spec(self.write_spec(background=str(kept))).background, kept)
+        kept = library_entry(library, b"png")
+        self.assertEqual(job.load_spec(self.write_spec(background=str(kept)), library).background, kept)
+        self.assertEqual(job.load_spec(self.write_spec(background=str(kept))).background, kept, "a real file at its real place")
         alias = self.root / "alias"
         symlink(self.root / "data", alias, self)
         through = alias / "backgrounds" / kept.name
-        self.assertEqual(job.load_spec(self.write_spec(background=str(through))).background, through,
+        self.assertEqual(job.load_spec(self.write_spec(background=str(through)), alias / "backgrounds").background, through,
                          "a data folder reached through a junction keeps its backgrounds")
+        below = f"Ảnh nền nằm trong thư mục là lối tắt (symlink/junction), hãy chọn tệp ở vị trí thật: {kept.name}"
+        # the allowance is the named library's alone: no library, the library at its other spelling, another folder
+        for named in (None, library, self.root / "data", alias):
+            with self.subTest(library=named):
+                self.assert_refused(self.write_spec(background=str(through)), below, named)
         self.assert_refused(self.write_spec(background=os.path.join(str(library), "..", "backgrounds", kept.name)),
-                            f"Đường dẫn ảnh nền không hợp lệ: {kept.name}")
+                            f"Đường dẫn ảnh nền không hợp lệ: {kept.name}", library)
+        self.assert_refused(self.write_spec(background=os.path.join(str(alias), "backgrounds", ".", kept.name)),
+                            f"Đường dẫn ảnh nền không hợp lệ: {kept.name}", alias / "backgrounds")
         symlink(kept, self.root / "bg-link.png", self)
         self.assert_refused(self.write_spec(background=str(self.root / "bg-link.png")),
-                            "Ảnh nền phải là tệp thật trên máy, không phải lối tắt: bg-link.png")
+                            "Ảnh nền phải là tệp thật trên máy, không phải lối tắt: bg-link.png", library)
         symlink(library, self.root / "library-link", self)
-        self.assert_refused(self.write_spec(background=str(self.root / "library-link" / kept.name)),
-                            f"Ảnh nền nằm trong thư mục là lối tắt (symlink/junction), hãy chọn tệp ở vị trí thật: {kept.name}")
+        self.assert_refused(self.write_spec(background=str(self.root / "library-link" / kept.name)), below, self.root / "library-link")
         self.assertEqual(kept.read_bytes(), b"png")
+
+    def test_a_background_of_the_users_below_a_linked_folder_is_refused(self):
+        # the worker's bypass: every background skipped the folders above its own, so a user's picture below a linked
+        # folder passed. Only the app's proven copy skips them now.
+        (self.root / "real" / "pictures").mkdir(parents=True)
+        own = self.root / "real" / "pictures" / "own.png"
+        own.write_bytes(b"png")
+        library = self.root / "real" / "backgrounds"
+        kept = library_entry(library, b"kept")
+        symlink(self.root / "real", self.root / "alias", self)
+        through = self.root / "alias" / "pictures" / "own.png"
+        self.assertTrue(through.is_file(), "reachable through the link")
+        message = "Ảnh nền nằm trong thư mục là lối tắt (symlink/junction), hãy chọn tệp ở vị trí thật: own.png"
+        for named in (None, library, self.root / "alias" / "backgrounds", self.root / "alias" / "pictures"):
+            with self.subTest(library=named):
+                self.assert_refused(self.write_spec(background=str(through)), message, named)
+        self.assertEqual(job.load_spec(self.write_spec(background=str(own)), library).background, own, "the same file at its real place")
+        self.assertEqual(job.load_spec(self.write_spec(background=str(self.root / "alias" / "backgrounds" / kept.name)),
+                                       self.root / "alias" / "backgrounds").background, self.root / "alias" / "backgrounds" / kept.name)
+
+    def test_a_file_named_like_a_library_entry_is_a_file_of_the_users(self):
+        # 64 hex characters and an image extension are a name, not a proof
+        library = self.root / "data" / "backgrounds"
+        kept = library_entry(library, b"png")
+        digest = hashlib.sha256(b"png").hexdigest()
+        cases = {
+            "outside the library, the right bytes": self.root / "data" / "pictures" / f"{digest}.png",
+            "outside the library, any bytes": self.root / "data" / f"{'a' * 64}.png",
+            "in the library, not listed, other bytes": library / f"{'b' * 64}.png",
+            "in the library, not listed, the right bytes": library_entry(library, b"placed", listed=False),
+            "in the library, listed, other bytes": library_entry(library, b"listed"),
+            "in the library, listed under another extension": library / f"{digest}.jpg",
+            "in a folder below the library": library / "deeper" / f"{digest}.png",
+        }
+        for path in cases.values():
+            path.parent.mkdir(parents=True, exist_ok=True)
+        for label in ("outside the library, the right bytes", "in the library, listed under another extension", "in a folder below the library"):
+            cases[label].write_bytes(b"png")
+        for label in ("outside the library, any bytes", "in the library, not listed, other bytes", "in the library, listed, other bytes"):
+            cases[label].write_bytes(b"other bytes")
+        symlink(self.root / "data", self.root / "alias", self)
+        through = self.root / "alias" / "backgrounds"
+        self.assertEqual(job._library_file(str(kept), library), kept)
+        self.assertEqual(job._library_file(str(through / kept.name), through), through / kept.name)
+        for label, path in cases.items():
+            with self.subTest(label):
+                self.assertIsNone(job._library_file(str(path), library), "not the app's proven copy")
+                self.assertEqual(job.load_spec(self.write_spec(background=str(path)), library).background, path,
+                                 "a real file below real folders: accepted, as the user's")
+                linked = self.root / "alias" / path.relative_to(self.root / "data")
+                self.assertTrue(linked.is_file())
+                self.assert_refused(self.write_spec(background=str(linked)),
+                                    f"Ảnh nền nằm trong thư mục là lối tắt (symlink/junction), hãy chọn tệp ở vị trí thật: {path.name}", through)
+
+    def test_the_proof_reads_the_index_and_the_bytes(self):
+        library = self.root / "data" / "backgrounds"
+        kept = library_entry(library, b"png")
+        self.assertEqual(job._library_file(str(kept), library), kept)
+        self.assertIsNone(job._library_file(str(kept), None), "no library named")
+        self.assertIsNone(job._library_file(str(kept), Path("backgrounds")), "a relative library")
+        self.assertIsNone(job._library_file(str(kept).upper(), library), "another spelling")
+        self.assertIsNone(job._library_file(str(library / f"{'c' * 64}.png"), library), "nothing there")
+        self.assertIsNone(job._library_file(str(library / "index.json"), library))
+        upper = library / f"{kept.stem.upper()}.png"
+        if not upper.exists():  # a case-sensitive disk: an entry's name is lowercase hex
+            upper.write_bytes(b"png")
+            self.assertIsNone(job._library_file(str(upper), library))
+        original = job.MAX_BACKGROUND_BYTES
+        try:
+            job.MAX_BACKGROUND_BYTES = 2
+            self.assertIsNone(job._library_file(str(kept), library), "larger than the library takes")
+        finally:
+            job.MAX_BACKGROUND_BYTES = original
+        index = library / "index.json"
+        listing = index.read_bytes()
+        for broken in (b"", b"{", b"[]", b'{"items": 3}', b'{"items": [3, null, {"id": 1}]}', b'{"schema_version": 1, "items": []}'):
+            with self.subTest(index=broken):
+                index.write_bytes(broken)
+                self.assertIsNone(job._library_file(str(kept), library))
+        index.unlink()
+        self.assertIsNone(job._library_file(str(kept), library), "no index")
+        index.write_bytes(listing)
+        self.assertEqual(job._library_file(str(kept), library), kept)
+        kept.write_bytes(b"swapped")
+        self.assertIsNone(job._library_file(str(kept), library), "its bytes are read on every call")
+
+    def test_the_worker_is_given_the_library_on_the_command_line(self):
+        from unittest import mock
+        from engine.dubflow.product import __main__ as worker
+        library = self.root / "data" / "backgrounds"
+        kept = library_entry(library, b"png")
+        symlink(self.root / "data", self.root / "alias", self)
+        through = self.root / "alias" / "backgrounds"
+        # the spec cannot name its own library: only the command line does
+        spec = self.write_spec(background=str(through / kept.name), library_dir=str(through), library=str(through))
+        argv = ["--spec", str(spec), "--output-dir", str(self.root / "out"), "--app-root", str(self.root), "--model-root", str(self.root),
+                "--ffmpeg", "ffmpeg", "--ffprobe", "ffprobe"]
+        with mock.patch("builtins.print"):
+            self.assertEqual(worker.main(argv), 1)
+        status = json.loads((self.root / "out" / ".dubflow-work" / "status.json").read_text(encoding="utf-8"))
+        self.assertEqual(status["message"], f"Ảnh nền nằm trong thư mục là lối tắt (symlink/junction), hãy chọn tệp ở vị trí thật: {kept.name}")
+        loaded = []
+        real = worker.load_spec
+
+        def load(*args):
+            loaded.append(real(*args))
+            raise job.ProductError("dừng ở đây")
+        with mock.patch.object(worker, "load_spec", load), mock.patch("builtins.print"):
+            self.assertEqual(worker.main(argv + ["--library-dir", str(through)]), 1)
+        self.assertEqual([spec.background for spec in loaded], [through / kept.name], "the library named on the command line")
+
 
 class ReadOnlyRenderTests(SpecFixture):
     """A whole Bán hàng render; kept apart from the rule's own cases so those can run alone (the Windows lane)."""
@@ -439,18 +570,37 @@ class JunctionTests(LegacyMusicFixture, SpecFixture):
 
     def test_a_library_background_below_a_junctioned_data_folder_is_kept(self):
         library = self.root / "data" / "backgrounds"
-        library.mkdir(parents=True)
-        kept = library / f"{'a' * 64}.png"
-        kept.write_bytes(b"png")
+        kept = library_entry(library, b"png")
         junction(self.root / "data", self.root / "data-alias", self)
-        through = self.root / "data-alias" / "backgrounds" / kept.name
-        self.assertEqual(job.load_spec(self.write_spec(background=str(through))).background, through,
+        through = self.root / "data-alias" / "backgrounds"
+        self.assertEqual(job.load_spec(self.write_spec(background=str(through / kept.name)), through).background, through / kept.name,
                          "the data folder may be reached through a junction")
         junction(library, self.root / "library-alias", self)
         with self.assertRaises(job.ProductError) as caught:
-            job.load_spec(self.write_spec(background=str(self.root / "library-alias" / kept.name)))
+            job.load_spec(self.write_spec(background=str(self.root / "library-alias" / kept.name)), self.root / "library-alias")
         self.assertEqual(caught.exception.message, f"Ảnh nền {self.BELOW}: {kept.name}", "the library folder itself may not")
 
+    def test_only_the_apps_proven_copy_may_sit_below_a_junction(self):
+        library = self.root / "data" / "backgrounds"
+        kept = library_entry(library, b"png")
+        placed = library_entry(library, b"placed", listed=False)
+        changed = library_entry(library, b"listed")
+        changed.write_bytes(b"other bytes")
+        named = self.root / "data" / kept.name
+        named.write_bytes(b"png")
+        (self.root / "data" / "own.png").write_bytes(b"png")
+        junction(self.root / "data", self.root / "data-alias", self)
+        alias = self.root / "data-alias"
+        through = alias / "backgrounds"
+        with self.assertRaises(job.ProductError) as caught:
+            job.load_spec(self.write_spec(background=str(through / kept.name)))
+        self.assertEqual(caught.exception.message, f"Ảnh nền {self.BELOW}: {kept.name}", "no library named: the user's rule")
+        for path in (alias / "own.png", alias / named.name, through / placed.name, through / changed.name):
+            with self.subTest(path.name), self.assertRaises(job.ProductError) as caught:
+                job.load_spec(self.write_spec(background=str(path)), through)
+            self.assertEqual(caught.exception.message, f"Ảnh nền {self.BELOW}: {path.name}")
+        for path in (self.root / "data" / "own.png", named, placed, changed):
+            self.assertEqual(job.load_spec(self.write_spec(background=str(path)), library).background, path, "at its real place")
 
 if __name__ == "__main__":
     unittest.main()
