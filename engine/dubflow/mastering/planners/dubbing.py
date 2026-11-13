@@ -3,7 +3,9 @@
 From measurements (``mastering.measure``) and the options, decide:
 
 - loudness: a linear two-pass ``loudnorm`` of the final mix to −16 LUFS / −1.5 dBTP, or nothing when the mix is
-  already within 1 LU and under the ceiling, or silent;
+  already within 1 LU and under the ceiling, or silent; the worker then encodes the result with the render's own AAC
+  arguments, measures it, and when the encoded peak is over the ceiling lowers it by a bounded linear ``volume``
+  (``aac_trim``; issue #821): the ceiling is checked after AAC, never only predicted;
 - colour: a ``colorlevels`` stretch when the sampled frames' luma range is compressed, bounded per level (no
   saturation, no sharpen, no curve);
 - framing (Balanced and Dynamic): only a window-box (dark bars on both axes) is cropped and scaled back uniformly,
@@ -25,11 +27,17 @@ from ..measure import GREY_H, GREY_W, Loudness, Picture
 from ..plan import Options
 
 WORKFLOW = "dubbing_preserve"
-RECIPE = "dubbing-master-v3"  # v2: captions from the final TTS; v3: linear loudness kept under the peak with AAC headroom
+# v2: captions from the final TTS; v3: linear loudness kept under the peak with AAC headroom; v4: the peak is measured
+# after an AAC trial encode and trimmed linearly until it is under the ceiling (issue #821)
+RECIPE = "dubbing-master-v4"
 TARGET_LUFS, PEAK_DBTP, TARGET_LRA = -16.0, -1.5, 11.0
 QUIET_LUFS = -45.0          # quieter than this the mix is (nearly) silent: nothing to level
 CLOSE_LU = 1.0
 AAC_HEADROOM_DB = 1.0    # peak the AAC encode can add over the mix's true peak
+# After AAC (issue #821): the encode can add more than AAC_HEADROOM_DB (rc17: +1.20 dB), and how much is not monotonic
+# in the gain (rc17: −0.2/−0.4/−0.6 dB more gave −2.29/−2.77/−2.54 dBTP), so every trim is encoded and measured again.
+AAC_TRIM_MARGIN_DB = 0.3  # trimmed below the ceiling by this much, so a small re-encode variation stays under it
+AAC_TRIM_TRIES = 3        # at most this many trimmed re-encodes after the first trial: bounded, never a loop
 # How far colorlevels may move black and white (share of the 0–1 range) per level.
 COLOR_LIMIT = {"light": 0.06, "balanced": 0.06, "dynamic": 0.10}
 COLOR_MIN_GAIN = 0.02       # smaller stretches are not worth a filter
@@ -46,6 +54,9 @@ class DubbingMaster:
     climax: Mapping[str, Any] | None = None     # a suggestion, never rendered
     notes: tuple[str, ...] = ()
     measured: Mapping[str, Any] = field(default_factory=dict)
+    # The AAC trial of the dubbed mix (issue #821): {"first_true_peak", "true_peak", "trim_db", "tries"}, or None when
+    # there is no dubbed mix or the trial could not run (the export is still measured after the render).
+    aac_trial: Mapping[str, Any] | None = None
 
     @property
     def changes_render(self) -> bool:
@@ -54,7 +65,8 @@ class DubbingMaster:
     def to_dict(self) -> dict[str, Any]:
         return {"schema_version": 1, "kind": "dubbing_mastering", "recipe": RECIPE, "options": self.options.to_dict(),
                 "audio_filter": self.audio_filter, "video_filters": list(self.video_filters), "captions": self.captions,
-                "climax": dict(self.climax) if self.climax else None, "notes": list(self.notes), "measured": dict(self.measured)}
+                "climax": dict(self.climax) if self.climax else None, "notes": list(self.notes), "measured": dict(self.measured),
+                "aac_trial": dict(self.aac_trial) if self.aac_trial is not None else None}
 
     def digest(self) -> str:
         return hashlib.sha256(json.dumps(self.to_dict(), sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
@@ -88,6 +100,46 @@ def _loudness(found: Loudness | None, sample_rate: int, notes: list[str]) -> str
     return (f"loudnorm=I={target:g}:TP={PEAK_DBTP:g}:LRA={lra:g}:measured_I={found.integrated:.2f}"
             f":measured_TP={found.true_peak:.2f}:measured_LRA={found.lra:.2f}:measured_thresh={found.threshold:.2f}"
             f":offset={found.offset:.2f}:linear=true:print_format=summary,aresample={sample_rate}")
+
+
+def aac_trim(true_peak: float | None, trimmed_db: float = 0.0) -> float:
+    """The next cumulative trim (dB, never negative: a trim only ever lowers) after an AAC trial measured
+    ``true_peak`` with ``trimmed_db`` already taken off the mastered PCM. Always counted from the PCM (planner
+    filter, then ``volume=-<trim>dB``), never from decoded AAC. Unchanged when the peak is under the ceiling or
+    was not measured (silence)."""
+    if trimmed_db < 0 or trimmed_db != trimmed_db:
+        raise ValueError("trimmed_db must be a non-negative number")
+    if true_peak is None or true_peak <= PEAK_DBTP:
+        return trimmed_db
+    return round(trimmed_db + (true_peak - PEAK_DBTP) + AAC_TRIM_MARGIN_DB, 2)
+
+
+def with_trim(audio_filter: str | None, trim_db: float) -> str | None:
+    """``audio_filter`` followed by a linear ``volume`` cut of ``trim_db`` (or the cut alone): no limiter, no
+    compressor, no change of loudness range."""
+    if trim_db < 0 or trim_db != trim_db:
+        raise ValueError("trim_db must be a non-negative number")
+    if trim_db == 0:
+        return audio_filter
+    gain = f"volume=-{trim_db:.2f}dB"
+    return f"{audio_filter},{gain}" if audio_filter else gain
+
+
+def aac_note(trial: Mapping[str, Any]) -> str | None:
+    """What the AAC trial changed, for the plan's notes. Its prefix is deliberately not "Âm lượng:" (that is the
+    planner's own loudness note, which the card and the B1 fallback look up by that exact prefix)."""
+    trim, peak = float(trial.get("trim_db") or 0.0), trial.get("true_peak")
+    if peak is not None and peak > PEAK_DBTP:
+        return (f"Âm lượng sau AAC: đã giảm thêm {_vi(trim)} dB qua {trial.get('tries')} lần thử mã hóa nhưng đỉnh vẫn "
+                f"{_vi(peak)} dBTP, chưa đạt trần {_vi(PEAK_DBTP)} dBTP.")
+    if trim > 0:
+        return f"Âm lượng sau AAC: giảm thêm {_vi(trim)} dB để đỉnh ≤ {_vi(PEAK_DBTP)} dBTP."
+    return None
+
+
+def _vi(value: float) -> str:
+    """One decimal, Vietnamese style: comma and a true minus sign."""
+    return f"{value:.1f}".replace(".", ",").replace("-", "−")
 
 
 def _colour(found: Picture | None, level: str, notes: list[str]) -> str | None:
@@ -178,4 +230,5 @@ def plan(options: Options, *, mix: Loudness | None, mix_rate: int | None, frames
     return DubbingMaster(options, audio, tuple(video), captions, suggestion, tuple(notes), measured)
 
 
-__all__ = ["DubbingMaster", "RECIPE", "WORKFLOW", "plan"]
+__all__ = ["AAC_TRIM_MARGIN_DB", "AAC_TRIM_TRIES", "DubbingMaster", "RECIPE", "WORKFLOW", "aac_note", "aac_trim", "plan",
+           "with_trim"]

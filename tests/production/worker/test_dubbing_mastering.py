@@ -5,7 +5,9 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import replace as dataclass_replace
 import json
+import os
 from pathlib import Path
+import shutil
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
@@ -338,6 +340,490 @@ class PostAacMeasurementTests(unittest.TestCase):
         self.assertNotIn("mastering", qc)
         self.assertEqual(calls, [])
         self.assertIsNone(plan)
+
+
+Loud = worker.mastering_measure.Loudness
+RC17_MIX = Loud(-15.42, -0.73, 7.60, -26.04, 0.77)  # issue #821 rc17: planned to −17.2 LUFS, −2.51 dBTP before AAC
+CLOSE_MIX = Loud(-16.2, -3.0, 6.0, -26.3, 0.1)       # within 1 LU and under −2.5 dBTP: the planner adds no filter
+DYNAMIC_WORDS = ("alimiter", "compand", "acompressor", "dynaudnorm", "agate", "asoftclip", "linear=false")
+
+
+class AacJob:
+    """One Lồng tiếng job (the separation fixture, B2 with a real mix file) with its FFmpeg calls recorded.
+
+    ``trials``: what each AAC trial measures, in order (a dBTP number, None for silence or an exception to raise);
+    ``final``: what the final MP4 measures (a Loudness, None or an exception). Trial encodes and mastered WAVs are
+    "written" by the recorded ``_capture`` so hashes and renames behave as on disk."""
+
+    def __init__(self, level, mix, trials=(), final=None, *, b2_error=None, render_error=False, root=None):
+        self.level, self.mix, self.trials, self.final = level, mix, list(trials), final
+        self.b2_error, self.render_error, self.root = b2_error, render_error, root
+        self.captures, self.measured, self.renders, self.rendered_audio = [], [], [], []
+
+    def capture(self, argv):
+        self.captures.append(list(argv))
+        out = Path(argv[-1])
+        if "pcm_s16le" in argv:
+            out.write_bytes(b"RIFF-mastered:" + argv[argv.index("-af") + 1].encode())
+        else:
+            out.write_bytes(b"aac trial of " + Path(argv[argv.index("-i") + 1]).read_bytes()[:64])
+        return b"", b""
+
+    def loudness(self, ffmpeg, path):
+        name = Path(path).name
+        self.measured.append(name)
+        if name == "final.wav":
+            return self.mix
+        if name == "aac_trial.m4a":
+            if not Path(path).is_file():
+                raise AssertionError("the trial was measured before it was encoded")
+            value = self.trials.pop(0)
+            if isinstance(value, Exception):
+                raise value
+            return None if value is None else Loud(-17.5, value, 7.6, -27.6, 0.1)
+        if name == "final_vi.mp4":
+            if isinstance(self.final, Exception):
+                raise self.final
+            return self.final
+        raise AssertionError(f"unexpected measurement of {name}")
+
+    @contextmanager
+    def running(self):
+        from unittest.mock import Mock
+        from tests.production.worker.test_separation import SeparationWorkerTests
+
+        helper = SeparationWorkerTests()
+        with helper.fixture() as (root, config, probe, media), helper.pipeline(probe, media) as (dub, _):
+            self.root, self.config, self.media = Path(root), dataclass_replace(config, separate_background=False), media
+            if self.b2_error is not None:
+                dub.side_effect = self.b2_error
+            self.config.output_dir.mkdir(parents=True, exist_ok=True)
+            if self.level is not None:
+                (self.config.output_dir / worker.MASTERING_FILE).write_text(
+                    json.dumps({"schema_version": 1, "level": self.level}), encoding="utf-8")
+
+            def render(source, target, **kwargs):
+                self.renders.append(kwargs)
+                audio = kwargs.get("audio_path")
+                self.rendered_audio.append(Path(audio).read_bytes() if audio is not None else None)
+                if self.render_error and kwargs.get("audio_path") is not None:
+                    raise worker.MediaAdapterError("MEDIA_COMMAND_FAILED", "mix refused")
+                target.write_bytes(b"rendered video seam")
+            media.render.side_effect = render
+            with patch.object(worker.mastering_measure, "loudness", side_effect=self.loudness), \
+                    patch.object(worker.mastering_measure, "_capture", side_effect=self.capture), \
+                    patch.object(worker.mastering_measure, "grey_frames", return_value=[]), \
+                    patch.object(worker, "_separate_background_stage", return_value=(None, {"mode": "original"})):
+                yield lambda: worker.run_local_file(self.config, Mock())
+
+    def run(self):
+        with self.running() as run:
+            return self.result(run())
+
+    def result(self, done):
+        self.qc = json.loads(Path(done["qc"]).read_text(encoding="utf-8"))
+        final = self.config.output_dir / "final_vi.mp4"
+        self.published = final.read_bytes() if final.is_file() else None
+        plans = list(self.root.rglob("dubbing-plan.json"))
+        self.plan = json.loads(plans[0].read_text(encoding="utf-8")) if plans else None
+        self.trial_encodes = [argv for argv in self.captures if "aac" in argv]
+        folders = [path for path in self.root.rglob("mastering") if path.is_dir()]
+        # what the mastering folder holds besides the plan and the mastered mix: the trial must leave nothing behind
+        self.leftovers = sorted(path.name for folder in folders for path in folder.iterdir()
+                                if path.name not in ("dubbing-plan.json", "final_mix_mastered.wav"))
+        self.applies = [argv for argv in self.captures if "pcm_s16le" in argv]
+        return self
+
+    @property
+    def conformance(self):
+        return self.qc["mastering"]["conformance"]
+
+
+class AacTrueCeilingTests(unittest.TestCase):
+    """Issue #821: the B2 export's true peak is checked against −1.5 dBTP on the encoded AAC, not predicted; a linear
+    trim (never a limiter) brings it under; what could not be met or measured is a warning, never a silent pass."""
+
+    def assert_linear(self, audio_filter):
+        for word in DYNAMIC_WORDS:
+            self.assertNotIn(word, audio_filter or "")
+
+    def assert_no_trial_leftovers(self, job):
+        self.assertEqual(job.leftovers, [])
+
+    def test_b2_loudnorm_within_the_ceiling_after_aac_needs_no_trim(self):
+        job = AacJob("light", RC17_MIX, trials=[-2.6], final=Loud(-17.22, -2.6, 7.4, -27.4, 0.1)).run()
+        self.assertEqual(job.plan["recipe"], "dubbing-master-v4")
+        self.assertTrue(job.plan["audio_filter"].startswith("loudnorm=I=-17.2:TP=-1.5:"))
+        self.assertNotIn("volume=", job.plan["audio_filter"])
+        self.assertEqual(job.plan["aac_trial"], {"first_true_peak": -2.6, "true_peak": -2.6, "trim_db": 0.0, "tries": 1})
+        # the trial encodes the WAV the render uses, with exactly the render's audio arguments
+        (trial,) = job.trial_encodes
+        mastered = job.renders[-1]["audio_path"]
+        self.assertEqual(Path(mastered).name, "final_mix_mastered.wav")
+        self.assertEqual(trial[trial.index("-i") + 1], str(mastered))
+        self.assertEqual(trial[trial.index("-map"):trial.index("-f")], ["-map", "0:a:0", *worker.AAC_RENDER_ARGS])
+        self.assertEqual(len(job.applies), 1)
+        self.assertEqual(job.conformance, {"status": "passed", "ceiling_dbtp": -1.5, "true_peak_dbtp": -2.6,
+                                           "path": "B2", "trim_db": 0.0, "tries": 1})
+        self.assertEqual(job.qc["mastering"]["result"],
+                         {"technical_render": "success", "mastering_conformance": "passed", "final_qc": "passed"})
+        self.assertEqual((job.qc["status"], job.qc["downgrade"]), ("passed", False))
+        self.assertFalse(any(w.startswith("MASTERING_") for w in job.qc["warnings"]))
+        self.assertEqual(job.measured.count("final_vi.mp4"), 1)
+        self.assert_no_trial_leftovers(job)
+
+    def test_b2_post_aac_overshoot_rc17_is_trimmed_linearly_then_passes(self):
+        # rc17: −2.51 dBTP before AAC, −1.31 after. Trim (−1.31 + 1.5) + 0.3 = 0.49 dB, then the trial passes.
+        job = AacJob("light", RC17_MIX, trials=[-1.31, -2.29], final=Loud(-17.71, -2.29, 7.4, -27.9, 0.1)).run()
+        audio_filter = job.plan["audio_filter"]
+        self.assertTrue(audio_filter.startswith("loudnorm=I=-17.2:TP=-1.5:LRA=11:"), audio_filter)
+        self.assertTrue(audio_filter.endswith(",aresample=48000,volume=-0.49dB"), audio_filter)
+        self.assertIn("linear=true", audio_filter)
+        self.assert_linear(audio_filter)
+        self.assertEqual(job.plan["aac_trial"], {"first_true_peak": -1.31, "true_peak": -2.29, "trim_db": 0.49, "tries": 2})
+        # the trimmed mix is made again from the dubbed mix (PCM), never from decoded AAC
+        self.assertEqual([Path(argv[argv.index("-i") + 1]).name for argv in job.applies], ["final.wav", "final.wav"])
+        self.assertEqual([argv[argv.index("-af") + 1] for argv in job.applies][-1], audio_filter)
+        self.assertEqual(Path(job.renders[-1]["audio_path"]).name, "final_mix_mastered.wav")
+        self.assertEqual(job.rendered_audio[-1], b"RIFF-mastered:" + audio_filter.encode())
+        self.assertEqual(job.conformance["status"], "corrected")
+        self.assertEqual((job.conformance["trim_db"], job.conformance["tries"], job.conformance["true_peak_dbtp"]),
+                         (0.49, 2, -2.29))
+        self.assertTrue(any(note == "Âm lượng sau AAC: giảm thêm 0,5 dB để đỉnh ≤ −1,5 dBTP." for note in job.qc["mastering"]["notes"]))
+        self.assertTrue(job.qc["mastering"]["loudness"])
+        self.assertEqual((job.qc["status"], job.qc["downgrade"]), ("passed", False))
+        self.assertEqual(job.qc["mastering"]["result"]["final_qc"], "passed")
+        self.assert_no_trial_leftovers(job)
+
+    def test_b2_without_a_planner_filter_gets_a_volume_only_trim(self):
+        job = AacJob("light", CLOSE_MIX, trials=[-1.2, -2.0], final=Loud(-16.8, -2.0, 6.0, -26.9, 0.1)).run()
+        self.assertEqual(job.plan["audio_filter"], "volume=-0.60dB")
+        self.assertEqual([Path(argv[argv.index("-i") + 1]).name for argv in job.trial_encodes],
+                         ["final.wav", "final_mix_trim1.wav"])  # the first trial is the dubbed mix the render would use
+        self.assertEqual(Path(job.renders[-1]["audio_path"]).name, "final_mix_mastered.wav")
+        self.assertTrue(job.qc["mastering"]["loudness"], "a trim is a gain applied to the dubbed mix")
+        self.assertEqual(job.conformance["status"], "corrected")
+        self.assertEqual(job.conformance["trim_db"], 0.6)
+        # within the ceiling at the first trial: nothing applied, the final mix itself is rendered, measured once
+        job = AacJob("light", CLOSE_MIX, trials=[-2.2], final=Loud(-16.2, -2.2, 6.0, -26.3, 0.1)).run()
+        self.assertIsNone(job.plan["audio_filter"])
+        self.assertEqual(job.applies, [])
+        self.assertEqual(Path(job.renders[-1]["audio_path"]).name, "final.wav")
+        self.assertEqual(job.conformance["status"], "passed")
+        self.assertFalse(job.qc["mastering"]["loudness"])
+        self.assertEqual(job.measured.count("final_vi.mp4"), 1)
+
+    def test_b2_with_a_high_input_peak_stays_linear(self):
+        loud = Loud(-11.8, 0.6, 9.2, -22.0, 0.3)
+        job = AacJob("light", loud, trials=[-0.9, -1.95], final=Loud(-19.6, -1.95, 9.0, -29.8, 0.1)).run()
+        audio_filter = job.plan["audio_filter"]
+        planned = worker.dubbing_master.plan(worker.MasteringOptions("light"), mix=loud, mix_rate=48000, frames=None,
+                                             width=1920, height=1080).audio_filter
+        self.assertEqual(audio_filter, planned + ",volume=-0.90dB")  # the planner's own filter (target, LRA) unchanged
+        self.assertIn(":LRA=11:", audio_filter)
+        self.assert_linear(audio_filter)
+        self.assertEqual(job.conformance["status"], "corrected")
+
+    def test_b2_near_the_ceiling_exactly_at_it_passes_and_just_over_is_trimmed(self):
+        job = AacJob("light", RC17_MIX, trials=[-1.5], final=Loud(-17.2, -1.5, 7.4, -27.4, 0.1)).run()
+        self.assertNotIn("volume=", job.plan["audio_filter"])
+        self.assertEqual(job.conformance["status"], "passed")
+        job = AacJob("light", RC17_MIX, trials=[-1.49, -1.82], final=Loud(-17.5, -1.82, 7.4, -27.7, 0.1)).run()
+        self.assertTrue(job.plan["audio_filter"].endswith("volume=-0.31dB"))
+        self.assertEqual(job.conformance["status"], "corrected")
+
+    def test_a_non_monotonic_overshoot_is_measured_again_after_every_trim(self):
+        # rc17: more gain reduction does not always lower the AAC peak; every trim is cumulative and re-measured.
+        job = AacJob("light", RC17_MIX, trials=[-1.31, -1.40, -1.20, -1.62],
+                     final=Loud(-18.7, -1.62, 7.4, -28.9, 0.1)).run()
+        trims = [argv[argv.index("-af") + 1].rsplit(",", 1)[-1] for argv in job.applies[1:]]
+        self.assertEqual(trims, ["volume=-0.49dB", "volume=-0.89dB", "volume=-1.49dB"])
+        self.assertEqual(len(job.trial_encodes), 4)
+        self.assertEqual(job.plan["aac_trial"], {"first_true_peak": -1.31, "true_peak": -1.62, "trim_db": 1.49, "tries": 4})
+        self.assertEqual(job.conformance["status"], "corrected")
+        self.assert_no_trial_leftovers(job)
+
+    def test_exhausted_tries_keep_the_lowest_peak_and_report_failed_with_a_warning(self):
+        job = AacJob("light", RC17_MIX, trials=[-1.31, -1.40, -1.20, -1.35],
+                     final=Loud(-17.7, -1.40, 7.4, -27.9, 0.1)).run()
+        self.assertEqual(len(job.trial_encodes), 1 + worker.dubbing_master.AAC_TRIM_TRIES, "bounded")
+        self.assertTrue(job.plan["audio_filter"].endswith("volume=-0.49dB"), "the attempt with the lowest peak")
+        self.assertEqual(job.rendered_audio[-1], b"RIFF-mastered:" + job.plan["audio_filter"].encode())
+        self.assertEqual(job.plan["aac_trial"], {"first_true_peak": -1.31, "true_peak": -1.40, "trim_db": 0.49, "tries": 4})
+        self.assertEqual(job.conformance["status"], "failed")
+        self.assertEqual(job.conformance["true_peak_dbtp"], -1.40)
+        over = [w for w in job.qc["warnings"] if w.startswith("MASTERING_TRUE_PEAK_OVER:")]
+        self.assertEqual(len(over), 1)
+        self.assertIn("-1.40 dBTP > -1.5 dBTP", over[0])
+        self.assertTrue(job.qc["downgrade"], "the supervisor then reports completed_with_warnings")
+        self.assertEqual(job.qc["status"], "passed", "the report stays valid: the render succeeded")
+        self.assertEqual(job.qc["mastering"]["result"],
+                         {"technical_render": "success", "mastering_conformance": "failed", "final_qc": "warning"})
+        self.assertEqual(job.published, b"rendered video seam", "the render is still produced and published")
+        self.assertTrue(any(note.startswith("Âm lượng sau AAC:") and "chưa đạt trần" in note
+                            for note in job.qc["mastering"]["notes"]))
+        self.assert_no_trial_leftovers(job)
+
+    def test_the_b1_fallback_is_measured_and_warned_but_never_trimmed(self):
+        from engine.dubflow.worker.b2_audio import B2AudioError
+
+        job = AacJob("light", RC17_MIX, final=Loud(-14.0, -0.4, 8.0, -24.0, 0.1),
+                     b2_error=B2AudioError("TTS_FAILED", "forced")).run()
+        self.assertEqual(job.captures, [], "no trial, no filter: the source sound is not touched")
+        self.assertNotIn("aac_trial.m4a", job.measured)
+        self.assertIsNone(job.renders[-1].get("audio_path"))
+        self.assertTrue(job.renders[-1]["preserve_original_audio"])
+        self.assertEqual(job.conformance, {"status": "not_applicable", "ceiling_dbtp": -1.5, "true_peak_dbtp": -0.4,
+                                           "path": "B1", "trim_db": 0.0, "tries": 0, "ceiling_met": False})
+        over = [w for w in job.qc["warnings"] if w.startswith("MASTERING_TRUE_PEAK_OVER:")]
+        self.assertEqual(len(over), 1)
+        self.assertIn("(B1, âm thanh gốc, không chỉnh)", over[0])
+        self.assertEqual(job.qc["audio"]["mode"], "original")
+        # a dubbed render that fails falls back to B1 after a trim: the trim is not reported for the source sound
+        job = AacJob("light", RC17_MIX, trials=[-1.31, -2.29], final=Loud(-14.0, -2.4, 8.0, -24.0, 0.1),
+                     render_error=True).run()
+        self.assertTrue(job.renders[-1]["preserve_original_audio"])
+        self.assertEqual((job.conformance["status"], job.conformance["path"], job.conformance["ceiling_met"],
+                          job.conformance["trim_db"]), ("not_applicable", "B1", True, 0.0))
+        self.assertFalse(any(note.startswith("Âm lượng") for note in job.qc["mastering"]["notes"]))
+        self.assertFalse(any(w.startswith("MASTERING_TRUE_PEAK") for w in job.qc["warnings"]))
+
+    def test_a_vietsub_only_job_is_not_applicable_and_not_warned(self):
+        from types import SimpleNamespace
+
+        with DubbingMasteringTests().job() as fixture, \
+                patch.object(worker.mastering_measure, "loudness", return_value=Loud(-14.0, -0.4, 8.0, -24.0, 0.1)), \
+                patch.object(worker.mastering_measure, "_capture", side_effect=AssertionError("nothing to encode")):
+            DubbingMasteringTests.options(SimpleNamespace(), fixture, {"schema_version": 1, "level": "light"})
+            fixture.run()
+            qc = fixture.qc()
+        self.assertEqual(qc["mastering"]["conformance"]["status"], "not_applicable")
+        self.assertEqual(qc["mastering"]["conformance"]["path"], "none")
+        self.assertFalse(any(w.startswith("MASTERING_TRUE_PEAK") for w in qc["warnings"]))
+
+    def test_failed_measurements_are_unmeasured_with_a_warning_and_never_fail_the_job(self):
+        boom = worker.mastering_measure.MeasureError("FFmpeg failed (1)")
+        job = AacJob("light", RC17_MIX, trials=[boom], final=boom).run()
+        self.assertFalse(any(w.startswith("MASTERING_SKIPPED") for w in job.qc["warnings"]), "mastering stays on")
+        self.assertIsNone(job.plan["aac_trial"])
+        self.assertNotIn("volume=", job.plan["audio_filter"], "the planner's filter, as before the trial")
+        self.assertEqual(Path(job.renders[-1]["audio_path"]).name, "final_mix_mastered.wav")
+        self.assertEqual(job.conformance["status"], "unmeasured")
+        self.assertIsNone(job.conformance["true_peak_dbtp"])
+        self.assertTrue(any(w.startswith("MASTERING_TRUE_PEAK_UNMEASURED:") for w in job.qc["warnings"]))
+        self.assertEqual((job.qc["status"], job.qc["downgrade"]), ("passed", True))
+        self.assertEqual(job.qc["mastering"]["result"]["final_qc"], "warning")
+        self.assert_no_trial_leftovers(job)
+        # the trial alone failing: the export is still measured, and a measured pass is a pass
+        job = AacJob("light", RC17_MIX, trials=[boom], final=Loud(-17.2, -2.3, 7.4, -27.4, 0.1)).run()
+        self.assertEqual(job.conformance["status"], "passed")
+        self.assertFalse(job.qc["downgrade"])
+        # a trim whose encode fails keeps the planner's mix (never a half-made one)
+        job = AacJob("light", RC17_MIX, trials=[-1.31, boom], final=Loud(-17.2, -1.31, 7.4, -27.4, 0.1)).run()
+        self.assertIsNone(job.plan["aac_trial"])
+        self.assertNotIn("volume=", job.plan["audio_filter"])
+        self.assertEqual(job.rendered_audio[-1], b"RIFF-mastered:" + job.plan["audio_filter"].encode())
+        self.assertEqual(job.conformance["status"], "failed")
+        self.assert_no_trial_leftovers(job)
+
+    def test_resume_reuses_the_trial_result_without_encoding_again(self):
+        job = AacJob("light", RC17_MIX, trials=[-1.31, -2.29], final=Loud(-17.71, -2.29, 7.4, -27.9, 0.1))
+        with job.running() as run:
+            first = job.result(run())
+            plan, conformance, captures = first.plan, first.conformance, len(job.captures)
+            renders, measured = len(job.renders), len(job.measured)
+            again = job.result(run())  # cancelled after the render and resumed, or simply run again
+        self.assertEqual(len(job.captures), captures, "no new trial encode or apply")
+        self.assertEqual(len(job.renders), renders, "the finished render is reused")
+        self.assertEqual(job.measured[measured:], ["final_vi.mp4"], "only the export is measured again")
+        self.assertEqual(again.plan, plan)
+        self.assertEqual(again.conformance, conformance)
+        self.assertEqual(again.conformance["status"], "corrected")
+
+    def test_a_render_from_unchanged_input_gets_the_same_filter_and_trim(self):
+        runs = [AacJob("light", RC17_MIX, trials=[-1.31, -1.40, -1.20, -1.62], final=Loud(-18.7, -1.62, 7.4, -28.9, 0.1)).run()
+                for _ in range(2)]
+        self.assertEqual(runs[0].plan, runs[1].plan)
+        self.assertEqual([argv[argv.index("-af") + 1] for argv in runs[0].applies],
+                         [argv[argv.index("-af") + 1] for argv in runs[1].applies])
+        self.assertEqual(runs[0].conformance, runs[1].conformance)
+
+    def test_mastering_off_runs_no_trial_and_its_report_is_unchanged(self):
+        job = AacJob(None, RC17_MIX, trials=[-1.31], final=Loud(-17.0, -1.0, 7.0, -27.0, 0.1)).run()
+        self.assertEqual((job.captures, job.measured), ([], []))
+        self.assertIsNone(job.plan)
+        self.assertEqual(Path(job.renders[-1]["audio_path"]).name, "final.wav")
+        self.assertNotIn("mastering_filters", job.renders[-1])
+        from engine.dubflow.tts import approved_default_voice
+
+        voice = approved_default_voice()
+        expected = {**OFF_QC, "audio": {**OFF_QC["audio"], "voice_hash": voice.content_hash(), "voice_id": voice.voice_id,
+                                        "voice_version": voice.voice_version}}
+        self.assertEqual(_normalised(job.qc, job.root), expected)
+
+    def test_the_trial_encodes_with_exactly_the_render_audio_arguments(self):
+        import sys
+        from engine.dubflow.media import FfmpegMediaAdapter
+        from tests.production.media.test_adapter import RecordingRunner
+
+        with TemporaryDirectory() as folder:
+            root = Path(folder)
+            source, audio = root / "source.mp4", root / "mix.wav"
+            source.write_bytes(b"source")
+            audio.write_bytes(b"audio")
+            runner = RecordingRunner()
+            executable = Path(sys.executable).resolve()
+            adapter = FfmpegMediaAdapter(executable, trusted_root=executable.parent, runner=runner)
+            adapter.render(source, root / "out.mp4", audio_path=audio, preserve_original_audio=False, overwrite=True)
+            call = list(runner.calls[-1])
+        at = call.index("-c:a")
+        self.assertEqual(tuple(call[at:at + len(worker.AAC_RENDER_ARGS)]), worker.AAC_RENDER_ARGS)
+        self.assertEqual(call.count("-c:a"), 1)
+        self.assertNotIn("-af", call, "the dubbed mix reaches the AAC encoder unfiltered, as in the trial")
+
+
+def _normalised(qc, root):
+    """The report without its time and with paths under the job folder reduced to their file name."""
+    def walk(value):
+        if isinstance(value, dict):
+            return {key: walk(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [walk(item) for item in value]
+        if isinstance(value, str) and value.startswith(str(root)):
+            return "<job>/" + Path(value).name
+        return value
+    return walk({key: value for key, value in qc.items() if key != "validated_at_utc"})
+
+
+# Mastering off (issue #821, ADR-0055 decision 2): the report of an off job as it was before the AAC conformance check.
+_OFF_PROBE = {
+    "canonical_duration_ticks": 3000, "canonical_time_base": {"denominator": 1000, "numerator": 1},
+    "format_duration_ticks": None, "format_name": None, "format_time_base": {"denominator": 1000, "numerator": 1},
+    "has_audio": True, "source_path": "<job>/source.mp4",
+    "streams": [{"channels": None, "codec_name": "h264", "codec_type": "video", "duration_ticks": 3000, "duration_ts": 3000,
+                 "frame_rate": None, "height": None, "index": 0, "sample_rate": None, "start_pts": 0,
+                 "time_base": {"denominator": 1000, "numerator": 1}, "width": None},
+                {"channels": 2, "codec_name": "aac", "codec_type": "audio", "duration_ticks": 144000, "duration_ts": 144000,
+                 "frame_rate": None, "height": None, "index": 1, "sample_rate": 48000, "start_pts": 0,
+                 "time_base": {"denominator": 48000, "numerator": 1}, "width": None}],
+    "video_timeline": {"duration_ticks": 3000, "end_pts": 3000, "start_pts": 0,
+                       "time_base": {"denominator": 1000, "numerator": 1}}}
+# Recorded from the job at 74c16d0 (before #821). The voice fields come from the approved default voice pack.
+OFF_QC = {
+    "schema_version": 1, "status": "passed", "source_probe": _OFF_PROBE, "output_probe": _OFF_PROBE,
+    "audio": {"backend": "hermetic-tts", "bed": "source", "mix_document": "<job>/mix_document.json", "mix_failures": 0,
+              "mix_provenance": {}, "mix_warnings": [], "mode": "dubbed", "source_audio_origin": "decoded-source",
+              "tts_document": "<job>/tts_document.json", "tts_failures": 0,
+              "undubbed": {"duration_ms": 0, "phrases": 0, "speech_ms": 1000, "starts_ms": []},
+              "voice_hash": "<voice>", "voice_id": "<voice>", "voice_version": "<voice>"},
+    "background": {"mode": "original"}, "downgrade": False, "warnings": []}
+
+
+class AacConformanceUnitTests(unittest.TestCase):
+    def test_the_output_measurement_tells_silence_from_an_error(self):
+        from types import SimpleNamespace
+        config = SimpleNamespace(ffmpeg_path=Path("ffmpeg"))
+        with patch.object(worker.mastering_measure, "loudness", return_value=None):
+            self.assertEqual(worker._output_measurement(config, Path("final_vi.mp4")), (None, None))
+        with patch.object(worker.mastering_measure, "loudness", side_effect=worker.mastering_measure.MeasureError("x")):
+            found, error = worker._output_measurement(config, Path("final_vi.mp4"))
+            self.assertIsNone(found)
+            self.assertEqual(error, "MeasureError: x")
+
+    def test_conformance_states(self):
+        loud = lambda peak: {"integrated": -17.0, "true_peak": peak, "lra": 7.0, "threshold": -27.0, "offset": 0.1}
+        trial = {"first_true_peak": -1.31, "true_peak": -2.29, "trim_db": 0.49, "tries": 2}
+        cases = [
+            (("B2", None, loud(-2.0), None), "passed", []),
+            (("B2", trial, loud(-2.29), None), "corrected", []),
+            (("B2", trial, loud(-1.2), None), "failed", ["MASTERING_TRUE_PEAK_OVER"]),
+            (("B2", None, loud(-1.2), None), "failed", ["MASTERING_TRUE_PEAK_OVER"]),  # no trial ran: still judged
+            (("B2", trial, None, "MeasureError: x"), "unmeasured", ["MASTERING_TRUE_PEAK_UNMEASURED"]),
+            (("B2", trial, None, None), "silent", []),
+            (("B1", None, loud(-0.4), None), "not_applicable", ["MASTERING_TRUE_PEAK_OVER"]),
+            (("B1", None, loud(-3.0), None), "not_applicable", []),
+            (("none", None, loud(-0.4), None), "not_applicable", []),
+        ]
+        for arguments, status, codes in cases:
+            with self.subTest(arguments=arguments):
+                warnings = []
+                record = worker._mastering_conformance(*arguments, warnings)
+                self.assertEqual(record["status"], status)
+                self.assertEqual(record["ceiling_dbtp"], -1.5)
+                self.assertEqual([w.split(":")[0] for w in warnings], codes)
+                self.assertFalse(any(w.startswith(worker.INFORMATIONAL_WARNINGS) for w in warnings))
+
+
+FFMPEG = os.environ.get("DUBFLOW_TEST_FFMPEG") or shutil.which("ffmpeg")
+
+
+@unittest.skipUnless(FFMPEG, "set DUBFLOW_TEST_FFMPEG (or put ffmpeg on PATH) to run against the real encoder")
+class RealAacTrimTests(unittest.TestCase):
+    """Issue #821 with the real encoder: a mix at −2.5 dBTP before AAC that peaks more than 1 dB higher after it is
+    trimmed by the real trial/trim helper until the encoded file itself measures ≤ −1.5 dBTP."""
+
+    @staticmethod
+    def write(path, frames, gain=1.0):
+        import struct
+        import wave
+        with wave.open(str(path), "wb") as writer:
+            writer.setnchannels(2)
+            writer.setsampwidth(2)
+            writer.setframerate(48000)
+            writer.writeframes(b"".join(struct.pack("<hh", round(a * gain), round(b * gain)) for a, b in frames))
+
+    def mix(self, folder):
+        """40 ms bursts of hard-clipped noise every 400 ms (square-like edges the AAC encode rings over), scaled to
+        −2.5 dBTP: about −14.5 LUFS, and about +3 dB of peak after AAC on FFmpeg 6.1.1 and n9.0.2."""
+        import random
+        rng = random.Random(821)
+        clip = lambda value: max(-1.0, min(1.0, value))
+        frames = [(clip(rng.gauss(0, 3)) * 20000, clip(rng.gauss(0, 3)) * 20000) if i % 19200 < 1920 else (0.0, 0.0)
+                  for i in range(48000 * 6)]
+        raw = folder / "raw.wav"
+        self.write(raw, frames)
+        peak = worker.mastering_measure.loudness(Path(FFMPEG), raw).true_peak
+        mix = folder / "final.wav"
+        self.write(mix, frames, 10 ** ((-2.5 - peak) / 20))
+        return mix
+
+    def encoded_peak(self, wav, folder):
+        """The true peak of a separate encode with the render's AAC arguments (not the helper's own trial)."""
+        import subprocess
+        out = folder / "check.m4a"
+        subprocess.run([FFMPEG, "-hide_banner", "-nostdin", "-v", "error", "-y", "-i", str(wav), "-map", "0:a:0",
+                        *worker.AAC_RENDER_ARGS, str(out)], check=True, capture_output=True, timeout=300)
+        return worker.mastering_measure.loudness(Path(FFMPEG), out).true_peak
+
+    def test_the_trial_and_trim_bring_the_encoded_peak_under_the_ceiling(self):
+        ffmpeg = Path(FFMPEG)
+        with TemporaryDirectory() as directory:
+            folder = Path(directory)
+            mix = self.mix(folder)
+            before = worker.mastering_measure.loudness(ffmpeg, mix)
+            self.assertAlmostEqual(before.true_peak, -2.5, delta=0.15)
+            untrimmed = self.encoded_peak(mix, folder)
+            self.assertGreater(untrimmed - before.true_peak, 1.0, "the signal must overshoot after AAC by more than 1 dB")
+            (folder / "mastering").mkdir()
+            # no planner filter: the trim alone; then the planner's own linear loudnorm (−1.5 LU here) and the trim
+            planned = worker.dubbing_master.plan(worker.MasteringOptions("light"), mix=before, mix_rate=48000,
+                                                 frames=None, width=1920, height=1080).audio_filter
+            self.assertIn("linear=true", planned)
+            for base in (None, planned):
+                with self.subTest(base=base):
+                    mastered = folder / "mastering" / "final_mix_mastered.wav"
+                    if base:
+                        worker._apply_audio_filter(ffmpeg, mix, base, mastered)
+                    audio_filter, record = worker._aac_conform(ffmpeg, mix, base, mastered)
+                    self.assertGreater(record["first_true_peak"], -1.5)
+                    self.assertGreater(record["trim_db"], 0)
+                    self.assertLessEqual(record["true_peak"], -1.5)
+                    self.assertLessEqual(record["tries"], 1 + worker.dubbing_master.AAC_TRIM_TRIES)
+                    self.assertTrue(audio_filter.endswith(f"volume=-{record['trim_db']:.2f}dB"))
+                    self.assertLessEqual(self.encoded_peak(mastered, folder), -1.5)
+                    self.assertEqual(sorted(path.name for path in (folder / "mastering").iterdir()),
+                                     ["final_mix_mastered.wav"])
+                    mastered.unlink()
 
 
 class OutputLoudnessTests(unittest.TestCase):

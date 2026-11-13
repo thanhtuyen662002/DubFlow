@@ -62,5 +62,17 @@ than its source cue (window widening, fast fit), the Vietnamese caption can drif
 - Legacy jobs and jobs without `mastering.json` are unchanged (regression test compares FFmpeg argv and render
   identity).
 - Mastering costs one `loudnorm` analysis + one apply over the mix and a few sampled frames: no model, no GPU.
+  Amended 2026-11-13 (#821): plus, for a dubbed mix, one audio-only AAC trial encode of the audio the render will use
+  (the render's own `-c:a aac -b:a 192k`) and one `loudnorm` measurement of it. When that encoded true peak is over
+  −1.5 dBTP, the mix is made again from the PCM with the planner's filter followed by a linear `volume` cut
+  (cumulative, (peak + 1.5) + 0.3 dB each time), encoded and measured again: at most `AAC_TRIM_TRIES` (3) re-applies,
+  and if none is under the ceiling the one with the lowest measured peak is kept. Only linear gain: no limiter,
+  compressor, dynamic `loudnorm` or loudness-range change. The trial result is stored in the plan and the stage, so a
+  resumed job does not encode again; a trial that cannot run leaves the plan as planned and never turns mastering
+  off. The final MP4 is still measured once after the render, and QC records `mastering.conformance` (passed,
+  corrected, failed, unmeasured, silent, not_applicable for the B1 fallback and Vietsub only); failed or unmeasured
+  adds a non-informational warning (`MASTERING_TRUE_PEAK_OVER` / `MASTERING_TRUE_PEAK_UNMEASURED`) while `status`
+  stays "passed" (the report is valid and the render succeeded). The B1 source sound is measured and warned, never
+  trimmed. Off is unchanged: no trial, no measurement, no new QC key. Recipe `dubbing-master-v4`.
 - The UI to choose levels and review suggestions is Phase 5; until then `mastering.json` is written by tests,
   the E2E harness or a power user.
