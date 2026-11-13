@@ -126,7 +126,7 @@
                             "properties": {"min_confidence": {"type": "integer", "minimum": 0, "maximum": 1000},
                                            "flagged_pieces": {"type": "integer", "minimum": 0},
                                            "needs_review": {"type": "boolean"}}},
-            "claims": {"description": "Only for a sentence that states a number, a written title or a card's words (#802): whether it speaks of something displayed, and which of those claims the chosen shots' content evidence shows, leaves unshown or contradicts. Absent otherwise and in older logs. 'disputed' (#817, only when not empty): the unverified counts for which a chosen shot ties another figure to the same kind of thing (a population); for review only, never a conflict.",
+            "claims": {"description": "Only for a sentence that states a number, a written title or a card's words (#802): whether it speaks of something displayed, and which of those claims the chosen shots' content evidence shows, leaves unshown or contradicts. Absent otherwise and in older logs. 'disputed' (#817, only when not empty): the counts for which a chosen shot ties another figure to the same kind of thing (a population), also when another chosen shot shows the stated figure (then also in 'verified'); for review only, never a conflict.",
                        "type": "object", "additionalProperties": false, "required": ["display", "verified", "unverified", "conflicts"],
                        "properties": {"display": {"type": "boolean"},
                                       "verified": {"type": "array", "maxItems": 50, "items": {"type": "string", "maxLength": 200}},

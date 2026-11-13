@@ -122,8 +122,9 @@ def check_parts(parts: Sequence[tuple[str, Mapping[str, Any] | None, Mapping[str
             open_units += [f"{label}câu {reviewing_number(u)}" for u in shown["unreviewed"]]
             accepted = accepted and review.accept_unreviewed
         critical += [f"{label}câu {reviewing_number(u['unit_id'])}" for u in shown["units"] if u.get("priority") == reviewing.CRITICAL]
-        # a displayed claim the shots do not show that the user settled (approved, replaced, no suitable footage): the
-        # user's word, said so; the claim is not counted as confirmed
+        # a displayed claim the shots do not show that the user settled (approved, no suitable footage): the user's
+        # word, said so; the claim is not counted as confirmed. A pinned sentence has no claim left once replanned: the
+        # planner checks none on the user's own shot
         user_accepted += [f"{label}câu {reviewing_number(u['unit_id'])}" for u in shown["units"]
                           if u.get("priority") is None and u.get("decision")
                           and any(c["status"] in (claims.CONTRADICTED, claims.UNVERIFIED) for c in u.get("claims") or ())]

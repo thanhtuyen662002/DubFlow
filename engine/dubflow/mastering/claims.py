@@ -25,8 +25,10 @@ A number is read apart from what it counts (#817). A count of people ("193.000.0
 after "dân số": "biểu đồ dân số 1.500") is shown only by a figure the same evidence line ties to people: the unit
 after it, or one of a few words for a population right before or after it (``MEASURE_WORDS``). A bare figure, a
 figure with another unit ("1500 MILES"), a year, a price, an ordinal ("No. 1500") never shows a count. A different
-figure tied to people ("POPULATION 93,000,000" for 193 000 000 người) is *disputed*: a reason for a person to look,
-never a hard conflict, because a misread digit must not move the planner off the right shot.
+figure tied to people ("POPULATION 93,000,000" or "93,000,000 PEOPLE" for 193 000 000 người) is *disputed*: a reason
+for a person to look, never a hard conflict, because a misread digit must not move the planner off the right shot. A
+bare year beside the population word ("Population (1941): 193,000,000", "dân số 193 triệu năm 1941") is the year of
+the figure, never a figure of its own.
 
 Read time: :func:`statuses` gives each claim of a log's ``signals.claims`` one of ``CONFIRMED``, ``CONTRADICTED``,
 ``UNVERIFIED`` or ``NOT_APPLICABLE`` (a sentence that speaks of nothing displayed); :func:`unresolved` lists the
@@ -172,16 +174,23 @@ _MEASURE_AFTER: tuple[tuple[str, ...], ...] = (
 # and a year ("dân số năm 1941 là …", read apart as a year)
 _MEASURE_LINKS = frozenset("of is was about around approximately nearly almost over total là khoảng gần hơn chừng đạt tới lên".split())
 MEASURE_GAP = 2  # link words at most between the measure word and the figure
-# a figure followed by one of these is an age, a duration, an ordinal or a price, never a count of people
+# a figure followed by one of these (a space apart, nothing between) is an age, a duration, an ordinal or a price,
+# never a count of people. "năm" / "year" followed by a year is the year the figure is for ("193 triệu năm 1941")
 _NOT_A_COUNT = frozenset("tuổi năm tháng ngày giờ phút giây years year months days hours minutes seconds th st nd rd "
                          "usd dollars dollar euro euros đô".split())
+_YEAR_WORDS = frozenset({"năm", "year"})
+# a bare figure in these bounds may be a year ("POPULATION 1941", "Dân số (1941): …"): it never disputes a count, and
+# it may stand between a measure word and the figure it is for
+YEAR_FROM, YEAR_TO = 1000, 2100
 _MONEY_MARK = "¤"  # where a currency word stood ("1500 đồng"): ``ev.numbers`` drops it, a count must not lose it
 _CURRENCY = re.compile(r"(\d)\s*(?:vnđ|vnd|đồng|đ)(?![^\W\d_])", re.IGNORECASE)  # as ``ev.numbers`` reads it
 _MARKS_BEFORE = frozenset("$€£¥#№")
 _MARKS_AFTER = frozenset("$€£¥" + _MONEY_MARK)
 _LINE = re.compile(r"[\n;]")  # one evidence item, one line of visible text: a measure word never crosses it
-# "1 500", "193 000 000" (a space, a no-break or a thin space between groups of three) read as "1.500"
+# "1 500", "193 000 000" (a space, a no-break or a thin space between groups of three) read as "1.500"; never after
+# a word that numbers a day, a rank or a place in a list: "ngày 15 300 lính" is the 15th and 300 soldiers
 _SPACED = re.compile(r"(?<![\d.,])\d{1,3}(?:[ \u00a0\u202f\u2009]\d{3})+(?![\d]|[.,]\d)")
+_NOT_GROUPED_AFTER = frozenset("ngày tháng thứ hạng top lần trang chương tập câu bài mục no day page chapter rank".split())
 # a number with no unit names a displayed fact only when it is distinctive: 1941, 1500. A day, a month, "3 mũi tên",
 # "mười năm sau" are no fact a picture must show, and a small number in any description would "verify" them
 DISTINCT_FROM = 100
@@ -213,17 +222,22 @@ def _ends_with(tokens: list[str], lines: list[int], end: int, line: int, words: 
     return start >= 0 and all(lines[k] == line for k in range(start, end + 1)) and tuple(tokens[start:end + 1]) == words
 
 
+def _year_like(token: str) -> bool:
+    return bool(re.fullmatch(r"\d{4}", token)) and YEAR_FROM <= int(token) <= YEAR_TO
+
+
 def _measure_before(tokens: list[str], lines: list[int], i: int) -> str | None:
-    """People when a measure word stands right before ``tokens[i]`` on its line (a few link words or a year apart)."""
+    """People when a measure word stands right before ``tokens[i]`` on its line (a few link words or a year apart:
+    "population of 193,000,000", "Population (1941): 193,000,000")."""
     j, gap = i - 1, 0
     while j >= 0 and lines[j] == lines[i]:
         if any(_ends_with(tokens, lines, j, lines[i], words) for words in MEASURE_WORDS):
             return PEOPLE
-        if tokens[j] in _MEASURE_LINKS and gap < MEASURE_GAP:
-            j, gap = j - 1, gap + 1
-        elif re.fullmatch(r"\d{4}", tokens[j]) and j and lines[j - 1] == lines[i] and tokens[j - 1] in ("năm", "year", "in") \
+        if re.fullmatch(r"\d{4}", tokens[j]) and j and lines[j - 1] == lines[i] and tokens[j - 1] in ("năm", "year", "in") \
                 and gap < MEASURE_GAP:
             j, gap = j - 2, gap + 1  # "dân số năm 1941 là 193 triệu"
+        elif (tokens[j] in _MEASURE_LINKS or _year_like(tokens[j])) and gap < MEASURE_GAP:
+            j, gap = j - 1, gap + 1  # "population of …", "Population (1941): …"
         else:
             return None
     return None
@@ -237,6 +251,23 @@ def _measure_after(tokens: list[str], lines: list[int], after: int, line: int) -
     return None
 
 
+def _grouped(match: re.Match[str]) -> str:
+    """"1 500" as "1.500", unless a word before it numbers a day or a rank ("ngày 15 300 lính")."""
+    word = re.search(r"([^\W\d_]+)\W*$", match.string[:match.start()])
+    if word and _nfc(word.group(1)).casefold() in _NOT_GROUPED_AFTER:
+        return match.group(0)
+    return re.sub(r"[ \u00a0\u202f\u2009]", ".", match.group(0))
+
+
+def _not_a_count(tokens: list[str], lines: list[int], spaced: list[bool], after: int) -> bool:
+    """Whether the word right after a figure (``tokens[after]``) makes it an age, a duration, an ordinal or a price."""
+    if after >= len(tokens) or lines[after] != lines[after - 1] or not spaced[after] or tokens[after] not in _NOT_A_COUNT:
+        return False
+    # "193 triệu năm 1941" is the population in 1941, "1500 năm" fifteen hundred years
+    return not (tokens[after] in _YEAR_WORDS and after + 1 < len(tokens) and lines[after + 1] == lines[after]
+                and _year_like(tokens[after + 1]))
+
+
 @functools.lru_cache(maxsize=8192)
 def _quantities(text: str) -> tuple[Quantity, ...]:
     # one token stream over the whole text, as before; each token knows its line and whether a currency or an
@@ -244,12 +275,16 @@ def _quantities(text: str) -> tuple[Quantity, ...]:
     tokens: list[str] = []
     lines: list[int] = []
     marked: list[bool] = []
-    grouped = _SPACED.sub(lambda m: re.sub(r"[ \u00a0\u202f\u2009]", ".", m.group(0)), text)
+    spaced: list[bool] = []  # only spaces between this token and the one before it on its line ("1500 tuổi", not "1500, năm")
+    grouped = _SPACED.sub(_grouped, text)
     read = _nfc(ev.numbers(_CURRENCY.sub(lambda m: m.group(1) + " " + _MONEY_MARK, grouped)))
     for number, line in enumerate(_LINE.split(read)):
+        end = None
         for found in _TOKEN.finditer(line):
             tokens.append(found.group(0))
             lines.append(number)
+            spaced.append(end is not None and not line[end:found.start()].strip())
+            end = found.end()
             before, after_text = line[:found.start()].rstrip()[-1:], line[found.end():].lstrip()[:1]
             marked.append(bool(before and before in _MARKS_BEFORE) or bool(after_text and after_text in _MARKS_AFTER))
     out: list[Quantity] = []
@@ -283,8 +318,7 @@ def _quantities(text: str) -> tuple[Quantity, ...]:
                 break
         measure = None
         # what the figure counts: only a figure with no unit or a head count, with no price, ordinal or time on it
-        if unit in (None, PEOPLE) and not marked[i] and not marked[after - 1] \
-                and not (after < len(tokens) and tokens[after] in _NOT_A_COUNT and lines[after] == lines[i]):
+        if unit in (None, PEOPLE) and not marked[i] and not marked[after - 1] and not _not_a_count(tokens, lines, spaced, after):
             measure = _measure_before(tokens, lines, i) or (_measure_after(tokens, lines, after, lines[i]) if unit is None else None)
         out.append(Quantity(value, unit, base, measure))
         i = after
@@ -370,8 +404,9 @@ class Check:
     verified: list[str] = field(default_factory=list)
     unverified: list[str] = field(default_factory=list)
     conflicts: list[str] = field(default_factory=list)
-    # of the unverified, the counts the evidence ties another figure to (#817): for a person to look at, never a
-    # conflict (no penalty, the shot stays acceptable: a misread digit must not move the choice off the right shot)
+    # the counts the evidence ties another figure to (#817): for a person to look at, never a conflict (no penalty,
+    # the shot stays acceptable: a misread digit must not move the choice off the right shot). One piece's disputed
+    # count is unverified; merged over pieces it may also be verified by another piece, and stays disputed
     disputed: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, list[str]]:
@@ -409,8 +444,8 @@ def check(claims: Claims, text: str) -> Check:
                 out.verified.append(label)
             else:
                 out.unverified.append(label)
-                if kind == PEOPLE and any(q.measure == PEOPLE and q.value != wanted.value and q.value >= DISTINCT_FROM for q in shown):
-                    out.disputed.append(label)  # "POPULATION 93,000,000" for 193 000 000 người
+                if kind == PEOPLE and any(_disputes(q, wanted) for q in shown):
+                    out.disputed.append(label)  # "POPULATION 93,000,000" or "93,000,000 PEOPLE" for 193 000 000 người
             continue
         # an amount with a unit is shown only with that unit ("1500 MILES" for 1 500 dặm; a bare "1500" is not)
         # (a year is the number itself: "1941" on a chart shows the year 1941)
@@ -453,6 +488,13 @@ def _tied(q: Quantity, kind: str) -> bool:
     return q.unit == kind or (kind == PEOPLE and q.unit is None and q.measure == PEOPLE)
 
 
+def _disputes(q: Quantity, wanted: Quantity) -> bool:
+    """Whether the evidence figure ``q`` is another count of the people ``wanted`` counts: tied to people by its unit or
+    a population word, distinctive, and no bare year ("POPULATION 1941" is the year of the chart, not its figure)."""
+    return _tied(q, PEOPLE) and q.value != wanted.value and q.value >= DISTINCT_FROM \
+        and not (q.unit is None and YEAR_FROM <= q.value <= YEAR_TO)
+
+
 PHRASE_GAP = 2  # words that may come between two words of a title in the evidence ("THE BATTLE OF RUSSIA", a line break)
 
 
@@ -491,7 +533,9 @@ def merged(checks: Iterable[Check]) -> Check:
     verified = list(dict.fromkeys(v for c in checks for v in c.verified))
     conflicts = list(dict.fromkeys(v for c in checks for v in c.conflicts if v not in verified))
     unverified = list(dict.fromkeys(v for c in checks for v in c.unverified if v not in verified and v not in conflicts))
-    disputed = list(dict.fromkeys(v for c in checks for v in c.disputed if v in unverified))
+    # a disputed count stays disputed when another piece shows it: the viewer sees the other figure too, as with a
+    # conflict (rc15 i16.u1). Never both a conflict and disputed
+    disputed = list(dict.fromkeys(v for c in checks for v in c.disputed if v not in conflicts))
     return Check(verified, unverified, conflicts, disputed)
 
 

@@ -1202,7 +1202,9 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
             claim_result = said.merged(per_piece)
             contradicted = [v for piece in per_piece for v in piece.conflicts]
             # only a sentence about something displayed: a number spoken over a scene names no figure the shot must show
-            unproven = stated[unit.unit_id].display and bool(contradicted or claim_result.unverified or claim_result.conflicts)
+            # a disputed count (#817) is CONTRADICTED for the review queue even when another piece shows it: never READY
+            unproven = stated[unit.unit_id].display and bool(contradicted or claim_result.unverified or claim_result.conflicts
+                                                             or claim_result.disputed)
             if contradicted and not claim_result.conflicts:
                 claim_result.conflicts = list(dict.fromkeys(contradicted))
             if unproven:

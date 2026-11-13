@@ -182,11 +182,12 @@ class ClaimTests(unittest.TestCase):  # #817
         self.assertTrue(check["ok"], check)
 
     def test_an_approved_claim_passes_as_the_users_acceptance(self):
-        for how, shots in (("approve", None), ("pin", ["c2"]), ("missing", None)):
+        # approve and "no suitable footage" keep the planner's shots, so the claim stays on the log, unconfirmed. A pin
+        # is not here: the replan that renders it checks no claim on the user's shot (align: pinned_by_user), so the
+        # log has no claim left to name (test_a_pinned_claim_is_the_users_shot)
+        for how in ("approve", "missing"):
             made, review = claim_world()
-            review.decide(made, "u3", how, shots)
-            if how == "pin":
-                made["edits"]["pin"]["u3"] = ["c2"]  # rendered with it
+            review.decide(made, "u3", how)
             checks = self.checks([("video 1", made, plan_dict(GOOD), review)])
             self.assertTrue(checks["claims"]["ok"], (how, checks["claims"]))
             self.assertTrue(checks["decisions"]["ok"], how)
@@ -194,6 +195,18 @@ class ClaimTests(unittest.TestCase):  # #817
             shown = {u["unit_id"]: u for u in rv.view(made, None, review)["units"]}["u3"]
             self.assertIsNone(shown["priority"])  # not asked again
             self.assertEqual(shown["claims"][0]["status"], "UNVERIFIED")  # the user's word, not a confirmation
+
+    def test_a_pinned_claim_is_the_users_shot(self):
+        made, review = claim_world()
+        review.decide(made, "u3", "pin", ["c2"])
+        made["edits"]["pin"]["u3"] = ["c2"]  # rendered with it
+        del made["units"][2]["signals"]["claims"]  # as the replan writes a pinned sentence: no claim checked on it
+        checks = self.checks([("video 1", made, plan_dict(GOOD), review)])
+        self.assertTrue(checks["claims"]["ok"], checks["claims"])
+        self.assertNotIn("người dùng đã chấp nhận", checks["claims"]["detail"])
+        shown = {u["unit_id"]: u for u in rv.view(made, None, review)["units"]}["u3"]
+        self.assertIsNone(shown["priority"])
+        self.assertEqual(shown["claims"], [])
 
     def test_an_invalidated_approval_is_listed_again(self):
         made, review = claim_world()

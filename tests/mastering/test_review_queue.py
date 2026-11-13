@@ -68,6 +68,9 @@ class ClaimQueueTests(unittest.TestCase):  # #817
         claims = dict(POPULATION_CLAIM, unverified=["a1", "a2", "a3", "a4"])
         reasons = self.by(with_claim(world(), "u3", claims))["u3"]["queue_reasons"]
         self.assertIn("câu nói điều hiển thị trên hình nhưng cảnh chưa cho thấy: a1, a2, a3", reasons)
+        claims = dict(POPULATION_CLAIM, unverified=[], conflicts=["b1", "b2", "b3", "b4"])
+        reasons = self.by(with_claim(world(), "u3", claims))["u3"]["queue_reasons"]
+        self.assertIn("cảnh cho thấy con số khác với lời câu: b1, b2, b3", reasons)
 
     def test_a_plain_sentence_with_a_number_is_never_escalated(self):
         made = with_claim(world(), "u3", dict(POPULATION_CLAIM, display=False))

@@ -502,6 +502,10 @@ class CountContextTests(unittest.TestCase):
             self.assertEqual(verdict(HEADS, evidence)[0], ["1.500 người"], evidence)
         for sentence in ("Biểu đồ ghi 1 500 người.", "Biểu đồ ghi 1,500 người.", "Biểu đồ ghi 1500 người."):
             self.assertEqual(verdict(sentence, "1,500 PEOPLE")[0], ["1.500 người"], sentence)
+        # a space joins groups of three, never after a word that numbers a day, a rank or a place in a list
+        self.assertEqual(said.quantities("Ngày 15 300 lính tiến vào"), [said.Quantity(15), said.Quantity(300, "people", "people")])
+        self.assertEqual(said.quantities("Top 10 100 sản phẩm"), [said.Quantity(10), said.Quantity(100)])
+        self.assertEqual(said.quantities("ngày 15\u00a0300 người"), [said.Quantity(15), said.Quantity(300, "people", "people")])
 
     def test_english_scale_words(self):
         self.assertEqual(said.quantities("193 MILLION"), [said.Quantity(193_000_000)])
@@ -516,6 +520,21 @@ class CountContextTests(unittest.TestCase):
         for evidence in ("năm 1500", "year 1500", "in 1500", "22/6/1500", "June 1500", "population in 1500"):
             verified, _, conflicts, disputed = verdict(HEADS, evidence)
             self.assertEqual((verified, conflicts, disputed), ([], [], []), evidence)
+        # a bare year beside the population word is the chart's year: no figure of its own, never another count
+        for sentence, evidence in ((HEADS, "population 1941"), (POPULATION, "POPULATION 1941"), (POPULATION, "POPULATION (1941)"),
+                                   (POPULATION, "USSR\nPOPULATION 1941\n193,000,000")):
+            verified, unverified, conflicts, disputed = verdict(sentence, evidence)
+            self.assertEqual((verified, conflicts, disputed), ([], [], []), evidence)
+            self.assertEqual(len(unverified), 1, evidence)
+
+    def test_a_year_beside_the_population_word_leaves_the_figure_its_count(self):
+        for evidence in ("Population (1941): 193,000,000", "USSR population 1941: 193 million", "Dân số (1941): 193 triệu",
+                         "DÂN SỐ 1941 193.000.000", "POPULATION 2020 = 193,000,000", "Dân số 193 triệu năm 1941",
+                         "Dân số 193 triệu, năm 1941", "dân số: 193.000.000 (năm 1941)", "population of 193,000,000 in 1941"):
+            self.assertEqual(verdict(POPULATION, evidence), (["193.000.000 người"], [], [], []), evidence)
+        # "năm" right after a figure is still a duration when no year follows it
+        self.assertEqual(said.quantities("dân số 1500 năm"), [said.Quantity(1500)])
+        self.assertEqual(said.quantities("dân số 1500 năm 1941")[0], said.Quantity(1500, None, None, "people"))
         # a year next to a population word is the year; the figure after it is the population
         self.assertEqual(said.quantities("dân số năm 1941 là 193 triệu"),
                          [said.Quantity(1941, "year", "year"), said.Quantity(193_000_000, None, None, "people")])
@@ -558,8 +577,12 @@ class CountContextTests(unittest.TestCase):
         self.assertEqual(said.check(said.of(POPULATION), said.content_text(read)).verified, ["193.000.000 người"])
 
     def test_another_figure_for_the_population_is_disputed_never_a_conflict(self):
-        verified, unverified, conflicts, disputed = verdict(POPULATION, "POPULATION 93,000,000")
-        self.assertEqual((verified, unverified, conflicts, disputed), ([], ["193.000.000 người"], [], ["193.000.000 người"]))
+        # tied by a population word, or by the unit after the figure (spec B: the unit after it ties it too)
+        for evidence in ("POPULATION 93,000,000", "93,000,000 PEOPLE", "93.000.000 người", "POPULATION 93,000,000 PEOPLE"):
+            verified, unverified, conflicts, disputed = verdict(POPULATION, evidence)
+            self.assertEqual((verified, unverified, conflicts, disputed),
+                             ([], ["193.000.000 người"], [], ["193.000.000 người"]), evidence)
+        self.assertEqual(verdict(HEADS, "1,600 PEOPLE")[2:], ([], ["1.500 người"]))
         # a head count in a description is no population figure (#808)
         self.assertEqual(verdict("Biểu đồ: 20.000 lính", "3 người lính đứng bên đường")[3], [])
         self.assertEqual(verdict("Biểu đồ: 20.000 lính", "3 persons standing")[3], [])
@@ -591,9 +614,20 @@ class CountContextTests(unittest.TestCase):
         self.assertEqual(sorted(chosen), ["c1", "c3"], decision.to_dict())
         self.assertFalse(ready)
         self.assertEqual(said.statuses(decision.signals["claims"]), [("193.000.000 người", said.CONTRADICTED)])
-        # ... and a piece that shows it, tied to people, confirms it for the sentence
+        # a piece that shows it, tied to people, does not hide the misread one: the viewer sees both figures, so the
+        # sentence stays CONTRADICTED and is never READY, as a conflict beside a verifying piece is (rc15 i16.u1).
+        # (Before the #817 review this read CONFIRMED: a verifying piece dropped the other piece's disputed figure.)
         found["c3"] = seen("c3", "Biểu đồ khác về Liên Xô.", ("biểu đồ",), "POPULATION 193,000,000", ("explanation",), 800)
-        _, _, decision = plan(POPULATION, pool, found, length=7000)
+        chosen, ready, decision = plan(POPULATION, pool, found, length=7000)
+        self.assertEqual(sorted(chosen), ["c1", "c3"], decision.to_dict())
+        self.assertFalse(ready, decision.to_dict())
+        self.assertEqual(said.statuses(decision.signals["claims"]), [("193.000.000 người", said.CONTRADICTED)])
+        self.assertTrue(any("con số khác" in n for n in decision.notes), decision.notes)
+        # ... and with no other figure beside it, the piece that shows it confirms it for the sentence
+        found["c1"] = seen("c1", "Biểu đồ đen trắng với dòng chữ lớn về dân số Liên Xô.", ("biểu đồ", "dòng chữ"),
+                           "LIÊN XÔ", ("explanation", "text_on_screen"), 800)
+        chosen, _, decision = plan(POPULATION, pool, found, length=7000)
+        self.assertIn("c3", chosen, decision.to_dict())
         self.assertEqual(said.statuses(decision.signals["claims"]), [("193.000.000 người", said.CONFIRMED)])
 
     def test_a_disputed_count_fits_the_contract(self):
@@ -608,7 +642,8 @@ class CountContextTests(unittest.TestCase):
         self.assertLessEqual(set(claims), set(schema["properties"]))
         self.assertLessEqual(set(schema["required"]), set(claims))
         self.assertNotIn("disputed", schema["required"])
-        self.assertLessEqual(set(claims["disputed"]), set(claims["unverified"]))
+        # one piece: its disputed count is unverified; merged over pieces it may be verified by another (test_merged_pieces)
+        self.assertLessEqual(set(claims["disputed"]), set(claims["unverified"]) | set(claims["verified"]))
 
 
 class StatusTests(unittest.TestCase):
@@ -630,9 +665,16 @@ class StatusTests(unittest.TestCase):
         right = said.check(said.of(POPULATION), "POPULATION 193,000,000")
         misread = said.check(said.of(POPULATION), "POPULATION 93,000,000")
         bare = said.check(said.of(POPULATION), "a field")
+        # a piece that verifies the count does not hide another piece's different figure: it stays disputed, so it
+        # reads CONTRADICTED, as a conflict does beside a verifying piece (spec B; changed in the #817 review, where
+        # this expected the disputed label to be dropped)
         self.assertEqual(said.merged([misread, right]).to_dict(),
-                         {"verified": ["193.000.000 người"], "unverified": [], "conflicts": []})
+                         {"verified": ["193.000.000 người"], "unverified": [], "conflicts": [], "disputed": ["193.000.000 người"]})
+        self.assertEqual(said.statuses({"display": True, **said.merged([right, misread]).to_dict()}),
+                         [("193.000.000 người", said.CONTRADICTED)])
         self.assertEqual(said.merged([bare, misread]).disputed, ["193.000.000 người"])
+        self.assertEqual(said.merged([bare, right]).to_dict(),
+                         {"verified": ["193.000.000 người"], "unverified": [], "conflicts": []})
 
     def test_a_user_note_never_proves_what_is_displayed(self):
         noted = ev.Evidence("n")
