@@ -144,5 +144,42 @@ class W3ToolTests(unittest.TestCase):
             self.assertEqual(near["units"], 3)
 
 
+class ReviewFindingsTests(unittest.TestCase):  # an independent review of the tool (#810)
+    def test_an_empty_range_hits_nothing(self):
+        shot = {"start_ms": 0, "end_ms": 5000}
+        self.assertFalse(w3.hits(shot, [[12.0, 12.0]]))
+        self.assertFalse(w3.hits({"start_ms": 3000, "end_ms": 3000}, [[0.0, 6.0]]))
+        self.assertTrue(w3.hits(shot, [[1.0, 2.0]]))
+
+    def test_the_spec_names_the_kept_sound_keep_source_audio(self):
+        spec = {"items": [{"item_id": "i1", "title": "T", "keep_source_audio": "off", "sources": []}]}
+        self.assertEqual(w3.spec_part(spec, "i1")["keep"], "off")
+
+    def test_a_replay_with_other_evidence_keeps_that_evidence_in_a_copy(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run = w3.load_run(make_run(root))
+            gt = w3.load_gt(*make_truth(root))
+            oracle = w3.oracle_evidence(gt, run, only_looked=False)
+            told = next(c for c in oracle.logs["i1"]["candidates"] if c["id"] == "i1-s1c6")
+            self.assertIn("oracle", [i["detail"] for i in told["evidence"]["items"]])  # what was planned with
+            self.assertIsNot(oracle.logs["i1"]["candidates"], run.logs["i1"]["candidates"])
+            # attribution on the oracle run reads the oracle's evidence: the never-looked tank shot is looked at now
+            self.assertEqual({r["unit"]: r["stage"] for r in w3.attribute(gt, oracle)["rows"]}["i1.u3"], "OK")
+            self.assertEqual(w3.attribute(gt, run)["multi_source_parts"], [])
+
+    def test_out_and_json_are_written(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            folder = make_run(root)
+            gt, lock = make_truth(root)
+            import contextlib, io
+            with contextlib.redirect_stdout(io.StringIO()):
+                w3.main(["replay", str(gt), str(lock), str(folder), "--out", str(root / "again")])
+                w3.main(["variability", str(folder), str(folder), "--json", str(root / "v.json")])
+            self.assertTrue((root / "again" / "plan-i1.json").is_file())
+            self.assertEqual(json.loads((root / "v.json").read_text(encoding="utf-8"))["looked_in_all"], len(TEXTS))
+
+
 if __name__ == "__main__":
     unittest.main()

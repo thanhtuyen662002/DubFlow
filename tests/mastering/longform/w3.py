@@ -14,18 +14,23 @@ scoring rules are those of the locked Windows harness (``score_w3.py``, fixed be
 * recall@k = units with footage whose top k has a hit / units with footage;
 * serious silent miss = a unit with footage, READY, whose chosen shots hit nothing; a "missing" unit READY too.
 
+The ground truth gives times without a source: a part with more than one source is listed apart
+(``multi_source_parts``), since its ranges cannot be told apart (every W3 item has one source). A replay has no source
+subtitles (``cues``: not in the saved files), so a part whose moment came from speech may plan differently; the replay
+reports which parts differ.
+
 Oracle experiments change the evidence of a copy in memory only. Their numbers are upper bounds of a stage, never a
 measure of the pipeline (they use the ground truth).
 
 Usage (from the repository root, ``python -B``)::
 
     python -B -m tests.mastering.longform.w3 score     <gt.json> <lock> <run-dir> [<run-dir> ...]
-    python -B -m tests.mastering.longform.w3 replay    <gt.json> <lock> <run-dir> [--out DIR]
+    python -B -m tests.mastering.longform.w3 replay    <gt.json> <lock> <run-dir> [--out DIR] [--json OUT]
     python -B -m tests.mastering.longform.w3 attribute <gt.json> <lock> <run-dir> [--json OUT]
     python -B -m tests.mastering.longform.w3 oracle    <gt.json> <lock> <run-dir>
     python -B -m tests.mastering.longform.w3 swap      <gt.json> <lock> <run-dir-A> <run-dir-B>
     python -B -m tests.mastering.longform.w3 pooled    <gt.json> <lock> <run-dir> <donor-run-dir> [...]
-    python -B -m tests.mastering.longform.w3 variability <run-dir> [<run-dir> ...]
+    python -B -m tests.mastering.longform.w3 variability <run-dir> [<run-dir> ...] [--json OUT]
     python -B -m tests.mastering.longform.w3 hint      <gt.json> <lock> <run-dir> [--window-s 15]
 """
 from __future__ import annotations
@@ -48,10 +53,10 @@ from engine.dubflow.mastering import evidence as ev  # noqa: E402
 from engine.dubflow.mastering import plan as m  # noqa: E402
 from engine.dubflow.mastering.candidates import Candidate  # noqa: E402
 from engine.dubflow.mastering.planners import compilation as compiler  # noqa: E402
+from engine.dubflow.product import script  # noqa: E402
 from tests.mastering.real.capture import analysis_from, evidence_from  # noqa: E402
 
-LEAD_MS, GAP_MS = 300, 250  # product.script.LEAD_MS / GAP_MS, the values every raw run plans with
-TAIL_MS = 700
+LEAD_MS, GAP_MS, TAIL_MS = script.LEAD_MS, script.GAP_MS, script.TAIL_MS  # what every raw run plans with
 
 
 # --- ground truth ---
@@ -79,7 +84,7 @@ def hits(c: Mapping[str, Any], ranges: Sequence[Sequence[float]]) -> bool:
     for r0, r1 in ranges:
         r0, r1 = r0 * 1000, r1 * 1000
         o = overlap(c0, c1, r0, r1)
-        if o >= 1000 or o >= 0.5 * min(c1 - c0, r1 - r0):
+        if o > 0 and (o >= 1000 or o >= 0.5 * min(c1 - c0, r1 - r0)):  # an empty range or shot hits nothing
             return True
     return False
 
@@ -237,7 +242,8 @@ def spec_part(spec: Mapping[str, Any], part: str) -> dict[str, Any]:
             start, end = source.get("start_ms"), source.get("end_ms")
             if start is not None or end is not None:
                 trims[f"{part}-s{number}"] = (int(start or 0), int(end) if end is not None else None)
-        return {"title": str(item.get("title") or ""), "keep": str(item.get("keep_audio") or "auto"), "trims": trims}
+        keep = item.get("keep_source_audio", item.get("keep_audio"))  # the spec's name (program.py), or an older one
+        return {"title": str(item.get("title") or ""), "keep": str(keep or "auto"), "trims": trims}
     return {"title": "", "keep": "auto", "trims": {}}
 
 
@@ -264,15 +270,26 @@ def call_of(run: Run, part: str, shown: Sequence[str], *, evidence: Mapping[str,
             trim = None if trim == (0, found.duration_ms) else trim
         footage.append(compiler.Footage(sid, Path(f"{sid}.media"), found, int(source["width"]),
                                         int(source["height"]), (int(fps["numerator"]), int(fps["denominator"])), (), "",
-                                        trim, (source.get("rights") or {}).get("status", "unknown")))
+                                        trim, (source.get("rights") or {}).get("status", "unknown"),
+                                        str(source.get("credit") or "")))
     cands: dict[str, list[Candidate]] = {}
     for c in log.get("candidates") or ():
         cands.setdefault(c["source_id"], []).append(Candidate.from_dict(c))
     if evidence is None:
         evidence = {c["id"]: evidence_from(c["evidence"]) for c in log.get("candidates") or () if c.get("evidence")}
     groups = {c["id"]: c["group"] for c in log.get("candidates") or () if c.get("group")}
+    # the log's edits carry pins and exclusions; the user's approvals (and the footage of exclusions) live in the
+    # part's review file, read as the run read it
+    edits = align.Edits.from_dict(log.get("edits") or {})
+    review_file = run.folder / ".dubflow-work" / f"review-{part}.json"
+    if review_file.is_file():
+        from engine.dubflow.mastering import review as reviewing
+        try:
+            edits = reviewing.load(review_file).edits(edits)
+        except (reviewing.ReviewError, ValueError, OSError):
+            pass
     return {"part": part, "kind": kind, "spoken": spoken, "narration_ms": total, "footage": footage, "candidates": cands,
-            "evidence": evidence, "groups": groups, "edits": align.Edits.from_dict(log.get("edits") or {}),
+            "evidence": evidence, "groups": groups, "edits": edits,
             "options": m.Options(plan["options"]["level"], plan["options"]["style"]),
             "inputs": (plan.get("provenance") or {}).get("inputs") or {}, "shown": list(shown) if kind in ("intro", "outro") else [],
             "title": given["title"], "keep": given["keep"]}
@@ -298,7 +315,13 @@ def replay(run: Run, *, evidence_for: Any = None, parts: Iterable[str] | None = 
             continue
         evidence = evidence_for(part, run.logs[part]) if evidence_for else None
         plan, log = plan_again(call_of(run, part, sorted(shown), evidence=evidence))
-        log["candidates"] = run.logs[part].get("candidates")  # the candidates (and their times) as the run listed them
+        # the candidates (and their times) as the run listed them, a copy of its own, with the evidence planned with
+        listed = json.loads(json.dumps(run.logs[part].get("candidates") or []))
+        if evidence is not None:
+            for c in listed:
+                if c["id"] in evidence:
+                    c["evidence"] = evidence[c["id"]].to_dict()
+        log["candidates"] = listed
         logs[part], plans[part] = log, plan
         shown.update(c for u in log["units"] for c in u.get("chosen") or ())
     return Run(run.folder, logs, plans, run.analyses, run.order, run.spec)
@@ -331,6 +354,18 @@ def attribute(gt: Mapping[str, Any], run: Run) -> dict[str, Any]:
     misses), and its review outcome (R7), from the saved files and a Scorer replay over the part's candidates."""
     found = units_by_text(run)
     rows = []
+    built: dict[str, tuple[Any, ...]] = {}  # per part: what depends on the part only
+
+    def of_part(part: str) -> tuple[Any, ...]:
+        if part not in built:
+            pool = list(candidates_of(run.logs[part]).values())
+            evidence = {c["id"]: evidence_from(c["evidence"]) for c in pool if c.get("evidence")}
+            cand_objs = [Candidate.from_dict(c) for c in pool]
+            scorer = align.Scorer([c for c in cand_objs if c.quality.usable] or cand_objs, evidence)
+            trims = [t for t in (_trim_of(run.logs[part], s) for s in sorted({c["source_id"] for c in pool})) if t]
+            built[part] = (pool, scorer, trims)
+        return built[part]
+
     for g in gt["units"]:
         match = found.get(norm(g["text"]))
         if match is None:
@@ -350,21 +385,18 @@ def attribute(gt: Mapping[str, Any], run: Run) -> dict[str, Any]:
             row["stage"] = "MISSING_OK" if review.get("state") != "READY" else "R7_MISSING_READY"
             rows.append(row)
             continue
-        pool = list(cands.values())
+        pool, scorer, trims = of_part(part)
+        row["sources"] = len({c["source_id"] for c in pool})
         hit_ids = [c["id"] for c in pool if hits(c, ranges)]
         row["hit_ids"] = hit_ids
         rank = next((k + 1 for k, i in enumerate(order) if i in hit_ids), None)
         row["rank"] = rank
         row["chosen_hit"] = any(i in hit_ids for i in chosen)
-        trim = _trim_of(log, pool[0]["source_id"]) if pool else None
         looked = {c["id"] for c in pool if any(i["origin"] in ev.CONTENT_ORIGINS and (i.get("text") or i.get("labels"))
                                                   for i in (c.get("evidence") or {}).get("items") or ())}
         row["hit_looked"] = [i for i in hit_ids if i in looked]
         usable = [i for i in hit_ids if not (cands[i].get("quality") or {}).get("problems")]
-        # a Scorer over the part's usable candidates, as the planner built it at its final call
-        evidence = {c["id"]: evidence_from(c["evidence"]) for c in pool if c.get("evidence")}
-        cand_objs = [Candidate.from_dict(c) for c in pool]
-        scorer = align.Scorer([c for c in cand_objs if c.quality.usable] or cand_objs, evidence)
+        # a Scorer over the part's usable candidates, as the planner built it at its final call (built once per part)
         unit = align.Unit(u["unit_id"], u["text"], int(u["start_ms"]), int(u["end_ms"]), "narration")
         rel = {c.candidate_id: scorer.relevance(unit, c)[0] for c in scorer.candidates}
         best = max(rel.values(), default=0)
@@ -384,7 +416,7 @@ def attribute(gt: Mapping[str, Any], run: Run) -> dict[str, Any]:
         # the earliest stage where the unit's own footage was lost; a unit whose chosen shots hit is "OK"
         if row["chosen_hit"]:
             stage = "OK"
-        elif not trim or not any(overlap(trim[0], trim[1], r0 * 1000, r1 * 1000) > 0 for r0, r1 in ranges):
+        elif not any(overlap(t[0], t[1], r0 * 1000, r1 * 1000) > 0 for t in trims for r0, r1 in ranges):
             stage = "R1_SOURCE"
         elif not hit_ids:
             stage = "R2_DISCOVERY"
@@ -421,7 +453,8 @@ def attribute(gt: Mapping[str, Any], run: Run) -> dict[str, Any]:
         if "r7" in r:
             r7[r["r7"]] = r7.get(r["r7"], 0) + 1
     return {"run": run.name, "ground_truth_sha256": gt.get("sha256"), "footage_units": len(footage), "stages": stages,
-            "review": r7, "rows": rows}
+            "review": r7, "multi_source_parts": sorted({r["unit"].split(".")[0] for r in rows if r.get("sources", 1) > 1}),
+            "rows": rows}
 
 
 # --- experiments ---
@@ -543,6 +576,7 @@ def hint(gt: Mapping[str, Any], run: Run, window_s: float) -> dict[str, Any]:
     rank only the shots inside that window with the run's own Scorer. Uses the ground truth only as the user's hint."""
     found = units_by_text(run)
     rows = []
+    scorers: dict[str, tuple[Any, dict[str, Candidate]]] = {}
     for g in gt["units"]:
         match = found.get(norm(g["text"]))
         if match is None or not g.get("ranges"):
@@ -553,11 +587,13 @@ def hint(gt: Mapping[str, Any], run: Run, window_s: float) -> dict[str, Any]:
         inside = [c for c in pool if overlap(c["start_ms"], c["end_ms"], mid - window_s * 1000, mid + window_s * 1000) > 0]
         if not inside:
             continue
-        evidence = {c["id"]: evidence_from(c["evidence"]) for c in pool if c.get("evidence")}
-        cand_objs = [Candidate.from_dict(c) for c in pool]
-        scorer = align.Scorer(cand_objs, evidence)
+        if part not in scorers:
+            evidence = {c["id"]: evidence_from(c["evidence"]) for c in pool if c.get("evidence")}
+            objs = {c["id"]: Candidate.from_dict(c) for c in pool}
+            scorers[part] = (align.Scorer(list(objs.values()), evidence), objs)
+        scorer, objs = scorers[part]
         unit = align.Unit(u["unit_id"], u["text"], int(u["start_ms"]), int(u["end_ms"]), "narration")
-        ranked = sorted(inside, key=lambda c: (-scorer.relevance(unit, Candidate.from_dict(c))[0], c["start_ms"]))
+        ranked = sorted(inside, key=lambda c: (-scorer.relevance(unit, objs[c["id"]])[0], c["start_ms"]))
         first_hit = next((k + 1 for k, c in enumerate(ranked) if hits(c, g["ranges"])), None)
         rows.append({"unit": u["unit_id"], "shots_in_window": len(inside), "rank": first_hit})
     n = len(rows)
@@ -582,8 +618,16 @@ def main(argv: list[str]) -> int:
         at = rest.index("--json")
         out_json = Path(rest[at + 1])
         rest = rest[:at] + rest[at + 2:]
+    out_dir = None
+    if "--out" in rest:
+        at = rest.index("--out")
+        out_dir = Path(rest[at + 1])
+        rest = rest[:at] + rest[at + 2:]
     if command == "variability":
-        print(json.dumps(variability([load_run(Path(p)) for p in rest]), ensure_ascii=False, indent=1))
+        result = variability([load_run(Path(p)) for p in rest])
+        print(json.dumps(result, ensure_ascii=False, indent=1))
+        if out_json is not None:
+            out_json.write_text(json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
         return 0
     gt = load_gt(Path(rest[0]), Path(rest[1]))
     folders = [Path(p) for p in rest[2:] if not p.startswith("--")]
@@ -597,6 +641,12 @@ def main(argv: list[str]) -> int:
         equal = {p: same_plan(run.plans[p], again.plans[p]) for p in run.order}
         result = {"equal_plans": sum(equal.values()), "parts": len(equal), "different": [p for p, v in equal.items() if not v],
                   "saved": _brief(score(gt, run)), "replayed": _brief(score(gt, again))}
+        if out_dir is not None:  # the replayed plan and log of every part, beside the run's own
+            out_dir.mkdir(parents=True, exist_ok=True)
+            for part in again.order:
+                (out_dir / f"plan-{part}.json").write_text(json.dumps(again.plans[part], ensure_ascii=False, indent=1), encoding="utf-8")
+                (out_dir / f"editorial-{part}.json").write_text(json.dumps(again.logs[part], ensure_ascii=False, indent=1),
+                                                                encoding="utf-8")
         print(json.dumps(result, ensure_ascii=False, indent=1))
     elif command == "attribute":
         result = attribute(gt, load_run(folders[0]))
