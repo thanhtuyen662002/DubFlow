@@ -40,6 +40,7 @@ function conformance(value: unknown): Conformance | null {
   if ((status === "not_applicable") === (path === "B2")) return null;
   if (judged && (truePeak === null || (truePeak > TRUE_PEAK_CEILING) !== (status === "failed"))) return null;
   if (status === "corrected" && item.trim_db === 0) return null;
+  if (status === "silent" && truePeak !== null) return null; // no measurable sound: there is no peak to report
   if (item.unmeasured !== undefined && typeof item.unmeasured !== "boolean") return null;
   const unmeasured = item.unmeasured === true;
   if (unmeasured && (path === "B2" || truePeak !== null || ceilingMet !== null)) return null;
@@ -77,14 +78,17 @@ export function parseDubbingQc(value: unknown): DubbingQc | null {
   const climax = item.climax && typeof item.climax === "object" ? item.climax as Record<string, unknown> : null;
   const span = climax && typeof climax.start_ms === "number" && typeof climax.end_ms === "number" && climax.end_ms > climax.start_ms
     ? { start_ms: climax.start_ms, end_ms: climax.end_ms } : null;
+  const after = loud(item.output_loudness);
+  const check = conformance(item.conformance);
   return {
     level: item.level,
     notes,
     loudness: item.loudness === true,
     filters: Array.isArray(item.video_filters) ? item.video_filters.length : 0,
     before: loud(measured.mix),
-    after: loud(item.output_loudness),
-    conformance: conformance(item.conformance),
+    after,
+    // "silent" beside a measurement contradicts itself: dropped like any other inconsistent record
+    conformance: check?.status === "silent" && after ? null : check,
     climax: span,
     climaxDecision: item.climax_decision === "keep" || item.climax_decision === "drop" ? item.climax_decision : null,
     fallback: item.fallback === true,
@@ -116,6 +120,8 @@ export function qcRows(qc: DubbingQc): { label: string; text: string; tone: "ok"
       : check.tries > 1 ? ` dù đã thử giảm ${check.tries - 1} lần (không lần nào hạ được đỉnh nên giữ bản chưa giảm)` : "")
     : "";
   const unmeasured = check?.status === "unmeasured" || check?.unmeasured === true;
+  // a dubbed (B2) export that measured no sound at all after AAC; the parser admits "silent" for B2 only
+  const silent = check?.status === "silent";
   // B1 is the source sound, which mastering never touches: its measurement is said to be under or over the ceiling,
   // never "đạt" (the record says not_applicable: no mastering result to pass)
   const b1 = check?.path === "B1";
@@ -128,6 +134,16 @@ export function qcRows(qc: DubbingQc): { label: string; text: string; tone: "ok"
       label: "Âm lượng",
       text: `Vietsub: âm thanh gốc, không áp trần ${ceiling}. Đo bản xuất: ${number(qc.after.integrated)} LUFS, đỉnh ${number(qc.after.true_peak)} dBTP sau AAC`,
       tone: "info",
+    });
+  } else if (silent) {
+    // Product System Design 19.3 "Không silence toàn video": never a pass, whether or not a filter was applied and
+    // whether the dubbed mix was already silent (the planner's note says so) or lost its sound later. The engine
+    // warns too (MASTERING_OUTPUT_SILENT), so the card and qc_report.json agree.
+    const did = qc.loudness ? `Đã chuẩn hóa từ ${before}` : (note("Âm lượng:") ?? "Không chuẩn hóa").replace(/\.$/, "");
+    rows.push({
+      label: "Âm lượng",
+      text: `${did}. Bản xuất lồng tiếng không có âm thanh đo được sau AAC (video im lặng): cần kiểm tra lại.`,
+      tone: "warn",
     });
   } else if (qc.loudness && qc.after) {
     const over = qc.after.true_peak > TRUE_PEAK_CEILING || failed;
@@ -158,8 +174,11 @@ export function qcRows(qc: DubbingQc): { label: string; text: string; tone: "ok"
     });
   } else if (unmeasured) {
     const kept = check?.path === "B1" ? "Âm thanh gốc (B1), không được chỉnh" : (note("Âm lượng:") ?? "Giữ nguyên").replace(/\.$/, "");
-    // Vietsub only: mastering does not touch the sound, so an unmeasured export is said, not flagged
-    rows.push({ label: "Âm lượng", text: `${kept}; không đo được sau AAC nên chưa xác nhận trần ${ceiling}.`, tone: check?.path === "none" ? "info" : "warn" });
+    // Vietsub only: mastering does not touch the sound and the ceiling does not apply to it (the measured row above
+    // says so too), so an unmeasured export is said, not flagged, and no ceiling is left "unconfirmed"
+    rows.push(check?.path === "none"
+      ? { label: "Âm lượng", text: `Vietsub: âm thanh gốc, không áp trần ${ceiling}. Bản xuất không đo được sau AAC.`, tone: "info" }
+      : { label: "Âm lượng", text: `${kept}; không đo được sau AAC nên chưa xác nhận trần ${ceiling}.`, tone: "warn" });
   } else {
     rows.push({ label: "Âm lượng", text: note("Âm lượng:") ?? "Giữ nguyên.", tone: "info" });
   }

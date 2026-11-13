@@ -231,6 +231,39 @@ console.log("mastering tests passed");
   const vietsub = row(b1Card({ ...b1Record, path: "none" }));
   assert.equal(vietsub.tone, "info");
   assert.match(vietsub.text, /không đo được sau AAC/);
+  // the ceiling does not apply to a Vietsub-only export, so nothing is left "chưa xác nhận" (as in the measured row)
+  assert.equal(vietsub.text, "Vietsub: âm thanh gốc, không áp trần −1,5 dBTP. Bản xuất không đo được sau AAC.");
+  // Product System Design 19.3: a dubbed (B2) export with no measurable sound after AAC is never a pass. The engine
+  // keeps status "silent" and warns (MASTERING_OUTPUT_SILENT); the card warns in both branches, never "không đo lại
+  // được" (it was measured) and never the planner's note alone
+  const silentRecord = { status: "silent", ceiling_dbtp: -1.5, true_peak_dbtp: null, trim_db: 0, tries: 1, path: "B2" };
+  const silentFiltered = row(card(silentRecord, { output_loudness: null }));
+  assert.equal(silentFiltered.tone, "warn");
+  assert.equal(silentFiltered.text, "Đã chuẩn hóa từ −15,4 LUFS, đỉnh −0,7 dBTP. Bản xuất lồng tiếng không có âm thanh đo được sau AAC (video im lặng): cần kiểm tra lại.");
+  assert.doesNotMatch(silentFiltered.text, /không đo lại được|không đo được|đạt/);
+  // the dubbed mix was already silent before mastering: the planner's note stays and the row still warns
+  const silentMix = row(parseDubbingQc({ level: "light", loudness: false, notes: ["Âm lượng: bản trộn im lặng, không chỉnh."],
+    measured: { mix: null }, output_loudness: null, conformance: silentRecord }));
+  assert.equal(silentMix.tone, "warn");
+  assert.equal(silentMix.text, "Bản trộn im lặng, không chỉnh. Bản xuất lồng tiếng không có âm thanh đo được sau AAC (video im lặng): cần kiểm tra lại.");
+  // no filter was needed and the sound was lost later: the planner's "giữ nguyên" alone would read as fine
+  const silentKept = row(parseDubbingQc({ level: "light", loudness: false, notes: ["Âm lượng: đã đạt −16,2 LUFS; giữ nguyên."],
+    measured: { mix: { integrated: -16.2, true_peak: -3.0, lra: 6 } }, output_loudness: null, conformance: silentRecord }));
+  assert.equal(silentKept.tone, "warn");
+  assert.match(silentKept.text, /^Đã đạt −16,2 LUFS; giữ nguyên\. Bản xuất lồng tiếng không có âm thanh đo được sau AAC \(video im lặng\)/);
+  // strict: "silent" is a B2 state with no peak and no measurement beside it
+  for (const bad of [{ ...silentRecord, true_peak_dbtp: -2 }, { ...silentRecord, path: "B1" }, { ...silentRecord, path: "none" }]) {
+    assert.equal(card(bad, { output_loudness: null }).conformance, null, JSON.stringify(bad));
+  }
+  assert.equal(card(silentRecord).conformance, null, "silent beside an output measurement contradicts itself");
+  // the source's own silence (B1 fallback or Vietsub only, not_applicable, nothing measured, no error) is not flagged
+  for (const path of ["B1", "none"]) {
+    const quiet = row(parseDubbingQc({ level: "light", loudness: false, fallback: path === "B1", notes: ["Âm lượng: bản trộn im lặng, không chỉnh."],
+      measured: {}, output_loudness: null,
+      conformance: { status: "not_applicable", ceiling_dbtp: -1.5, true_peak_dbtp: null, trim_db: 0, tries: 0, path, ceiling_met: null } }));
+    assert.equal(quiet.tone, "info", path);
+    assert.equal(quiet.text, "Bản trộn im lặng, không chỉnh.", path);
+  }
   // Vietsub only, measured over the ceiling: the sound is the source's, not mastered, so the ceiling does not apply:
   // a plain measurement (info), neither "vượt trần" (the engine adds no warning) nor "đạt"
   const vietsubRecord = { status: "not_applicable", ceiling_dbtp: -1.5, true_peak_dbtp: -0.4, trim_db: 0, tries: 0, path: "none", ceiling_met: false };
