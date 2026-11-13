@@ -23,7 +23,7 @@ Tại thời điểm chốt báo cáo:
 - Ba bản sửa đã được merge vào main qua bốn PR, mỗi issue một nhánh (chỉ thị §23): #822 và #825 cho #821, #823 cho #816, #824 cho #817. main hiện ở `1687771` (§2, §3).
 - Trước khi build candidate, một lượt rà soát chéo đối kháng trên bản ghép ba nhánh đã tìm ra hai lớp xác nhận sai của #817, một chỗ hở của #816 và các điểm cần gia cố trên Windows của #821. Tất cả đã được sửa trước candidate (§14).
 - Bản candidate **1.1.96-rc18** đã được build (§11) và được nghiệm thu trên Windows 11 bằng tự động hoá CDP (§12). Lượt nghiệm thu ghi 10 phát hiện, mức cao nhất là P2; không có P0 hay P1 được ghi nhận. Với W1f, biên bản không ghi lệnh hủy có tới engine hay không, nên khả năng một lệnh hủy bị bỏ qua chưa được loại trừ (§16.5, §16.6, §17.1).
-- Stage 2 (#815) **chưa bắt đầu**. Stage 1 nay đạt; việc mở Stage 2 là quyết định của chủ dự án.
+- Stage 2 (#815) chưa bắt đầu tại thời điểm chốt báo cáo. Theo chỉ thị, Stage 2 được mở khi Stage 1 đạt; Stage 2 chỉ gồm audit, thí nghiệm offline E1–E5, ADR ở trạng thái PROPOSED và báo cáo khả thi, không thay đổi planner production.
 - Không phát hành stable: Stage 1 đạt không phải là bản phát hành ổn định, và rc18 có `production_qualified: false`.
 ## 2. HEAD
 
@@ -791,7 +791,7 @@ Mười phát hiện của lượt Windows E2E trên rc18. Không phát hiện n
 Hệ quả:
 
 - Release Safety Closure (Stage 1) hoàn tất cho phạm vi của chỉ thị, với các giới hạn ở §17.1.
-- Stage 2 (#815) chưa bắt đầu; mở Stage 2 là quyết định của chủ dự án.
+- Stage 2 (#815) chưa bắt đầu tại thời điểm chốt báo cáo; theo chỉ thị, Stage 2 được mở khi Stage 1 đạt và không gồm thay đổi production nào.
 - Không phát hành stable; chỉ có bản candidate rc18 (`production_qualified: false`), job publish bị bỏ qua.
 
 ### 17.1. Giới hạn của nghiệm thu
