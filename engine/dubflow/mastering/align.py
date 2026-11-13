@@ -535,7 +535,7 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
         if stated[u.unit_id].any and mode == "content":
             for c in usable:
                 result = checked[(u.unit_id, c.candidate_id)] = said.check(stated[u.unit_id], shown_text[c.candidate_id])
-                if result.conflicts:
+                if result.conflicts and stated[u.unit_id].display:
                     accepts[u.unit_id].discard(c.candidate_id)
                 elif result.verified and not (scorer.card[c.candidate_id] and not about_text(u)):
                     accepts[u.unit_id].add(c.candidate_id)
@@ -666,7 +666,7 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
         if claim is not None:
             if claim.verified:
                 total += DISPLAYED_BONUS if stated[unit.unit_id].display else VERIFIED_BONUS
-            if claim.conflicts:
+            if claim.conflicts and stated[unit.unit_id].display:
                 total -= CONTRADICTED_PENALTY
         if unit.function == "hook" and not card:
             total += min(60, candidate.motion // 4) + (info.hook // 10 if info else 0)
@@ -704,7 +704,7 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
             reasons.append(f"cảnh {ev.LABEL_NAMES_VI.get(label, label)} hợp câu {unit.function}")
         if claim is not None and claim.verified:
             reasons.append("cảnh có điều lời câu nói: " + ", ".join(claim.verified[:3]))
-        if claim is not None and claim.conflicts:
+        if claim is not None and claim.conflicts and stated[unit.unit_id].display:
             reasons.append("cảnh hiển thị con số khác lời câu: " + ", ".join(claim.conflicts[:3]))
         if not candidate.quality.usable:
             reasons.append("chất lượng thấp: " + "; ".join(candidate.quality.problems))
@@ -1073,7 +1073,8 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
             per_piece = [checked.get((unit.unit_id, c.candidate.candidate_id)) or said.Check() for c in mine]
             claim_result = said.merged(per_piece)
             contradicted = [v for piece in per_piece for v in piece.conflicts]
-            unproven = bool(contradicted) or (stated[unit.unit_id].display and bool(claim_result.unverified or claim_result.conflicts))
+            # only a sentence about something displayed: a number spoken over a scene names no figure the shot must show
+            unproven = stated[unit.unit_id].display and bool(contradicted or claim_result.unverified or claim_result.conflicts)
             if contradicted and not claim_result.conflicts:
                 claim_result.conflicts = list(dict.fromkeys(contradicted))
             if unproven:

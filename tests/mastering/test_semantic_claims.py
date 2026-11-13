@@ -164,6 +164,61 @@ class ReadingClaimsTests(unittest.TestCase):
         self.assertEqual(said.check(said.of(MAP), said.content_text(named)).verified, [])
 
 
+class ReviewFindingsTests(unittest.TestCase):
+    """A4: what an independent review of the first fix found (#808): claims that are no displayed fact."""
+
+    def test_square_kilometres_written_km2(self):
+        for text in ("500 km2", "500 km²", "500 km vuông"):
+            self.assertEqual(said.quantities(text), [said.Quantity(500, "sq_km", "km")], text)
+        result = said.check(said.of("Bản đồ diện tích 500 km vuông"), "a map with 500 km2")
+        self.assertEqual((result.verified, result.conflicts), (["500 km²"], []))
+
+    def test_a_head_count_in_a_picture_is_no_displayed_figure(self):
+        result = said.check(said.of("Hai mươi nghìn lính tiến về Moskva"), "3 người lính đứng bên đường")
+        self.assertEqual(result.conflicts, [])
+        # nor is a number spoken over a scene a figure the shot must show: never a reason to review
+        pool, found = map_shots("c514", "c519")
+        found["c519"] = seen("c519", "Đoàn binh sĩ đội mũ sắt hành quân trên đường đất, 3 người lính đi đầu.", ("binh sĩ",), "",
+                             ("establishing", "people"), 880)
+        chosen, ready, decision = plan("Hai mươi nghìn binh sĩ hành quân trên con đường đất.", pool, found, length=2800)
+        self.assertEqual(chosen, ["c519"])
+        self.assertTrue(ready, decision.to_dict())
+        # ... but the same count verifies
+        self.assertEqual(said.check(said.of("Biểu đồ: 20.000 lính"), "chart: 20,000 soldiers").verified, ["20.000 người"])
+
+    def test_quoted_speech_is_not_written(self):
+        stated = said.of('Stalin nói: "Không lùi một bước"')
+        self.assertEqual((stated.phrases, stated.display), ((), False))
+        self.assertEqual(said.of('Khẩu hiệu "Victory or death" kẻ trên tường').phrases, ("Victory or death",))
+
+    def test_a_small_bare_number_is_no_fact_to_show(self):
+        self.assertEqual(said.of("Bản đồ cho thấy 3 mũi tên").quantities, ())
+        self.assertEqual(said.of("mười năm sau bản đồ thay đổi").quantities, ())
+        self.assertFalse(align.about_text(align.Unit("u", "mười năm sau bản đồ thay đổi", 0, 2000, "narration")))
+        # a bare "3" in the evidence never stands for "3 dặm"
+        self.assertEqual(said.check(said.of("Bản đồ đánh dấu 3 dặm"), "a map, 3 soldiers").verified, [])
+
+    def test_a_date_keeps_only_its_year(self):
+        stated = said.of("Bản đồ ngày 22/6/1941")
+        self.assertEqual([q.value for q in stated.quantities], [1941])
+        self.assertEqual(said.check(stated, "map captioned June 1941").verified, ["1.941"])
+
+    def test_the_sea_is_not_a_sign(self):
+        stated = said.of("Trên biển North Sea hạm đội Anh thông báo chiến thắng")
+        self.assertEqual((stated.phrases, stated.written, stated.display), ((), (), False))
+        self.assertEqual(said.of("Biển báo Danger Zone Ahead dựng ven đường").phrases, ("Danger Zone Ahead",))
+
+    def test_a_digit_with_a_scale_word(self):
+        self.assertEqual(said.quantities("2 tỷ người"), [said.Quantity(2_000_000_000, "people", "people")])
+        self.assertEqual(said.quantities("2 tỷ người"), said.quantities("hai tỷ người"))
+
+    def test_labels_fit_the_contract(self):
+        long = "Tấm thẻ chữ cho biết " + " ".join(f"từ{i} điều{i}" for i in range(40))
+        stated = said.of(long)
+        label = said.check(stated, "").unverified[0]
+        self.assertLessEqual(len(label), 200)
+
+
 class TitleTests(unittest.TestCase):
     """A1 i1.u2."""
 

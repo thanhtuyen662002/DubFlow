@@ -38,7 +38,8 @@ _DIGIT_WORDS = {"không": 0, "một": 1, "mốt": 1, "hai": 2, "ba": 3, "bốn":
 _SCALES = {"nghìn": 1000, "ngàn": 1000, "triệu": 1_000_000, "tỷ": 1_000_000_000, "tỉ": 1_000_000_000}
 _FILLERS = {"linh", "lẻ"}
 _NUMBER_WORDS = set(_DIGIT_WORDS) | set(_SCALES) | _FILLERS | {"mươi", "mười", "trăm"}
-_TOKEN = re.compile(r"\d+(?:[.,]\d+)*|[^\W\d_]+|%", re.UNICODE)
+# "km2" / "m2" are one word (square kilometres / metres), never a number 2 after "km"
+_TOKEN = re.compile(r"(?<![^\W\d_])(?:km|m)2(?!\d)|\d+(?:[.,]\d+)*|[^\W\d_]+|%", re.UNICODE)
 
 
 def _nfc(text: str) -> str:
@@ -111,13 +112,15 @@ def _digits(token: str) -> int | None:
 
 
 # unit words after a number: (words, unit, base). Two units with one base (miles, square miles) are two statements
-# of the same kind: one shown where the other is said contradicts it.
+# of the same kind: one shown where the other is said contradicts it. A count of people, planes or tanks is not: a
+# description saying "3 người lính" counts who is in the picture, it does not display a figure (_COUNTED).
 _UNITS: tuple[tuple[tuple[str, ...], str, str], ...] = (
     (("dặm", "vuông"), "sq_mile", "mile"), (("square", "miles"), "sq_mile", "mile"), (("square", "mile"), "sq_mile", "mile"),
     (("dặm",), "mile", "mile"), (("miles",), "mile", "mile"), (("mile",), "mile", "mile"),
-    (("km", "vuông"), "sq_km", "km"), (("km2",), "sq_km", "km"), (("square", "kilometers"), "sq_km", "km"),
+    (("km", "vuông"), "sq_km", "km"), (("km2",), "sq_km", "km"), (("km²",), "sq_km", "km"), (("square", "kilometers"), "sq_km", "km"),
     (("ki", "lô", "mét", "vuông"), "sq_km", "km"), (("cây", "số"), "km", "km"), (("km",), "km", "km"),
     (("kilometers",), "km", "km"), (("kilometres",), "km", "km"), (("ki", "lô", "mét"), "km", "km"),
+    (("mét", "vuông"), "sq_m", "m"), (("m2",), "sq_m", "m"), (("m²",), "sq_m", "m"),
     (("mét",), "m", "m"), (("meters",), "m", "m"), (("metres",), "m", "m"),
     (("phần", "trăm"), "%", "%"), (("%",), "%", "%"), (("percent",), "%", "%"),
     (("tấn",), "ton", "ton"), (("tons",), "ton", "ton"), (("kg",), "kg", "kg"),
@@ -131,6 +134,10 @@ _UNITS: tuple[tuple[tuple[str, ...], str, str], ...] = (
 
 
 _CLASSIFIERS = frozenset({"chiếc", "con", "cái", "đoàn", "tốp"})
+_COUNTED = frozenset({"people", "planes", "tanks"})  # verified by the same count, never contradicted by another
+# a number with no unit names a displayed fact only when it is distinctive: 1941, 1500. A day, a month, "3 mũi tên",
+# "mười năm sau" are no fact a picture must show, and a small number in any description would "verify" them
+DISTINCT_FROM = 100
 
 
 @dataclass(frozen=True)
@@ -141,7 +148,7 @@ class Quantity:
 
     def spoken(self) -> str:
         shown = f"{self.value:,}".replace(",", ".")
-        names = {"mile": "dặm", "sq_mile": "dặm vuông", "km": "km", "sq_km": "km²", "m": "mét", "%": "%", "ton": "tấn",
+        names = {"mile": "dặm", "sq_mile": "dặm vuông", "km": "km", "sq_km": "km²", "m": "mét", "sq_m": "m²", "%": "%", "ton": "tấn",
                  "kg": "kg", "people": "người", "planes": "máy bay", "tanks": "xe tăng", "vnd": "đồng", "year": ""}
         if self.unit == "year":
             return f"năm {self.value}"
@@ -163,6 +170,8 @@ def _quantities(text: str) -> tuple[Quantity, ...]:
         after = i + 1
         if tokens[i][0].isdigit():
             value = _digits(tokens[i])
+            if value is not None and after < len(tokens) and tokens[after] in _SCALES:  # "2 tỷ" is two billion
+                value, after = value * _SCALES[tokens[after]], after + 1
         else:
             read = _spelled(tokens, i)
             if read:
@@ -191,16 +200,17 @@ def _quantities(text: str) -> tuple[Quantity, ...]:
 
 # a sentence about something displayed: what it says must be seen, not merely the kind of picture it is
 _DISPLAY = re.compile(r"\b(ban do|bieu do|do thi|dong chu|the chu|khung chu|man hinh chu|tieu de|con so|danh dau|hien thi|"
-                      r"hien len|ghi chu|chu thich|bang chu|tam bien|bien bao|bang so|chu tren|chu lon|chu trang|chu den)\b")
+                      r"hien len|ghi chu|chu thich|bang chu|tam bien|bien bao|bien hieu|khau hieu|bang so|chu tren|chu lon|chu trang|chu den)\b")
 # a phrase the sentence says is written: introduced by a word for text, or between quotes
-_PHRASE_CUE = re.compile(r"(?i:dòng chữ|chữ|tiêu đề|tựa đề|tên phim|biển|bảng|thẻ|khẩu hiệu|chú thích)"
+_PHRASE_CUE = re.compile(r"(?i:dòng chữ|chữ|tiêu đề|tựa đề|tên phim|biển (?:hiệu|báo|tên|chữ)|tấm biển|bảng|thẻ|khẩu hiệu|chú thích)"
                          r"(?:\s+(?i:lớn|nhỏ|to|trắng|đen|đỏ|in hoa|tiếng anh|tiếng nga|tiếng đức|ghi|là))*"
                          r"\s+([A-Z][\w'’.-]*(?:\s+(?:[A-Z0-9][\w'’.-]*|of|the|and|in|on|for|to|a|an|de|la|le|du))*)")
 _QUOTED = re.compile(r"[\"“'‘]([^\"”'’]{3,80})[\"”'’]")
 # what a card or a screen is said to state
-_WRITTEN = re.compile(r"(?:thẻ|tấm thẻ|dòng chữ|chữ|màn hình|bảng|biển|khung chữ|tiêu đề|chú thích)\b.{0,40}?\b(?:cho biết|ghi rằng|ghi là|"
+_WRITTEN = re.compile(r"(?:thẻ|tấm thẻ|dòng chữ|chữ|màn hình|bảng|biển (?:hiệu|báo|tên|chữ)|tấm biển|khung chữ|tiêu đề|chú thích)\b.{0,40}?\b(?:cho biết|ghi rằng|ghi là|"
                       r"viết rằng|nói rằng|thông báo|khẳng định|nêu rõ|ghi)\s+(.+)$", re.IGNORECASE)
 _FUNCTION_EN = frozenset("of the and in on for to a an we our de la le du".split())
+LABEL_MAX = 120  # characters of a claim as the log and the reviewer's note show it (the contract allows 200)
 
 
 def _ascii_phrase(phrase: str) -> bool:
@@ -219,6 +229,7 @@ class Claims:
         return bool(self.quantities or self.phrases or self.written)
 
 
+@functools.lru_cache(maxsize=4096)
 def of(text: str) -> Claims:
     """The claims of one sentence."""
     folded = " " + ev.fold(text).replace("chu thap", "") + " "  # "chữ thập ngoặc" (a swastika) is not text
@@ -231,15 +242,19 @@ def of(text: str) -> Claims:
         phrase = " ".join(words)
         # a foreign phrase of at least two words (a title, a slogan), never a Vietnamese word that happens to follow
         if _ascii_phrase(phrase) and len([w for w in words if w.casefold() not in _FUNCTION_EN]) >= 2:
-            phrases.append(phrase)
-    for found in _QUOTED.finditer(text):
-        phrases.append(found.group(1).strip())
+            phrases.append(phrase[:LABEL_MAX])
+    # a quote is written only in a sentence about something displayed ("khẩu hiệu “…” trên tường"); "Stalin nói:
+    # “…”" quotes speech, which no picture must show
+    if display:
+        for found in _QUOTED.finditer(text):
+            phrases.append(found.group(1).strip()[:LABEL_MAX])
     written: list[str] = []
     match = _WRITTEN.search(text)
     if match:
         clause = match.group(1)
         written = sorted({w for w in _content_words(clause)})
-    return Claims(tuple(quantities(text)), tuple(dict.fromkeys(phrases)), tuple(written), display or bool(phrases or written))
+    amounts = tuple(q for q in quantities(text) if q.unit is not None or q.value >= DISTINCT_FROM)
+    return Claims(amounts, tuple(dict.fromkeys(phrases)), tuple(written), display or bool(phrases or written))
 
 
 _STOP_WRITTEN = frozenset("và với của cho là không có một những các này thì mà nên sẽ đang được bị rất cũng lại khi nếu vì "
@@ -281,14 +296,15 @@ def check(claims: Claims, text: str) -> Check:
     for wanted in claims.quantities:
         label = wanted.spoken()
         same_value = [q for q in shown if q.value == wanted.value]
-        if any(wanted.unit is None or q.unit is None or q.unit == wanted.unit for q in same_value):
+        # a bare number in the evidence stands for the amount only when it is distinctive ("1500" for 1 500 dặm,
+        # never a "3" for 3 dặm)
+        if any(wanted.unit is None or q.unit == wanted.unit or (q.unit is None and q.value >= DISTINCT_FROM) for q in same_value):
             out.verified.append(label)
-        elif wanted.base and any(q.base == wanted.base for q in shown):
+        elif wanted.base and wanted.unit not in _COUNTED and any(q.base == wanted.base for q in shown):
             out.conflicts.append(label)  # the picture states another amount of the same kind (500 000 dặm vuông)
         else:
             out.unverified.append(label)
-    folded_words = ev.fold(text).split()
-    folded = " " + " ".join(folded_words) + " "
+    folded = _folded(text)
     for phrase in claims.phrases:
         words = [w for w in ev.fold(phrase).split() if w not in _FUNCTION_EN or len(ev.fold(phrase).split()) <= 2]
         if words and (f" {' '.join(ev.fold(phrase).split())} " in folded or all(f" {w} " in folded for w in words)):
@@ -296,14 +312,24 @@ def check(claims: Claims, text: str) -> Check:
         else:
             out.unverified.append(phrase)
     if claims.written:
-        have = set(_content_words(text))
+        have = _have(text)
         found = sum(1 for w in claims.written if w in have)
-        label = " ".join(claims.written)
+        label = " ".join(claims.written)[:LABEL_MAX]
         if found * 1000 >= WRITTEN_SHARE * len(claims.written):
             out.verified.append(label)
         else:
             out.unverified.append(label)
     return out
+
+
+@functools.lru_cache(maxsize=8192)
+def _folded(text: str) -> str:
+    return " " + " ".join(ev.fold(text).split()) + " "
+
+
+@functools.lru_cache(maxsize=8192)
+def _have(text: str) -> frozenset[str]:
+    return frozenset(_content_words(text))
 
 
 def merged(checks: Iterable[Check]) -> Check:
