@@ -434,6 +434,36 @@ def _sha256(path: Path) -> str:
     return "sha256:" + digest.hexdigest()
 
 
+# Windows refuses to rename over a file another process holds open (an antivirus, a backup tool, the desktop reading
+# it): ERROR_ACCESS_DENIED (5), ERROR_SHARING_VIOLATION (32), ERROR_LOCK_VIOLATION (33). Such a refusal passes, so
+# the rename is tried again with a short growing pause (the pattern of product/job.py ``_atomic_text``, issue #766).
+_BUSY_WINERRORS = frozenset({5, 32, 33})
+REPLACE_ATTEMPTS = 6  # about 1.6 s of backoff in all
+
+
+def _replace_busy(source: Path, target: Path, *, attempts: int = REPLACE_ATTEMPTS, first_delay: float = 0.05) -> None:
+    """``os.replace`` tried again while the refusal is a held-open file; anything else (a full disk) fails at once."""
+    delay = first_delay
+    for attempt in range(max(1, attempts)):
+        try:
+            os.replace(source, target)
+            return
+        except OSError as error:
+            busy = isinstance(error, PermissionError) or getattr(error, "winerror", None) in _BUSY_WINERRORS
+            if not busy or attempt >= attempts - 1:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2, 1.0)
+
+
+def _unlink_quietly(path: Path) -> None:
+    """Remove a regenerable file if it can be removed now; a file held open stays as scratch, never an error."""
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def _atomic_json(path: Path, value: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.partial")
@@ -442,9 +472,10 @@ def _atomic_json(path: Path, value: Mapping[str, Any]) -> None:
         with temporary.open("r+b") as handle:
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        # a plan or checkpoint briefly held open must not discard the stage that made it (issue #821 review)
+        _replace_busy(temporary, path)
     except OSError as error:
-        temporary.unlink(missing_ok=True)
+        _unlink_quietly(temporary)
         raise ProductionJobError("CHECKPOINT_WRITE_FAILED", str(error), retryable=True) from error
 
 
@@ -875,13 +906,20 @@ AAC_RENDER_ARGS = ("-c:a", "aac", "-b:a", "192k")
 
 
 def _is_link(path: Path) -> bool:
-    """Whether ``path`` itself (never what it points to) is a symlink or any Windows reparse point (a symlink, a
-    junction or another name surrogate). False when nothing is there."""
+    """Whether ``path`` itself (never what it points to) is a symlink or, on Windows, carries *any* reparse point:
+    a symlink or a junction (the name surrogates), and equally a non-surrogate one such as a cloud-sync placeholder
+    or a deduplicated file. That is deliberately broader than "a link": this is asked only of the mastering folder
+    and the mastered mix, app-owned work data the worker creates itself as plain entries, so anything else found there
+    was put by someone else and is refused (the folder: mastering renders as off) or replaced (the mix), never read
+    or written through. False when nothing is there."""
     try:
         info = os.lstat(path)
     except FileNotFoundError:
         return False
     return stat.S_ISLNK(info.st_mode) or bool(getattr(info, "st_file_attributes", 0) & 0x400)  # REPARSE_POINT
+
+
+SCRATCH_PREFIX = ".scratch-"
 
 
 @contextmanager
@@ -893,34 +931,60 @@ def _private_scratch(folder: Path) -> Iterator[Path]:
     unlinks a link inside instead of following it)."""
     if _is_link(folder):
         raise OSError(f"{folder.name}: the mastering folder is a link")
-    scratch = Path(tempfile.mkdtemp(prefix=".scratch-", dir=os.fspath(folder)))
+    scratch = Path(tempfile.mkdtemp(prefix=SCRATCH_PREFIX, dir=os.fspath(folder)))
     try:
         yield scratch
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
 
 
+def _sweep_stale_scratch(folder: Path) -> None:
+    """Remove the ``.scratch-*`` directories a killed worker left in the mastering folder (its ``finally`` never ran).
+
+    Called at the start of the stage, before this run makes any, so every one found is older than the run. Only real
+    directories whose name has the prefix, directly inside ``folder`` (which the caller has checked is not a link);
+    an entry with that name that is a link or a file is left alone, and ``rmtree`` unlinks a link inside a directory
+    instead of following it. Best effort: what cannot be removed or even examined now (Windows: a directory pending
+    deletion or held by a scanner) stays as scratch and never turns mastering off."""
+    try:
+        with os.scandir(folder) as entries:
+            stale = [Path(entry.path) for entry in entries
+                     if entry.name.startswith(SCRATCH_PREFIX) and entry.is_dir(follow_symlinks=False)]
+    except OSError:
+        return
+    for path in stale:
+        try:
+            if not _is_link(path):  # a junction is a directory to scandir: checked again, never entered
+                shutil.rmtree(path, ignore_errors=True)
+        except OSError:
+            continue
+
+
 def _replace_plain(source: Path, target: Path) -> None:
     """``os.replace`` that never writes through a link at ``target``. A rename replaces a symlink itself, never what
     it points to; Windows' MoveFileEx does so for a file symlink but refuses a directory link (a junction or a
-    directory symlink), so a link there is removed first (removing a link never touches its target)."""
+    directory symlink), so a link there is removed first (removing a link never touches its target). A target held
+    open for a moment (Windows: an antivirus or a backup tool reading the previous mix) is tried again, issue #766."""
     if _is_link(target):
         try:
             os.unlink(target)
         except (IsADirectoryError, PermissionError):
             os.rmdir(target)  # a directory link on Windows: rmdir removes the link, not the folder it names
-    os.replace(source, target)
+    _replace_busy(source, target)
 
 
 def _aac_trial(ffmpeg: Path, wav: Path, trial: Path) -> mastering_measure.Loudness | None:
     """``wav`` encoded with the render's AAC arguments, then measured with the meter of ``output_loudness``
-    (``loudnorm`` input_tp). None for silence; MeasureError when FFmpeg fails. The trial file is always removed."""
+    (``loudnorm`` input_tp). None for silence; MeasureError when FFmpeg fails. The trial file is removed when it can
+    be: a refusal (Windows: the file still held open) never replaces the measurement, and the private directory the
+    trial lives in is removed on the way out anyway. The caller gives every trial its own ``trial`` path, so a file
+    that could not be removed is never the next encode's output."""
     try:
         mastering_measure._capture([str(ffmpeg), "-hide_banner", "-nostdin", "-v", "error", "-y", "-i", str(wav),
                                     "-map", "0:a:0", *AAC_RENDER_ARGS, "-f", "mp4", str(trial)])
         return mastering_measure.loudness(ffmpeg, trial)
     finally:
-        trial.unlink(missing_ok=True)
+        _unlink_quietly(trial)
 
 
 def _apply_audio_filter(ffmpeg: Path, source: Path, audio_filter: str, target: Path) -> None:
@@ -956,9 +1020,9 @@ def _aac_conform(ffmpeg: Path, source: Path, audio_filter: str | None, mastered:
 def _aac_conform_in(ffmpeg: Path, source: Path, audio_filter: str | None, mastered: Path, folder: Path,
                     progress: Any) -> tuple[str | None, dict[str, Any]]:
     """``_aac_conform`` with every intermediate output in ``folder``, a private directory it owns."""
-    trial = folder / "aac_trial.m4a"
     planned = mastered if audio_filter else source
-    found = _aac_trial(ffmpeg, planned, trial)
+    # one file per trial: an encode never has to overwrite an earlier trial that is still held open (Windows)
+    found = _aac_trial(ffmpeg, planned, folder / "aac_trial0.m4a")
     first = found.true_peak if found else None
     # (measured peak, cumulative trim, audio file); the untrimmed attempt is the planner's own audio
     attempts: list[tuple[float | None, float, Path]] = [(first, 0.0, planned)]
@@ -970,7 +1034,7 @@ def _aac_conform_in(ffmpeg: Path, source: Path, audio_filter: str | None, master
             progress(trim)
         candidate = folder / f"final_mix_trim{len(attempts)}.wav"
         _apply_audio_filter(ffmpeg, source, dubbing_master.with_trim(audio_filter, trim), candidate)
-        found = _aac_trial(ffmpeg, candidate, trial)
+        found = _aac_trial(ffmpeg, candidate, folder / f"aac_trial{len(attempts)}.m4a")
         if found is None:  # a lowered copy of sound that was measured cannot be silent
             raise mastering_measure.MeasureError("the trimmed AAC trial measured no sound")
         attempts.append((found.true_peak, trim, candidate))
@@ -987,7 +1051,10 @@ def _mastering_conformance(path: str, trial: Mapping[str, Any] | None, output: M
     """The final MP4's true peak against the −1.5 dBTP ceiling after AAC (issue #821), from the one post-render
     measurement. ``path``: "B2" (the mastered dubbed mix is heard), "B1" (fell back to the source sound, never
     trimmed) or "none" (Vietsub only). Appends MASTERING_TRUE_PEAK_OVER / _UNMEASURED to ``warnings`` when the output
-    misses the ceiling or could not be measured; neither is informational, so the job reports its warnings.
+    misses the ceiling or could not be measured, and MASTERING_OUTPUT_SILENT when a dubbed (B2) export measures no
+    sound at all (status "silent": Product System Design 19.3 "Không silence toàn video", so never a pass, whether
+    the dubbed mix was already silent or lost its sound later); none is informational, so the job reports its warnings.
+    A silent B1 or Vietsub-only export is the source's own silence: recorded, not warned.
     On B1 and Vietsub only a failed measurement adds ``unmeasured: true`` (``ceiling_met`` stays None, never a pass)."""
     ceiling = dubbing_master.PEAK_DBTP
     peak = output["true_peak"] if output else None
@@ -1014,6 +1081,8 @@ def _mastering_conformance(path: str, trial: Mapping[str, Any] | None, output: M
                         f"the {ceiling:.1f} dBTP ceiling is not confirmed")
     elif peak is None:
         status = "silent"
+        warnings.append("MASTERING_OUTPUT_SILENT: the final MP4 of the dubbed export has no measurable sound after AAC; "
+                        f"a wholly silent video is not a pass and the {ceiling:.1f} dBTP ceiling has nothing to confirm")
     elif over:
         status = "failed"
         if trim > 0:
@@ -1074,6 +1143,7 @@ def _dubbing_mastering(options: MasteringOptions, config: WorkerConfig, probe: M
             # a symlink or junction planted at the folder: refused here, before any plan, partial or trial is read or
             # written through it, so the job renders as off whatever the planner would decide (issue #821 review)
             raise OSError(f"{folder.name}: the mastering folder is a link")
+        _sweep_stale_scratch(folder)
         plan_path, mastered = folder / "dubbing-plan.json", folder / "final_mix_mastered.wav"
         identity = sha256(json.dumps({"options": options.to_dict(), "recipe": dubbing_master.RECIPE, "source": source_hash,
                                       "mix": _sha256(audio_path) if audio_path is not None else None},

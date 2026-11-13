@@ -224,9 +224,10 @@ jobs:
             tests.production.worker.test_dubbing_mastering.PlantedLinkTests.test_windows_links_at_the_old_names_are_never_written_through `
             tests.production.worker.test_dubbing_mastering.PlantedLinkTests.test_windows_junctions_at_the_old_names_are_never_written_through `
             tests.production.worker.test_dubbing_mastering.AacTrueCeilingTests.test_a_link_at_the_mastered_mix_is_replaced_and_a_linked_folder_refused `
+            tests.production.worker.test_dubbing_mastering.AacTrueCeilingTests.test_a_linked_mastering_folder_renders_as_off_before_anything_is_written `
             -v 2>&1 | Tee-Object -FilePath $log
           if ($LASTEXITCODE -ne 0) { throw 'Mastering planted-link tests failed' }
           $text = Get-Content -LiteralPath $log -Raw
           if ($text -match '\.\.\. skipped') { throw 'Mastering planted-link tests skipped some cases' }
-          if ($text -notmatch '(?m)^Ran 3 tests in ') { throw 'Expected 3 mastering planted-link tests (symlinks and junctions)' }
-          Write-Host 'Mastering planted-link tests passed on Windows through the pinned FFmpeg: 3, none skipped'
+          if ($text -notmatch '(?m)^Ran 4 tests in ') { throw 'Expected 4 mastering planted-link tests (symlinks and junctions, the whole worker with a linked mastering folder included)' }
+          Write-Host 'Mastering planted-link tests passed on Windows through the pinned FFmpeg: 4 (3 helper tests and 1 whole-worker run with a junction at the mastering folder), none skipped'
