@@ -318,6 +318,18 @@ class NotEverythingNeedsReviewTests(unittest.TestCase):
         self.assertEqual(chosen, ["c509"])
         self.assertTrue(ready)
 
+    def test_the_contract_lists_the_claims(self):
+        import json
+        from pathlib import Path
+        schema = json.loads((Path(__file__).resolve().parents[2] / "contracts" / "mastering" / "editorial-v1.json")
+                            .read_text(encoding="utf-8"))["$defs"]["unit"]["properties"]["signals"]
+        pool, found = map_shots("c505", "c514")
+        _, _, decision = plan(MAP, pool, found, length=2800)
+        claims = decision.to_dict()["signals"]["claims"]
+        self.assertNotIn("claims", schema["required"])  # optional: only sentences that state something displayed
+        self.assertEqual(set(schema["properties"]["claims"]["required"]), set(claims))
+        self.assertEqual(set(decision.to_dict()["signals"]) - {"claims"}, set(schema["required"]))
+
     def test_a_pinned_shot_is_the_users_choice(self):
         pool, found = map_shots("c505", "c514")
         unit = align.Unit("u", MAP, 0, 2800, "narration")
