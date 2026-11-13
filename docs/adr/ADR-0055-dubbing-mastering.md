@@ -86,10 +86,10 @@ than its source cue (window widening, fast fit), the Vietnamese caption can drif
   (Product System Design §19.3 "Không silence toàn video"): it adds the non-informational warning
   `MASTERING_OUTPUT_SILENT`, so `mastering.result.final_qc` is "warning" and the card shows a warning row, whether
   the dubbed mix was already silent before mastering or lost its sound later. The source's own silence (B1 fallback,
-  Vietsub only) is recorded and not warned. On Windows a file briefly held open never costs a measured trim: a trial
-  file that cannot be deleted is left to the private directory's removal, and the renames over the mastered mix, the
-  plan and the checkpoint are tried again with a short backoff (#766 class). `.scratch-*` directories left by a
+  Vietsub only) is recorded and not warned. On Windows a file briefly held open never costs a measured trim: every
+  trial encodes to its own file, one that cannot be deleted is left to the private directory's removal, and the
+  renames over the mastered mix, the plan and the checkpoint are tried again with a short backoff (#766 class). `.scratch-*` directories left by a
   killed worker are removed at the start of the stage: only real directories with that prefix directly inside the
-  non-link `mastering` folder, never through a link.
+  non-link `mastering` folder, never through a link; one that cannot be examined or removed is left.
 - The UI to choose levels and review suggestions is Phase 5; until then `mastering.json` is written by tests,
   the E2E harness or a power user.

@@ -944,7 +944,8 @@ def _sweep_stale_scratch(folder: Path) -> None:
     Called at the start of the stage, before this run makes any, so every one found is older than the run. Only real
     directories whose name has the prefix, directly inside ``folder`` (which the caller has checked is not a link);
     an entry with that name that is a link or a file is left alone, and ``rmtree`` unlinks a link inside a directory
-    instead of following it. Best effort: what cannot be removed now stays as scratch."""
+    instead of following it. Best effort: what cannot be removed or even examined now (Windows: a directory pending
+    deletion or held by a scanner) stays as scratch and never turns mastering off."""
     try:
         with os.scandir(folder) as entries:
             stale = [Path(entry.path) for entry in entries
@@ -952,8 +953,11 @@ def _sweep_stale_scratch(folder: Path) -> None:
     except OSError:
         return
     for path in stale:
-        if not _is_link(path):  # a junction is a directory to scandir: checked again, never entered
-            shutil.rmtree(path, ignore_errors=True)
+        try:
+            if not _is_link(path):  # a junction is a directory to scandir: checked again, never entered
+                shutil.rmtree(path, ignore_errors=True)
+        except OSError:
+            continue
 
 
 def _replace_plain(source: Path, target: Path) -> None:
@@ -973,7 +977,8 @@ def _aac_trial(ffmpeg: Path, wav: Path, trial: Path) -> mastering_measure.Loudne
     """``wav`` encoded with the render's AAC arguments, then measured with the meter of ``output_loudness``
     (``loudnorm`` input_tp). None for silence; MeasureError when FFmpeg fails. The trial file is removed when it can
     be: a refusal (Windows: the file still held open) never replaces the measurement, and the private directory the
-    trial lives in is removed on the way out anyway."""
+    trial lives in is removed on the way out anyway. The caller gives every trial its own ``trial`` path, so a file
+    that could not be removed is never the next encode's output."""
     try:
         mastering_measure._capture([str(ffmpeg), "-hide_banner", "-nostdin", "-v", "error", "-y", "-i", str(wav),
                                     "-map", "0:a:0", *AAC_RENDER_ARGS, "-f", "mp4", str(trial)])
@@ -1015,9 +1020,9 @@ def _aac_conform(ffmpeg: Path, source: Path, audio_filter: str | None, mastered:
 def _aac_conform_in(ffmpeg: Path, source: Path, audio_filter: str | None, mastered: Path, folder: Path,
                     progress: Any) -> tuple[str | None, dict[str, Any]]:
     """``_aac_conform`` with every intermediate output in ``folder``, a private directory it owns."""
-    trial = folder / "aac_trial.m4a"
     planned = mastered if audio_filter else source
-    found = _aac_trial(ffmpeg, planned, trial)
+    # one file per trial: an encode never has to overwrite an earlier trial that is still held open (Windows)
+    found = _aac_trial(ffmpeg, planned, folder / "aac_trial0.m4a")
     first = found.true_peak if found else None
     # (measured peak, cumulative trim, audio file); the untrimmed attempt is the planner's own audio
     attempts: list[tuple[float | None, float, Path]] = [(first, 0.0, planned)]
@@ -1029,7 +1034,7 @@ def _aac_conform_in(ffmpeg: Path, source: Path, audio_filter: str | None, master
             progress(trim)
         candidate = folder / f"final_mix_trim{len(attempts)}.wav"
         _apply_audio_filter(ffmpeg, source, dubbing_master.with_trim(audio_filter, trim), candidate)
-        found = _aac_trial(ffmpeg, candidate, trial)
+        found = _aac_trial(ffmpeg, candidate, folder / f"aac_trial{len(attempts)}.m4a")
         if found is None:  # a lowered copy of sound that was measured cannot be silent
             raise mastering_measure.MeasureError("the trimmed AAC trial measured no sound")
         attempts.append((found.true_peak, trim, candidate))
