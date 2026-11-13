@@ -709,12 +709,15 @@ class TiedFigureTests(unittest.TestCase):
     def test_what_may_follow_a_population_figure(self):
         # nothing, punctuation, a year, a link to a year, "and", a people word
         for evidence in ("POPULATION 1500", "POPULATION 1500.", "POPULATION 1500, AREA 300 KM2", "POPULATION 1500 (1941)",
-                         "POPULATION 1500 IN 1941", "dân số 1500 năm 1941", "dân số 1500 vào năm 1941", "POPULATION 1500 - 1941",
+                         "POPULATION 1500 IN 1941", "dân số 1500 năm 1941", "dân số 1500 vào năm 1941", "POPULATION 1,500 - 1941",
                          "DÂN SỐ 1500 VÀ DIỆN TÍCH 300 KM2", "POPULATION 1500 AND AREA 300", "POPULATION 1500 (PEOPLE)",
                          "POPULATION 1500 INHABITANTS", "POPULATION 1500\nFEET ABOVE SEA LEVEL 300"):
             self.assertEqual(verdict(HEADS, evidence), (["1.500 người"], [], [], []), evidence)
         for evidence in ("POPULATION 1500 IN FEET", "POPULATION 1500 BY ROAD"):  # a link word only before a year
             self.unconfirmed(HEADS, evidence)
+        # two bare years side by side are a range or an axis, not a count and its year (second review: this string
+        # was expected to confirm; base 74c16d0 left it unverified, as "DÂN SỐ 1500 - 1900")
+        self.unconfirmed(HEADS, "POPULATION 1500 - 1941")
 
     def test_a_population_word_in_another_sentence_ties_nothing(self):
         for evidence in ("Biểu đồ về dân số. 1500", "A chart of the population. 1500", "Who are these people? 1500",
@@ -754,8 +757,12 @@ class TiedFigureTests(unittest.TestCase):
                          "1500 dân/km2", "POPULATION 1500 (PEOPLE PER SQ MI)", "DENSITY: 1500 INHABITANTS/KM2"):
             self.unconfirmed(HEADS, evidence)
             self.assertEqual(verdict(HEADS, evidence)[2:], ([], []), evidence)
-        self.unconfirmed("Biểu đồ có 1500 máy bay.", "1500 máy bay/ngày")
-        self.unconfirmed("Biểu đồ có 1500 xe tăng.", "1500 tanks per month")
+        # only a density over an area is no head count: a count per day or per month is that count on the frame, as
+        # at base 74c16d0 (second review: the first review's rate rule refused these two)
+        self.assertEqual(verdict("Biểu đồ có 1500 máy bay.", "1500 máy bay/ngày")[0], ["1.500 máy bay"])
+        self.assertEqual(verdict("Biểu đồ có 1500 xe tăng.", "1500 tanks per month")[0], ["1.500 xe tăng"])
+        self.unconfirmed("Biểu đồ có 1500 máy bay.", "1500 máy bay/km2")
+        self.unconfirmed("Biểu đồ có 1500 xe tăng.", "1500 tanks per square mile")
         self.assertEqual(verdict(HEADS, "1500 người trên quảng trường")[0], ["1.500 người"])
         self.assertEqual(verdict(HEADS, "1500 người, mỗi người một lá cờ")[0], ["1.500 người"])
 
@@ -819,3 +826,143 @@ class TiedFigureTests(unittest.TestCase):
             self.assertEqual(said.check(said.of(sentence), "1500 MILES").verified, [], sentence)
             self.assertEqual(said.check(said.of(sentence), "1500").verified, [], sentence)
             self.assertEqual(said.check(said.of(sentence), "POPULATION 1500").verified, ["1.500"], sentence)
+
+
+class SecondReviewTests(unittest.TestCase):
+    """The second review of #817: each string was read the wrong way by 1f9a2d4. ``NOT`` must never confirm the count
+    beside it (most were unverified at base 74c16d0), ``YES`` must still confirm it (as at 13d23ec or 74c16d0), and a
+    sentence of ``SAID`` states a count that a bare figure or the figure with another unit never shows."""
+
+    P, PL, T = (1500, "people"), (1500, "planes"), (1500, "tanks")
+    BIG = (193_000_000, "people")
+    NOT = [
+     # R1 follow
+     (P, "POPULATION 1500 AND FEET"), (P, "people 1500 và km"), (P, "dân số 1500 và hộ 300"), (P, "POPULATION 1500, FEET"),
+     (P, "POPULATION 1500 1941 FEET"), (P, "POPULATION 1500 2000 FEET"), (P, "population 1500 in 2000 households"),
+     # R2 before the population word
+     (P, "Mật độ dân số 1500"), (P, "MẬT ĐỘ DÂN SỐ: 1500"), (P, "DENSITY OF POPULATION 1500"), (P, "GROWTH OF POPULATION: 1500"),
+     (P, "Tăng dân số 1500"), (P, "Thu nhập bình quân đầu người 1500"), (P, "Thu nhập đầu người: 1500"), (P, "GDP đầu người 1500"),
+     (P, "Giá mỗi người 1500"), (P, "COST PER RESIDENTS 1500"), (P, "Quyết định của Ủy ban nhân dân số 1500"),
+     (P, "Ủy ban nhân dân - Số 1500"), (P, "Công an nhân dân số: 1500"), (P, "Căn cước công dân số 1500"), (P, "Tòa án nhân dân 1500"),
+     (P, "Báo Nhân Dân 1500"), (P, "Dân số (nghìn người): 1500"), (P, "POPULATION (THOUSAND PEOPLE): 1500"),
+     (P, "Đơn vị: nghìn người 1500"), ((193, "people"), "POPULATION (MILLION PEOPLE): 193"), ((193, "people"), "Dân số (triệu người) 193"),
+     ((15, "people"), "Bác sĩ trên 10.000 dân: 15"), ((73, "people"), "Tuổi thọ người dân: 73"),
+     (BIG, "POPULATION ... 193,000,000"), (P, "A chart of the population... 1500"),  # an ellipsis, as "…": no leader dots
+     # R3 year axis
+     (P, "POPULATION 1500-2000"), (P, "POPULATION 1500–1900"), (P, "DÂN SỐ 1500 - 1900"), (P, "WORLD POPULATION 1500, 1600, 1700"),
+     (P, "YEAR POPULATION 1500 1600 1700"), ((1700, "people"), "YEAR POPULATION 1500 1600 1700"), ((1600, "people"), "WORLD POPULATION 1500, 1600, 1700"),
+     # R4 spaced groups
+     (P, "Group 1 500 people"), (P, "Nhóm 1 500 người"), (P, "Đợt 1 500 người"), (P, "Phase 1 500 people"), (P, "Step 1 500 people"),
+     (P, "Tuần 1 500 người"), (P, "Khu 1 500 người"), (P, "Cột 1 500 người"), (P, "Q1 500 people"), (P, "Đội 1 500 lính"),
+     (PL, "Wave 1 500 planes"), (PL, "Đợt 1 500 máy bay"), (T, "Tập đoàn quân 1 500 xe tăng"), ((6300, "people"), "22-6 300 lính"),
+     ((22300, "people"), "JUNE 22 300 SOLDIERS"),
+     # R5 whitespace
+     (P, "Trên bảng ghi 1500\rNgười đi bộ"), (P, "1500\u2028Người đi bộ"), (P, "1500\x0bNgười"), (P, "1500\tPEOPLE"), (P, "DÂN SỐ\r1500"),
+     (P, "POPULATION\t1500"), (P, "1500\x0cPEOPLE"), (P, "1500\x85PEOPLE"), (P, "POPULATION\u20291500"),
+     # R6 dates and times
+     ((1941, "people"), "22-6-1941 người Đức tấn công"), ((1941, "people"), "06-22-1941 PEOPLE OF RUSSIA"),
+     ((1941, "people"), "Mùa hè 1941 người Đức tấn công Liên Xô"), ((1941, "people"), "SUMMER 1941 PEOPLE OF RUSSIA"),
+     ((1941, "people"), "tháng Sáu 1941 người Đức"), ((1941, "people"), "Since 1941 people have suffered"),
+     ((1941, "people"), "1941 PEOPLE OF RUSSIA"), ((1945, "people"), "1941-1945 PEOPLE OF RUSSIA"), ((1945, "people"), "Sau 1945 người dân trở về"),
+     ((1941, "planes"), "7-12-1941 máy bay Nhật tấn công"), ((22, "people"), "1941-06-22 people"),
+     ((30, "planes"), "5h30 máy bay Nhật tấn công"), ((55, "planes"), "07:55 PLANES ATTACK"), ((1941, "people"), "tháng mười hai 1941 người Nhật"),
+     ((1941, "tanks"), "tháng 7, 1941 xe tăng Đức"), (P, "1000-1500 người"), (P, "1 bác sĩ / 1500 người"), (P, "1:1500 people"),
+     # R7 designations and labels
+     ((34, "tanks"), "T-34 TANKS"), ((34, "tanks"), "Xe T-34 xe tăng Liên Xô"), ((1, "tanks"), "KV-1 tanks"), (T, "T-1500 tanks"),
+     ((17, "planes"), "B-17 AIRCRAFT"), ((731, "people"), "UNIT 731 SOLDIERS"), ((316, "people"), "Sư đoàn 316 binh sĩ"),
+     ((141, "people"), "Trung đoàn 141 lính"), ((20, "people"), "Thế kỷ 20 người Việt"), ((16, "people"), "Chỉ thị 16 người dân ở nhà"),
+     ((58, "people"), "Điều 58 người dân có quyền"), ((101, "people"), "Phòng 101 người"), ((51, "people"), "AREA 51 PEOPLE"),
+     (P, "Hotline 1500 people"), (P, "Điện thoại 1500 người"), (P, "Mã số thuế 1500 người nộp"), (P, "STT 1500 người"), (P, "ID 1500 people"),
+     (P, "Code 1500 people"), (P, "Km 1500 người"), (P, "Tr. 1500 người"), (P, "p. 1500 people"), (P, "pp 1500 people"), (P, "Vol 1500 people"),
+     (P, "x1500 people"), (P, "tuổi 1500 người"), (P, "lúc 1500 người lính xuất phát"),
+     # R8 currency
+     (P, "USD 1500 people"), (P, "VND 1.500 người lớn"), (P, "₫1.500 người lớn"), (P, "RM 1500 soldiers"), (P, "Rp1500 people"), (P, "₽1500 người"),
+     (P, "Giá vé 1500 người lớn"), (P, "1500₽ người"), (PL, "₽1500 planes"), (T, "USD 1500 tanks"),
+     # R9 densities
+     (P, "1500 PERSONS TO THE SQUARE MILE"), (P, "1500 inhabitants to the sq km"), (P, "1500 PEOPLE TO THE SQUARE MILE"),
+     (P, "1500 people a square mile"), (P, "1500 người trên 1 km2"), (P, "1500 người trên mỗi km vuông"), (P, "1500 người/km2"),
+     (P, "1500 people per sq mi"), (P, "1500 lính/km"), (PL, "1500 máy bay/km2"),
+     # R10 compounds
+     (PL, "1500 AIRCRAFT WORKERS ON STRIKE"), (PL, "1500 aircraft carriers"), (PL, "1500 aircraft engines"), (PL, "1500 máy bay giấy"),
+     (T, "1500 TANKS OF OIL"), (T, "1500 xe tăng đồ chơi"), (P, "1500 MEN'S COATS"), (P, "1500 men-hours"), (P, "1500 người máy"), (P, "1500 lính chì"),
+    ]
+    YES = [
+     # R12 a count after a day or a month
+     (P, "Tháng 6: 1.500 người"), (P, "Tháng 6 1.500 người"), (P, "tháng 12 1.500 người"), (P, "Ngày 22 tháng 6: 1.500 người"),
+     (P, "Thương vong tháng 6 1.500 người"), (P, "June 22: 1,500 people"), (P, "June 22: 1500 people"), (P, "sau 3 tháng 1500 người đã chết"),
+     ((2000, "people"), "DECEMBER 7: 2,000 PEOPLE"), ((2000, "people"), "Dec 7 2,000 men"), ((2000, "people"), "Tháng 12: 2.000 người thiệt mạng"),
+     (PL, "June 22: 1,500 planes"), (PL, "Tháng 6 1.500 máy bay"), (T, "Tháng 7 1.500 xe tăng"), (P, "lên đến 1500 người"),
+     # R13 caption layouts
+     (BIG, "USSR - POPULATION 193,000,000 - AREA 8,500,000 SQ MI"), (BIG, "POPULATION 193,000,000 | AREA 8,500,000"),
+     (BIG, "POPULATION 193,000,000 • AREA 8,500,000"), (BIG, "POPULATION 193,000,000 / AREA 8,500,000 SQ MI"),
+     (BIG, "Dân số 193.000.000 - Diện tích 22.400.000 km2"), (BIG, "POPULATION 193,000,000 (EST.)"), (BIG, "Dân số 193.000.000 (ước tính)"),
+     (BIG, "POPULATION .... 193,000,000"), (BIG, "POPULATION ......... 193,000,000"), (BIG, "POPULATION . . . . 193,000,000"),
+     (BIG, "POPULATION | 193,000,000 | AREA"),
+     (BIG, "The text 'POPULATION 193,000,000' appears over a map"), (BIG, "Chữ 'DÂN SỐ 193.000.000' hiện trên màn hình"),
+     (BIG, "Text: POPULATION 193,000,000 over a map of the USSR"), (BIG, "A map of the USSR with the caption POPULATION 193,000,000 below"),
+     (BIG, "POPULATION 193,000,000 AREA 8,500,000 SQUARE MILES"), (BIG, "Dân số 193.000.000 trong năm 1941"), (BIG, "POPULATION 193,000,000 as of 1941"),
+     ((25000, "people"), "A sign: POPULATION 25,000 visible on the right"), ((25000, "people"), "Biển ghi dân số 25.000 bên đường"),
+     (P, "POPULATION 1,500 ELEVATION 300 FT"), (P, "POPULATION 1500 (1941)"), (P, "POPULATION 1,500 - 1941"), (P, "POPULATION 1500 IN 1941"),
+     # R14 a count per period, a footnote mark
+     (P, "1.500 người/ngày"), (P, "1.500 người mỗi ngày"), (P, "1,500 people per day"), (P, "1,500 PEOPLE/DAY"), (P, "1.500 người/tháng"),
+     (P, "1.500 người / 3 ngày"), (P, "1.500 người mỗi bên"), (P, "1,500 men per regiment"), (P, "1500 người một ngày"),
+     (PL, "1,500 planes per month"), (PL, "1.500 máy bay/tháng"), (PL, "1500 máy bay/ngày"), (T, "1,500 tanks per month"), (T, "1500 tanks per month"),
+     (BIG, "193,000,000* people"), (BIG, "193,000,000+ people"), (BIG, "193,000,000 † people"),
+     (BIG, "193,000,000 PEOPLE OF THE USSR"), (P, "1500 người trên quảng trường"), (P, "1.500 lính"), (P, "Đức mất 1 500 lính"), (PL, "Đức mất 1.500 máy bay"),
+    ]
+    # a narrated count stays that count: a bare figure or the figure with another unit never shows it
+    SAID = [
+     ("Bản đồ ghi 1.500 máy bay mỗi tháng.", "1500 MILES"), ("Trên bản đồ hiện dòng chữ: ngày 22 tháng 6, 1.500 người đã chết.", "ROUTE 1500 MILES"),
+     ("Biểu đồ cho thấy tháng 6 1.500 người thiệt mạng.", "1500 MILES"), ("Bảng thống kê ghi 1.500 người mỗi ngày.", "1500 FEET"),
+     ("Bảng ghi nhà máy sản xuất 1.500 xe tăng mỗi tháng.", "ROUTE 1500"), ("Bảng ghi trong tháng 6, 1.500 người đã chết.", "1500 MILES"),
+     ("Bảng ghi tháng 6: 1.500 người chết.", "1500 MILES"), ("Bảng ghi tháng 7 1.500 xe tăng tiến vào.", "1500 MILES"),
+     ("Bảng ghi top 1500 người giàu nhất.", "1500 MILES"), ("Bảng ghi với số 1.500 người, họ tiến lên.", "1500 MILES"),
+     ("Bảng ghi số 1.500 người này bị bắt.", "1500"), ("Biểu đồ ghi mật độ 1.500 người/km2.", "ROUTE 1500"),
+     ("Bảng ghi hãng bán 1.500 máy bay mỗi năm.", "1500 FEET"), ("Bảng ghi June 22: 1,500 planes were lost.", "1500 MILES"),
+     ("Bảng ghi tháng 6 1500 người chết.", "1500 MILES"), ("Bảng ghi 1500 người máy.", "1500"), ("Biểu đồ ghi 1500 người trên mỗi km vuông.", "1500 KM"),
+    ]
+
+    @staticmethod
+    def confirmed(wanted: tuple[int, str], evidence: str) -> list[str]:
+        stated = said.Claims((said.Quantity(wanted[0], wanted[1], wanted[1]),), (), (), True)
+        return said.check(stated, evidence).verified
+
+    def test_none_of_these_confirms_the_count(self):
+        for wanted, evidence in self.NOT:
+            self.assertEqual(self.confirmed(wanted, evidence), [], (wanted, evidence))
+
+    def test_all_of_these_still_confirm_the_count(self):
+        for wanted, evidence in self.YES:
+            self.assertEqual(len(self.confirmed(wanted, evidence)), 1, (wanted, evidence))
+
+    def test_a_narrated_count_is_not_shown_by_the_bare_figure(self):
+        for sentence, evidence in self.SAID:
+            result = said.check(said.of(sentence), evidence)
+            read = said.statuses({"display": True, **result.to_dict()})
+            self.assertTrue(read, sentence)
+            self.assertNotIn(said.CONFIRMED, [status for _, status in read], (sentence, evidence, read))
+        # the label keeps the unit the sentence said, and the frame that shows the count confirms it
+        self.assertEqual(verdict("Bản đồ ghi 1.500 máy bay mỗi tháng.", "1,500 PLANES")[0], ["1.500 máy bay"])
+        self.assertEqual(verdict("Biểu đồ ghi mật độ 1.500 người/km2.", "1500 MILES")[1], ["1.500 người"])
+        self.assertEqual(verdict("Bảng ghi top 1500 người giàu nhất.", "1,500 PEOPLE")[0], ["1.500 người"])
+        # a price, a date or a model states no count at all (the figure stays a number to show, as before #817)
+        self.assertEqual(said.of("Bảng giá ghi 1.500 đồng/người.").quantities[0].wide, None)
+        self.assertEqual(said.of("Bảng ghi T-34 xe tăng.").quantities, ())
+        self.assertEqual(said.of("Biểu đồ thu nhập đầu người 1500").quantities, (said.Quantity(1500),))
+        self.assertEqual(said.of("Biểu đồ thu nhập đầu người 1500").quantities[0].near, None)
+        self.assertEqual(said.of("Bản đồ mật độ dân số 1500").quantities[0].near, None)
+
+    def test_spaced_groups_join_only_where_an_amount_is_expected(self):
+        for evidence in ("1 500 người", "POPULATION 1 500", "Dân số: 1 500", "khoảng 1 500 người", "Đức mất 1 500 lính",
+                         "(1 500 người)", "tổng số 1 500 người"):
+            self.assertEqual([q.value for q in said.quantities(evidence)], [1500], evidence)
+        for evidence in ("Group 1 500 people", "Đợt 1 500 máy bay", "Q1 500 people", "22-6 300 lính", "JUNE 22 300 SOLDIERS",
+                         "Tuần 1 500 người", "22/6 300 lính"):
+            self.assertNotIn(True, [q.value >= 1000 for q in said.quantities(evidence)], evidence)
+
+    def test_a_line_ends_at_every_line_break_and_at_a_tab(self):
+        for evidence in ("1500\rPEOPLE", "1500\u2028PEOPLE", "1500\x0bPEOPLE", "1500\x0cPEOPLE", "1500\x85PEOPLE", "1500\tPEOPLE",
+                         "POPULATION\r1500", "POPULATION\t1500", "POPULATION\u20291500"):
+            self.assertEqual(verdict(HEADS, evidence), ([], ["1.500 người"], [], []), repr(evidence))
+        for evidence in ("1500 PEOPLE", "1500\u00a0PEOPLE", "1500\u202fPEOPLE", "1500  PEOPLE"):
+            self.assertEqual(verdict(HEADS, evidence)[0], ["1.500 người"], repr(evidence))
