@@ -17,6 +17,7 @@ subtitle result instead of silently returning fixture text.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from hashlib import sha256
 import json
@@ -25,12 +26,14 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import sys
+import tempfile
 import threading
 import time
 import uuid
 import wave
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 
 def _prepare_worker_import_path() -> None:
@@ -849,13 +852,187 @@ def _mastering_options(config: WorkerConfig) -> MasteringOptions:
         raise ProductionJobError("MASTERING_OPTIONS_INVALID", f"{path.name}: {error}") from error
 
 
-def _output_loudness(config: WorkerConfig, video: Path) -> dict[str, Any] | None:
-    """What the viewer hears: the final MP4's audio after AAC, measured once for QC (mastering on only)."""
+def _output_measurement(config: WorkerConfig, video: Path) -> tuple[dict[str, Any] | None, str | None]:
+    """What the viewer hears: the final MP4's audio after AAC, measured once for QC (mastering on only), as
+    (loudness, error). (None, None) is silence; (None, "<reason>") a measurement that could not be taken (issue #821
+    tells them apart: a failed measurement is never read as a pass). Never raises."""
     try:
         measured = mastering_measure.loudness(config.ffmpeg_path, video)
-    except (mastering_measure.MeasureError, ValueError):  # ValueError: a malformed loudnorm block (issue #715)
-        return None
-    return measured.to_dict() if measured else None
+    except (mastering_measure.MeasureError, ValueError) as error:  # ValueError: a malformed loudnorm block (issue #715)
+        return None, f"{type(error).__name__}: {str(error)[:200]}"
+    return (measured.to_dict() if measured else None), None
+
+
+def _output_loudness(config: WorkerConfig, video: Path) -> dict[str, Any] | None:
+    """The final MP4's loudness after AAC, or None (silence or a failed measurement)."""
+    return _output_measurement(config, video)[0]
+
+
+# The render's own AAC arguments (media/adapter.py ``render`` and the joining pass of ``_render_parts``). The AAC
+# trial (issue #821) must encode exactly as the export does, so its true peak is the export's. Kept here instead of
+# changing adapter.py, whose hash is part of every render identity; a test asserts the render still uses exactly these.
+AAC_RENDER_ARGS = ("-c:a", "aac", "-b:a", "192k")
+
+
+def _is_link(path: Path) -> bool:
+    """Whether ``path`` itself (never what it points to) is a symlink or any Windows reparse point (a symlink, a
+    junction or another name surrogate). False when nothing is there."""
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return False
+    return stat.S_ISLNK(info.st_mode) or bool(getattr(info, "st_file_attributes", 0) & 0x400)  # REPARSE_POINT
+
+
+@contextmanager
+def _private_scratch(folder: Path) -> Iterator[Path]:
+    """A fresh directory inside ``folder`` for FFmpeg's intermediate outputs (issue #821 review). Its name is
+    unpredictable and the OS creates it exclusively (``mkdtemp``: mode 0700, fails on any existing name, so a planted
+    file, symlink or junction is skipped, never used), so FFmpeg's ``-y`` only ever writes to files nobody else could
+    have placed. ``folder`` itself must not be a link. Removed with everything in it on the way out (``rmtree``
+    unlinks a link inside instead of following it)."""
+    if _is_link(folder):
+        raise OSError(f"{folder.name}: the mastering folder is a link")
+    scratch = Path(tempfile.mkdtemp(prefix=".scratch-", dir=os.fspath(folder)))
+    try:
+        yield scratch
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _replace_plain(source: Path, target: Path) -> None:
+    """``os.replace`` that never writes through a link at ``target``. A rename replaces a symlink itself, never what
+    it points to; Windows' MoveFileEx does so for a file symlink but refuses a directory link (a junction or a
+    directory symlink), so a link there is removed first (removing a link never touches its target)."""
+    if _is_link(target):
+        try:
+            os.unlink(target)
+        except (IsADirectoryError, PermissionError):
+            os.rmdir(target)  # a directory link on Windows: rmdir removes the link, not the folder it names
+    os.replace(source, target)
+
+
+def _aac_trial(ffmpeg: Path, wav: Path, trial: Path) -> mastering_measure.Loudness | None:
+    """``wav`` encoded with the render's AAC arguments, then measured with the meter of ``output_loudness``
+    (``loudnorm`` input_tp). None for silence; MeasureError when FFmpeg fails. The trial file is always removed."""
+    try:
+        mastering_measure._capture([str(ffmpeg), "-hide_banner", "-nostdin", "-v", "error", "-y", "-i", str(wav),
+                                    "-map", "0:a:0", *AAC_RENDER_ARGS, "-f", "mp4", str(trial)])
+        return mastering_measure.loudness(ffmpeg, trial)
+    finally:
+        trial.unlink(missing_ok=True)
+
+
+def _apply_audio_filter(ffmpeg: Path, source: Path, audio_filter: str, target: Path) -> None:
+    """``source`` through ``audio_filter`` to 16-bit PCM at ``target``: written in a private directory beside it, then
+    renamed in place (a link at ``target`` is replaced, never written through; issue #821 review)."""
+    with _private_scratch(target.parent) as scratch:
+        partial = scratch / (target.stem + ".partial.wav")
+        mastering_measure._capture([str(ffmpeg), "-hide_banner", "-nostdin", "-v", "error", "-y", "-i", str(source),
+                                    "-map", "0:a:0", "-af", audio_filter, "-c:a", "pcm_s16le", str(partial)])
+        _replace_plain(partial, target)
+
+
+def _aac_conform(ffmpeg: Path, source: Path, audio_filter: str | None, mastered: Path,
+                 progress: Any = None) -> tuple[str | None, dict[str, Any]]:
+    """Keep the dubbed mix's true peak under the ceiling *after AAC* (issue #821) with a linear gain only.
+
+    The planned audio (``mastered`` made from ``source`` with ``audio_filter``, or ``source`` itself when there is no
+    filter) is trial-encoded with the render's AAC arguments and measured. While the encoded peak is over
+    ``PEAK_DBTP`` and fewer than ``AAC_TRIM_TRIES`` trims were tried, the mix is made again from ``source`` with the
+    planner's filter followed by ``volume=-<trim>dB`` (cumulative from the PCM, never from decoded AAC), encoded and
+    measured again: the AAC overshoot is not monotonic in gain, so nothing is predicted. If every try is still over,
+    the attempt with the lowest measured peak is kept (the QC then reports it as failed).
+
+    Returns the audio filter to render with (``mastered`` then holds its output when it is not None) and the record
+    {"first_true_peak", "true_peak", "trim_db", "tries"}. Raises (MeasureError, OSError) when a trial cannot run;
+    ``mastered`` then still holds the planner's own output. The trial file and the trim candidates are written only
+    inside a private directory (``_private_scratch``) that is removed on the way out; the chosen candidate is renamed
+    over ``mastered`` (a link there is replaced, never written through; issue #821 review)."""
+    with _private_scratch(mastered.parent) as scratch:
+        return _aac_conform_in(ffmpeg, source, audio_filter, mastered, scratch, progress)
+
+
+def _aac_conform_in(ffmpeg: Path, source: Path, audio_filter: str | None, mastered: Path, folder: Path,
+                    progress: Any) -> tuple[str | None, dict[str, Any]]:
+    """``_aac_conform`` with every intermediate output in ``folder``, a private directory it owns."""
+    trial = folder / "aac_trial.m4a"
+    planned = mastered if audio_filter else source
+    found = _aac_trial(ffmpeg, planned, trial)
+    first = found.true_peak if found else None
+    # (measured peak, cumulative trim, audio file); the untrimmed attempt is the planner's own audio
+    attempts: list[tuple[float | None, float, Path]] = [(first, 0.0, planned)]
+    # the candidates are left in ``folder``: the caller removes it, and every file in it, on the way out
+    while attempts[-1][0] is not None and attempts[-1][0] > dubbing_master.PEAK_DBTP \
+            and len(attempts) <= dubbing_master.AAC_TRIM_TRIES:
+        trim = dubbing_master.aac_trim(attempts[-1][0], attempts[-1][1])
+        if progress is not None:
+            progress(trim)
+        candidate = folder / f"final_mix_trim{len(attempts)}.wav"
+        _apply_audio_filter(ffmpeg, source, dubbing_master.with_trim(audio_filter, trim), candidate)
+        found = _aac_trial(ffmpeg, candidate, trial)
+        if found is None:  # a lowered copy of sound that was measured cannot be silent
+            raise mastering_measure.MeasureError("the trimmed AAC trial measured no sound")
+        attempts.append((found.true_peak, trim, candidate))
+    measured = [attempt for attempt in attempts if attempt[0] is not None]
+    peak, trim, chosen = min(measured, key=lambda attempt: attempt[0]) if measured else attempts[0]
+    if trim > 0:
+        _replace_plain(chosen, mastered)
+    return dubbing_master.with_trim(audio_filter, trim), {
+        "first_true_peak": first, "true_peak": peak, "trim_db": trim, "tries": len(attempts)}
+
+
+def _mastering_conformance(path: str, trial: Mapping[str, Any] | None, output: Mapping[str, Any] | None,
+                           error: str | None, warnings: list[str]) -> dict[str, Any]:
+    """The final MP4's true peak against the −1.5 dBTP ceiling after AAC (issue #821), from the one post-render
+    measurement. ``path``: "B2" (the mastered dubbed mix is heard), "B1" (fell back to the source sound, never
+    trimmed) or "none" (Vietsub only). Appends MASTERING_TRUE_PEAK_OVER / _UNMEASURED to ``warnings`` when the output
+    misses the ceiling or could not be measured; neither is informational, so the job reports its warnings.
+    On B1 and Vietsub only a failed measurement adds ``unmeasured: true`` (``ceiling_met`` stays None, never a pass)."""
+    ceiling = dubbing_master.PEAK_DBTP
+    peak = output["true_peak"] if output else None
+    over = peak is not None and peak > ceiling
+    record: dict[str, Any] = {"ceiling_dbtp": ceiling, "true_peak_dbtp": peak, "path": path}
+    if path != "B2":
+        # the source sound is kept as it is: measured and recorded, never trimmed
+        record.update(status="not_applicable", trim_db=0.0, tries=0, ceiling_met=None if peak is None else not over)
+        if error is not None:
+            record["unmeasured"] = True
+        if path == "B1" and over:
+            warnings.append(f"MASTERING_TRUE_PEAK_OVER: {peak:.2f} dBTP > {ceiling:.1f} dBTP after AAC "
+                            "(B1, âm thanh gốc, không chỉnh)")
+        elif path == "B1" and error is not None:
+            warnings.append(f"MASTERING_TRUE_PEAK_UNMEASURED: the final MP4 could not be measured after AAC ({error[:120]}); "
+                            f"the {ceiling:.1f} dBTP ceiling is not confirmed (B1, âm thanh gốc, không chỉnh)")
+        return {"status": record.pop("status"), **record}
+    trim = float((trial or {}).get("trim_db") or 0.0)
+    tries = int((trial or {}).get("tries") or 0)
+    record.update(trim_db=trim, tries=tries)
+    if error is not None:
+        status = "unmeasured"
+        warnings.append(f"MASTERING_TRUE_PEAK_UNMEASURED: the final MP4 could not be measured after AAC ({error[:120]}); "
+                        f"the {ceiling:.1f} dBTP ceiling is not confirmed")
+    elif peak is None:
+        status = "silent"
+    elif over:
+        status = "failed"
+        if trim > 0:
+            done = f"trimmed {trim:.2f} dB over {tries} trial encodes"
+        elif tries > 1:  # every trim was tried and none measured lower than the untrimmed mix
+            done = f"no trim lowered the peak over {tries} trial encodes; kept untrimmed"
+        else:
+            done = "no AAC trial result"
+        warnings.append(f"MASTERING_TRUE_PEAK_OVER: {peak:.2f} dBTP > {ceiling:.1f} dBTP after AAC ({done})")
+    else:
+        status = "corrected" if trim > 0 else "passed"
+    return {"status": status, **record}
+
+
+def _mastering_result(conformance: str, downgrade: bool) -> dict[str, str]:
+    """The three separate answers of a mastered Lồng tiếng export (issue #821): the render succeeded (a failed render
+    raises before QC), whether mastering met its ceiling, and the final QC (any non-informational warning)."""
+    return {"technical_render": "success", "mastering_conformance": conformance,
+            "final_qc": "warning" if downgrade else "passed"}
 
 
 def _wav_rate(path: Path, default: int = 48_000) -> int:
@@ -864,6 +1041,23 @@ def _wav_rate(path: Path, default: int = 48_000) -> int:
             return reader.getframerate()
     except (OSError, EOFError, wave.Error):
         return default
+
+
+def _aac_checked(master: dubbing_master.DubbingMaster, config: WorkerConfig, audio_path: Path, mastered: Path,
+                 emitter: Any) -> dubbing_master.DubbingMaster:
+    """The plan after its AAC trial (issue #821). A trial that cannot run leaves the plan as the planner made it and
+    records ``aac_trial: null``: it never turns mastering off (the export is still measured after the render, and a
+    failed measurement there is reported, never read as a pass)."""
+    emitter.progress(0.83, "Đang thử mã hóa AAC để kiểm tra đỉnh âm thanh")
+    try:
+        audio_filter, trial = _aac_conform(
+            config.ffmpeg_path, audio_path, master.audio_filter, mastered,
+            lambda trim: emitter.progress(0.84, f"Đang giảm thêm {trim:.1f} dB để đỉnh sau AAC không vượt trần".replace(".", ",")))
+    except Exception as error:  # noqa: BLE001 - a trial never turns mastering off (the blanket except below would)
+        return replace(master, aac_trial=None, notes=(*master.notes, "Âm lượng sau AAC: không mã hóa thử được "
+                                                      f"({type(error).__name__}), đỉnh chỉ được đo trên bản xuất sau khi render."))
+    note = dubbing_master.aac_note(trial)
+    return replace(master, audio_filter=audio_filter, aac_trial=trial, notes=(*master.notes, *((note,) if note else ())))
 
 
 def _dubbing_mastering(options: MasteringOptions, config: WorkerConfig, probe: MediaProbeResult, source_hash: str,
@@ -876,6 +1070,10 @@ def _dubbing_mastering(options: MasteringOptions, config: WorkerConfig, probe: M
     try:
         folder = work_dir / "mastering"
         folder.mkdir(parents=True, exist_ok=True)
+        if _is_link(folder):
+            # a symlink or junction planted at the folder: refused here, before any plan, partial or trial is read or
+            # written through it, so the job renders as off whatever the planner would decide (issue #821 review)
+            raise OSError(f"{folder.name}: the mastering folder is a link")
         plan_path, mastered = folder / "dubbing-plan.json", folder / "final_mix_mastered.wav"
         identity = sha256(json.dumps({"options": options.to_dict(), "recipe": dubbing_master.RECIPE, "source": source_hash,
                                       "mix": _sha256(audio_path) if audio_path is not None else None},
@@ -885,6 +1083,10 @@ def _dubbing_mastering(options: MasteringOptions, config: WorkerConfig, probe: M
         if stage.get("input_hash") == identity and plan_path.is_file():
             document = json.loads(plan_path.read_text(encoding="utf-8"))
             if document.get("audio_filter") and not (mastered.is_file() and _sha256(mastered) == stage.get("mastered_sha256")):
+                document = None
+            elif audio_path is not None and document.get("aac_trial") is None:
+                # the AAC trial could not run last time (a timeout, a file briefly locked): try it again rather than
+                # keep an untrimmed plan for good (issue #821)
                 document = None
         if document is None:
             emitter.progress(0.80, "Đang đo âm lượng và hình ảnh để hậu kỳ")
@@ -900,11 +1102,11 @@ def _dubbing_mastering(options: MasteringOptions, config: WorkerConfig, probe: M
             result: dict[str, Any] = {"input_hash": identity, "path": str(plan_path)}
             if master.audio_filter and audio_path is not None:
                 emitter.progress(0.82, "Đang chuẩn hóa âm lượng bản lồng tiếng")
-                partial = mastered.with_name(mastered.stem + ".partial.wav")
-                mastering_measure._capture([str(config.ffmpeg_path), "-hide_banner", "-nostdin", "-v", "error", "-y",
-                                            "-i", str(audio_path), "-map", "0:a:0", "-af", master.audio_filter,
-                                            "-c:a", "pcm_s16le", str(partial)])
-                os.replace(partial, mastered)
+                _apply_audio_filter(config.ffmpeg_path, audio_path, master.audio_filter, mastered)
+            if audio_path is not None:
+                master = _aac_checked(master, config, audio_path, mastered, emitter)
+                result["aac_trial"] = master.aac_trial
+            if master.audio_filter and audio_path is not None:
                 result["mastered_sha256"] = _sha256(mastered)
             document = master.to_dict()
             _atomic_json(plan_path, document)
@@ -2467,23 +2669,36 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
     if b2_audio is None:
         background_summary = {"mode": "original"}
     qc_path = export_dir / "qc_report.json"
-    qc = {"schema_version": 1, "status": "passed", "source_probe": probe.to_dict(), "output_probe": output_probe.to_dict(), "audio": audio_metadata,
-          **({"caption_blur": {"auto": caption_scan_summary, "regions": len(blur_regions), **({"style": cover_args["cover_style"].mode} if "cover_style" in cover_args else {})}} if blur_regions or caption_scan_summary else {}), "warnings": warnings, "downgrade": any(not warning.startswith(INFORMATIONAL_WARNINGS) for warning in warnings), "validated_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    mastering_qc: dict[str, Any] | None = None
     if mastering_document is not None:
         notes = list(mastering_document["notes"])
         if any(warning.startswith("B2_AUDIO_FALLBACK_TO_B1") for warning in warnings):
-            # the dubbed mix is not in the output: what mastering said about it no longer holds
-            notes = [note for note in notes if not note.startswith(("Âm lượng:", "Phụ đề:"))]
+            # the dubbed mix is not in the output: what mastering said about it (and its AAC trim) no longer holds
+            notes = [note for note in notes if not note.startswith(("Âm lượng:", "Âm lượng sau AAC:", "Phụ đề:"))]
             notes.append("Đã quay về âm thanh gốc (B1): không chuẩn hóa âm lượng bản lồng tiếng, phụ đề giữ thời gian nguồn.")
-        # "loudness": a normalisation filter was applied to the dubbed mix in the output (issue #715 keeps that meaning);
+        # "loudness": a normalisation filter was applied to the dubbed mix in the output (issue #715 keeps that meaning;
+        # a trim-only "volume" from the AAC trial counts, issue #821);
         # "output_loudness": what the viewer hears, the final MP4 after AAC, measured whenever mastering is on and the
         # output has sound: no filter needed, B2 or the B1 fallback alike. A failed measurement is None, never fatal.
         loudness_applied = bool(mastering_document["audio_filter"]) and b2_audio is not None
-        qc["mastering"] = {"level": mastering_options.level, "recipe": dubbing_master.RECIPE, "notes": notes,
-                           "loudness": loudness_applied,
-                           "video_filters": mastering_document["video_filters"], "climax": mastering_document["climax"],
-                           "measured": mastering_document["measured"],
-                           "output_loudness": _output_loudness(config, final_path) if output_probe.has_audio else None}
+        output_loudness, output_error = _output_measurement(config, final_path) if output_probe.has_audio else (None, None)
+        # Issue #821: the −1.5 dBTP ceiling judged on that measurement. Its warnings go in before "downgrade" is computed.
+        conformance = _mastering_conformance(
+            "B2" if b2_audio is not None else "B1" if config.enable_dubbing else "none",
+            mastering_document.get("aac_trial"), output_loudness, output_error, warnings)
+        mastering_qc = {"level": mastering_options.level, "recipe": dubbing_master.RECIPE, "notes": notes,
+                        "loudness": loudness_applied,
+                        "video_filters": mastering_document["video_filters"], "climax": mastering_document["climax"],
+                        "measured": mastering_document["measured"],
+                        "output_loudness": output_loudness, "conformance": conformance}
+    # "status" stays the literal "passed": it means the report is valid and the render passed its technical checks
+    # (every real failure raises before this point), and the supervisor reads any other value as an unreadable report.
+    # How the output measured up is "downgrade" (from the warnings) and, with mastering on, mastering["result"].
+    qc = {"schema_version": 1, "status": "passed", "source_probe": probe.to_dict(), "output_probe": output_probe.to_dict(), "audio": audio_metadata,
+          **({"caption_blur": {"auto": caption_scan_summary, "regions": len(blur_regions), **({"style": cover_args["cover_style"].mode} if "cover_style" in cover_args else {})}} if blur_regions or caption_scan_summary else {}), "warnings": warnings, "downgrade": any(not warning.startswith(INFORMATIONAL_WARNINGS) for warning in warnings), "validated_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    if mastering_qc is not None:
+        mastering_qc["result"] = _mastering_result(mastering_qc["conformance"]["status"], qc["downgrade"])
+        qc["mastering"] = mastering_qc
     if speaker_summary is not None:
         qc["speakers"] = speaker_summary
     qc["background"] = background_summary
@@ -2534,6 +2749,8 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
         if copied:
             warnings.append("EDITABLE_LINK_FALLBACK: the output volume cannot hard-link; editable audio was copied: " + ", ".join(copied))
             qc["downgrade"] = True
+            if "mastering" in qc:
+                qc["mastering"]["result"] = _mastering_result(qc["mastering"]["conformance"]["status"], True)
             _atomic_json(qc_path, qc)
         # The separation stem, the generation's bed copy and the mixer's source
         # snapshot repeat the editable tracks byte for byte.

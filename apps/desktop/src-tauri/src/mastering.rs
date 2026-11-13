@@ -316,8 +316,8 @@ fn qc_view(dir: &Path) -> Result<Value, String> {
     Ok(json!({
         "level": mastering["level"], "notes": mastering["notes"], "loudness": mastering["loudness"],
         "video_filters": mastering["video_filters"], "measured": mastering["measured"],
-        "output_loudness": mastering["output_loudness"], "climax": mastering["climax"],
-        "climax_decision": decision, "fallback": fallback,
+        "output_loudness": mastering["output_loudness"], "conformance": mastering["conformance"],
+        "climax": mastering["climax"], "climax_decision": decision, "fallback": fallback,
     }))
 }
 
@@ -642,6 +642,18 @@ mod tests {
         assert_eq!(view["level"], "dynamic");
         assert_eq!(view["fallback"], true);
         assert_eq!(view["climax_decision"], Value::Null);
+        assert_eq!(view["conformance"], Value::Null, "a report from before issue #821 has none");
+        // issue #821: the post-AAC conformance of the export is forwarded as written (the card checks it)
+        let conformance = json!({"status": "corrected", "ceiling_dbtp": -1.5, "true_peak_dbtp": -2.29,
+                                 "trim_db": 0.49, "tries": 2, "path": "B2"});
+        fs::write(dir.join("qc_report.json"), serde_json::to_vec(&json!({
+            "warnings": [], "mastering": {"level": "light", "notes": [], "loudness": true, "video_filters": [],
+                                          "measured": {}, "climax": null, "conformance": conformance.clone()}})).unwrap()).unwrap();
+        assert_eq!(qc_view(&dir).unwrap()["conformance"], conformance);
+        fs::write(dir.join("qc_report.json"), serde_json::to_vec(&json!({
+            "warnings": ["B2_AUDIO_FALLBACK_TO_B1: x"],
+            "mastering": {"level": "dynamic", "notes": ["Âm lượng: …"], "loudness": false, "video_filters": [],
+                          "measured": {}, "climax": {"start_ms": 1000, "end_ms": 6000}}})).unwrap()).unwrap();
         fs::create_dir_all(climax_file(&dir).parent().unwrap()).unwrap();
         fs::write(climax_file(&dir), r#"{"climax":"keep"}"#).unwrap();
         assert_eq!(qc_view(&dir).unwrap()["climax_decision"], "keep");
