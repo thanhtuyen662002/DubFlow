@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from engine.dubflow.product import render as narration_render
-from engine.dubflow.product.job import ProductError, _file
+from engine.dubflow.product.job import ProductError, _file, _plain_file
 from . import layout
 
 CompilationError = ProductError
@@ -107,13 +107,16 @@ def _object(value: Any, label: str, allowed: set[str], required: set[str] = froz
 
 def _source(value: Any, label: str) -> Source:
     item = _object(value, label, {"video", "start_ms", "end_ms", "transcript", "notes", "credit", "rights"}, {"video"})
-    video = _file(item["video"], VIDEO_SUFFIXES, "video nguồn")
+    # the desktop's one source rule again (Issue #816): a re-render without an edit reuses the spec unchecked by the host
+    video = _plain_file(item["video"], VIDEO_SUFFIXES, "video nguồn")
     start, end = _whole(item.get("start_ms"), "Mốc bắt đầu"), _whole(item.get("end_ms"), "Mốc kết thúc")
     if end is not None and end <= (start or 0):
         raise CompilationError(f"{label}: mốc kết thúc phải sau mốc bắt đầu")
     transcript = None
     if item.get("transcript") is not None:
-        transcript = _file(item["transcript"], frozenset({".srt"}), "phụ đề nguồn")
+        # a transcript the spec names is a file the user chose: `_file` keeps its old refusals' text, the rule adds the rest
+        _file(item["transcript"], frozenset({".srt"}), "phụ đề nguồn")
+        transcript = _plain_file(item["transcript"], frozenset({".srt"}), "phụ đề nguồn")
     else:
         beside = video.parent / "captions_vi.srt"  # a Hàng đợi run keeps its Vietnamese subtitles beside the source
         transcript = beside if beside.is_file() else None
@@ -210,7 +213,7 @@ def load(value: dict) -> Program:
     editorial = _editorial(value.get("editorial"))
     return Program(_text(value["title"], "Tiêu đề", 120, required=True), value["layout"],
                    _text(value["voice_id"], "Giọng đọc", 96, required=True), float(speed),
-                   None if value.get("music") is None else _file(value["music"], narration_render.MUSIC_SUFFIXES, "nhạc nền"),
+                   None if value.get("music") is None else _plain_file(value["music"], narration_render.MUSIC_SUFFIXES, "nhạc nền"),
                    float(volume), kind, ranking, bool(program.get("apply_suggestion", False)),
                    _text(value.get("hook"), "Câu mở màn", 300), _text(value.get("intro"), "Mở đầu", 800),
                    _text(value.get("outro"), "Kết thúc", 800), tuple(items), mastering, editorial)

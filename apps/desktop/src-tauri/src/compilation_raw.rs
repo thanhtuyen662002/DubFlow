@@ -17,11 +17,11 @@ use std::process::{Command, Stdio};
 use std::os::windows::process::CommandExt;
 
 use crate::compilation::text;
+use crate::product::SourceRefusal;
 use crate::{control_root, display_path, fail, load_voice_catalog, version_root, AiTranslation, VoiceCatalog, CREATE_NO_WINDOW};
 
 /// The formats the v2 engine reads (`program.VIDEO_SUFFIXES`); anything else is refused by name.
 pub(crate) const SOURCE_EXTENSIONS: [&str; 6] = ["mp4", "mov", "mkv", "webm", "m4v", "avi"];
-const MUSIC_EXTENSIONS: [&str; 6] = ["mp3", "m4a", "aac", "wav", "ogg", "flac"];
 const LAYOUTS: [&str; 2] = ["bang-thong-tin", "toan-man-hinh"];
 const KINDS: [&str; 2] = ["top_n", "list"];
 const RIGHTS: [&str; 4] = ["owned", "licensed", "permitted", "unknown"];
@@ -89,20 +89,16 @@ pub struct RawRequest {
     cpu_only: bool,
 }
 
-/// A source video: an absolute path to a plain local file (not a link) of a supported format.
+/// A source video: Bán hàng's source rule (`product::check_source`, Issue #816) with Tổng hợp's own texts, in the same
+/// order as before: the path, the format, the file itself (not a link), the folders on the way (not links), and never a
+/// file of the app's own work folders.
 fn source_file(value: &str) -> Result<PathBuf, String> {
     let path = PathBuf::from(value);
-    let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
-    if !path.is_absolute() || path.components().any(|part| matches!(part, Component::ParentDir | Component::CurDir)) {
-        return Err(fail(format!("Đường dẫn video nguồn không hợp lệ: {name}")));
-    }
-    if !path.extension().and_then(|ext| ext.to_str())
-        .is_some_and(|ext| SOURCE_EXTENSIONS.iter().any(|known| known.eq_ignore_ascii_case(ext))) {
-        return Err(fail(format!("Định dạng chưa hỗ trợ: {name} (dùng MP4, MOV, MKV, WEBM, M4V hoặc AVI)")));
-    }
-    let metadata = fs::symlink_metadata(&path).map_err(|_| fail(format!("Không tìm thấy video nguồn: {name}")))?;
-    if crate::edit::is_link(&metadata) || !metadata.is_file() {
-        return Err(fail(format!("Video nguồn phải là tệp thật trên máy, không phải lối tắt: {name}")));
+    let name = crate::product::source_name(&path);
+    match crate::product::check_source(&path, &SOURCE_EXTENSIONS) {
+        Ok(()) => {}
+        Err(SourceRefusal::Unsupported) => return Err(fail(format!("Định dạng chưa hỗ trợ: {name} (dùng MP4, MOV, MKV, WEBM, M4V hoặc AVI)"))),
+        Err(refusal) => return Err(refusal.message("Video nguồn", &name)),
     }
     if is_below_output(&path) {
         return Err(fail(format!("Video nguồn nằm trong thư mục làm việc của DubFlow: {name}")));
@@ -115,15 +111,9 @@ fn is_below_output(path: &Path) -> bool {
     path.components().any(|part| matches!(part, Component::Normal(name) if name == ".dubflow-work"))
 }
 
+/// The music: the same source rule; its one message as before, and the new folder-link refusal by name.
 fn music_file(value: &str) -> Result<PathBuf, String> {
-    let path = PathBuf::from(value);
-    let metadata = fs::symlink_metadata(&path).ok();
-    if !path.is_absolute() || metadata.as_ref().is_none_or(|m| crate::edit::is_link(m) || !m.is_file())
-        || !path.extension().and_then(|ext| ext.to_str())
-            .is_some_and(|ext| MUSIC_EXTENSIONS.iter().any(|known| known.eq_ignore_ascii_case(ext))) {
-        return Err(fail("Không mở được nhạc nền; chọn MP3, M4A, AAC, WAV, OGG hoặc FLAC"));
-    }
-    Ok(path)
+    crate::product::music_source(value)
 }
 
 /// The request as the engine's v2 spec, every field checked; the sources as checked paths.
@@ -727,7 +717,11 @@ mod tests {
         let mut same_rank = good.clone();
         same_rank["items"][1]["rank"] = same_rank["items"][0]["rank"].clone();
         assert!(build_spec(&parse(same_rank), &catalog()).is_err());
-        for video in [display_path(&flv), "relative.mp4".into(), display_path(&base.join("..").join("a.mp4")),
+        // Issue #816: the `..` case names a file that exists (`sub/../a.mp4` is `a.mp4`), so only the `..` refuses it
+        fs::create_dir_all(base.join("sub")).unwrap();
+        let traversal = base.join("sub").join("..").join("a.mp4");
+        assert!(traversal.is_file());
+        for video in [display_path(&flv), "relative.mp4".into(), display_path(&traversal),
                       display_path(&base.join("missing.mp4")), display_path(&base)] {
             let mut bad = good.clone();
             bad["items"][0]["sources"][0]["video"] = json!(video);
@@ -735,6 +729,16 @@ mod tests {
         }
         let error = source_file(&display_path(&flv)).unwrap_err();
         assert!(error.contains("c.flv") && error.contains("chưa hỗ trợ"), "{error}");
+        // Tổng hợp's texts, unchanged by the shared rule
+        assert_eq!(source_file(&display_path(&traversal)).unwrap_err(), "Đường dẫn video nguồn không hợp lệ: a.mp4");
+        assert_eq!(source_file("relative.mp4").unwrap_err(), "Đường dẫn video nguồn không hợp lệ: relative.mp4");
+        assert_eq!(source_file(&display_path(&base.join("missing.mp4"))).unwrap_err(), "Không tìm thấy video nguồn: missing.mp4");
+        fs::create_dir_all(base.join("folder.mp4")).unwrap();
+        assert_eq!(source_file(&display_path(&base.join("folder.mp4"))).unwrap_err(),
+                   "Video nguồn phải là tệp thật trên máy, không phải lối tắt: folder.mp4");
+        // a hard link is the file itself
+        fs::hard_link(&a, base.join("hard.mp4")).unwrap();
+        assert!(source_file(&display_path(&base.join("hard.mp4"))).is_ok());
         for (field, change) in [("startMs", json!(5000)), ("rights", json!("stolen")), ("notes", json!("x".repeat(401)))] {
             let mut bad = good.clone();
             bad["items"][0]["sources"][0][field] = change;
@@ -744,12 +748,38 @@ mod tests {
         let work = base.join("x").join(".dubflow-work");
         fs::create_dir_all(&work).unwrap();
         fs::write(work.join("source.mp4"), b"x").unwrap();
-        assert!(source_file(&display_path(&work.join("source.mp4"))).is_err(), "the app's own files are not sources");
-        #[cfg(unix)]
-        {
-            std::os::unix::fs::symlink(&a, base.join("link.mp4")).unwrap();
-            assert!(source_file(&display_path(&base.join("link.mp4"))).is_err(), "a link is not a source");
+        assert_eq!(source_file(&display_path(&work.join("source.mp4"))).unwrap_err(),
+                   "Video nguồn nằm trong thư mục làm việc của DubFlow: source.mp4", "the app's own files are not sources");
+        // a file link (unix; Windows when this system lets the test make one) is refused with the same text as Bán hàng's
+        if crate::product::tests::link_file(&a, &base.join("link.mp4")) {
+            let link = display_path(&base.join("link.mp4"));
+            assert_eq!(source_file(&link).unwrap_err(), "Video nguồn phải là tệp thật trên máy, không phải lối tắt: link.mp4");
+            assert_eq!(source_file(&link).unwrap_err(),
+                       crate::product::plain_source_file(&link, "Video nguồn", &SOURCE_EXTENSIONS).unwrap_err(), "one rule, one text");
+            let mut linked = good.clone();
+            linked["items"][0]["sources"][0]["video"] = json!(link);
+            assert_eq!(build_spec(&parse(linked), &catalog()).unwrap_err(),
+                       "Mục 1: nguồn 1: Video nguồn phải là tệp thật trên máy, không phải lối tắt: link.mp4");
         }
+        // a file below a folder link or junction is refused; music too
+        let alias = base.join("alias");
+        let linked = crate::product::tests::link_dir(&base.join("sub"), &alias);
+        #[cfg(windows)]
+        assert!(linked, "junctions need no privilege on Windows");
+        if linked {
+            fs::write(base.join("sub").join("b.mp4"), b"x").unwrap();
+            fs::write(base.join("sub").join("song.mp3"), b"x").unwrap();
+            assert_eq!(source_file(&display_path(&alias.join("b.mp4"))).unwrap_err(),
+                       "Video nguồn nằm trong thư mục là lối tắt (symlink/junction), hãy chọn tệp ở vị trí thật: b.mp4");
+            assert!(source_file(&display_path(&base.join("sub").join("b.mp4"))).is_ok(), "the same file at its real place");
+            assert_eq!(music_file(&display_path(&alias.join("song.mp3"))).unwrap_err(),
+                       "Nhạc nền nằm trong thư mục là lối tắt (symlink/junction), hãy chọn tệp ở vị trí thật: song.mp3");
+            assert!(music_file(&display_path(&base.join("sub").join("song.mp3"))).is_ok());
+        }
+        fs::write(base.join("song.mp3"), b"x").unwrap();
+        assert!(music_file(&display_path(&base.join("song.mp3"))).is_ok());
+        assert_eq!(music_file(&display_path(&base.join("sub").join("..").join("song.mp3"))).unwrap_err(),
+                   "Không mở được nhạc nền; chọn MP3, M4A, AAC, WAV, OGG hoặc FLAC");
         let mut unknown = good.clone();
         unknown["shell"] = json!("calc.exe");
         assert!(serde_json::from_value::<RawRequest>(unknown).is_err(), "unknown fields are refused");
