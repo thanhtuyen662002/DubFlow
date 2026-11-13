@@ -1070,6 +1070,10 @@ def _dubbing_mastering(options: MasteringOptions, config: WorkerConfig, probe: M
     try:
         folder = work_dir / "mastering"
         folder.mkdir(parents=True, exist_ok=True)
+        if _is_link(folder):
+            # a symlink or junction planted at the folder: refused here, before any plan, partial or trial is read or
+            # written through it, so the job renders as off whatever the planner would decide (issue #821 review)
+            raise OSError(f"{folder.name}: the mastering folder is a link")
         plan_path, mastered = folder / "dubbing-plan.json", folder / "final_mix_mastered.wav"
         identity = sha256(json.dumps({"options": options.to_dict(), "recipe": dubbing_master.RECIPE, "source": source_hash,
                                       "mix": _sha256(audio_path) if audio_path is not None else None},

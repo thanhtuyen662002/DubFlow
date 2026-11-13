@@ -16,6 +16,25 @@ from engine.dubflow.mastering.measure import Picture
 from engine.dubflow.worker import production_job as worker
 from tests.production.worker.test_cover import CoverFixture
 
+def _directory_link(target, link, kind="symlink"):
+    """A link at ``link`` naming the directory ``target``: a directory symlink, or (``kind="junction"``, Windows only)
+    a directory junction, which needs no privilege. Returns False when the system refuses to create it."""
+    if kind == "symlink":
+        try:
+            os.symlink(target, link, target_is_directory=True)
+            return True
+        except OSError:
+            return False
+    try:
+        import _winapi
+        _winapi.CreateJunction(str(target), str(link))
+        return True
+    except (ImportError, AttributeError, OSError):
+        import subprocess
+        done = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], capture_output=True, check=False)
+        return done.returncode == 0 and os.path.lexists(link)
+
+
 COMPRESSED = Picture(16, 40, 200, 110, (0, 0, 0, 0))  # washed-out picture: black and white pulled in
 
 
@@ -513,29 +532,65 @@ class AacTrueCeilingTests(unittest.TestCase):
         self.assert_no_trial_leftovers(job)
 
     def test_a_link_at_the_mastered_mix_is_replaced_and_a_linked_folder_refused(self):
-        with TemporaryDirectory() as directory:
-            root = Path(directory)
-            outside, folder = root / "outside", root / "mastering"
-            outside.mkdir()
-            folder.mkdir()
-            (outside / "keep.txt").write_bytes(b"keep")
-            target = folder / "final_mix_mastered.wav"
-            try:
-                os.symlink(outside, target, target_is_directory=True)
-            except OSError:
-                self.skipTest("this system refused to create a directory symlink")
-            source = folder / "made.wav"
-            source.write_bytes(b"RIFF")
-            worker._replace_plain(source, target)
-            self.assertFalse(worker._is_link(target))
-            self.assertEqual(target.read_bytes(), b"RIFF")
-            self.assertEqual([(path.name, path.read_bytes()) for path in outside.iterdir()], [("keep.txt", b"keep")])
-            linked = root / "linked"
-            os.symlink(outside, linked, target_is_directory=True)
-            with self.assertRaises(OSError):
-                with worker._private_scratch(linked):
-                    pass
-            self.assertEqual([path.name for path in outside.iterdir()], ["keep.txt"])
+        # a directory symlink everywhere; on Windows a directory junction too (no privilege needed; a rename onto it is
+        # refused, so _replace_plain must remove the junction itself first, never the folder it names)
+        kinds = ("symlink", "junction") if os.name == "nt" else ("symlink",)
+        made = 0
+        for kind in kinds:
+            with self.subTest(kind=kind), TemporaryDirectory() as directory:
+                root = Path(directory)
+                outside, folder = root / "outside", root / "mastering"
+                outside.mkdir()
+                folder.mkdir()
+                (outside / "keep.txt").write_bytes(b"keep")
+                target = folder / "final_mix_mastered.wav"
+                if not _directory_link(outside, target, kind):
+                    continue
+                made += 1
+                self.assertTrue(worker._is_link(target))
+                source = folder / "made.wav"
+                source.write_bytes(b"RIFF")
+                worker._replace_plain(source, target)
+                self.assertFalse(worker._is_link(target))
+                self.assertEqual(target.read_bytes(), b"RIFF")
+                self.assertEqual([(path.name, path.read_bytes()) for path in outside.iterdir()], [("keep.txt", b"keep")])
+                linked = root / "linked"
+                self.assertTrue(_directory_link(outside, linked, kind))
+                with self.assertRaises(OSError):
+                    with worker._private_scratch(linked):
+                        pass
+                self.assertEqual([path.name for path in outside.iterdir()], ["keep.txt"])
+        if not made:
+            self.skipTest("this system refused to create a directory link")
+
+    def test_a_linked_mastering_folder_renders_as_off_before_anything_is_written(self):
+        # issue #821 review: with a mix already within target (no planner filter) only the AAC trial saw the link and
+        # its refusal was caught as a failed trial, so mastering stayed on and wrote dubbing-plan.json through the
+        # linked folder; the stage itself now refuses the folder, whatever the planner would decide
+        for mix, trials in ((CLOSE_MIX, [-1.2, -2.0]), (RC17_MIX, [-1.31, -2.29])):
+            with self.subTest(mix=mix):
+                job = AacJob("light", mix, trials=trials, final=Loud(-16.8, -2.0, 6.0, -26.9, 0.1))
+                with TemporaryDirectory() as elsewhere, job.running() as run:
+                    outside = Path(elsewhere)  # outside the job's whole tree
+                    victim = outside / "dubbing-plan.json"
+                    victim.write_bytes(b"VICTIM\n")
+                    os.utime(victim, ns=(1_600_000_000_000_000_000, 1_600_000_000_000_000_000))
+                    work = job.config.output_dir / ".dubflow-work"
+                    work.mkdir(parents=True, exist_ok=True)
+                    link = work / "mastering"
+                    # Windows without the symlink privilege: a directory junction needs none
+                    if not (_directory_link(outside, link) or (os.name == "nt" and _directory_link(outside, link, "junction"))):
+                        self.skipTest("this system refused to create a directory link")
+                    job.result(run())
+                    self.assertIn("MASTERING_SKIPPED: OSError: mastering: the mastering folder is a link",
+                                  job.qc["warnings"])
+                    self.assertNotIn("mastering", job.qc)
+                    self.assertEqual(job.trial_encodes, [])
+                    self.assertEqual(job.applies, [])
+                    self.assertEqual(Path(job.renders[-1]["audio_path"]).name, "final.wav")
+                    self.assertEqual([path.name for path in outside.iterdir()], ["dubbing-plan.json"])
+                    self.assertEqual((victim.read_bytes(), victim.stat().st_mtime_ns),
+                                     (b"VICTIM\n", 1_600_000_000_000_000_000))
 
     def test_b2_without_a_planner_filter_gets_a_volume_only_trim(self):
         job = AacJob("light", CLOSE_MIX, trials=[-1.2, -2.0], final=Loud(-16.8, -2.0, 6.0, -26.9, 0.1)).run()
@@ -1029,6 +1084,19 @@ class PlantedLinkTests(unittest.TestCase):
                                       capture_output=True, check=False)
                 if done.returncode != 0 or not os.path.lexists(link):
                     self.skipTest("Windows refused to create a symlink or a junction here")
+
+        with TemporaryDirectory() as directory:
+            self.conform(Path(directory), plant)
+
+    @unittest.skipUnless(os.name == "nt", "Windows reparse points")
+    def test_windows_junctions_at_the_old_names_are_never_written_through(self):
+        # the attack that needs no privilege: a directory junction at every old name, the mastered mix included (a
+        # rename onto a junction is refused by Windows, so _replace_plain must remove the junction itself first).
+        # Always a junction, even where symlinks could be made (an elevated runner), so this path is exercised.
+        def plant(link, marker):
+            if not _directory_link(marker.parent, link, "junction"):
+                self.skipTest("Windows refused to create a junction here")
+            self.assertTrue(worker._is_link(link), "the junction must be seen as a link")
 
         with TemporaryDirectory() as directory:
             self.conform(Path(directory), plant)

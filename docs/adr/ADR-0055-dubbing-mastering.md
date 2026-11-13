@@ -77,8 +77,10 @@ than its source cue (window widening, fast fit), the Vietnamese caption can drif
   `MASTERING_TRUE_PEAK_UNMEASURED`). Off is unchanged: no trial, no measurement, no new QC key. Recipe `dubbing-master-v4`.
   Every intermediate FFmpeg output of the stage (the planner's PCM partial, the AAC trial file, the trim candidates)
   is written only inside a fresh private directory (`tempfile.mkdtemp` in the `mastering` folder, removed afterwards)
-  and renamed over `final_mix_mastered.wav`; a symlink or junction there is replaced, never written through, and a
-  linked `mastering` folder is refused (mastering then renders as off). The card shows a Vietsub-only export's
+  and renamed over `final_mix_mastered.wav`; a symlink or junction there is replaced, never written through. A
+  linked `mastering` folder (symlink or junction) is refused by the stage itself before any plan, partial or trial is
+  read or written, whether or not the planner adds a filter: mastering then renders as off with `MASTERING_SKIPPED`.
+  The card shows a Vietsub-only export's
   measurement as information only: the source sound is not mastered and the ceiling does not apply to it.
 - The UI to choose levels and review suggestions is Phase 5; until then `mastering.json` is written by tests,
   the E2E harness or a power user.
