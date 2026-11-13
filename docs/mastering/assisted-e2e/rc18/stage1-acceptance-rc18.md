@@ -24,6 +24,8 @@ FORMAL Stage 1 acceptance on candidate 1.1.96-rc18 is finished. Every row marked
 
 ## W1 — Audio ceiling (UI)
 
+> Supersession note (added later): the W1f row below is superseded, for the tested cancel path (checkpoint b2-audio, before the mastering stage), by W1f3 in `stage1-extra-ui-rc18.md`; the two W1f attempts here never sent a cancel (harness miss). Cancel during the AAC trial encode remains NOT VERIFIED. W1d' and W1e have packaged-runtime evidence (not UI) in `stage1-packaged-runtime-rc18.md`.
+
 Evidence is in `rc18\logs\W1*-check.json` and `screenshots\W1*-card.png`. The "independent" figures come from bundled ffmpeg loudnorm on final_vi.mp4. Every decode was 0 errors.
 
 | # | Scenario | Measured | Verdict |

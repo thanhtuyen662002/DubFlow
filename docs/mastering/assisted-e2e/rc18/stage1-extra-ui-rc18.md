@@ -6,7 +6,8 @@
 - Limit: no per-click IPC log in the app; evidence consistent with no cancel sent.
 - P1 candidate: NO (no cancel received and ignored).
 
-## B W1f3 dubbing cancel during mastering (bursts input, Cân bằng; logs\W1f3-log.txt, stage1\tools\dubcancel.ps1)
+## B W1f3 dubbing cancel during the post-production measurement (checkpoint b2-audio, before the mastering stage; bursts input, Cân bằng; logs\W1f3-log.txt, stage1\tools\dubcancel.ps1)
+Cancel during the AAC trial encode or after the mastering stage completed was not exercised (NOT VERIFIED).
 - Cancel button lives in the Thiết lập tab footer of the selected job; on Kết quả tab laid out at width 0. With running job selected + Thiết lập open: visible (width 311).
 - Click at 92.4 s, progress "Đang đo âm lượng và hình ảnh để hậu kỳ": clicked #cancel-processing (real mouse event).
 - Engine: UI "Đã hủy". Job json state FAILED, reason cancelled, message "Đã hủy theo yêu cầu", checkpoint b2-audio (800/1000). No qc_report.json (also none 20 s later). Never COMPLETED. Checkpoint stages: audio, b2-audio, b2-generation, models, probe, separation, subtitles, transcript, translation (no mastering, no render). PASS.
