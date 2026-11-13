@@ -116,6 +116,11 @@ export function qcRows(qc: DubbingQc): { label: string; text: string; tone: "ok"
       : check.tries > 1 ? ` dù đã thử giảm ${check.tries - 1} lần (không lần nào hạ được đỉnh nên giữ bản chưa giảm)` : "")
     : "";
   const unmeasured = check?.status === "unmeasured" || check?.unmeasured === true;
+  // B1 is the source sound, which mastering never touches: its measurement is said to be under or over the ceiling,
+  // never "đạt" (the record says not_applicable: no mastering result to pass)
+  const b1 = check?.path === "B1";
+  const against = (over: boolean) => over ? ` (vượt trần ${ceiling})` : b1 ? ` (dưới trần ${ceiling})` : ` (trần ${ceiling}: đạt)`;
+  const b1Said = b1 ? ". Đây là âm thanh gốc (B1), không được chỉnh" : "";
   if (check?.path === "none" && qc.after) {
     // Vietsub only: the sound is the source's, never mastered, so the ceiling does not apply (the engine judges
     // nothing and warns nothing): a measurement only, neither "vượt trần" nor "đạt"
@@ -129,10 +134,10 @@ export function qcRows(qc: DubbingQc): { label: string; text: string; tone: "ok"
     rows.push({
       label: "Âm lượng",
       text: `Trước ${before} → sau ${number(qc.after.integrated)} LUFS, đỉnh ${number(qc.after.true_peak)} dBTP sau AAC`
-        + (over ? ` (vượt trần ${ceiling})` : ` (trần ${ceiling}: đạt)`) + afterAac
+        + against(over) + afterAac + b1Said
         // rc2 Windows check (D5): why the result is quieter than the target, from the planner's own note
         + (note("Âm lượng:")?.includes("thấp hơn mục tiêu") ? ". Thấp hơn mục tiêu vì đỉnh của bản trộn đã cao: chỉ tăng/giảm tuyến tính, không nén." : ""),
-      tone: over ? "warn" : "ok",
+      tone: over ? "warn" : b1 ? "info" : "ok",
     });
   } else if (qc.loudness) {
     rows.push({
@@ -147,9 +152,8 @@ export function qcRows(qc: DubbingQc): { label: string; text: string; tone: "ok"
     rows.push({
       label: "Âm lượng",
       text: `${(note("Âm lượng:") ?? "Không chuẩn hóa").replace(/\.$/, "")}. Đo bản xuất: ${number(qc.after.integrated)} LUFS, đỉnh ${number(qc.after.true_peak)} dBTP sau AAC`
-        + (over ? ` (vượt trần ${ceiling})` : ` (trần ${ceiling}: đạt)`) + afterAac
         // issue #821: the B1 fallback is the source sound, which mastering never trims
-        + (over && check?.path === "B1" ? ". Đây là âm thanh gốc (B1), không được chỉnh" : ""),
+        + against(over) + afterAac + b1Said,
       tone: over ? "warn" : "info", // nothing was normalised: a measurement, not a result of mastering
     });
   } else if (unmeasured) {

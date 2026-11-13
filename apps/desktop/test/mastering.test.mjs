@@ -246,6 +246,18 @@ console.log("mastering tests passed");
   const b1Over = row(vietsubCard({ fallback: true, notes: ["Đã quay về âm thanh gốc (B1)"], conformance: { ...vietsubRecord, path: "B1" } }));
   assert.equal(b1Over.tone, "warn");
   assert.match(b1Over.text, /\(vượt trần −1,5 dBTP\)\. Đây là âm thanh gốc \(B1\), không được chỉnh$/);
+  // ... and the B1 fallback measured under the ceiling is the untouched source's measurement: said to be under the
+  // ceiling, never "đạt" (the record is not_applicable with ceiling_met true: no mastering result to pass)
+  const b1UnderRecord = { ...vietsubRecord, path: "B1", true_peak_dbtp: -3.2, ceiling_met: true };
+  const b1UnderCard = (extra) => vietsubCard({ fallback: true, notes: ["Đã quay về âm thanh gốc (B1)"],
+    output_loudness: { integrated: -19.0, true_peak: -3.2, lra: 8 }, conformance: b1UnderRecord, ...extra });
+  for (const [name, qc] of [["no normalisation", b1UnderCard({})], ["loudness flag set", b1UnderCard({ loudness: true })]]) {
+    const under = row(qc);
+    assert.equal(under.tone, "info", name);
+    assert.doesNotMatch(under.text, /đạt|vượt trần|Đã giảm/, name);
+    assert.match(under.text, /đỉnh −3,2 dBTP sau AAC \(dưới trần −1,5 dBTP\)\. Đây là âm thanh gốc \(B1\), không được chỉnh$/, name);
+  }
+  assert.equal(row(b1UnderCard({})).text, "Không chuẩn hóa. Đo bản xuất: −19,0 LUFS, đỉnh −3,2 dBTP sau AAC (dưới trần −1,5 dBTP). Đây là âm thanh gốc (B1), không được chỉnh");
   // ... and a report without a conformance record (before #821) keeps its old reading
   const oldOver = row(vietsubCard({ conformance: undefined }));
   assert.equal(oldOver.tone, "warn");
