@@ -447,5 +447,199 @@ class PinLeftOutTests(unittest.TestCase):  # #805 x #802: an independent review 
         self.assertTrue(any("ghim" in n for n in decision.notes), decision.notes)
 
 
+
+# --- #817: a number is tied to what it counts ---------------------------------------------------------------------
+# Synthetic cases written from what a chart or a caption shows, never from the W3 labels (FROZEN): a count of people
+# is shown only by a figure the same evidence line ties to people.
+
+POPULATION = "Biểu đồ cho thấy dân số Liên Xô là 193.000.000 người."
+HEADS = "Biểu đồ ghi 1.500 người."
+
+
+def verdict(sentence: str, evidence: str) -> tuple[list[str], list[str], list[str], list[str]]:
+    result = said.check(said.of(sentence), evidence)
+    return result.verified, result.unverified, result.conflicts, result.disputed
+
+
+def chart_shots(visible: str, description: str = "Biểu đồ đen trắng với dòng chữ lớn về dân số Liên Xô.") -> tuple[list, dict]:
+    pool = [shot("c1", 10_000, 14_000), shot("c2", 20_000, 24_000)]
+    found = {"c1": seen("c1", description, ("biểu đồ", "dòng chữ"), visible, ("explanation", "text_on_screen"), 800),
+             "c2": seen("c2", "Cánh đồng lúa mì rộng, nông dân gặt lúa.", ("cánh đồng", "nông dân"), "", ("establishing",), 850)}
+    return pool, found
+
+
+class CountContextTests(unittest.TestCase):
+    def test_people_count_in_the_right_context_is_confirmed(self):
+        for evidence in ("POPULATION 193,000,000", "population of about 193.000.000", "193,000,000 INHABITANTS",
+                         "dân số 193 triệu", "Dân số: 193.000.000", "193,000,000 PEOPLE", "dân số năm 1941 là 193 triệu"):
+            self.assertEqual(verdict(POPULATION, evidence)[0], ["193.000.000 người"], evidence)
+        self.assertEqual(verdict(HEADS, "1,500 PEOPLE")[0], ["1.500 người"])  # #802: the unit after the figure, as before
+
+    def test_people_count_in_the_wrong_context_stays_unverified(self):
+        for evidence in ("193,000,000", "AREA 193,000,000", "193,000,000 MILES", "NO. 193,000,000",
+                         "POPULATION\n193,000,000", "POPULATION; 193,000,000"):  # another line: the word is not on it
+            verified, unverified, conflicts, disputed = verdict(POPULATION, evidence)
+            self.assertEqual((verified, unverified, conflicts, disputed), ([], ["193.000.000 người"], [], []), evidence)
+        # one vision item says "population", another (OCR) item has the figure: a word never crosses evidence items
+        found = ev.Evidence("x")
+        found.add(ev.Item("vision", 800, "Biểu đồ về dân số", (), "AI test"))
+        found.add(ev.Item("transcript", 900, "193,000,000", (), "OCR chữ trên hình"))
+        self.assertEqual(said.check(said.of(POPULATION), said.content_text(found)).verified, [])
+
+    def test_the_same_figure_with_another_unit_never_confirms_a_count(self):
+        for evidence in ("1500 MILES", "POPULATION 1500 MILES", "POPULATION\n 1500 MILES", "dân số 1500 km", "1500 tấn"):
+            verified, _, conflicts, disputed = verdict(HEADS, evidence)
+            self.assertEqual((verified, conflicts, disputed), ([], [], []), evidence)
+
+    def test_vietnamese_number_words(self):
+        self.assertEqual(verdict("Biểu đồ ghi một trăm chín mươi ba triệu người.", "POPULATION 193,000,000")[0],
+                         ["193.000.000 người"])
+        self.assertEqual(verdict("Biểu đồ ghi một nghìn năm trăm người.", "dân số một nghìn năm trăm")[0], ["1.500 người"])
+        self.assertEqual(said.quantities("dân số một nghìn năm trăm"), [said.Quantity(1500, None, None, "people")])
+
+    def test_separators(self):
+        for evidence in ("POPULATION 1.500", "POPULATION 1,500", "POPULATION 1500", "POPULATION 1 500", "POPULATION 1\u00a0500"):
+            self.assertEqual(verdict(HEADS, evidence)[0], ["1.500 người"], evidence)
+        for sentence in ("Biểu đồ ghi 1 500 người.", "Biểu đồ ghi 1,500 người.", "Biểu đồ ghi 1500 người."):
+            self.assertEqual(verdict(sentence, "1,500 PEOPLE")[0], ["1.500 người"], sentence)
+
+    def test_english_scale_words(self):
+        self.assertEqual(said.quantities("193 MILLION"), [said.Quantity(193_000_000)])
+        self.assertEqual(said.quantities("20 THOUSAND soldiers"), [said.Quantity(20_000, "people", "people")])
+        self.assertEqual(said.quantities("2 billion people"), [said.Quantity(2_000_000_000, "people", "people")])
+        self.assertEqual(said.quantities("1.5 million"), [said.Quantity(1_500_000)])
+        self.assertEqual(said.quantities("1,5 tỷ người"), [said.Quantity(1_500_000_000, "people", "people")])
+        self.assertEqual(verdict(POPULATION, "POPULATION 193 MILLION")[0], ["193.000.000 người"])
+        self.assertEqual(verdict(POPULATION, "POPULATION 193")[3], ["193.000.000 người"])  # 193 is not 193 million
+
+    def test_dates_and_years_never_confirm_a_count(self):
+        for evidence in ("năm 1500", "year 1500", "in 1500", "22/6/1500", "June 1500", "population in 1500"):
+            verified, _, conflicts, disputed = verdict(HEADS, evidence)
+            self.assertEqual((verified, conflicts, disputed), ([], [], []), evidence)
+        # a year next to a population word is the year; the figure after it is the population
+        self.assertEqual(said.quantities("dân số năm 1941 là 193 triệu"),
+                         [said.Quantity(1941, "year", "year"), said.Quantity(193_000_000, None, None, "people")])
+
+    def test_prices_never_confirm_a_count(self):
+        for evidence in ("mỗi người 1.500 đồng", "người 1500đ", "population $1500", "dân số 1500 USD", "giá 1.500 đồng"):
+            verified, _, conflicts, disputed = verdict(HEADS, evidence)
+            self.assertEqual((verified, conflicts, disputed), ([], [], []), evidence)
+
+    def test_a_distance_never_confirms_a_count_and_the_reverse_hole_is_closed(self):
+        for evidence in ("1500 MILES", "1500 km", "1.500 dặm"):
+            self.assertEqual(verdict(HEADS, evidence)[0], [], evidence)
+        # a unit-less figure after "dân số" counts people: a distance does not show it (it did before #817)
+        stated = said.of("Biểu đồ dân số 1500")
+        self.assertEqual(stated.quantities, (said.Quantity(1500, None, None, "people"),))
+        for evidence in ("1500 miles", "POPULATION\n 1500 MILES", "1500"):
+            self.assertEqual(said.check(stated, evidence).verified, [], evidence)
+        self.assertEqual(said.check(stated, "POPULATION 1500").verified, ["1.500"])
+        self.assertEqual(said.check(said.of("Biểu đồ dân số 1.500"), "1,500 PEOPLE").verified, ["1.500"])
+
+    def test_an_area_never_confirms_a_count(self):
+        for evidence in ("1500 km2", "1,500 SQUARE MILES", "dân số 1500 km vuông"):
+            verified, _, conflicts, disputed = verdict(HEADS, evidence)
+            self.assertEqual((verified, conflicts, disputed), ([], [], []), evidence)
+
+    def test_an_ordinal_or_an_age_never_confirms_a_count(self):
+        for evidence in ("No. 1500", "#1500", "the 1500th citizen", "người 1500 tuổi"):
+            verified, _, conflicts, disputed = verdict(HEADS, evidence)
+            self.assertEqual((verified, conflicts, disputed), ([], [], []), evidence)
+
+    def test_a_vague_vision_description_is_no_proof(self):
+        verified, unverified, conflicts, disputed = verdict(POPULATION, "Biểu đồ với dòng chữ lớn về dân số Liên Xô")
+        self.assertEqual((verified, unverified, conflicts, disputed), ([], ["193.000.000 người"], [], []))
+
+    def test_ocr_read_right_but_not_proving_the_claim(self):
+        read = ev.Evidence("o")
+        read.add(ev.Item("transcript", 900, "193,000,000", (), "OCR chữ trên hình"))  # the right digits, tied to nothing
+        self.assertEqual(said.check(said.of(POPULATION), said.content_text(read)).verified, [])
+        read.add(ev.Item("transcript", 900, "POPULATION 193,000,000", (), "OCR chữ trên hình"))
+        self.assertEqual(said.check(said.of(POPULATION), said.content_text(read)).verified, ["193.000.000 người"])
+
+    def test_another_figure_for_the_population_is_disputed_never_a_conflict(self):
+        verified, unverified, conflicts, disputed = verdict(POPULATION, "POPULATION 93,000,000")
+        self.assertEqual((verified, unverified, conflicts, disputed), ([], ["193.000.000 người"], [], ["193.000.000 người"]))
+        # a head count in a description is no population figure (#808)
+        self.assertEqual(verdict("Biểu đồ: 20.000 lính", "3 người lính đứng bên đường")[3], [])
+        self.assertEqual(verdict("Biểu đồ: 20.000 lính", "3 persons standing")[3], [])
+
+    def test_a_misread_population_does_not_move_the_choice(self):
+        pool, found = chart_shots("POPULATION 93,000,000")
+        chosen, ready, decision = plan(POPULATION, pool, found, length=3000)
+        self.assertEqual(chosen, ["c1"], decision.to_dict())  # still the chart: no penalty, not dropped from accepts
+        self.assertFalse(ready, decision.to_dict())
+        claims = decision.signals["claims"]
+        self.assertEqual((claims["conflicts"], claims["disputed"]), ([], ["193.000.000 người"]))
+        self.assertEqual(said.statuses(claims), [("193.000.000 người", said.CONTRADICTED)])
+        self.assertTrue(any("con số khác" in n for n in decision.notes), decision.notes)
+
+    def test_the_chart_with_the_population_is_ready(self):
+        pool, found = chart_shots("POPULATION 193,000,000")
+        chosen, ready, decision = plan(POPULATION, pool, found, length=3000)
+        self.assertEqual(chosen, ["c1"], decision.to_dict())
+        self.assertTrue(ready, decision.to_dict())
+        self.assertEqual(said.statuses(decision.signals["claims"]), [("193.000.000 người", said.CONFIRMED)])
+        self.assertNotIn("disputed", decision.signals["claims"])  # absent when empty: logs read as before
+
+    def test_a_claim_split_over_pieces_is_checked_on_every_piece(self):
+        # the sentence outlasts the chart: two pieces, neither shows the count; the misread one makes it disputed
+        pool, found = chart_shots("POPULATION 93,000,000")
+        pool.append(shot("c3", 30_000, 34_000))
+        found["c3"] = seen("c3", "Biểu đồ khác về Liên Xô.", ("biểu đồ",), "193,000,000", ("explanation",), 800)
+        chosen, ready, decision = plan(POPULATION, pool, found, length=7000)
+        self.assertEqual(sorted(chosen), ["c1", "c3"], decision.to_dict())
+        self.assertFalse(ready)
+        self.assertEqual(said.statuses(decision.signals["claims"]), [("193.000.000 người", said.CONTRADICTED)])
+        # ... and a piece that shows it, tied to people, confirms it for the sentence
+        found["c3"] = seen("c3", "Biểu đồ khác về Liên Xô.", ("biểu đồ",), "POPULATION 193,000,000", ("explanation",), 800)
+        _, _, decision = plan(POPULATION, pool, found, length=7000)
+        self.assertEqual(said.statuses(decision.signals["claims"]), [("193.000.000 người", said.CONFIRMED)])
+
+    def test_a_disputed_count_fits_the_contract(self):
+        import json
+        from pathlib import Path
+        schema = json.loads((Path(__file__).resolve().parents[2] / "contracts" / "mastering" / "editorial-v1.json")
+                            .read_text(encoding="utf-8"))["$defs"]["unit"]["properties"]["signals"]["properties"]["claims"]
+        pool, found = chart_shots("POPULATION 93,000,000")
+        _, _, decision = plan(POPULATION, pool, found, length=3000)
+        claims = decision.to_dict()["signals"]["claims"]
+        self.assertIn("disputed", claims)
+        self.assertLessEqual(set(claims), set(schema["properties"]))
+        self.assertLessEqual(set(schema["required"]), set(claims))
+        self.assertNotIn("disputed", schema["required"])
+        self.assertLessEqual(set(claims["disputed"]), set(claims["unverified"]))
+
+
+class StatusTests(unittest.TestCase):
+    def test_statuses_map_from_signals(self):
+        claims = {"display": True, "verified": ["The Battle of Russia", "1.500 dặm"], "unverified": ["phim giá trị"],
+                  "conflicts": ["1.500 dặm"]}  # rc15 i16.u1: verified by one piece, contradicted by another
+        self.assertEqual(said.statuses(claims), [("1.500 dặm", said.CONTRADICTED), ("phim giá trị", said.UNVERIFIED),
+                                                 ("The Battle of Russia", said.CONFIRMED)])
+        self.assertEqual(said.unresolved(claims), ["1.500 dặm", "phim giá trị"])
+        disputed = {"display": True, "verified": [], "unverified": ["193.000.000 người"], "conflicts": [],
+                    "disputed": ["193.000.000 người"]}
+        self.assertEqual(said.statuses(disputed), [("193.000.000 người", said.CONTRADICTED)])
+        plain = dict(claims, display=False)
+        self.assertEqual({s for _, s in said.statuses(plain)}, {said.NOT_APPLICABLE})
+        self.assertEqual(said.unresolved(plain), [])
+        self.assertEqual((said.statuses(None), said.unresolved({})), ([], []))
+
+    def test_merged_pieces(self):
+        right = said.check(said.of(POPULATION), "POPULATION 193,000,000")
+        misread = said.check(said.of(POPULATION), "POPULATION 93,000,000")
+        bare = said.check(said.of(POPULATION), "a field")
+        self.assertEqual(said.merged([misread, right]).to_dict(),
+                         {"verified": ["193.000.000 người"], "unverified": [], "conflicts": []})
+        self.assertEqual(said.merged([bare, misread]).disputed, ["193.000.000 người"])
+
+    def test_a_user_note_never_proves_what_is_displayed(self):
+        noted = ev.Evidence("n")
+        noted.add(ev.Item("user", 1000, "POPULATION 193,000,000", (), "ghi chú"))
+        self.assertEqual(said.content_text(noted), "")
+        self.assertEqual(said.check(said.of(POPULATION), said.content_text(noted)).verified, [])
+
+
 if __name__ == "__main__":
     unittest.main()

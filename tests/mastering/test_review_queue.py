@@ -30,6 +30,100 @@ def world():
     return made
 
 
+POPULATION_CLAIM = {"display": True, "verified": [], "unverified": ["193.000.000 người"], "conflicts": []}
+
+
+def with_claim(made: dict, unit_id: str, claims: dict, note: str = "chưa thấy trong cảnh điều lời câu nói là hiển thị "
+               "(193.000.000 người): cần kiểm tra") -> dict:
+    """``made`` with ``unit_id`` carrying what align writes for a displayed claim (#802): its note, needs_review and
+    ``signals.claims``."""
+    unit = next(u for u in made["units"] if u["unit_id"] == unit_id)
+    unit["notes"] = [*unit.get("notes", []), note]
+    unit["coverage"]["needs_review"] = True
+    unit.setdefault("signals", {})["claims"] = dict(claims)
+    rv.annotate(made)
+    return made
+
+
+class ClaimQueueTests(unittest.TestCase):  # #817
+    def by(self, made, review=None):
+        return {u["unit_id"]: u for u in rv.view(made, None, review or rv.Review())["units"]}
+
+    def test_an_unverified_display_claim_is_critical(self):
+        u3 = self.by(with_claim(world(), "u3", POPULATION_CLAIM))["u3"]
+        self.assertEqual(u3["priority"], rv.CRITICAL)
+        self.assertIn("câu nói điều hiển thị trên hình nhưng cảnh chưa cho thấy: 193.000.000 người", u3["queue_reasons"])
+        self.assertEqual(u3["claims"], [{"label": "193.000.000 người", "status": "UNVERIFIED"}])
+
+    def test_a_contradicted_or_disputed_claim_is_critical_and_says_so(self):
+        for claims in ({"display": True, "verified": [], "unverified": [], "conflicts": ["1.500 dặm"]},
+                       {"display": True, "verified": ["1.500 dặm"], "unverified": [], "conflicts": ["1.500 dặm"]},  # rc15 i16.u1
+                       dict(POPULATION_CLAIM, disputed=["193.000.000 người"])):
+            u3 = self.by(with_claim(world(), "u3", claims))["u3"]
+            self.assertEqual(u3["priority"], rv.CRITICAL, claims)
+            self.assertTrue(any(r.startswith("cảnh cho thấy con số khác với lời câu: ") for r in u3["queue_reasons"]), u3)
+            self.assertEqual({c["status"] for c in u3["claims"]}, {"CONTRADICTED"})
+
+    def test_at_most_three_labels_are_named(self):
+        claims = dict(POPULATION_CLAIM, unverified=["a1", "a2", "a3", "a4"])
+        reasons = self.by(with_claim(world(), "u3", claims))["u3"]["queue_reasons"]
+        self.assertIn("câu nói điều hiển thị trên hình nhưng cảnh chưa cho thấy: a1, a2, a3", reasons)
+
+    def test_a_plain_sentence_with_a_number_is_never_escalated(self):
+        made = with_claim(world(), "u3", dict(POPULATION_CLAIM, display=False))
+        u3 = self.by(made)["u3"]
+        self.assertEqual(u3["priority"], rv.REVIEW)
+        self.assertEqual(u3["claims"], [{"label": "193.000.000 người", "status": "NOT_APPLICABLE"}])
+        made = with_claim(world(), "u1", {"display": False, "verified": [], "unverified": ["3.000.000 người"], "conflicts": []})
+        self.assertNotEqual(self.by(made)["u1"]["priority"], rv.CRITICAL)
+
+    def test_a_confirmed_claim_is_not_escalated(self):
+        made = world()
+        next(u for u in made["units"] if u["unit_id"] == "u1")["signals"] = {
+            "claims": {"display": True, "verified": ["1.500 dặm"], "unverified": [], "conflicts": []}}
+        rv.annotate(made)
+        u1 = self.by(made)["u1"]
+        self.assertEqual(u1["priority"], rv.OPTIONAL)
+        self.assertEqual(u1["claims"], [{"label": "1.500 dặm", "status": "CONFIRMED"}])
+
+    def test_an_old_log_without_signals_keeps_its_priority(self):
+        made = world()
+        self.assertEqual({k: u["priority"] for k, u in self.by(made).items()},
+                         {"u1": rv.OPTIONAL, "u2": rv.CRITICAL, "u3": rv.REVIEW, "u4": rv.CRITICAL})
+        self.assertTrue(all(u["claims"] == [] for u in self.by(made).values()))
+
+    def test_an_approved_claim_is_not_reasked_and_stays_unverified(self):
+        for how, shots in (("approve", None), ("pin", ["c2"]), ("missing", None)):
+            made = with_claim(world(), "u3", POPULATION_CLAIM)
+            review = rv.Review()
+            review.decide(made, "u3", how, shots)
+            u3 = self.by(made, review)["u3"]
+            self.assertIsNone(u3["priority"], how)  # settled: not asked again
+            self.assertEqual(u3["claims"], [{"label": "193.000.000 người", "status": "UNVERIFIED"}], how)  # never CONFIRMED
+            self.assertNotIn("u3", rv.view(made, None, review)["queue"])
+
+    def test_an_invalidated_approval_of_a_claim_is_critical_again(self):
+        made = with_claim(world(), "u3", POPULATION_CLAIM)
+        review = rv.Review()
+        review.decide(made, "u3", "approve")
+        made["units"][2]["chosen"] = ["c3"]  # the footage changed after the approval
+        review.reconcile(made)
+        u3 = self.by(made, review)["u3"]
+        self.assertEqual(u3["priority"], rv.CRITICAL)
+        self.assertTrue(any(r.startswith("lựa chọn trước không còn hợp lệ") for r in u3["queue_reasons"]), u3)
+        self.assertTrue(any(r.startswith("câu nói điều hiển thị") for r in u3["queue_reasons"]), u3)
+
+    def test_a_replan_with_the_same_shots_keeps_an_approval(self):
+        # an approval is given on the footage, not on a claim's verdict: a new plan that only finds the claim unshown
+        # (a fresh vision answer) does not ask again (P2-N5)
+        made = world()
+        review = rv.Review()
+        review.decide(made, "u3", "approve")
+        again = with_claim(world(), "u3", POPULATION_CLAIM)
+        self.assertEqual(review.reconcile(again), [])
+        self.assertIsNone(self.by(again, review)["u3"]["priority"])
+
+
 class QueueTests(unittest.TestCase):
     def test_groups_order_and_reasons(self):
         made = world()

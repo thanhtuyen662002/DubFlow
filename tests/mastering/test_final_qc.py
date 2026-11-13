@@ -9,7 +9,8 @@ import unittest
 from engine.dubflow.mastering import final_qc as qc
 from engine.dubflow.mastering import review as rv
 
-from tests.mastering.test_review_queue import world
+from tests.mastering.test_review_queue import POPULATION_CLAIM, with_claim, world
+from tests.mastering.test_review import cand, log, unit
 
 
 FIXTURE = Path(__file__).resolve().parents[2] / "fixtures" / "mastering" / "valid" / "product-plan.json"
@@ -129,6 +130,125 @@ class PartTests(unittest.TestCase):
         review.decide(made, "u2", "missing")
         review.decide(made, "u4", "approve")
         self.assertTrue(self.checks(made, plan_dict(GOOD), review)["claims"]["ok"])
+
+
+def claim_world():
+    """world() with the opening and the unfound sentence settled, u1 READY, and u3 a displayed claim not shown (#817)."""
+    made = with_claim(world(), "u3", POPULATION_CLAIM)
+    review = rv.Review()
+    review.decide(made, "u2", "missing")
+    review.decide(made, "u4", "approve")
+    return made, review
+
+
+class ClaimTests(unittest.TestCase):  # #817
+    def checks(self, parts):
+        return {c["id"]: c for c in qc.check_parts(parts)}
+
+    def test_accepting_the_unreviewed_does_not_wave_an_unverified_claim_through(self):
+        made, review = claim_world()
+        review.set_accept_unreviewed(True)
+        checks = self.checks([("video 1", made, plan_dict(GOOD), review)])
+        self.assertTrue(checks["decisions"]["ok"])  # the blanket acceptance is the user's ...
+        self.assertFalse(checks["claims"]["ok"])    # ... but a critical claim is never settled by it
+        self.assertIn("câu 3", checks["claims"]["detail"])
+        out = qc.result([qc._check("render", "", True), *checks.values()], "COMPLETED")
+        self.assertEqual(out["state"], "FINAL_QC_FAILED")
+        self.assertFalse(out["passed"])
+
+    def test_a_contradicted_claim_is_listed(self):
+        for claims in ({"display": True, "verified": [], "unverified": [], "conflicts": ["1.500 dặm"]},
+                       {"display": True, "verified": ["1.500 dặm"], "unverified": [], "conflicts": ["1.500 dặm"]},
+                       dict(POPULATION_CLAIM, disputed=["193.000.000 người"])):
+            made = with_claim(world(), "u3", claims, note="cảnh hiển thị con số khác với lời câu (1.500 dặm): cần kiểm tra")
+            review = rv.Review()
+            review.decide(made, "u2", "missing")
+            review.decide(made, "u4", "approve")
+            review.set_accept_unreviewed(True)
+            check = self.checks([("video 1", made, plan_dict(GOOD), review)])["claims"]
+            self.assertFalse(check["ok"], claims)
+            self.assertIn("câu 3", check["detail"])
+
+    def test_a_verified_claim_with_low_coverage_is_not_on_the_claims_line(self):  # rc16 i16.u1
+        made = world()
+        u3 = made["units"][2]
+        u3["notes"] = ["độ phủ 81 %"]
+        u3["signals"] = {"claims": {"display": True, "verified": ["1.500 dặm"], "unverified": [], "conflicts": []}}
+        rv.annotate(made)
+        review = rv.Review()
+        review.decide(made, "u2", "missing")
+        review.decide(made, "u4", "approve")
+        check = self.checks([("video 1", made, plan_dict(GOOD), review)])["claims"]
+        self.assertTrue(check["ok"], check)
+
+    def test_an_approved_claim_passes_as_the_users_acceptance(self):
+        for how, shots in (("approve", None), ("pin", ["c2"]), ("missing", None)):
+            made, review = claim_world()
+            review.decide(made, "u3", how, shots)
+            if how == "pin":
+                made["edits"]["pin"]["u3"] = ["c2"]  # rendered with it
+            checks = self.checks([("video 1", made, plan_dict(GOOD), review)])
+            self.assertTrue(checks["claims"]["ok"], (how, checks["claims"]))
+            self.assertTrue(checks["decisions"]["ok"], how)
+            self.assertIn("người dùng đã chấp nhận: câu 3", checks["claims"]["detail"])
+            shown = {u["unit_id"]: u for u in rv.view(made, None, review)["units"]}["u3"]
+            self.assertIsNone(shown["priority"])  # not asked again
+            self.assertEqual(shown["claims"][0]["status"], "UNVERIFIED")  # the user's word, not a confirmation
+
+    def test_an_invalidated_approval_is_listed_again(self):
+        made, review = claim_world()
+        review.decide(made, "u3", "approve")
+        made["units"][2]["chosen"] = ["c3"]
+        review.reconcile(made)
+        review.set_accept_unreviewed(True)
+        self.assertFalse(self.checks([("video 1", made, plan_dict(GOOD), review)])["claims"]["ok"])
+
+    def test_an_accept_from_an_earlier_run_does_not_wave_a_new_claim_through(self):
+        # the part was accepted, then planned again with the same shots: the render is reused, so the acceptance stays
+        # (raw.py resets it only on a re-render), and the new plan finds a displayed claim unshown
+        made = world()
+        review = rv.Review()
+        review.decide(made, "u2", "missing")
+        review.decide(made, "u4", "approve")
+        review.set_accept_unreviewed(True)
+        self.assertTrue(self.checks([("video 1", made, plan_dict(GOOD), review)])["claims"]["ok"])
+        again = with_claim(world(), "u3", POPULATION_CLAIM)
+        review.reconcile(again)
+        self.assertFalse(self.checks([("video 1", again, plan_dict(GOOD), review)])["claims"]["ok"])
+
+    def test_claims_are_listed_across_parts(self):
+        first, one = claim_world()
+        second, two = claim_world()
+        check = self.checks([("i1", first, plan_dict(GOOD), one), ("i16", second, plan_dict(GOOD), two)])["claims"]
+        self.assertFalse(check["ok"])
+        self.assertIn("i1: câu 3", check["detail"])
+        self.assertIn("i16: câu 3", check["detail"])
+        self.assertIn("2 câu", check["detail"])
+
+    def test_every_critical_sentence_is_counted_and_none_is_dropped(self):  # rc16 W3: 15 critical, 12 shown, no "+3"
+        units = []
+        for n in range(1, 16):
+            u = unit(f"u{n}", matched=1, status="partial", needs_review=True, chosen=("c1",))
+            u["signals"] = {"claims": dict(POPULATION_CLAIM)}
+            units.append(u)
+        made = log(units, [cand("c1", text="biểu đồ"), cand("c2", text="cánh đồng")])
+        rv.annotate(made)
+        review = rv.Review()
+        review.set_accept_unreviewed(True)
+        segments = [(f"u{n}", 0, 400, (n - 1) * 400, n * 400, "primary") for n in range(1, 16)]
+        check = self.checks([("video 1", made, plan_dict(segments, duration=6000), review)])["claims"]
+        self.assertFalse(check["ok"])
+        self.assertTrue(check["detail"].startswith("15 câu chưa xử lý"), check["detail"])
+        listed = check["detail"].split(": ", 1)[1].removesuffix(" và 3 câu khác").split(", ")
+        self.assertEqual(listed, [f"câu {n}" for n in range(1, 13)])
+        self.assertNotIn("câu 13", check["detail"])
+        self.assertTrue(check["detail"].endswith("câu 12 và 3 câu khác"), check["detail"])
+        self.assertLessEqual(len(check["detail"]), 400)  # what the desktop shows of a detail
+
+    def test_twelve_are_listed_without_a_tail(self):
+        names = [f"câu {n}" for n in range(1, 13)]
+        self.assertEqual(qc.listed(names), ", ".join(names))
+        self.assertEqual(qc.listed([*names, "câu 13"]), ", ".join(names) + " và 1 câu khác")
 
 
 class OutputTests(unittest.TestCase):

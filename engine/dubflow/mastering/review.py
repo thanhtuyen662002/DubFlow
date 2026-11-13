@@ -28,7 +28,7 @@ from pathlib import Path
 import re
 from typing import Any, Iterable, Mapping, Sequence
 
-from . import align, evidence as ev
+from . import align, claims as stated_claims, evidence as ev
 from .candidates import Candidate
 from .frames import parent
 
@@ -874,6 +874,15 @@ def priority(unit: Mapping[str, Any], state: str, decision: UnitDecision | None,
     if any(cue in n for n in notes for cue in _CLAIM_NOTES):
         reasons.append("câu nêu thông tin cụ thể nhưng không có bằng chứng hình")
     reasons += [w for w in said if "nhưng thông tin sản phẩm không có" in w]
+    # what the sentence says is displayed and the chosen shots contradict or do not show (#802, #817): a person must
+    # settle it, so "accept the unreviewed" never exports it. A plain sentence's numbers are no displayed fact.
+    marks = stated_claims.statuses((unit.get("signals") or {}).get("claims"))
+    contradicted = [label for label, status in marks if status == stated_claims.CONTRADICTED]
+    unshown = [label for label, status in marks if status == stated_claims.UNVERIFIED]
+    if contradicted:
+        reasons.append("cảnh cho thấy con số khác với lời câu: " + ", ".join(contradicted[:3]))
+    if unshown:
+        reasons.append("câu nói điều hiển thị trên hình nhưng cảnh chưa cho thấy: " + ", ".join(unshown[:3]))
     if reasons:
         return CRITICAL, reasons
     if state == NEEDS_REVIEW:
@@ -948,6 +957,9 @@ def view(log: Mapping[str, Any], plan: Mapping[str, Any] | None, review: Review,
                              for a in [a for a in (unit.get("alternatives") or [])
                                        if a.get("candidate_id") not in set(unit.get("chosen") or [])][:3]
                              if (s := shot(a.get("candidate_id", "")))],
+            # each claim's status as the planner saw it: a user's decision settles the sentence, never the claim
+            "claims": [{"label": label, "status": status}
+                       for label, status in stated_claims.statuses((unit.get("signals") or {}).get("claims"))],
             "unreviewed": unit["unit_id"] in open_units})
     texts = list(dict.fromkeys([*warnings, *(log.get("warnings") or [])]))
     return {"schema_version": 1, "kind": "editorial_review_view", "plan_id": log.get("plan_id"), "mode": content_mode(log),
