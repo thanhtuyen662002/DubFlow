@@ -117,7 +117,7 @@ def _plain_file(value: Any, suffixes: frozenset[str], name: str, folders: int | 
 
     Not closed: FFmpeg opens the file by its path after this check, so a file swapped in that last window is read. It
     is the user's own folder (the same user could change the file itself), outside the threat model. ``_file`` keeps its
-    meaning for the other callers: transcripts, and the finished ``final_vi.mp4`` that Đóng gói and the first Tổng hợp
+    meaning for the finished ``final_vi.mp4`` that Đóng gói and the first Tổng hợp
     read, which are the app's own outputs and not sources (their music is: ``_picked_music``).
     """
     if type(value) is not str or not value or len(value) > 1024:

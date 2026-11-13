@@ -245,6 +245,39 @@ class CompilationSourceTests(Fixture):
         self.assert_refused(str(self.root / "alias" / "b.mp4"),
                             "Video nguồn nằm trong thư mục là lối tắt (symlink/junction), hãy chọn tệp ở vị trí thật: b.mp4")
 
+    def transcript(self, value: str):
+        return program._source({"video": str(self.clip), "transcript": value}, "Mục 1, nguồn 1").transcript
+
+    def assert_transcript_refused(self, value: str, message: str) -> None:
+        with self.assertRaises(program.CompilationError) as caught:
+            self.transcript(value)
+        self.assertEqual(caught.exception.message, message)
+
+    def test_a_named_transcript_is_a_real_file_or_a_hard_link(self):
+        srt = self.root / "real" / "t.srt"
+        srt.parent.mkdir()
+        srt.write_text("1\n00:00:00,000 --> 00:00:01,000\nxin chào\n", encoding="utf-8")
+        self.assertEqual(self.transcript(str(srt)), srt)
+        os.link(srt, self.root / "hard.srt")
+        self.assertEqual(self.transcript(str(self.root / "hard.srt")), self.root / "hard.srt")
+        # what was refused before keeps its text
+        for value in ("t.srt", str(self.root / "missing.srt"), str(self.clip)):
+            self.assert_transcript_refused(value, f"Không mở được phụ đề nguồn: {Path(value).name}")
+
+    def test_a_named_transcript_follows_the_same_rule(self):
+        # Issue #816 review: the transcript a spec names was read by `_file`, which follows links and `..`
+        srt = self.root / "real" / "t.srt"
+        srt.parent.mkdir()
+        srt.write_text("1\n00:00:00,000 --> 00:00:01,000\nxin chào\n", encoding="utf-8")
+        self.assert_transcript_refused(os.path.join(str(self.root), "real", "..", "real", "t.srt"),
+                                       "Đường dẫn phụ đề nguồn không hợp lệ: t.srt")
+        symlink(srt, self.root / "link.srt", self)
+        self.assert_transcript_refused(str(self.root / "link.srt"),
+                                       "Phụ đề nguồn phải là tệp thật trên máy, không phải lối tắt: link.srt")
+        symlink(srt.parent, self.root / "alias", self)
+        self.assert_transcript_refused(str(self.root / "alias" / "t.srt"),
+                                       "Phụ đề nguồn nằm trong thư mục là lối tắt (symlink/junction), hãy chọn tệp ở vị trí thật: t.srt")
+
     def program(self, music: str):
         items = [{"title": f"Mục {number}", "sources": [{"video": str(self.clip)}]} for number in (1, 2)]
         return program.load({"schema_version": 2, "title": "Tổng hợp", "layout": "toan-man-hinh", "voice_id": "vi-test",
@@ -376,6 +409,10 @@ class JunctionTests(LegacyMusicFixture, SpecFixture):
         with self.assertRaises(program.CompilationError) as caught:
             program._source({"video": str(self.alias / "b.mp4")}, "Mục 1, nguồn 1")
         self.assertEqual(caught.exception.message, f"Video nguồn {self.BELOW}: b.mp4")
+        (self.music.parent / "t.srt").write_text("1\n00:00:00,000 --> 00:00:01,000\nxin chào\n", encoding="utf-8")
+        with self.assertRaises(program.CompilationError) as caught:
+            program._source({"video": str(self.clip), "transcript": str(self.alias / "t.srt")}, "Mục 1, nguồn 1")
+        self.assertEqual(caught.exception.message, f"Phụ đề nguồn {self.BELOW}: t.srt")
 
     def test_music_below_a_junction_is_refused(self):
         through = str(self.alias / "song.mp3")

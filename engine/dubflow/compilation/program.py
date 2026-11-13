@@ -114,7 +114,9 @@ def _source(value: Any, label: str) -> Source:
         raise CompilationError(f"{label}: mốc kết thúc phải sau mốc bắt đầu")
     transcript = None
     if item.get("transcript") is not None:
-        transcript = _file(item["transcript"], frozenset({".srt"}), "phụ đề nguồn")
+        # a transcript the spec names is a file the user chose: `_file` keeps its old refusals' text, the rule adds the rest
+        _file(item["transcript"], frozenset({".srt"}), "phụ đề nguồn")
+        transcript = _plain_file(item["transcript"], frozenset({".srt"}), "phụ đề nguồn")
     else:
         beside = video.parent / "captions_vi.srt"  # a Hàng đợi run keeps its Vietnamese subtitles beside the source
         transcript = beside if beside.is_file() else None
