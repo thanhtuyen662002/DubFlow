@@ -13,7 +13,6 @@ use std::os::windows::process::CommandExt;
 use crate::{control_root, fail, load_voice_catalog, review_dir, version_root, VoiceCatalog, CREATE_NO_WINDOW};
 
 static RUNNING: LazyLock<Mutex<HashSet<PathBuf>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
-const MUSIC: [&str; 6] = ["mp3", "m4a", "aac", "wav", "ogg", "flac"];
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -55,12 +54,9 @@ fn validate(request: &PackageRequest, dir: &Path, catalog: &VoiceCatalog) -> Res
     if !(1.0..=1.3).contains(&request.speed) || !(0.0..=1.0).contains(&request.music_volume) {
         return Err(fail("Tốc độ đọc hoặc âm lượng nhạc không hợp lệ"));
     }
+    // the music is a file the user picks: the one source rule (Issue #816), as in Bán hàng and Tổng hợp
     if let Some(value) = &request.music {
-        let path = Path::new(value);
-        if !path.is_absolute() || !path.is_file() || !path.extension().and_then(|ext| ext.to_str())
-            .is_some_and(|ext| MUSIC.iter().any(|known| known.eq_ignore_ascii_case(ext))) {
-            return Err(fail("Không mở được nhạc nền; chọn MP3, M4A, AAC, WAV, OGG hoặc FLAC"));
-        }
+        crate::product::music_source(value)?;
     }
     match request.background.as_str() {
         "keep" => (),
@@ -196,6 +192,19 @@ mod tests {
     fn request() -> PackageRequest {
         serde_json::from_value(json!({"outputPath":"unused", "intro":"Xin chào.", "outro":"", "voiceId":"vi-test",
             "speed":1.0, "music":null, "musicVolume":0.2, "background":"keep", "cpuOnly":true})).unwrap()
+    }
+
+    #[test]
+    fn music_follows_the_one_source_rule() {
+        // Issue #816: the music was checked by `Path::is_file`, which follows links and takes `..`
+        let dir = std::env::temp_dir().join(format!("dubflow-package-music-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        crate::product::tests::music_follows_the_source_rule("package", |music| {
+            let mut value = request();
+            value.music = Some(music.to_owned());
+            validate(&value, &dir, &catalog())
+        });
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

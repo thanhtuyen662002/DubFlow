@@ -117,7 +117,8 @@ def _plain_file(value: Any, suffixes: frozenset[str], name: str, folders: int | 
 
     Not closed: FFmpeg opens the file by its path after this check, so a file swapped in that last window is read. It
     is the user's own folder (the same user could change the file itself), outside the threat model. ``_file`` keeps its
-    meaning for the other callers (transcripts, packages, the legacy compilation).
+    meaning for the other callers: transcripts, and the finished ``final_vi.mp4`` that Đóng gói and the first Tổng hợp
+    read, which are the app's own outputs and not sources (their music is: ``_picked_music``).
     """
     if type(value) is not str or not value or len(value) > 1024:
         raise ProductError(f"{name} không hợp lệ")
@@ -142,6 +143,16 @@ def _plain_file(value: Any, suffixes: frozenset[str], name: str, folders: int | 
         if linked:
             raise ProductError(f"{kind} nằm trong thư mục là lối tắt (symlink/junction), hãy chọn tệp ở vị trí thật: {path.name}")
     return path
+
+
+def _picked_music(value: Any) -> Path:
+    """The music the user picks for Đóng gói and for Tổng hợp from finished videos: the same source rule.
+
+    ``_file`` first, so what those workers already refused keeps its text; the rule then adds what they followed
+    before: a ``.`` or ``..`` part, a link, a file below a linked folder.
+    """
+    _file(value, render.MUSIC_SUFFIXES, "nhạc nền")
+    return _plain_file(value, render.MUSIC_SUFFIXES, "nhạc nền")
 
 
 def _visual(value: Any) -> Path:

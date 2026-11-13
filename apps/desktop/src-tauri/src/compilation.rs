@@ -64,12 +64,9 @@ fn validate(request: &CompilationRequest, catalog: &VoiceCatalog) -> Result<Vec<
         return Err(fail("Giọng đã chọn không có trong phiên bản này"));
     }
     if !(2..=30).contains(&request.items.len()) { return Err(fail("Hãy chọn từ 2 đến 30 video đã hoàn tất")); }
+    // the music is a file the user picks: the one source rule (Issue #816), as in Tổng hợp from raw footage
     if let Some(value) = &request.music {
-        let path = Path::new(value);
-        if !path.is_absolute() || !path.is_file() || !path.extension().and_then(|ext| ext.to_str())
-            .is_some_and(|ext| ["mp3", "m4a", "aac", "wav", "ogg", "flac"].iter().any(|known| known.eq_ignore_ascii_case(ext))) {
-            return Err(fail("Không mở được nhạc nền; chọn MP3, M4A, AAC, WAV, OGG hoặc FLAC"));
-        }
+        crate::product::music_source(value)?;
     }
     request.items.iter().enumerate().map(|(index, item)| {
         if !text(&item.title, 80, true, false) || !text(&item.lead, 400, false, true)
@@ -290,6 +287,23 @@ mod tests {
         }
         let mut nan = parse(value); nan.speed = f64::NAN;
         assert!(validate(&nan, &catalog()).is_err());
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn music_follows_the_one_source_rule() {
+        // Issue #816: the music was checked by `Path::is_file`, which follows links and takes `..`
+        let base = std::env::temp_dir().join(format!("dubflow-compilation-music-{}", std::process::id()));
+        let dir = base.join("DubFlow Output/job");
+        fs::create_dir_all(dir.join(".dubflow-work")).unwrap();
+        fs::write(dir.join("final_vi.mp4"), b"video").unwrap();
+        fs::write(dir.join(".dubflow-work/translation.json"), b"{}").unwrap();
+        let item = json!({"video":display_path(&dir.join("final_vi.mp4")),"title":"Phần thử","lead":"Xin chào.","score":8,"pros":[],"cons":[]});
+        crate::product::tests::music_follows_the_source_rule("compilation", |music| {
+            let value = json!({"title":"Tổng hợp","layout":"bang-thong-tin","voiceId":"vi-test","speed":1.0,"music":music,
+                "musicVolume":0.2,"intro":"Xin chào.","outro":"","items":[item.clone(),item.clone()],"cpuOnly":true,"outputRoot":null});
+            validate(&serde_json::from_value::<CompilationRequest>(value).unwrap(), &catalog()).map(|_| ())
+        });
         fs::remove_dir_all(base).unwrap();
     }
 

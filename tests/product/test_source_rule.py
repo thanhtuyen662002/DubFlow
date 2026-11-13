@@ -6,11 +6,13 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 from tempfile import TemporaryDirectory
 import unittest
 
-from engine.dubflow.compilation import program
+from engine.dubflow.compilation import job as compilation_job, program
+from engine.dubflow.package import job as package_job
 from engine.dubflow.product import job, render
 
 FFMPEG = os.environ.get("DUBFLOW_TEST_FFMPEG") or shutil.which("ffmpeg")
@@ -21,7 +23,24 @@ def symlink(target: Path, link: Path, test: unittest.TestCase) -> None:
     try:
         os.symlink(target, link, target_is_directory=target.is_dir())
     except (OSError, NotImplementedError) as error:  # Windows without Developer Mode or elevation
+        # the hosted runners can always make one: there a refusal fails, so the link cases never pass without running
+        if os.environ.get("CI"):
+            test.fail(f"CI must be able to make a symlink: {error}")
         test.skipTest(f"this system does not let the test make a symlink: {error}")
+
+
+def junction(target: Path, link: Path, test: unittest.TestCase) -> None:
+    """A real Windows directory junction (no privilege needed): what Explorer, ``mklink /J`` and installers make."""
+    if os.name != "nt":
+        test.skipTest("a directory junction needs Windows")
+    try:
+        import _winapi
+        _winapi.CreateJunction(str(target), str(link))
+    except (ImportError, AttributeError, OSError) as first:
+        made = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], stdin=subprocess.DEVNULL, capture_output=True)
+        if made.returncode:
+            test.skipTest(f"Windows does not let the test make a junction: {first}; mklink: {made.stderr!r}")
+    test.addCleanup(lambda: os.path.lexists(link) and os.rmdir(link))  # removes the junction only, never its target
 
 
 class Fixture(unittest.TestCase):
@@ -90,7 +109,7 @@ class PlainFileTests(Fixture):
         self.assertFalse(job._redirect(info(0, 0)))
 
 
-class SpecTests(Fixture):
+class SpecFixture(Fixture):
     def write_spec(self, **changes) -> Path:
         value = {"schema_version": 1, "name": "Nồi chiên", "price": "", "voice_id": "vi-test", "variants": ["Xin chào."],
                  "visuals": [str(self.clip)]}
@@ -104,6 +123,8 @@ class SpecTests(Fixture):
             job.load_spec(spec)
         self.assertEqual(caught.exception.message, message)
 
+
+class SpecTests(SpecFixture):
     def test_a_linked_clip_photo_or_music_in_a_spec_is_refused(self):
         photo, music = self.root / "a.jpg", self.root / "a.mp3"
         photo.write_bytes(b"jpg")
@@ -169,6 +190,9 @@ class SpecTests(Fixture):
         self.assert_refused(self.write_spec(background=str(self.root / "library-link" / kept.name)),
                             f"Ảnh nền nằm trong thư mục là lối tắt (symlink/junction), hãy chọn tệp ở vị trí thật: {kept.name}")
         self.assertEqual(kept.read_bytes(), b"png")
+
+class ReadOnlyRenderTests(SpecFixture):
+    """A whole Bán hàng render; kept apart from the rule's own cases so those can run alone (the Windows lane)."""
 
     @unittest.skipUnless(FFMPEG, "needs FFmpeg")
     def test_a_render_only_reads_its_sources(self):
@@ -244,6 +268,151 @@ class CompilationSourceTests(Fixture):
             self.program(str(self.root / "alias" / "a.mp3"))
         self.assertEqual(caught.exception.message,
                          "Nhạc nền nằm trong thư mục là lối tắt (symlink/junction), hãy chọn tệp ở vị trí thật: a.mp3")
+
+
+class LegacyMusicFixture(Fixture):
+    """The music the user picks for Tổng hợp from finished videos (spec v1) and for Đóng gói."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.music = self.root / "real" / "song.mp3"
+        self.music.parent.mkdir()
+        self.music.write_bytes(b"music")
+
+    def compilation(self, music):
+        items = []
+        for number in (1, 2):
+            video = self.root / "DubFlow Output" / f"job-{number}" / "final_vi.mp4"
+            video.parent.mkdir(parents=True, exist_ok=True)
+            video.write_bytes(b"video")
+            items.append({"video": str(video), "title": f"Clip {number}", "lead": "Nhận xét này.", "score": 8, "pros": [], "cons": []})
+        value = {"schema_version": 1, "title": "Tổng hợp thử", "layout": "bang-thong-tin", "voice_id": "vi-test", "speed": 1.1,
+                 "music": music, "music_volume": 0.2, "intro": "Xin chào.", "outro": "", "items": items}
+        (self.root / "compilation.json").write_text(json.dumps(value), encoding="utf-8")
+        return compilation_job.load_spec(self.root / "compilation.json").music
+
+    def package(self, music):
+        video = self.root / "final_vi.mp4"
+        video.write_bytes(b"video")
+        value = {"schema_version": 1, "video": str(video), "intro": "Xin chào.", "outro": "", "voice_id": "vi-test", "speed": 1.0,
+                 "music": music, "music_volume": 0.2, "background": "keep"}
+        (self.root / "package.json").write_text(json.dumps(value), encoding="utf-8")
+        return package_job.load_spec(self.root / "package.json").music
+
+    def pages(self):
+        return (("Tổng hợp v1", self.compilation), ("Đóng gói", self.package))
+
+    def assert_music_refused(self, value: str, message: str) -> None:
+        for page, load in self.pages():
+            with self.subTest(page=page):
+                with self.assertRaises(job.ProductError) as caught:
+                    load(value)
+                self.assertEqual(caught.exception.message, message)
+
+
+class LegacyMusicTests(LegacyMusicFixture):
+    def test_real_and_hard_linked_music_is_kept(self):
+        hard = self.root / "hard.MP3"
+        os.link(self.music, hard)
+        for page, load in self.pages():
+            with self.subTest(page=page):
+                self.assertEqual(load(str(self.music)), self.music, "a real file anywhere is the user's file")
+                self.assertEqual(load(str(hard)), hard, "a hard link is the file itself")
+                self.assertIsNone(load(None))
+
+    def test_traversal_relative_and_missing_music_is_refused(self):
+        traversal = os.path.join(str(self.root), "real", "..", "real", "song.mp3")
+        self.assertTrue(os.path.isfile(traversal), "the path names a file that exists: only the `..` refuses it")
+        self.assert_music_refused(traversal, "Đường dẫn nhạc nền không hợp lệ: song.mp3")
+        # what these pages' worker already refused keeps its text
+        self.assert_music_refused("song.mp3", "Không mở được nhạc nền: song.mp3")
+        self.assert_music_refused(str(self.root / "real" / "missing.mp3"), "Không mở được nhạc nền: missing.mp3")
+        (self.root / "song.txt").write_bytes(b"music")
+        self.assert_music_refused(str(self.root / "song.txt"), "Không mở được nhạc nền: song.txt")
+
+    def test_linked_music_is_refused(self):
+        symlink(self.music, self.root / "link.mp3", self)
+        self.assertTrue((self.root / "link.mp3").is_file())
+        self.assert_music_refused(str(self.root / "link.mp3"), "Nhạc nền phải là tệp thật trên máy, không phải lối tắt: link.mp3")
+        self.assertEqual(self.music.read_bytes(), b"music")
+
+    def test_music_below_a_linked_folder_is_refused(self):
+        symlink(self.music.parent, self.root / "alias", self)
+        self.assertTrue((self.root / "alias" / "song.mp3").is_file(), "reachable through the link")
+        self.assert_music_refused(str(self.root / "alias" / "song.mp3"),
+                                  "Nhạc nền nằm trong thư mục là lối tắt (symlink/junction), hãy chọn tệp ở vị trí thật: song.mp3")
+
+
+class JunctionTests(LegacyMusicFixture, SpecFixture):
+    """The rule against a real directory junction, which only Windows has: the lane `PR Desktop Editor Windows` runs
+    these and fails when one is skipped. Elsewhere they skip; the symlink cases above cover the same code."""
+
+    BELOW = "nằm trong thư mục là lối tắt (symlink/junction), hãy chọn tệp ở vị trí thật"
+
+    def setUp(self) -> None:
+        super().setUp()
+        (self.music.parent / "deeper").mkdir()
+        for name in ("b.mp4", "deeper/c.mp4"):
+            (self.music.parent / name).write_bytes(b"clip")
+        self.alias = self.root / "alias"
+        junction(self.music.parent, self.alias, self)
+
+    def test_a_junction_is_a_redirect(self):
+        info = os.lstat(self.alias)
+        self.assertEqual(info.st_reparse_tag, stat.IO_REPARSE_TAG_MOUNT_POINT, "a junction, not a symlink")
+        self.assertTrue(job._redirect(info))
+        self.assertFalse(job._redirect(os.lstat(self.music.parent)), "the real folder")
+        self.assertFalse(job._redirect(os.lstat(self.music)), "a real file")
+
+    def test_a_source_below_a_junction_is_refused(self):
+        for name in ("b.mp4", "deeper/c.mp4"):
+            self.assertTrue((self.alias / name).is_file(), "reachable through the junction")
+            self.refused(str(self.alias / name), f"Video nguồn {self.BELOW}: {Path(name).name}")
+            self.assertEqual(job._plain_file(str(self.music.parent / name), CLIPS, "video nguồn"), self.music.parent / name,
+                             "the same file at its real place")
+        with self.assertRaises(job.ProductError) as caught:
+            job.load_spec(self.write_spec(visuals=[str(self.alias / "b.mp4")]))
+        self.assertEqual(caught.exception.message, f"Video nguồn {self.BELOW}: b.mp4")
+        with self.assertRaises(program.CompilationError) as caught:
+            program._source({"video": str(self.alias / "b.mp4")}, "Mục 1, nguồn 1")
+        self.assertEqual(caught.exception.message, f"Video nguồn {self.BELOW}: b.mp4")
+
+    def test_music_below_a_junction_is_refused(self):
+        through = str(self.alias / "song.mp3")
+        self.assert_music_refused(through, f"Nhạc nền {self.BELOW}: song.mp3")
+        with self.assertRaises(job.ProductError) as caught:
+            job.load_spec(self.write_spec(music=through))
+        self.assertEqual(caught.exception.message, f"Nhạc nền {self.BELOW}: song.mp3")
+        items = [{"title": f"Mục {number}", "sources": [{"video": str(self.clip)}]} for number in (1, 2)]
+        with self.assertRaises(program.CompilationError) as caught:
+            program.load({"schema_version": 2, "title": "Tổng hợp", "layout": "toan-man-hinh", "voice_id": "vi-test",
+                          "music": through, "items": items})
+        self.assertEqual(caught.exception.message, f"Nhạc nền {self.BELOW}: song.mp3")
+
+    def test_a_folder_swapped_for_a_junction_is_refused(self):
+        moved = self.root / "moved"
+        spec = self.write_spec(visuals=[str(moved / "b.mp4")])
+        self.music.parent.rename(moved)
+        self.assertEqual(job.load_spec(spec).visuals, (moved / "b.mp4",), "a real folder when the desktop checked it")
+        moved.rename(self.root / "elsewhere")
+        junction(self.root / "elsewhere", moved, self)
+        with self.assertRaises(job.ProductError) as caught:
+            job.load_spec(spec)
+        self.assertEqual(caught.exception.message, f"Video nguồn {self.BELOW}: b.mp4")
+
+    def test_a_library_background_below_a_junctioned_data_folder_is_kept(self):
+        library = self.root / "data" / "backgrounds"
+        library.mkdir(parents=True)
+        kept = library / f"{'a' * 64}.png"
+        kept.write_bytes(b"png")
+        junction(self.root / "data", self.root / "data-alias", self)
+        through = self.root / "data-alias" / "backgrounds" / kept.name
+        self.assertEqual(job.load_spec(self.write_spec(background=str(through))).background, through,
+                         "the data folder may be reached through a junction")
+        junction(library, self.root / "library-alias", self)
+        with self.assertRaises(job.ProductError) as caught:
+            job.load_spec(self.write_spec(background=str(self.root / "library-alias" / kept.name)))
+        self.assertEqual(caught.exception.message, f"Ảnh nền {self.BELOW}: {kept.name}", "the library folder itself may not")
 
 
 if __name__ == "__main__":

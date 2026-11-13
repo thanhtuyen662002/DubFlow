@@ -22,7 +22,6 @@ use crate::{control_root, display_path, fail, load_voice_catalog, version_root, 
 
 /// The formats the v2 engine reads (`program.VIDEO_SUFFIXES`); anything else is refused by name.
 pub(crate) const SOURCE_EXTENSIONS: [&str; 6] = ["mp4", "mov", "mkv", "webm", "m4v", "avi"];
-const MUSIC_EXTENSIONS: [&str; 6] = ["mp3", "m4a", "aac", "wav", "ogg", "flac"];
 const LAYOUTS: [&str; 2] = ["bang-thong-tin", "toan-man-hinh"];
 const KINDS: [&str; 2] = ["top_n", "list"];
 const RIGHTS: [&str; 4] = ["owned", "licensed", "permitted", "unknown"];
@@ -114,12 +113,7 @@ fn is_below_output(path: &Path) -> bool {
 
 /// The music: the same source rule; its one message as before, and the new folder-link refusal by name.
 fn music_file(value: &str) -> Result<PathBuf, String> {
-    let path = PathBuf::from(value);
-    match crate::product::check_source(&path, &MUSIC_EXTENSIONS) {
-        Ok(()) => Ok(path),
-        Err(SourceRefusal::LinkedFolder) => Err(SourceRefusal::LinkedFolder.message("Nhạc nền", &crate::product::source_name(&path))),
-        Err(_) => Err(fail("Không mở được nhạc nền; chọn MP3, M4A, AAC, WAV, OGG hoặc FLAC")),
-    }
+    crate::product::music_source(value)
 }
 
 /// The request as the engine's v2 spec, every field checked; the sources as checked paths.

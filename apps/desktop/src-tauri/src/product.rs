@@ -81,7 +81,9 @@ fn plain_path(path: &Path) -> bool {
 }
 
 /// The one source rule (Issue #816) for every file the user chooses as a source in Bán hàng (photos, clips, music, a
-/// background to keep, a photo to preview) and Tổng hợp (source videos, music):
+/// background to keep, a photo to preview), Tổng hợp (source videos, music; the music of its first version too) and
+/// Đóng gói (music). The finished `final_vi.mp4` files those last two read are the app's own outputs, found by
+/// `review_dir`, not sources:
 /// - the path is absolute, made only of a prefix, a root and plain names: no `.` or `..` part, read on the text itself
 ///   (`Path::components` hides an inner `.`), so the path stored in the spec is the file the user picked;
 /// - it has one of `extensions`;
@@ -119,6 +121,17 @@ pub(crate) fn plain_source_file(value: &str, kind: &str, extensions: &[&str]) ->
     Ok(path)
 }
 
+/// The music the user picks for Tổng hợp (both versions) and Đóng gói: the same source rule ([`check_source`]). Those
+/// pages keep their one message; only the folder-link refusal, which the old message would not explain, names itself.
+pub(crate) fn music_source(value: &str) -> Result<PathBuf, String> {
+    let path = PathBuf::from(value);
+    match check_source(&path, &MUSIC_EXTENSIONS) {
+        Ok(()) => Ok(path),
+        Err(SourceRefusal::LinkedFolder) => Err(SourceRefusal::LinkedFolder.message("Nhạc nền", &source_name(&path))),
+        Err(_) => Err(fail("Không mở được nhạc nền; chọn MP3, M4A, AAC, WAV, OGG hoặc FLAC")),
+    }
+}
+
 /// A source's file name for messages.
 pub(crate) fn source_name(path: &Path) -> String {
     path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()
@@ -138,6 +151,12 @@ fn product_visuals(values: &[String]) -> Result<Vec<PathBuf>, String> {
 /// file the user's own source rule accepted, so the folders above the library are not looked at: the data folder may
 /// itself be reached through a junction (an install root on another drive), and its backgrounds must still preview and
 /// render.
+///
+/// The folder is compared part by part with the library's own spelling, exactly: the UI lists these paths from that
+/// same spelling (`product_backgrounds`). Another spelling of the same folder (on Windows another letter case, an 8.3
+/// short name, a `\\?\` form) is not recognised here and falls back to the user's source rule, the safe direction: a
+/// real file is still accepted, only the junctioned-data-folder allowance is lost. Recognising those spellings would
+/// take `canonicalize` (which follows the very links this refuses) or comparing text, so it is not done.
 fn library_file(library: &Path, value: &str) -> Option<PathBuf> {
     let path = PathBuf::from(value);
     let (id, extension) = path.file_name()?.to_str()?.split_once('.')?;
@@ -864,16 +883,36 @@ pub(crate) mod tests {
     }
 
     /// A file symlink: a plain symlink on unix; on Windows it needs Developer Mode or an elevated process, so false
-    /// (and the caller skips, saying so) when the system refuses.
+    /// (and the caller skips, saying so) when the system refuses. On CI (`CI` is set) it must be made, see [`link_made`].
     pub(crate) fn link_file(target: &Path, link: &Path) -> bool {
         #[cfg(windows)]
         let made = std::os::windows::fs::symlink_file(target, link);
         #[cfg(unix)]
         let made = std::os::unix::fs::symlink(target, link);
+        link_made(made, std::env::var_os("CI").is_some())
+    }
+
+    /// Whether a link a test asked for was made. A developer's Windows may refuse (the caller then skips its link
+    /// cases, and this says so); the hosted runners are elevated and can always make one, so there (`ci`) a refusal
+    /// fails the test instead of letting its link cases pass without running.
+    fn link_made(made: std::io::Result<()>, ci: bool) -> bool {
         if let Err(error) = &made {
+            assert!(!ci, "CI must be able to make a file symlink, or the link cases pass without running: {error}");
             eprintln!("skipped: this system does not let the test make a file symlink ({error})");
         }
         made.is_ok()
+    }
+
+    #[test]
+    fn a_link_that_cannot_be_made_is_a_skip_off_ci() {
+        assert!(link_made(Ok(()), true) && link_made(Ok(()), false));
+        assert!(!link_made(Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)), false));
+    }
+
+    #[test]
+    #[should_panic(expected = "CI must be able to make a file symlink")]
+    fn a_link_that_cannot_be_made_fails_the_test_on_ci() {
+        link_made(Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)), true);
     }
 
     fn refusal(path: &Path, kind: &str) -> String {
@@ -940,6 +979,48 @@ pub(crate) mod tests {
                    "Nhạc nền phải là tệp thật trên máy, không phải lối tắt: music-link.mp3");
         assert_eq!(fs::read(&clip).unwrap(), b"real", "the source is only read");
         fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// The music cases of the one source rule, for every page that takes the user's music through [`music_source`]
+    /// (`check` is that page's own validation of a request with this music): a real file and a hard link are accepted;
+    /// `..`, a file link and a file below a linked folder are refused.
+    pub(crate) fn music_follows_the_source_rule(name: &str, check: impl Fn(&str) -> Result<(), String>) {
+        const OLD: &str = "Không mở được nhạc nền; chọn MP3, M4A, AAC, WAV, OGG hoặc FLAC";
+        let base = source_base(name);
+        let real = base.join("real");
+        fs::create_dir_all(&real).unwrap();
+        let music = real.join("song.mp3");
+        fs::write(&music, b"music").unwrap();
+        assert_eq!(check(&text(&music)), Ok(()), "a real file anywhere is the user's file");
+        let hard = base.join("hard.MP3");
+        fs::hard_link(&music, &hard).unwrap();
+        assert_eq!(check(&text(&hard)), Ok(()), "a hard link is the file itself");
+        // each refused path names a file that exists and that the old check (`Path::is_file`) accepted
+        let traversal = real.join("..").join("real").join("song.mp3");
+        assert!(traversal.is_file());
+        assert_eq!(check(&text(&traversal)).unwrap_err(), OLD, "`..`");
+        assert_eq!(check("song.mp3").unwrap_err(), OLD, "relative");
+        assert_eq!(check(&text(&real.join("missing.mp3"))).unwrap_err(), OLD, "missing");
+        if link_file(&music, &base.join("link.mp3")) {
+            assert!(base.join("link.mp3").is_file());
+            assert_eq!(check(&text(&base.join("link.mp3"))).unwrap_err(), OLD, "a file link");
+        }
+        let alias = base.join("alias");
+        let linked = link_dir(&real, &alias);
+        #[cfg(windows)]
+        assert!(linked, "junctions need no privilege on Windows");
+        if linked {
+            assert!(alias.join("song.mp3").is_file(), "the file is reachable through the link");
+            assert_eq!(check(&text(&alias.join("song.mp3"))).unwrap_err(),
+                       "Nhạc nền nằm trong thư mục là lối tắt (symlink/junction), hãy chọn tệp ở vị trí thật: song.mp3");
+        }
+        assert_eq!(fs::read(&music).unwrap(), b"music", "the music is only read");
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn the_music_of_the_other_pages_follows_the_rule() {
+        music_follows_the_source_rule("music", |value| music_source(value).map(|path| assert_eq!(path, Path::new(value))));
     }
 
     #[test]
@@ -1081,6 +1162,18 @@ pub(crate) mod tests {
         assert!(library_file(&library, &text(&library.join(format!("{}.png", "b".repeat(64))))).is_none(), "nothing there");
         assert!(library_file(&library, &text(&library.join("own.png"))).is_none(), "not a library name");
         assert!(library_file(&library, &text(&data.join(format!("{id}.png")))).is_none(), "not in the library folder");
+        // another spelling of the library folder is not a library entry: the user's rule decides (the safe direction)
+        let spelled = base.join("DATA").join("Backgrounds").join(format!("{id}.png"));
+        assert!(library_file(&library, &text(&spelled)).is_none(), "the folder is compared exactly, part by part");
+        #[cfg(windows)]
+        {
+            assert!(spelled.is_file(), "the same file, spelled in another letter case");
+            assert_eq!(render(&spelled).unwrap(), Some(spelled.clone()), "a real file below real folders: still accepted, as the user's");
+            let long = PathBuf::from(format!(r"\\?\{}", kept.display()));
+            assert!(long.is_file() && library_file(&library, &text(&long)).is_none(), "nor its long-path form");
+        }
+        #[cfg(not(windows))]
+        assert_eq!(render(&spelled).unwrap_err(), format!("Không tìm thấy ảnh nền: {id}.png"), "names are exact here: another file");
         if link_file(&own, &library.join(format!("{}.png", "c".repeat(64)))) {
             let entry = library.join(format!("{}.png", "c".repeat(64)));
             assert!(library_file(&library, &text(&entry)).is_none(), "a link in the library is not the app's copy");
@@ -1104,6 +1197,10 @@ pub(crate) mod tests {
             fs::write(data.join("photo.png"), b"png").unwrap();
             assert_eq!(library_or_source(Some(&library), &text(&alias.join("photo.png")), "Ảnh").unwrap_err(),
                        "Ảnh nằm trong thư mục là lối tắt (symlink/junction), hãy chọn tệp ở vị trí thật: photo.png");
+            // another spelling of the junctioned library loses that allowance: refused as a file below a link
+            #[cfg(windows)]
+            assert_eq!(library_or_source(Some(&library), &text(&alias.join("BACKGROUNDS").join(format!("{id}.png"))), "Ảnh").unwrap_err(),
+                       format!("Ảnh nằm trong thư mục là lối tắt (symlink/junction), hãy chọn tệp ở vị trí thật: {id}.png"));
             // a library folder that is itself a link is not the app's own folder
             let library_link = base.join("library-link");
             assert!(link_dir(&library, &library_link));
