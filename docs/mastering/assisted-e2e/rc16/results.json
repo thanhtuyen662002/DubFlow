@@ -894,7 +894,7 @@
   }
  },
  "W2": {
-  "verdict": "PASS_WITH_DEVIATION",
+  "verdict": "PASS_WITH_DEVIATION (0-6 s shot not split); B2/B3/B5 PASS in follow-up 2",
   "run": "run-18892c740ffb",
   "draft_s": 255,
   "excluded_shot": "i1-s1c2",
@@ -917,7 +917,134 @@
   "undo_rebuild_s": 12.2,
   "export_qc": "Kiểm tra cuối: đạt.",
   "final_sha256": "9e3d5fb4963e2df7468a281bd9c91873213a393d777c67728006bcf7477a5e0",
-  "not_run": "0-6000 ms shot (not split in rc16)"
+  "not_run": "0-6000 ms shot (not split in rc16)",
+  "followup2": {
+   "A1_B3_exclude_one_piece": {
+    "verdict": "PASS",
+    "piece": "i1-s1c2f1",
+    "range_ms": [
+     6000,
+     7950
+    ],
+    "rebuild_s": 12.9,
+    "rendered": [
+     "i1"
+    ],
+    "reused": 7,
+    "segments_in_range": 0,
+    "sibling_f2_still_used": true,
+    "undo_rebuild_s": 13.1
+   },
+   "A2_B2_exclude_unused_alternative": {
+    "verdict": "PASS",
+    "piece": "i1-s1c3f1",
+    "range_ms": [
+     12000,
+     13950
+    ],
+    "rebuild_s": 8.9,
+    "rendered": [],
+    "reused": 8,
+    "segments_in_range": 0,
+    "undo_rebuild_s": 8.5
+   },
+   "A3_B5_whole_shot_restart_replan": {
+    "verdict": "PASS",
+    "shot": "i1-s1c2",
+    "range_ms": [
+     6000,
+     12000
+    ],
+    "rebuild_s": 12.7,
+    "rendered": [
+     "i1"
+    ],
+    "segments_in_range": 0,
+    "moment_dropped_first_rebuild": true,
+    "invalidated": {
+     "unit": "i1.u2",
+     "reason": "shot_gone (its approved pieces were excluded)"
+    },
+    "persisted_after_restart": true,
+    "replan_trigger": "exclude unused i1-s1c3f3",
+    "replan_rebuild_s": 11.8,
+    "plan_rewritten": true,
+    "segments_in_range_after_replan": 0,
+    "moment_after_replan": [
+     18000,
+     21500
+    ],
+    "undo_all_rebuild_s": 12.0
+   },
+   "A4_decoded_dhash": {
+    "part_decode": {
+     "exit": 0,
+     "errors": 0
+    },
+    "full": {
+     "part_frames": 65,
+     "excluded_frames": 30,
+     "control_frames": 18,
+     "excluded_6_12s": {
+      "min": 16,
+      "within_6": 0,
+      "median": 23
+     },
+     "control_used_12_15_49s": {
+      "min": 13,
+      "within_6": 0,
+      "median": 23
+     },
+     "decode_exit": [
+      0,
+      0,
+      0
+     ],
+     "decode_error_lines": [
+      0,
+      0,
+      0
+     ],
+     "control_timeline_6_9_49s_only": {
+      "frames": 17,
+      "min_to_control": 13,
+      "median_to_control": 18,
+      "min_to_excluded": 16
+     }
+    },
+    "centre_4x3": {
+     "part_frames": 65,
+     "excluded_frames": 30,
+     "control_frames": 18,
+     "excluded_6_12s": {
+      "min": 4,
+      "within_6": 1,
+      "median": 22
+     },
+     "control_used_12_15_49s": {
+      "min": 0,
+      "within_6": 18,
+      "median": 22
+     },
+     "decode_exit": [
+      0,
+      0,
+      0
+     ],
+     "decode_error_lines": [
+      0,
+      0,
+      0
+     ],
+     "control_timeline_6_9_49s_only": {
+      "frames": 17,
+      "min_to_control": 0,
+      "median_to_control": 1,
+      "min_to_excluded": 4
+     }
+    }
+   }
+  }
  },
  "W3": {
   "verdict": "Gate B FAIL",
@@ -1633,7 +1760,8 @@
     ],
     "mean_shots_in_window": 24.6
    }
-  }
+  },
+  "attribution_file": "W3-attribution-rc16.md (directive §12 fields, 64 rows)"
  },
  "W4": {
   "verdict": "PASS",

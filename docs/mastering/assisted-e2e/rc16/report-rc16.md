@@ -212,3 +212,44 @@ Final QC (file check, bundle `final_qc`): **REVIEW_PENDING**; decisions "67 câu
 ### W3 rc16 per-unit attribution
 
 `logs\W3-attribution-rc16.md`: 64 rows from `w3.py attribute`. Shot ids omit the `iN-s1c` prefix. The tool gives no secondary factor, so the table shows the R7 review outcome in that column.
+
+
+## Follow-up 2 (2026-11-13): #805 gaps on Windows (B3, B2, B5 with replan, decoded-video check) and the §12 per-unit record
+
+Run: the W2 Top 5 run `run-18892c740ffb`, item i1, on rc16 (launch4 and launch5 PROOF OK). Every decision was made with real clicks in the review panel. UI = CDP automation, not human review; no IPC calls were substituted. Starting state: no exclusions; i1.u1 uses c1 (0–6000); i1.u2 uses c1, **c2f1 6000–7950** and **c2f2 7950–10050**; moment 18000–21500; every sentence approved.
+
+| # | Step (UI) | Rebuild | Plan-i1 check | Approvals |
+|---|---|---|---|---|
+| A1 | **B3**: "Bỏ đoạn này" on the piece **i1-s1c2f1** (6000–7950) in use by u2. No confirmation; state "Đã loại cảnh. Bấm render lại để dựng lại."; list "Câu 2 đã loại cảnh i1-s1c2f1"; review records `ranges` i1-s1 6000–7950 | **12.9 s**, "dựng 1 phần, dùng lại 7" (i1 only) | u2 = c1, **c2f2**, c3f1 → **0 segments in 6000–7950**; the sibling piece f2 (7950–10050) is **still used** (1 segment) | i1.u2's own approval was replaced by the exclusion (panel "Nghiêm trọng"); 0 INVALIDATED elsewhere |
+| A1u | "Hoàn tác" + rebuild | 13.1 s, 1 part (i1) | back to the draft plan (c2f1 6000–7950 used again) | i1.u2 shows "Bạn đã duyệt" again |
+| A2 | **B2**: "Bỏ đoạn này" on the **unused alternative i1-s1c3f1** (12000–13950, "Phương án · điểm 478" under u1; the piece the planner had picked in A1) | **8.9 s**, "dựng 0 phần, dùng lại 8" (plan unchanged, since it was not in use) | **0 segments in 12000–13950** | i1.u1 now "Cần xem lại" (its own decision); 0 INVALIDATED |
+| A2u | "Hoàn tác" + rebuild | 8.5 s, 0 parts | unchanged | i1.u1 approved again |
+| A3 | **B5**: "Bỏ cả cảnh gốc" on i1-s1c2 (from u1's alternative 6,0–8,0 s). The confirmation lists Đoạn 1 6,0–8,0 s Câu 2 đang dùng / Đoạn 2 8,0–10,1 s Câu 2 đang dùng / Đoạn 3 10,1–12,0 s chưa câu nào dùng. Confirmed | **12.7 s**, "dựng 1 phần, dùng lại 7" (i1 only) | u2 = c1, c3f1, c3f2 → **0 segments in 6000–12000**. **The moment 18000–21500 was dropped** in this rebuild (i1 9490 ms instead of 12990 ms) | **i1.u2: INVALIDATED** "Cảnh bạn đã duyệt không còn trong nguồn; hãy chọn lại." (conflict `shot_gone`, shots c2f1, c2f2): the approval relied on the excluded pieces. This is not an unrelated invalidation. Other parts 0 |
+| A3r | Close the app completely (0 DubFlow processes) → relaunch (launch5 PROOF OK) → reopen the panel | — | Exclusion still there: "Cảnh đã loại: Câu 1 đã loại cảnh i1-s1c2" + "Bỏ loại"; queue "1 nghiêm trọng · 1 cần xem"; i1.u2 "Nghiêm trọng · Cần chọn lại" | — |
+| A3p | **Replan while the exclusion is active**: "Bỏ đoạn này" on the unused alternative i1-s1c3f3 (16050–18000), then "Dựng lại các phần đã đổi" | **11.8 s**, "dựng 1 phần, dùng lại 7" (i1 only); plan-i1.json and editorial-i1.json rewritten (planner ran) | edits.exclude = [i1-s1c2, i1-s1c3f3]; u2 = c1, c3f1, c3f2; **0 segments in 6000–12000**, 0 in 16050–18000; the moment 18000–21500 is back (12990 ms) | INVALIDATED stays 1 (i1.u2); others unchanged |
+| A3u | "Hoàn tác" ×2 (exclusions [c2, c3f3] → [c2] → []) + rebuild | 12.0 s, 1 part (i1) | draft plan again (c2f1, c2f2 used; moment kept) | i1.u1 and i1.u2 both "Bạn đã duyệt" |
+
+**A4: decoded-video check** of part-i1 in state A3p (exclusion active, after the reopen and the replan rebuild). part-i1 decodes with exit 0 and 0 errors. Frames at 5 fps: 65 frames of part-i1; source `m2-lop-hoc-2995.webm` 6.0–12.0 s (excluded) 30 frames, and 12.0–15.49 s (used by part-i1 at timeline 6.0–9.49 s, the control) 18 frames. All source decodes exit 0, 0 errors. Hash: 64-bit dHash on 9×8 grayscale.
+
+| Variant | Min Hamming, part → excluded 6–12 s | Part frames within ≤ 6 of excluded | Control: min / median, part 6.0–9.49 s → used 12–15.49 s | Part frames within ≤ 6 of control |
+|---|---|---|---|---|
+| Full frame (part is 16:9, source 4:3) | 16 | **0** | 13 / 18 | 0 (the 16:9 cover changes the frame, so full-frame hashing is not discriminative) |
+| Centre crop to 4:3 (`crop=ih*4/3:ih`) | **4** | **1** | **0 / 1** | 18 |
+
+The single near frame (centre crop) is part-i1 at **t = 6.0 s**: the first frame of the segment that starts at source 12.0 s. It is distance 4 from excluded source 11.8 s and distance **3** from the used source 12.0–15.49 s. The source is one continuous take across 11.8 → 12.0 s, so this frame is from the used range. No part frame matches the excluded range more closely than the used range.
+
+**A verdict: B3, B2 and B5 (with a replan after reopening) PASS on Windows; the decoded video holds no excluded footage.** Observations:
+- (P3) The first whole-shot rebuild (A3) dropped i1's own-sound moment, while the replan after reopening (A3p) brought it back. In W2 earlier the same exclusion kept the moment. The planner's moment choice depends on the edit history (the approval state of u2).
+- Excluding a piece or shot used by an approved sentence voids that sentence's approval. This is visible ("Cần chọn lại") and undo restores it.
+
+### §12 per-unit record (W3 rc16)
+
+`W3-attribution-rc16.md` was regenerated with the directive's minimum fields:
+- unit id; narration (≤ 80 chars); GT ranges;
+- right shots, and whether one was looked at by vision; the vision text of the best right shot (≤ 80 chars);
+- rank; chosen; hit; review state; primary stage;
+- allocation constraint (cursor_ms for the 3 R6_BEHIND_CURSOR units: i7.u2 673682, i11.u2 1127522, i15.u2 1512320);
+- secondary factor ("none": the tool reports one primary stage only);
+- R7 review; trim_basis; evidence reference (`ev16\run-f6919b04ccb3\.dubflow-work\mastering\editorial-iN.json`).
+
+64 rows (60 footage + 4 missing).
