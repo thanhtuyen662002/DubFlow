@@ -24,12 +24,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ffmpeg", type=Path, required=True)
     parser.add_argument("--ffprobe", type=Path, required=True)
     parser.add_argument("--cpu-only", action="store_true")
+    # the desktop's background library: a background proven to be its own copy there may sit below a junctioned data folder
+    parser.add_argument("--library-dir", type=Path)
     args = parser.parse_args(argv)
     # The user's AI key for this job only (as for translation); out of the environment before FFmpeg starts.
     ai_key = os.environ.pop("DUBFLOW_AI_KEY", "") or ""
     output = args.output_dir.absolute()
     try:
-        spec = load_spec(args.spec)
+        spec = load_spec(args.spec, args.library_dir)
     except ProductError as error:
         work = output / ".dubflow-work"
         work.mkdir(parents=True, exist_ok=True)

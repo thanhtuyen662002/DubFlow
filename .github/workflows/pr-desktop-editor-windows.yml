@@ -28,7 +28,12 @@ on:
       - engine/dubflow/separation/outdir.py
       - tests/separation/test_editor_cli.py
       - engine/dubflow/product/job.py
+      - engine/dubflow/product/__main__.py
       - tests/product/test_status_write.py
+      - engine/dubflow/compilation/job.py
+      - engine/dubflow/compilation/program.py
+      - engine/dubflow/package/job.py
+      - tests/product/test_source_rule.py
   pull_request:
     paths:
       - .github/workflows/pr-desktop-editor-windows.yml
@@ -50,7 +55,12 @@ on:
       - engine/dubflow/separation/outdir.py
       - tests/separation/test_editor_cli.py
       - engine/dubflow/product/job.py
+      - engine/dubflow/product/__main__.py
       - tests/product/test_status_write.py
+      - engine/dubflow/compilation/job.py
+      - engine/dubflow/compilation/program.py
+      - engine/dubflow/package/job.py
+      - tests/product/test_source_rule.py
 
 permissions:
   contents: read
@@ -160,6 +170,27 @@ jobs:
           if ($text -notmatch '(?m)^Ran (\d+) tests? in ') { throw 'Status write test count missing' }
           Write-Host "Status write tests passed: $($Matches[1]), none skipped"
 
+      - name: Run the worker's source-rule tests with real junctions and symlinks (#816)
+        shell: pwsh
+        run: |
+          # The rule's own cases (standard library only). The whole Bán hàng render in the same file
+          # (ReadOnlyRenderTests) stays in the Linux lanes.
+          $log = Join-Path $env:RUNNER_TEMP 'source-rule-tests.log'
+          python -B -m unittest `
+            tests.product.test_source_rule.PlainFileTests `
+            tests.product.test_source_rule.SpecTests `
+            tests.product.test_source_rule.CompilationSourceTests `
+            tests.product.test_source_rule.LegacyMusicTests `
+            tests.product.test_source_rule.JunctionTests `
+            -v 2>&1 | Tee-Object -FilePath $log
+          if ($LASTEXITCODE -ne 0) { throw 'Source-rule tests failed' }
+          $text = Get-Content -LiteralPath $log -Raw
+          if ($text -match '\.\.\. skipped') { throw 'Source-rule tests skipped some cases (a junction or a symlink could not be made)' }
+          $junctions = [regex]::Matches($text, '(?m)^test_\S+ \(tests\.product\.test_source_rule\.JunctionTests\.\S+\) \.\.\. ok').Count
+          if ($junctions -ne 6) { throw "Expected 6 junction tests to pass against a real junction, saw $junctions" }
+          if ($text -notmatch '(?m)^Ran (\d+) tests? in ') { throw 'Source-rule test count missing' }
+          Write-Host "Source-rule tests passed on Windows: $($Matches[1]) (6 against a real junction), none skipped"
+
       - name: Run the custom beep-sound decode test against real FFmpeg
         shell: pwsh
         run: |
@@ -193,9 +224,10 @@ jobs:
             tests.production.worker.test_dubbing_mastering.PlantedLinkTests.test_windows_links_at_the_old_names_are_never_written_through `
             tests.production.worker.test_dubbing_mastering.PlantedLinkTests.test_windows_junctions_at_the_old_names_are_never_written_through `
             tests.production.worker.test_dubbing_mastering.AacTrueCeilingTests.test_a_link_at_the_mastered_mix_is_replaced_and_a_linked_folder_refused `
+            tests.production.worker.test_dubbing_mastering.AacTrueCeilingTests.test_a_linked_mastering_folder_renders_as_off_before_anything_is_written `
             -v 2>&1 | Tee-Object -FilePath $log
           if ($LASTEXITCODE -ne 0) { throw 'Mastering planted-link tests failed' }
           $text = Get-Content -LiteralPath $log -Raw
           if ($text -match '\.\.\. skipped') { throw 'Mastering planted-link tests skipped some cases' }
-          if ($text -notmatch '(?m)^Ran 3 tests in ') { throw 'Expected 3 mastering planted-link tests (symlinks and junctions)' }
-          Write-Host 'Mastering planted-link tests passed on Windows through the pinned FFmpeg: 3, none skipped'
+          if ($text -notmatch '(?m)^Ran 4 tests in ') { throw 'Expected 4 mastering planted-link tests (symlinks and junctions, the whole worker with a linked mastering folder included)' }
+          Write-Host 'Mastering planted-link tests passed on Windows through the pinned FFmpeg: 4 (3 helper tests and 1 whole-worker run with a junction at the mastering folder), none skipped'

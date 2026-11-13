@@ -35,6 +35,21 @@ def _directory_link(target, link, kind="symlink"):
         return done.returncode == 0 and os.path.lexists(link)
 
 
+def _plain_named(root, name):
+    """Every entry called ``name`` under ``root``, found without ever looking through a link: a symlink, or a Windows
+    junction (a plain directory to ``Path.rglob`` on Python 3.12, which would walk into whatever a test planted)."""
+    found, pending = [], [Path(root)]
+    while pending:
+        for entry in sorted(pending.pop().iterdir()):
+            if worker._is_link(entry):
+                continue
+            if entry.name == name:
+                found.append(entry)
+            if entry.is_dir():
+                pending.append(entry)
+    return found
+
+
 COMPRESSED = Picture(16, 40, 200, 110, (0, 0, 0, 0))  # washed-out picture: black and white pulled in
 
 
@@ -393,7 +408,7 @@ class AacJob:
         self.measured.append(name)
         if name == "final.wav":
             return self.mix
-        if name == "aac_trial.m4a":
+        if name.startswith("aac_trial") and name.endswith(".m4a"):  # one file per trial: aac_trial0.m4a, ...
             if not Path(path).is_file():
                 raise AssertionError("the trial was measured before it was encoded")
             value = self.trials.pop(0)
@@ -443,10 +458,11 @@ class AacJob:
         self.qc = json.loads(Path(done["qc"]).read_text(encoding="utf-8"))
         final = self.config.output_dir / "final_vi.mp4"
         self.published = final.read_bytes() if final.is_file() else None
-        plans = list(self.root.rglob("dubbing-plan.json"))
+        # never through a link: a test may plant one at the mastering folder, and what it names is not the job's
+        plans = _plain_named(self.root, "dubbing-plan.json")
         self.plan = json.loads(plans[0].read_text(encoding="utf-8")) if plans else None
         self.trial_encodes = [argv for argv in self.captures if "aac" in argv]
-        folders = [path for path in self.root.rglob("mastering") if path.is_dir()]
+        folders = [path for path in _plain_named(self.root, "mastering") if path.is_dir()]
         # what the mastering folder holds besides the plan and the mastered mix: the trial must leave nothing behind
         self.leftovers = sorted(path.name for folder in folders for path in folder.iterdir()
                                 if path.name not in ("dubbing-plan.json", "final_mix_mastered.wav"))
@@ -526,8 +542,8 @@ class AacTrueCeilingTests(unittest.TestCase):
             self.assertNotEqual(output.parent, folder)
             self.assertTrue(output.parent.name.startswith(".scratch-"), output)
             self.assertIn(folder, output.parents)
-        self.assertEqual([output.name for output in outputs], ["final_mix_mastered.partial.wav", "aac_trial.m4a",
-                                                              "final_mix_trim1.partial.wav", "aac_trial.m4a"])
+        self.assertEqual([output.name for output in outputs], ["final_mix_mastered.partial.wav", "aac_trial0.m4a",
+                                                              "final_mix_trim1.partial.wav", "aac_trial1.m4a"])
         self.assertEqual(len({output.parent for output in outputs[1:3]}), 2, "each helper makes its own directory")
         self.assert_no_trial_leftovers(job)
 
@@ -566,31 +582,224 @@ class AacTrueCeilingTests(unittest.TestCase):
     def test_a_linked_mastering_folder_renders_as_off_before_anything_is_written(self):
         # issue #821 review: with a mix already within target (no planner filter) only the AAC trial saw the link and
         # its refusal was caught as a failed trial, so mastering stayed on and wrote dubbing-plan.json through the
-        # linked folder; the stage itself now refuses the folder, whatever the planner would decide
-        for mix, trials in ((CLOSE_MIX, [-1.2, -2.0]), (RC17_MIX, [-1.31, -2.29])):
+        # linked folder; the stage itself now refuses the folder, whatever the planner would decide.
+        # A directory symlink everywhere; on Windows always a directory junction too (it needs no privilege, so it is
+        # the link anyone can plant, and an elevated runner that can make symlinks must not leave it untried).
+        kinds = ("symlink", "junction") if os.name == "nt" else ("symlink",)
+        made = set()
+        for kind in kinds:
+            for mix, trials in ((CLOSE_MIX, [-1.2, -2.0]), (RC17_MIX, [-1.31, -2.29])):
+                with self.subTest(kind=kind, mix=mix):
+                    job = AacJob("light", mix, trials=trials, final=Loud(-16.8, -2.0, 6.0, -26.9, 0.1))
+                    with TemporaryDirectory() as elsewhere, job.running() as run:
+                        outside = Path(elsewhere)  # outside the job's whole tree
+                        victim = outside / "dubbing-plan.json"
+                        victim.write_bytes(b"VICTIM\n")
+                        os.utime(victim, ns=(1_600_000_000_000_000_000, 1_600_000_000_000_000_000))
+                        work = job.config.output_dir / ".dubflow-work"
+                        work.mkdir(parents=True, exist_ok=True)
+                        link = work / "mastering"
+                        if not _directory_link(outside, link, kind):
+                            continue  # Windows without the symlink privilege: the junction below needs none
+                        made.add(kind)
+                        self.assertTrue(worker._is_link(link), f"the {kind} must be seen as a link")
+                        job.result(run())
+                        self.assertIn("MASTERING_SKIPPED: OSError: mastering: the mastering folder is a link",
+                                      job.qc["warnings"])
+                        self.assertNotIn("mastering", job.qc)
+                        self.assertEqual(job.trial_encodes, [])
+                        self.assertEqual(job.applies, [])
+                        self.assertEqual(Path(job.renders[-1]["audio_path"]).name, "final.wav")
+                        self.assertTrue(worker._is_link(link), "the planted link is refused, not removed or replaced")
+                        self.assertIsNone(job.plan, "no plan in the job, and the victim outside is not read as one")
+                        self.assertEqual(job.leftovers, [])
+                        self.assertEqual([path.name for path in outside.iterdir()], ["dubbing-plan.json"])
+                        self.assertEqual((victim.read_bytes(), victim.stat().st_mtime_ns),
+                                         (b"VICTIM\n", 1_600_000_000_000_000_000))
+        if kinds[-1] not in made:  # the link kind that needs no privilege on this system
+            self.skipTest(f"this system refused to create a directory {kinds[-1]}")
+
+    def test_the_job_reader_never_looks_through_a_planted_folder_link(self):
+        # the harness itself: on Windows with Python 3.12 Path.rglob walks into a directory junction, so reading the
+        # job's plan with it found the victim file outside and failed to parse it. Shown here on any system with an
+        # rglob that follows directory links, as that one does for a junction.
+        def following(self, pattern):
+            return (Path(folder, name) for folder, folders, files in os.walk(self, followlinks=True)
+                    for name in (*folders, *files) if name == pattern)
+
+        job = AacJob("light", RC17_MIX, trials=[-1.31, -2.29], final=Loud(-16.8, -2.0, 6.0, -26.9, 0.1))
+        with TemporaryDirectory() as elsewhere, job.running() as run:
+            outside = Path(elsewhere)
+            (outside / "dubbing-plan.json").write_bytes(b"VICTIM\n")
+            (outside / "stray.bin").write_bytes(b"not a leftover of the job")
+            work = job.config.output_dir / ".dubflow-work"
+            work.mkdir(parents=True, exist_ok=True)
+            if not (_directory_link(outside, work / "mastering") or (
+                    os.name == "nt" and _directory_link(outside, work / "mastering", "junction"))):
+                self.skipTest("this system refused to create a directory link")
+            done = run()
+            with patch.object(Path, "rglob", following):
+                job.result(done)
+            self.assertIsNone(job.plan)
+            self.assertEqual(job.leftovers, [])
+            self.assertNotIn("mastering", job.qc)
+
+    def test_a_silent_dubbed_export_is_a_warning_never_a_pass(self):
+        # Product System Design 19.3 "Không silence toàn video": a B2 export that measures no sound after AAC keeps
+        # status "silent" and is reported, whether the dubbed mix was silent before mastering or lost its sound later
+        cases = ((None, [None], "Âm lượng: bản trộn im lặng, không chỉnh.", False),
+                 (RC17_MIX, [-2.6], None, True))
+        for mix, trials, note, loudness in cases:
             with self.subTest(mix=mix):
-                job = AacJob("light", mix, trials=trials, final=Loud(-16.8, -2.0, 6.0, -26.9, 0.1))
-                with TemporaryDirectory() as elsewhere, job.running() as run:
-                    outside = Path(elsewhere)  # outside the job's whole tree
-                    victim = outside / "dubbing-plan.json"
-                    victim.write_bytes(b"VICTIM\n")
-                    os.utime(victim, ns=(1_600_000_000_000_000_000, 1_600_000_000_000_000_000))
-                    work = job.config.output_dir / ".dubflow-work"
-                    work.mkdir(parents=True, exist_ok=True)
-                    link = work / "mastering"
-                    # Windows without the symlink privilege: a directory junction needs none
-                    if not (_directory_link(outside, link) or (os.name == "nt" and _directory_link(outside, link, "junction"))):
-                        self.skipTest("this system refused to create a directory link")
-                    job.result(run())
-                    self.assertIn("MASTERING_SKIPPED: OSError: mastering: the mastering folder is a link",
-                                  job.qc["warnings"])
-                    self.assertNotIn("mastering", job.qc)
-                    self.assertEqual(job.trial_encodes, [])
-                    self.assertEqual(job.applies, [])
-                    self.assertEqual(Path(job.renders[-1]["audio_path"]).name, "final.wav")
-                    self.assertEqual([path.name for path in outside.iterdir()], ["dubbing-plan.json"])
-                    self.assertEqual((victim.read_bytes(), victim.stat().st_mtime_ns),
-                                     (b"VICTIM\n", 1_600_000_000_000_000_000))
+                job = AacJob("light", mix, trials=trials, final=None).run()
+                self.assertEqual(job.conformance, {"status": "silent", "ceiling_dbtp": -1.5, "true_peak_dbtp": None,
+                                                   "path": "B2", "trim_db": 0.0, "tries": 1})
+                silent = [w for w in job.qc["warnings"] if w.startswith("MASTERING_OUTPUT_SILENT:")]
+                self.assertEqual(len(silent), 1, job.qc["warnings"])
+                self.assertFalse(silent[0].startswith(worker.INFORMATIONAL_WARNINGS))
+                self.assertFalse(any(w.startswith(("MASTERING_TRUE_PEAK", "MASTERING_SKIPPED")) for w in job.qc["warnings"]))
+                self.assertEqual((job.qc["status"], job.qc["downgrade"]), ("passed", True))
+                self.assertEqual(job.qc["mastering"]["result"],
+                                 {"technical_render": "success", "mastering_conformance": "silent", "final_qc": "warning"})
+                self.assertIsNone(job.qc["mastering"]["output_loudness"])
+                self.assertEqual(job.qc["mastering"]["loudness"], loudness)
+                if note is not None:
+                    self.assertIn(note, job.qc["mastering"]["notes"])
+                self.assertEqual(job.published, b"rendered video seam", "the export is still produced")
+                self.assert_no_trial_leftovers(job)
+
+    def test_a_busy_trial_file_plan_or_mastered_mix_never_loses_the_measured_trim(self):
+        # Windows (#766 class): the encoded trial cannot be deleted while something still holds it, and a rename over
+        # the mastered mix or the plan is refused for a moment. Neither may replace the measurement already taken:
+        # the trim stays applied. Every trial unlink is refused; every rename to those names is refused once.
+        job = AacJob("light", RC17_MIX, trials=[-1.31, -2.29], final=Loud(-17.71, -2.29, 7.4, -27.9, 0.1))
+        real_unlink, real_replace, refused, held = Path.unlink, os.replace, [], set()
+
+        def unlink(path, missing_ok=False):
+            if path.name.startswith("aac_trial"):
+                refused.append("unlink")
+                raise PermissionError(13, "the file is held open", str(path))
+            return real_unlink(path, missing_ok=missing_ok)
+
+        def rename(source, target):
+            if Path(target).name in ("final_mix_mastered.wav", "dubbing-plan.json") and str(source) not in held:
+                held.add(str(source))
+                refused.append(Path(target).name)
+                raise PermissionError(13, "the file is held open", str(target))
+            return real_replace(source, target)
+
+        with patch.object(Path, "unlink", unlink), patch.object(worker.os, "replace", side_effect=rename), \
+                patch.object(worker.time, "sleep") as slept:
+            job.run()
+        self.assertEqual(refused.count("unlink"), 2)
+        self.assertEqual(refused.count("final_mix_mastered.wav"), 2)  # the planner's mix, then the trimmed one
+        self.assertGreaterEqual(refused.count("dubbing-plan.json"), 1)
+        self.assertGreaterEqual(slept.call_count, 3)
+        self.assertTrue(all(0 < call.args[0] <= 1.0 for call in slept.call_args_list), "a short backoff")
+        self.assertFalse(any(w.startswith("MASTERING_") for w in job.qc["warnings"]), job.qc["warnings"])
+        self.assertIsNotNone(job.plan["aac_trial"])
+        self.assertEqual(job.plan["aac_trial"], {"first_true_peak": -1.31, "true_peak": -2.29, "trim_db": 0.49, "tries": 2})
+        self.assertGreater(job.conformance["trim_db"], 0)
+        self.assertEqual(job.conformance["status"], "corrected")
+        self.assertTrue(job.plan["audio_filter"].endswith(",volume=-0.49dB"))
+        self.assertEqual(job.rendered_audio[-1], b"RIFF-mastered:" + job.plan["audio_filter"].encode())
+        self.assert_no_trial_leftovers(job)
+
+    def test_a_trial_file_that_stays_held_open_is_never_the_next_encodes_output(self):
+        # Windows: a trial file still held open can be neither deleted nor overwritten by the next "ffmpeg -y". With
+        # one shared trial path the second encode was refused, so the over-ceiling measurement already taken was
+        # dropped (aac_trial null, no trim, conformance failed). Every trial has its own file in the private directory.
+        job = AacJob("light", RC17_MIX, trials=[-1.31, -2.29], final=Loud(-17.71, -2.29, 7.4, -27.9, 0.1))
+        real_unlink, real_capture, refused = Path.unlink, job.capture, []
+
+        def unlink(path, missing_ok=False):
+            if path.name.startswith("aac_trial"):
+                refused.append(path.name)
+                raise PermissionError(13, "the file is held open", str(path))
+            return real_unlink(path, missing_ok=missing_ok)
+
+        def capture(argv):
+            out = Path(argv[-1])
+            if out.name.startswith("aac_trial") and out.exists():
+                raise worker.mastering_measure.MeasureError("ffmpeg: Permission denied (the file is held open)")
+            return real_capture(argv)
+
+        job.capture = capture
+        with patch.object(Path, "unlink", unlink):
+            job.run()
+        self.assertFalse(any(w.startswith("MASTERING_") for w in job.qc["warnings"]), job.qc["warnings"])
+        self.assertIsNotNone(job.plan["aac_trial"])
+        self.assertEqual(refused, ["aac_trial0.m4a", "aac_trial1.m4a"], "both stayed; neither was written again")
+        self.assertEqual(job.plan["aac_trial"], {"first_true_peak": -1.31, "true_peak": -2.29, "trim_db": 0.49, "tries": 2})
+        self.assertGreater(job.conformance["trim_db"], 0)
+        self.assertEqual(job.conformance["status"], "corrected")
+        self.assertTrue(job.plan["audio_filter"].endswith(",volume=-0.49dB"))
+        self.assertEqual(job.rendered_audio[-1], b"RIFF-mastered:" + job.plan["audio_filter"].encode())
+        self.assert_no_trial_leftovers(job)
+
+    def test_a_rename_refused_for_another_reason_or_for_too_long_still_fails(self):
+        with TemporaryDirectory() as directory:
+            source, target = Path(directory) / "made.wav", Path(directory) / "final_mix_mastered.wav"
+            source.write_bytes(b"RIFF")
+            for error, calls in ((OSError(28, "No space left on device"), 1), (PermissionError(13, "held open"), worker.REPLACE_ATTEMPTS)):
+                with self.subTest(error=error), patch.object(worker.os, "replace", side_effect=error) as rename, \
+                        patch.object(worker.time, "sleep") as slept, self.assertRaises(type(error)):
+                    worker._replace_plain(source, target)
+                self.assertEqual(rename.call_count, calls)
+                self.assertEqual(slept.call_count, calls - 1)
+            self.assertFalse(target.exists())
+
+    def test_scratch_directories_left_by_a_killed_worker_are_swept_at_the_stage_start(self):
+        # a worker killed inside a trial never runs its cleanup: its ".scratch-*" directory stays in the mastering
+        # folder. The next run removes those, and only those: real directories with the prefix, never through a link.
+        job = AacJob("light", RC17_MIX, trials=[-1.31, -2.29], final=Loud(-17.71, -2.29, 7.4, -27.9, 0.1))
+        with TemporaryDirectory() as elsewhere, job.running() as run:
+            outside = Path(elsewhere)
+            (outside / "keep.txt").write_bytes(b"keep")
+            folder = job.config.output_dir / ".dubflow-work" / "mastering"
+            stale = folder / ".scratch-killed1"
+            stale.mkdir(parents=True)
+            (stale / "aac_trial.m4a").write_bytes(b"half a trial")
+            (stale / "final_mix_trim1.wav").write_bytes(b"half a trim")
+            inner_link = _directory_link(outside, stale / "inside-link")
+            planted = _directory_link(outside, folder / ".scratch-planted")
+            (folder / ".scratch-file").write_bytes(b"a file, not a scratch directory")
+            (folder / "scratch-other").mkdir()
+            (folder / "scratch-other" / "kept.txt").write_bytes(b"kept")
+            job.result(run())
+            self.assertFalse(stale.exists(), "the killed worker's scratch directory is removed")
+            self.assertEqual(job.conformance["status"], "corrected")
+            self.assertEqual(job.leftovers, sorted([".scratch-file", "scratch-other"] + ([".scratch-planted"] if planted else [])))
+            self.assertEqual((folder / "scratch-other" / "kept.txt").read_bytes(), b"kept")
+            if planted:
+                self.assertTrue(worker._is_link(folder / ".scratch-planted"), "a link with the prefix is left alone")
+            self.assertTrue(inner_link or planted or os.name == "nt")
+            self.assertEqual([(path.name, path.read_bytes()) for path in outside.iterdir()], [("keep.txt", b"keep")])
+
+    def test_a_stale_scratch_directory_that_cannot_be_examined_never_turns_mastering_off(self):
+        # Windows: a leftover directory pending deletion or held by a scanner refuses even lstat. The sweep is best
+        # effort, so that leftover stays and this run's mastering goes on: it has nothing to do with this run.
+        job = AacJob("light", RC17_MIX, trials=[-1.31, -2.29], final=Loud(-17.71, -2.29, 7.4, -27.9, 0.1))
+        real_lstat, refused = os.lstat, []
+
+        def lstat(path, *args, **kwargs):
+            if os.path.basename(os.fspath(path)) == ".scratch-killed1":
+                refused.append(os.fspath(path))
+                raise PermissionError(13, "delete pending", os.fspath(path))
+            return real_lstat(path, *args, **kwargs)
+
+        with job.running() as run:
+            folder = job.config.output_dir / ".dubflow-work" / "mastering"
+            (folder / ".scratch-killed1").mkdir(parents=True)
+            (folder / ".scratch-killed2").mkdir()
+            with patch.object(worker.os, "lstat", lstat):
+                done = run()
+            job.result(done)
+            self.assertTrue(refused, "the sweep looked at the leftover")
+            self.assertFalse(any(w.startswith("MASTERING_") for w in job.qc["warnings"]), job.qc["warnings"])
+            self.assertEqual(job.conformance["status"], "corrected")
+            self.assertGreater(job.conformance["trim_db"], 0)
+            self.assertEqual(job.leftovers, [".scratch-killed1"], "left as scratch; the other leftover is still swept")
 
     def test_b2_without_a_planner_filter_gets_a_volume_only_trim(self):
         job = AacJob("light", CLOSE_MIX, trials=[-1.2, -2.0], final=Loud(-16.8, -2.0, 6.0, -26.9, 0.1)).run()
@@ -667,7 +876,7 @@ class AacTrueCeilingTests(unittest.TestCase):
         job = AacJob("light", RC17_MIX, final=Loud(-14.0, -0.4, 8.0, -24.0, 0.1),
                      b2_error=B2AudioError("TTS_FAILED", "forced")).run()
         self.assertEqual(job.captures, [], "no trial, no filter: the source sound is not touched")
-        self.assertNotIn("aac_trial.m4a", job.measured)
+        self.assertFalse([name for name in job.measured if name.startswith("aac_trial")])
         self.assertIsNone(job.renders[-1].get("audio_path"))
         self.assertTrue(job.renders[-1]["preserve_original_audio"])
         self.assertEqual(job.conformance, {"status": "not_applicable", "ceiling_dbtp": -1.5, "true_peak_dbtp": -0.4,
@@ -894,7 +1103,12 @@ class AacConformanceUnitTests(unittest.TestCase):
             (("B2", trial, loud(-1.2), None), "failed", ["MASTERING_TRUE_PEAK_OVER"]),
             (("B2", None, loud(-1.2), None), "failed", ["MASTERING_TRUE_PEAK_OVER"]),  # no trial ran: still judged
             (("B2", trial, None, "MeasureError: x"), "unmeasured", ["MASTERING_TRUE_PEAK_UNMEASURED"]),
-            (("B2", trial, None, None), "silent", []),
+            # a dubbed export with no measurable sound is never a pass (Product System Design 19.3) ...
+            (("B2", trial, None, None), "silent", ["MASTERING_OUTPUT_SILENT"]),
+            (("B2", None, None, None), "silent", ["MASTERING_OUTPUT_SILENT"]),
+            # ... while the source's own silence (B1 fallback, Vietsub only) is recorded and not warned
+            (("B1", None, None, None), "not_applicable", []),
+            (("none", None, None, None), "not_applicable", []),
             (("B1", None, loud(-0.4), None), "not_applicable", ["MASTERING_TRUE_PEAK_OVER"]),
             (("B1", None, loud(-3.0), None), "not_applicable", []),
             (("none", None, loud(-0.4), None), "not_applicable", []),
