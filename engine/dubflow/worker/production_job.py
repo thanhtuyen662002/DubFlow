@@ -17,6 +17,7 @@ subtitle result instead of silently returning fixture text.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from hashlib import sha256
 import json
@@ -25,12 +26,14 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import sys
+import tempfile
 import threading
 import time
 import uuid
 import wave
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 
 def _prepare_worker_import_path() -> None:
@@ -871,6 +874,44 @@ def _output_loudness(config: WorkerConfig, video: Path) -> dict[str, Any] | None
 AAC_RENDER_ARGS = ("-c:a", "aac", "-b:a", "192k")
 
 
+def _is_link(path: Path) -> bool:
+    """Whether ``path`` itself (never what it points to) is a symlink or any Windows reparse point (a symlink, a
+    junction or another name surrogate). False when nothing is there."""
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return False
+    return stat.S_ISLNK(info.st_mode) or bool(getattr(info, "st_file_attributes", 0) & 0x400)  # REPARSE_POINT
+
+
+@contextmanager
+def _private_scratch(folder: Path) -> Iterator[Path]:
+    """A fresh directory inside ``folder`` for FFmpeg's intermediate outputs (issue #821 review). Its name is
+    unpredictable and the OS creates it exclusively (``mkdtemp``: mode 0700, fails on any existing name, so a planted
+    file, symlink or junction is skipped, never used), so FFmpeg's ``-y`` only ever writes to files nobody else could
+    have placed. ``folder`` itself must not be a link. Removed with everything in it on the way out (``rmtree``
+    unlinks a link inside instead of following it)."""
+    if _is_link(folder):
+        raise OSError(f"{folder.name}: the mastering folder is a link")
+    scratch = Path(tempfile.mkdtemp(prefix=".scratch-", dir=os.fspath(folder)))
+    try:
+        yield scratch
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _replace_plain(source: Path, target: Path) -> None:
+    """``os.replace`` that never writes through a link at ``target``. A rename replaces a symlink itself, never what
+    it points to; Windows' MoveFileEx does so for a file symlink but refuses a directory link (a junction or a
+    directory symlink), so a link there is removed first (removing a link never touches its target)."""
+    if _is_link(target):
+        try:
+            os.unlink(target)
+        except (IsADirectoryError, PermissionError):
+            os.rmdir(target)  # a directory link on Windows: rmdir removes the link, not the folder it names
+    os.replace(source, target)
+
+
 def _aac_trial(ffmpeg: Path, wav: Path, trial: Path) -> mastering_measure.Loudness | None:
     """``wav`` encoded with the render's AAC arguments, then measured with the meter of ``output_loudness``
     (``loudnorm`` input_tp). None for silence; MeasureError when FFmpeg fails. The trial file is always removed."""
@@ -883,11 +924,13 @@ def _aac_trial(ffmpeg: Path, wav: Path, trial: Path) -> mastering_measure.Loudne
 
 
 def _apply_audio_filter(ffmpeg: Path, source: Path, audio_filter: str, target: Path) -> None:
-    """``source`` through ``audio_filter`` to 16-bit PCM at ``target`` (written beside it, then moved in place)."""
-    partial = target.with_name(target.stem + ".partial.wav")
-    mastering_measure._capture([str(ffmpeg), "-hide_banner", "-nostdin", "-v", "error", "-y", "-i", str(source),
-                                "-map", "0:a:0", "-af", audio_filter, "-c:a", "pcm_s16le", str(partial)])
-    os.replace(partial, target)
+    """``source`` through ``audio_filter`` to 16-bit PCM at ``target``: written in a private directory beside it, then
+    renamed in place (a link at ``target`` is replaced, never written through; issue #821 review)."""
+    with _private_scratch(target.parent) as scratch:
+        partial = scratch / (target.stem + ".partial.wav")
+        mastering_measure._capture([str(ffmpeg), "-hide_banner", "-nostdin", "-v", "error", "-y", "-i", str(source),
+                                    "-map", "0:a:0", "-af", audio_filter, "-c:a", "pcm_s16le", str(partial)])
+        _replace_plain(partial, target)
 
 
 def _aac_conform(ffmpeg: Path, source: Path, audio_filter: str | None, mastered: Path,
@@ -903,38 +946,40 @@ def _aac_conform(ffmpeg: Path, source: Path, audio_filter: str | None, mastered:
 
     Returns the audio filter to render with (``mastered`` then holds its output when it is not None) and the record
     {"first_true_peak", "true_peak", "trim_db", "tries"}. Raises (MeasureError, OSError) when a trial cannot run;
-    ``mastered`` then still holds the planner's own output."""
-    folder = mastered.parent
+    ``mastered`` then still holds the planner's own output. The trial file and the trim candidates are written only
+    inside a private directory (``_private_scratch``) that is removed on the way out; the chosen candidate is renamed
+    over ``mastered`` (a link there is replaced, never written through; issue #821 review)."""
+    with _private_scratch(mastered.parent) as scratch:
+        return _aac_conform_in(ffmpeg, source, audio_filter, mastered, scratch, progress)
+
+
+def _aac_conform_in(ffmpeg: Path, source: Path, audio_filter: str | None, mastered: Path, folder: Path,
+                    progress: Any) -> tuple[str | None, dict[str, Any]]:
+    """``_aac_conform`` with every intermediate output in ``folder``, a private directory it owns."""
     trial = folder / "aac_trial.m4a"
     planned = mastered if audio_filter else source
     found = _aac_trial(ffmpeg, planned, trial)
     first = found.true_peak if found else None
     # (measured peak, cumulative trim, audio file); the untrimmed attempt is the planner's own audio
     attempts: list[tuple[float | None, float, Path]] = [(first, 0.0, planned)]
-    made: list[Path] = []
-    try:
-        while attempts[-1][0] is not None and attempts[-1][0] > dubbing_master.PEAK_DBTP \
-                and len(attempts) <= dubbing_master.AAC_TRIM_TRIES:
-            trim = dubbing_master.aac_trim(attempts[-1][0], attempts[-1][1])
-            if progress is not None:
-                progress(trim)
-            candidate = folder / f"final_mix_trim{len(attempts)}.wav"
-            made.append(candidate)
-            _apply_audio_filter(ffmpeg, source, dubbing_master.with_trim(audio_filter, trim), candidate)
-            found = _aac_trial(ffmpeg, candidate, trial)
-            if found is None:  # a lowered copy of sound that was measured cannot be silent
-                raise mastering_measure.MeasureError("the trimmed AAC trial measured no sound")
-            attempts.append((found.true_peak, trim, candidate))
-        measured = [attempt for attempt in attempts if attempt[0] is not None]
-        peak, trim, chosen = min(measured, key=lambda attempt: attempt[0]) if measured else attempts[0]
-        if trim > 0:
-            os.replace(chosen, mastered)
-        return dubbing_master.with_trim(audio_filter, trim), {
-            "first_true_peak": first, "true_peak": peak, "trim_db": trim, "tries": len(attempts)}
-    finally:
-        for path in made:
-            path.unlink(missing_ok=True)
-            path.with_name(path.stem + ".partial.wav").unlink(missing_ok=True)
+    # the candidates are left in ``folder``: the caller removes it, and every file in it, on the way out
+    while attempts[-1][0] is not None and attempts[-1][0] > dubbing_master.PEAK_DBTP \
+            and len(attempts) <= dubbing_master.AAC_TRIM_TRIES:
+        trim = dubbing_master.aac_trim(attempts[-1][0], attempts[-1][1])
+        if progress is not None:
+            progress(trim)
+        candidate = folder / f"final_mix_trim{len(attempts)}.wav"
+        _apply_audio_filter(ffmpeg, source, dubbing_master.with_trim(audio_filter, trim), candidate)
+        found = _aac_trial(ffmpeg, candidate, trial)
+        if found is None:  # a lowered copy of sound that was measured cannot be silent
+            raise mastering_measure.MeasureError("the trimmed AAC trial measured no sound")
+        attempts.append((found.true_peak, trim, candidate))
+    measured = [attempt for attempt in attempts if attempt[0] is not None]
+    peak, trim, chosen = min(measured, key=lambda attempt: attempt[0]) if measured else attempts[0]
+    if trim > 0:
+        _replace_plain(chosen, mastered)
+    return dubbing_master.with_trim(audio_filter, trim), {
+        "first_true_peak": first, "true_peak": peak, "trim_db": trim, "tries": len(attempts)}
 
 
 def _mastering_conformance(path: str, trial: Mapping[str, Any] | None, output: Mapping[str, Any] | None,

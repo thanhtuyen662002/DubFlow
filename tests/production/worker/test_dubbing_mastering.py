@@ -495,6 +495,48 @@ class AacTrueCeilingTests(unittest.TestCase):
         self.assertEqual(job.qc["mastering"]["result"]["final_qc"], "passed")
         self.assert_no_trial_leftovers(job)
 
+    def test_every_ffmpeg_output_is_written_inside_a_private_directory(self):
+        # issue #821 review: no "-y" output at a predictable name in the job folder (a planted link there would be
+        # written through); each goes to a fresh ".scratch-*" directory and only renames reach the mastered mix
+        job = AacJob("light", RC17_MIX, trials=[-1.31, -2.29], final=Loud(-17.71, -2.29, 7.4, -27.9, 0.1)).run()
+        folder = Path(job.renders[-1]["audio_path"]).parent
+        self.assertEqual(folder.name, "mastering")
+        outputs = [Path(argv[-1]) for argv in job.captures if "-y" in argv]
+        self.assertEqual(len(outputs), 4)  # the planner's mix, the first trial, the trimmed mix, its trial
+        for output in outputs:
+            self.assertNotEqual(output.parent, folder)
+            self.assertTrue(output.parent.name.startswith(".scratch-"), output)
+            self.assertIn(folder, output.parents)
+        self.assertEqual([output.name for output in outputs], ["final_mix_mastered.partial.wav", "aac_trial.m4a",
+                                                              "final_mix_trim1.partial.wav", "aac_trial.m4a"])
+        self.assertEqual(len({output.parent for output in outputs[1:3]}), 2, "each helper makes its own directory")
+        self.assert_no_trial_leftovers(job)
+
+    def test_a_link_at_the_mastered_mix_is_replaced_and_a_linked_folder_refused(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            outside, folder = root / "outside", root / "mastering"
+            outside.mkdir()
+            folder.mkdir()
+            (outside / "keep.txt").write_bytes(b"keep")
+            target = folder / "final_mix_mastered.wav"
+            try:
+                os.symlink(outside, target, target_is_directory=True)
+            except OSError:
+                self.skipTest("this system refused to create a directory symlink")
+            source = folder / "made.wav"
+            source.write_bytes(b"RIFF")
+            worker._replace_plain(source, target)
+            self.assertFalse(worker._is_link(target))
+            self.assertEqual(target.read_bytes(), b"RIFF")
+            self.assertEqual([(path.name, path.read_bytes()) for path in outside.iterdir()], [("keep.txt", b"keep")])
+            linked = root / "linked"
+            os.symlink(outside, linked, target_is_directory=True)
+            with self.assertRaises(OSError):
+                with worker._private_scratch(linked):
+                    pass
+            self.assertEqual([path.name for path in outside.iterdir()], ["keep.txt"])
+
     def test_b2_without_a_planner_filter_gets_a_volume_only_trim(self):
         job = AacJob("light", CLOSE_MIX, trials=[-1.2, -2.0], final=Loud(-16.8, -2.0, 6.0, -26.9, 0.1)).run()
         self.assertEqual(job.plan["audio_filter"], "volume=-0.60dB")
@@ -901,6 +943,95 @@ class RealAacTrimTests(unittest.TestCase):
                     self.assertEqual(sorted(path.name for path in (folder / "mastering").iterdir()),
                                      ["final_mix_mastered.wav"])
                     mastered.unlink()
+
+
+# The predictable names the #821 helpers wrote with "-y" before their outputs moved into a private directory: a link
+# planted at any of them must never let FFmpeg write outside the job folder.
+PLANTED_NAMES = ("aac_trial.m4a", "final_mix_mastered.partial.wav", "final_mix_trim1.wav",
+                 "final_mix_trim1.partial.wav", "final_mix_mastered.wav")
+
+
+@unittest.skipUnless(FFMPEG, "set DUBFLOW_TEST_FFMPEG (or put ffmpeg on PATH) to run against the real encoder")
+class PlantedLinkTests(unittest.TestCase):
+    """Issue #821 review: the AAC trial, the PCM partials and the trim candidates are written only inside a fresh
+    private directory and renamed into place, so a symlink, junction or directory link planted at any of the old
+    names (or at the mastered mix itself) is replaced or left alone, never written through. Real FFmpeg, a mix that
+    needs a trim (so every helper and name is exercised)."""
+
+    write = staticmethod(RealAacTrimTests.write)
+    mix = RealAacTrimTests.mix
+
+    @staticmethod
+    def fingerprint(path):
+        import hashlib
+        data = path.read_bytes()
+        return data, hashlib.sha256(data).hexdigest(), path.stat().st_mtime_ns
+
+    def conform(self, root, plant):
+        """Plants a link at every old name with ``plant(link, marker)``, runs the planner's filter and the AAC
+        conformance, and checks that the marker outside the job folder is untouched and the mastered mix is a
+        regular file inside it."""
+        import stat
+        ffmpeg = Path(FFMPEG)
+        outside, job = root / "outside", root / "job"
+        outside.mkdir()
+        (job / "mastering").mkdir(parents=True)
+        marker = outside / "marker.bin"
+        marker.write_bytes(b"must never be truncated or written by the mastering stage\n" * 64)
+        os.utime(marker, ns=(1_600_000_000_000_000_000, 1_600_000_000_000_000_000))
+        before = self.fingerprint(marker)
+        listing = sorted(path.name for path in outside.iterdir())
+        mix = self.mix(job)
+        folder = job / "mastering"
+        for name in PLANTED_NAMES:
+            plant(folder / name, marker)
+        mastered = folder / "final_mix_mastered.wav"
+        planned = worker.dubbing_master.plan(worker.MasteringOptions("light"),
+                                             mix=worker.mastering_measure.loudness(ffmpeg, mix), mix_rate=48000,
+                                             frames=None, width=1920, height=1080).audio_filter
+        worker._apply_audio_filter(ffmpeg, mix, planned, mastered)
+        audio_filter, record = worker._aac_conform(ffmpeg, mix, planned, mastered)
+        self.assertGreater(record["trim_db"], 0, "the mix must need a trim, so the trim candidate names are used")
+        self.assertTrue(audio_filter.endswith(f"volume=-{record['trim_db']:.2f}dB"))
+        after = self.fingerprint(marker)
+        self.assertEqual(after[1:], before[1:], "the marker outside the job folder changed (SHA-256, mtime)")
+        self.assertTrue(after[0] == before[0], "the marker's bytes changed")
+        self.assertEqual(sorted(path.name for path in outside.iterdir()), listing)
+        info = os.lstat(mastered)
+        self.assertTrue(stat.S_ISREG(info.st_mode), "the mastered mix must be a regular file, not a link")
+        self.assertFalse(info.st_file_attributes & 0x400 if hasattr(info, "st_file_attributes") else False)
+        self.assertEqual(mastered.resolve().parent, folder.resolve())
+        self.assertLessEqual(worker.mastering_measure.loudness(ffmpeg, mastered).true_peak, record["first_true_peak"])
+        # the private directory is gone; the other planted links are left as they were, never opened
+        self.assertEqual(sorted(path.name for path in folder.iterdir()), sorted(PLANTED_NAMES))
+
+    @unittest.skipIf(os.name == "nt", "POSIX symlinks; Windows has its own test below")
+    def test_symlinks_at_the_old_names_are_never_written_through(self):
+        with TemporaryDirectory() as directory:
+            self.conform(Path(directory), lambda link, marker: os.symlink(marker, link))
+
+    @unittest.skipUnless(os.name == "nt", "Windows reparse points")
+    def test_windows_links_at_the_old_names_are_never_written_through(self):
+        import subprocess
+
+        def plant(link, marker):
+            try:  # a file symlink (developer mode or an elevated runner)
+                os.symlink(marker, link)
+                return
+            except OSError:
+                pass
+            # otherwise a directory junction to the marker's folder, which needs no privilege
+            try:
+                import _winapi
+                _winapi.CreateJunction(str(marker.parent), str(link))
+            except (ImportError, AttributeError, OSError):
+                done = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(marker.parent)],
+                                      capture_output=True, check=False)
+                if done.returncode != 0 or not os.path.lexists(link):
+                    self.skipTest("Windows refused to create a symlink or a junction here")
+
+        with TemporaryDirectory() as directory:
+            self.conform(Path(directory), plant)
 
 
 class OutputLoudnessTests(unittest.TestCase):
