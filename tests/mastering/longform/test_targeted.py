@@ -1,0 +1,1122 @@
+"""The offline Stage 2 harness (#815) on run folders made here by the planner itself (no media, no network, no key).
+
+The fixture extends ``test_w3.make_run``: shots c1…c10 of 6 s with small distinct JPEG files, a vision report and a
+programme file. The run looked at shots 2, 3, 4, 5 and 7 (3, 5 and 7 in the broad look, 2 and 4 targeted); shot 5
+shows smoke, so the tank sentence i1.u3 (ground truth 30.5–35.5 s, shot c6) has no matching footage, is flagged
+(partial or none, needs review) and is R3: its shot was never looked at. A donor run with the same JPEG bytes answered
+c6 with the tank sentence.
+"""
+from __future__ import annotations
+
+import ast
+import contextlib
+import dataclasses
+import hashlib
+import io
+import json
+from pathlib import Path
+import random
+import shutil
+import socket
+import subprocess
+from tempfile import TemporaryDirectory
+import unittest
+from unittest import mock
+
+from engine.dubflow.mastering import align
+from engine.dubflow.mastering import analysis as scene
+from engine.dubflow.mastering import candidates as shots
+from engine.dubflow.mastering import evidence as ev
+from engine.dubflow.mastering import plan as m
+from engine.dubflow.mastering import review as reviewing
+from engine.dubflow.mastering import vision
+from engine.dubflow.mastering.planners import compilation as planner
+from engine.dubflow.product import script
+from tests.mastering.longform import targeted as tt
+from tests.mastering.longform import targeting as tg
+from tests.mastering.longform import w3
+from tests.mastering.longform.test_w3 import SENTENCES, make_truth
+
+HERE = Path(__file__).resolve().parent
+PROVIDER, MODEL = "test-provider", "test-model"
+DETAIL = f"AI {PROVIDER}/{MODEL}"
+TEXTS = {2: "Bản đồ châu Âu có mũi tên, dòng chữ 1500 MILES",
+         3: "Lá cờ phấp phới trong gió",
+         4: "Đoàn binh sĩ đội mũ sắt hành quân trên con đường đất",
+         5: "Khói đen bốc lên từ ống khói nhà máy",
+         7: "Bầu trời có mây"}
+BROAD, TARGETED = (3, 5, 7), (2, 4)
+TANK = "Một chiếc xe tăng lăn bánh qua cánh đồng"
+INTRO = [("Phần mở đầu kể về chiến dịch mùa đông.", 2200)]
+UNUSABLE = (9, 10)
+
+
+def jpeg_bytes(part: str, number: int, salt: str = "") -> bytes:
+    return b"\xff\xd8\xff\xe0" + f"{part}-s1-c{number}{salt}".encode() + b"\xff\xd9"
+
+
+def make_run_k(root: Path, texts: dict[int, str] | None = None, name: str = "run-test", parts: tuple[str, ...] = ("i1",),
+               spec: dict | None = None, review: dict | None = None, jpegs: bool = True, salt: str = "",
+               intro: dict[int, str] | None = None, budget: int = 4, targeted: tuple[int, ...] = TARGETED,
+               provider: tuple[str, str] = (PROVIDER, MODEL), cache: bool = False, missing_jpegs: tuple[int, ...] = (),
+               broad: tuple[int, ...] = BROAD, twins: dict[int, int] | None = None) -> Path:
+    """A raw run of item parts (and an optional intro) as ``run_program`` saves it, with keyframes and vision reports."""
+    texts = TEXTS if texts is None else texts
+    detail = f"AI {provider[0]}/{provider[1]}"
+    length = 60_000
+    folder = root / name / ".dubflow-work" / "mastering"
+    folder.mkdir(parents=True)
+    work = folder.parent
+    sources, pools, analyses = {}, {}, {}
+    quality = shots.Quality(120, 50, 300)
+    bad = shots.Quality(10, 2, 1, ("quá tối",))
+    for part in [p for p in parts if p.startswith("i")]:
+        sid = f"{part}-s1"
+        identity = hashlib.sha256(sid.encode()).hexdigest()
+        found = scene.Analysis(length, tuple(range(6000, length, 6000)),
+                               tuple(scene.Shot(a, a + 6000, 40) for a in range(0, length, 6000)), (), True, identity)
+        analyses[sid] = found
+        sources[sid] = planner.Footage(sid, Path("film.webm"), found, 640, 480, (24000, 1001))
+        rng = random.Random(7 + len(pools))
+        pools[sid] = [shots.Candidate(f"{sid}c{n + 1}", sid, n * 6000 + 120, n * 6000 + 5880, n, 30,
+                                      bad if n + 1 in UNUSABLE else quality, rng.getrandbits(64), f"{sid}-c{n + 1}.jpg")
+                      for n in range(length // 6000)]
+        for copy, leader in (twins or {}).items():  # the same picture twice: one duplicate group
+            pools[sid][copy - 1] = dataclasses.replace(pools[sid][copy - 1], dhash=pools[sid][leader - 1].dhash)
+        for n in range(1, 11):
+            if jpegs and n not in missing_jpegs:
+                (folder / f"{sid}-c{n}.jpg").write_bytes(jpeg_bytes(part, n, salt))
+        (folder / f"analysis-{identity[:8]}.json").write_text(json.dumps(found.to_dict()), encoding="utf-8")
+    groups = shots.duplicate_groups([c for pool in pools.values() for c in pool])
+    base = planner.evidence_for(list(sources.values()), pools, {})
+
+    def answer(evidence: dict, sid: str, number: int, text: str) -> None:
+        # the production look shares an answer with the duplicates of the frame it asked about (vision.share)
+        for n in [number, *[c for c, leader in (twins or {}).items() if leader == number]]:
+            if not any(i.origin == "vision" for i in evidence[f"{sid}c{n}"].items):
+                evidence[f"{sid}c{n}"].add(ev.Item("vision", 850, text, ("explanation",), detail))
+
+    for part in [p for p in parts if p.startswith("i")]:
+        sid = f"{part}-s1"
+        for number in broad:
+            if number in texts:
+                answer(base, sid, number, texts[number])
+    cache_dir = folder / "vision"
+    report = {"provider": provider[0], "model": provider[1], "frames": 0, "asked": 0, "broad": len(broad) * sum(p.startswith("i") for p in parts),
+              "targeted": 0, "warnings": [], "budget": budget * sum(p.startswith("i") for p in parts), "budget_rule": "spec",
+              "shared_duplicates": 0}
+    report["frames"] = report["broad"]
+
+    def remember(part: str, number: int) -> None:
+        if not cache:
+            return
+        digest = hashlib.sha256(jpeg_bytes(part, number, salt)).digest()
+        key = hashlib.sha256(b"|".join([vision.PROMPT_VERSION.encode(), provider[0].encode(), provider[1].encode(),
+                                        ",".join(ev.MOMENT_LABELS).encode(), digest])).hexdigest()
+        cache_dir.mkdir(exist_ok=True)
+        (cache_dir / f"{key[:32]}.json").write_text(json.dumps({"key": key, "made_by": {"prompt": vision.PROMPT_VERSION,
+                                                                                         "provider": provider[0], "model": provider[1]}}),
+                                                     encoding="utf-8")
+
+    program_parts = []
+    for part in parts:
+        if part.startswith("i"):
+            for number in broad:
+                remember(part, number)
+    for part in parts:
+        if part == "intro":
+            evidence = {k: dataclasses.replace(v, items=list(v.items)) for k, v in base.items()}
+            for number, text in (intro or {}).items():
+                answer(evidence, "i1-s1", number, text)
+            report["targeted"] += len(intro or {})
+            report["frames"] = report["broad"] + report["targeted"]
+            spoken = INTRO
+            footage, candidates, kind = list(sources.values()), pools, "intro"
+        else:
+            sid = f"{part}-s1"
+            for number in targeted:
+                if number in texts:
+                    answer(base, sid, number, texts[number])
+                    remember(part, number)
+            report["targeted"] += len([n for n in targeted if n in texts])
+            report["frames"] = report["broad"] + report["targeted"]
+            evidence, spoken = base, SENTENCES
+            footage, candidates, kind = [sources[sid]], {sid: pools[sid]}, "item"
+        _, narration_ms = script.captions(spoken)
+        inputs = {f.source_id: f.analysis.identity for f in footage}
+        inputs["part"] = "b" * 64
+        made = planner.plan_part(part, kind, spoken, narration_ms, m.Options("balanced", "entertainment"), lead_ms=script.LEAD_MS,
+                                 gap_ms=script.GAP_MS, footage=footage, candidates=candidates, evidence=evidence, groups=groups,
+                                 inputs=inputs, title="")
+        reviewing.annotate(made.log, made.plan.to_dict())
+        made.log["vision"] = dict(report)
+        (folder / f"editorial-{part}.json").write_text(json.dumps(made.log, ensure_ascii=False), encoding="utf-8")
+        (folder / f"plan-{part}.json").write_text(json.dumps(made.plan.to_dict(), ensure_ascii=False), encoding="utf-8")
+        program_parts.append({"id": part})
+    (work / "program.json").write_text(json.dumps({"parts": program_parts, "vision": dict(report)}), encoding="utf-8")
+    items = [{"item_id": p, "sources": [{"start_ms": 0, "end_ms": length}]} for p in parts if p.startswith("i")]
+    (work / "spec.json").write_text(json.dumps(spec if spec is not None else {"items": items}), encoding="utf-8")
+    if review is not None:
+        (work / "review-i1.json").write_text(json.dumps(review), encoding="utf-8")
+    return root / name
+
+
+def donor_texts() -> dict[int, str]:
+    return {**TEXTS, 6: TANK, 2: "Bầu trời xám có mây trắng"}
+
+
+def make_pair(root: Path, **kwargs) -> tuple[Path, Path, Path, Path]:
+    run = make_run_k(root, name="run-a", **kwargs)
+    donor = make_run_k(root, name="run-b", texts=donor_texts(), targeted=(2, 6), **kwargs)
+    gt, lock = make_truth(root)
+    return run, donor, gt, lock
+
+
+def quiet(fn, *args, **kwargs):
+    with contextlib.redirect_stdout(io.StringIO()):
+        return fn(*args, **kwargs)
+
+
+def all_args(root: Path, run: Path, donor: Path, gt: Path, lock: Path, out: str, *extra: str) -> list[str]:
+    return ["all", str(gt), str(lock), "--primary", str(run), "--runs", str(donor), "--out-dir", str(root / out),
+            "--windows-s", "10,fwd", "--budgets", "matched,2x", "--blindness-check", "inprocess", *extra]
+
+
+
+
+_TMP: TemporaryDirectory | None = None
+STUDY: dict = {}
+FORBIDDEN = {"gt", "truth", "ground", "ranges", "hits", "lock", "oracle", "review", "load_gt"}
+
+
+def setUpModule() -> None:  # one study on the fixture, read by the tests that only look at its output
+    global _TMP
+    _TMP = TemporaryDirectory()
+    root = Path(_TMP.name)
+    run, donor, gt, lock = make_pair(root)
+    quiet(tt.main, all_args(root, run, donor, gt, lock, "out"))
+    STUDY.update(root=root, run=run, donor=donor, gt=gt, lock=lock,
+                 json=(root / "out" / "targeted-run-a.json").read_text(encoding="utf-8"),
+                 md=(root / "out" / "targeted-run-a.md").read_text(encoding="utf-8"),
+                 batch=json.loads((root / "out" / "real-call-batch-run-a.json").read_text(encoding="utf-8")))
+    STUDY["report"] = json.loads(STUDY["json"])
+
+
+def tearDownModule() -> None:
+    if _TMP is not None:
+        _TMP.cleanup()
+
+
+def arms_of(report: dict, run: str = "run-a") -> dict[str, dict]:
+    return {a["id"]: a for a in report["runs"][run]["arms"]}
+
+
+def tokens(text: str) -> set[str]:
+    out = set()
+    for word in "".join(ch if ch.isalnum() or ch == "_" else " " for ch in text.replace("needs_review", " ")).split():
+        out.add(word.lower())
+        out.update(part.lower() for part in word.split("_") if part)
+    return out
+
+
+def prepared(root: Path, **kwargs) -> tuple[tt.Prepared, tt.Prepared, dict]:
+    run, donor, gt, lock = make_pair(root, **kwargs)
+    return tt.prepare(tt.load(run)), tt.prepare(tt.load(donor)), w3.load_gt(gt, lock)
+
+
+class FixtureTests(unittest.TestCase):
+    def test_the_fixture_is_what_the_scenario_says(self):
+        with TemporaryDirectory() as tmp:
+            run, donor, gt_path, lock = make_pair(Path(tmp))
+            loaded = tt.load(run)
+            unit = {u["unit_id"]: u for u in loaded.run.logs["i1"]["units"]}["i1.u3"]
+            self.assertTrue(unit["coverage"]["needs_review"])
+            self.assertIn(unit["coverage"]["status"], ("partial", "none"))
+            gt = w3.load_gt(gt_path, lock)
+            prep = tt.prepare(loaded)
+            self.assertEqual({r["unit"]: r["stage"] for r in w3.attribute(gt, prep.A)["rows"]}["i1.u3"], "R3_NOT_LOOKED")
+            self.assertEqual(prep.broad["status"], "RECONSTRUCTED")
+            self.assertEqual(prep.broad["picked"], ["i1-s1c3", "i1-s1c5", "i1-s1c7"])
+            self.assertEqual(prep.matched, 2)
+            self.assertEqual(tt.preflight(loaded)["status"], "PASS")
+
+
+class BlindnessTests(unittest.TestCase):
+    ALLOWED = {"__future__": None, "dataclasses": None, "typing": None, "types": {"MappingProxyType"},
+               "engine.dubflow.mastering.vision": {"allocate", "spread_order", "targets"},
+               "engine.dubflow.mastering.align": {"Scorer", "Unit"},
+               "engine.dubflow.mastering.candidates": {"Candidate", "numbered", "_all_windows", "WITHIN_BASE", "MAX_CANDIDATES"},
+               "engine.dubflow.mastering.frames": {"extra_times", "SPLIT_MARK"},
+               "engine.dubflow.mastering.evidence": {"Evidence"}}
+
+    def tree(self) -> ast.Module:
+        return ast.parse((HERE / "targeting.py").read_text(encoding="utf-8"))
+
+    def test_the_selector_imports_only_the_allowlist(self):
+        for node in ast.walk(self.tree()):
+            if isinstance(node, ast.Import):
+                self.assertEqual([a.name for a in node.names], ["math"])
+            elif isinstance(node, ast.ImportFrom):
+                self.assertIn(node.module, self.ALLOWED)
+                allowed = self.ALLOWED[node.module]
+                if allowed is not None:
+                    self.assertLessEqual({a.name for a in node.names}, allowed)
+
+    def test_the_selector_has_no_file_network_or_scoring_words(self):
+        banned_names = {"open", "json", "pathlib", "io", "os", "subprocess", "factory", "Describer", "tests", "random"}
+        for node in ast.walk(self.tree()):
+            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+                self.assertNotIn(node.value.id, ("vision", "frames", "candidates", "w3"))
+            names = []
+            if isinstance(node, ast.Name):
+                names.append(node.id)
+            elif isinstance(node, ast.Attribute):
+                names.append(node.attr)
+            elif isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+                names.append(node.name)
+            elif isinstance(node, ast.arg):
+                names.append(node.arg)
+            elif isinstance(node, ast.keyword) and node.arg:
+                names.append(node.arg)
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                self.assertFalse(tokens(node.value) & FORBIDDEN, node.value[:80])
+            for name in names:
+                self.assertNotIn(name, banned_names)
+                self.assertFalse(tokens(name) & FORBIDDEN, name)
+
+    def test_signatures_and_fields(self):
+        import inspect
+        self.assertEqual(list(inspect.signature(tg.select).parameters), ["view", "params"])
+        self.assertEqual(list(inspect.signature(tg.planning_view).parameters), ["data"])
+        for cls in (tg.RunData, tg.PlanningView, tg.PartView, tg.ShotView, tg.UnitView, tg.SelectParams, tg.Sample):
+            for f in dataclasses.fields(cls):
+                self.assertFalse(tokens(f.name) & FORBIDDEN, f"{cls.__name__}.{f.name}")
+        with self.assertRaises(TypeError):
+            tg.select({"parts": []}, tg.SelectParams("mixed", 2, None))
+        with self.assertRaises(TypeError):
+            tg.planning_view({"logs": {}})
+
+    def test_the_selector_works_with_the_scoring_poisoned(self):
+        def boom(*args, **kwargs):
+            raise AssertionError("the selection path read the ground truth")
+        with TemporaryDirectory() as tmp, mock.patch.object(w3, "load_gt", boom), mock.patch.object(w3, "hits", boom), \
+                mock.patch.object(w3, "score", boom), mock.patch.object(w3, "attribute", boom):
+            run, donor, _, _ = make_pair(Path(tmp))
+            target, other = tt.prepare(tt.load(run)), tt.prepare(tt.load(donor))
+            found = tt.all_arm_selection(target, [other], tt.Options(windows="10,fwd", budgets="matched,2x"), True)
+            self.assertIn(tt.PRIMARY_ARM, found)
+            for strategy in tg.STRATEGIES:
+                tg.select(target.view_A, tg.SelectParams(strategy, None if strategy == "all_eligible" else 2, None))
+
+    def test_another_ground_truth_changes_only_the_upper_bounds(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run, donor, gt, lock = STUDY["run"], STUDY["donor"], STUDY["gt"], STUDY["lock"]
+            other = root / "other"
+            other.mkdir()
+            gt2, lock2 = make_truth(other, third=[[42.5, 47.5]])
+            quiet(tt.main, all_args(root, run, donor, gt2, lock2, "out2"))
+            second = json.loads((root / "out2" / "targeted-run-a.json").read_text(encoding="utf-8"))
+        first = STUDY["report"]
+        self.assertNotEqual(first["inputs"]["ground_truth_sha256"], second["inputs"]["ground_truth_sha256"])
+        for run_name in first["runs"]:
+            a, b = arms_of(first, run_name), arms_of(second, run_name)
+            self.assertEqual(sorted(a), sorted(b))
+            for arm_id in a:
+                self.assertEqual(a[arm_id].get("selection"), b[arm_id].get("selection"), arm_id)
+        oracle = lambda r: {u["id"]: u.get("selection") for u in r["runs"]["run-a"]["upper_bounds"]  # noqa: E731
+                            if u["id"].startswith("ORACLE_select_gt_window:open")}
+        self.assertNotEqual(oracle(first), oracle(second))
+
+    def test_a_review_file_changes_no_selection(self):
+        decisions = reviewing.Review(units={"i1.u3": reviewing.UnitDecision(pin=["i1-s1c8"]),
+                                            "i1.u1": reviewing.UnitDecision(approved=["i1-s1c2"])}).to_dict()
+        options = tt.Options(windows="10,fwd", budgets="matched,2x")
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            plain = make_run_k(root, name="run-a")
+            reviewed = make_run_k(root / "r", name="run-a", review=decisions)
+            donor = make_run_k(root, name="run-b", texts=donor_texts(), targeted=(2, 6))
+            other = tt.prepare(tt.load(donor))
+            loaded = tt.load(reviewed)
+            self.assertEqual(loaded.review_files["i1"], {"present": True, "nonempty": True, "pins": 1, "excludes": 0, "approvals": 1})
+            a = tt.all_arm_selection(tt.prepare(tt.load(plain)), [other], options, True)
+            b = tt.all_arm_selection(tt.prepare(loaded), [other], options, True)
+            self.assertEqual(tt.dumps(a), tt.dumps(b))
+            # the review is real: merged in (the old w3 behaviour), the pin moves the tank sentence
+            merged = tt.prepare(tt.load(reviewed), review=True)
+            self.assertEqual({u["unit_id"]: u["chosen"] for u in merged.A.logs["i1"]["units"]}["i1.u3"], ["i1-s1c8"])
+            self.assertNotEqual({u["unit_id"]: u["chosen"] for u in tt.prepare(loaded).A.logs["i1"]["units"]}["i1.u3"], ["i1-s1c8"])
+
+    def test_the_blindness_subprocess_gives_the_embedded_samples(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run, donor, gt, lock = STUDY["run"], STUDY["donor"], STUDY["gt"], STUDY["lock"]
+            args = all_args(root, run, donor, gt, lock, "sub")
+            args[args.index("inprocess")] = "subprocess"
+            quiet(tt.main, args)
+            report = json.loads((root / "sub" / "targeted-run-a.json").read_text(encoding="utf-8"))
+        self.assertEqual(report["blindness_check"], {"run-a": "PASS", "run-b": "PASS"})
+        self.assertEqual(report["runs"], STUDY["report"]["runs"])
+
+
+class BlindnessDecodingTests(unittest.TestCase):
+    def test_a_child_error_in_another_code_page_is_reported_not_raised(self):
+        with TemporaryDirectory() as tmp:
+            target, donor, _ = prepared(Path(tmp))
+        seen = {}
+
+        def run(argv, **kwargs):
+            seen.update(kwargs)
+            raw = "Traceback: C:\\Phim tài\\Đá x".encode("cp1258")  # the Vietnamese Windows code page
+            return subprocess.CompletedProcess(argv, 1, "", raw.decode(kwargs["encoding"], kwargs["errors"]))
+        with mock.patch.object(subprocess, "run", run):
+            found = tt.blindness_subprocess(target, [donor], tt.Options(), True)
+        self.assertTrue(found.startswith("ERROR 1: "))
+        self.assertEqual((seen["encoding"], seen["errors"], seen["env"]["PYTHONUTF8"], seen["env"]["PYTHONIOENCODING"]),
+                         ("utf-8", "replace", "1", "utf-8"))
+
+
+class ViewBasisTests(unittest.TestCase):
+    def test_b0_starts_from_a0_and_a0_flags_what_the_targeted_answers_covered(self):
+        with TemporaryDirectory() as tmp:
+            target, _, _ = prepared(Path(tmp))
+            flagged = lambda view: {u.unit_id for p in view.parts for u in tg.wanted_units(p, "flagged")}  # noqa: E731
+            self.assertNotIn("i1.u2", flagged(target.view_A))  # the soldiers' shot c4 was a targeted look
+            self.assertIn("i1.u2", flagged(target.view_A0))
+            self.assertEqual(target.view_A.basis, "A_replay_no_review")
+            self.assertEqual(target.view_A0.basis, "A0_replay_no_review")
+        for arm in arms_of(STUDY["report"]).values():
+            if "e2" in arm:
+                self.assertEqual(arm["view_basis"], "A0_replay_no_review" if "B0" in arm["id"] else "A_replay_no_review")
+
+
+class MatchingTests(unittest.TestCase):
+    def sample_of(self, prep: tt.Prepared, candidate_id: str, t_ms: int | None = None) -> tg.Sample:
+        s = prep.shot("i1", candidate_id)
+        return tg.Sample("i1", s.candidate_id, s.source_id, s.source_key, s.keyframe_ms if t_ms is None else t_ms,
+                         s.keyframe_basis, "i1.u3", "test", 1)
+
+    def test_the_same_jpeg_bytes_are_simulated(self):
+        arm = arms_of(STUDY["report"])[tt.PRIMARY_ARM]
+        tank = next(r for r in arm["samples"] if r["sample"]["candidate_id"] == "i1-s1c6")
+        self.assertEqual((tank["status"], tank["match_basis"], tank["donor_run"], tank["own_cache"]),
+                         ("SIMULATED", "jpeg", "run-b", False))
+
+    def test_other_bytes_another_provider_or_a_shared_answer_are_not(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run = make_run_k(root, name="run-a")
+            target = tt.prepare(tt.load(run))
+            salted = tt.prepare(tt.load(make_run_k(root, name="salted", texts=donor_texts(), targeted=(2, 6), salt="x")))
+            index = tt.DonorIndex(target, [salted])
+            self.assertEqual(index.match(self.sample_of(target, "i1-s1c6")).reason, "jpeg_mismatch")
+            other = tt.prepare(tt.load(make_run_k(root, name="other", texts=donor_texts(), targeted=(2, 6),
+                                                  provider=("other-provider", MODEL))))
+            index = tt.DonorIndex(target, [other])
+            self.assertGreater(index.counts["donor_provider_mismatch"], 0)
+            self.assertEqual(index.match(self.sample_of(target, "i1-s1c6")).status, "NOT_SIMULABLE")
+            shared = tt.prepare(tt.load(make_run_k(root, name="shared", texts={**TEXTS, 2: "Bầu trời xám"}, targeted=(2,),
+                                                   twins={6: 2})))
+            self.assertEqual(shared.classes["i1-s1c6"], "targeted_shared")
+            index = tt.DonorIndex(target, [shared])
+            self.assertGreater(index.counts["donor_shared_excluded"], 0)
+            self.assertEqual(index.match(self.sample_of(target, "i1-s1c6")).status, "NOT_SIMULABLE")
+
+    def test_a_missing_jpeg_falls_back_to_time_with_its_reasons(self):
+        with TemporaryDirectory() as tmp:
+            target = tt.prepare(tt.load(make_run_k(Path(tmp), name="run-a", missing_jpegs=(6,))))
+            index = tt.DonorIndex(target, [])
+            shot = target.shot("i1", "i1-s1c6")
+            self.assertEqual((shot.start_ms, shot.end_ms, shot.keyframe_ms), (30120, 35880, 33000))
+
+            def donor(t_ms: int, key: str | None = None) -> tt.DonorSample:
+                item = {"origin": "vision", "confidence": 850, "text": TANK, "labels": ["action"], "detail": DETAIL}
+                return tt.DonorSample("run-b", "i1", "i1-s1c6", 0, None, t_ms, "numbered_window", PROVIDER, MODEL, item,
+                                      shot.source_key if key is None else key, False)
+
+            def outcome(t_donor: int, t_sample: int = 33000, key: str | None = None) -> tuple:
+                index.pool, index.by_jpeg = [donor(t_donor, key)], {}
+                r = index.match(self.sample_of(target, "i1-s1c6", t_sample))
+                return r.status, r.reason or r.match_basis
+
+            self.assertEqual(outcome(33400), ("SIMULATED", "time_fallback"))
+            self.assertEqual(outcome(33500), ("SIMULATED", "time_fallback"))  # the boundary is inclusive
+            self.assertEqual(outcome(33600), ("NOT_SIMULABLE", "beyond_tolerance"))
+            self.assertEqual(outcome(35950, 35850), ("NOT_SIMULABLE", "cross_cut"))  # 100 ms, past the cut
+            self.assertEqual(outcome(33100, key="another-source"), ("NOT_SIMULABLE", "source_unknown"))
+            # a trim that clips the logged range past the keyframe: the unclipped window decides, not the logged range
+            self.assertEqual(shot.window, (30120, 35880))
+            target._shots[("i1", "i1-s1c6")] = dataclasses.replace(shot, start_ms=33500)
+            self.assertEqual(outcome(33000), ("SIMULATED", "time_fallback"))
+            self.assertEqual(outcome(33000, 33200), ("SIMULATED", "time_fallback"))
+
+    def test_the_runs_own_intro_answer_is_its_cache(self):
+        with TemporaryDirectory() as tmp:
+            run = make_run_k(Path(tmp), name="run-a", parts=("intro", "i1"), intro={8: "Xe tải chở lính trên đường"})
+            target = tt.prepare(tt.load(run))
+            self.assertFalse(target.shot("i1", "i1-s1c8").observed)  # an intro look stays the intro's
+            found = tt.DonorIndex(target, []).match(self.sample_of(target, "i1-s1c8"))
+            self.assertEqual((found.status, found.own_cache, found.donor_part), ("SIMULATED", True, "intro"))
+            cost = tt.e4_cost([found], None, None)
+            self.assertEqual((cost["frames_job"], cost["calls_est"]), (1, 0))
+
+
+class ProvenanceAndSimulationTests(unittest.TestCase):
+    def test_each_added_item_is_the_donor_item_verbatim(self):
+        with TemporaryDirectory() as tmp:
+            target, donor, gt = prepared(Path(tmp))
+            index = tt.DonorIndex(target, [donor])
+            ctx = tt.Context(gt, target, index, None, False, 500, True, "flagged", None, None)
+            sel = tg.select_detail(target.view_A, tg.SelectParams("mixed", 2, None))
+            replayed = [index.match(s) for s in sel.samples]
+            again, *_ = ctx.replay_with("A", replayed)
+            self.assertTrue(any(r.status == "SIMULATED" for r in replayed))
+            for r in replayed:
+                if r.status != "SIMULATED":
+                    continue
+                source = next(c for c in donor.loaded.run.logs[r.donor_part]["candidates"] if c["id"] == r.donor_candidate_id)
+                expected = tt.vision_items(source)[r.donor_item_index]
+                used = next(c for c in again.logs[r.sample.part]["candidates"] if c["id"] == r.sample.candidate_id)
+                self.assertEqual(tt.vision_items(used)[-1], expected)
+
+    def test_three_selected_one_answered(self):
+        arm = arms_of(STUDY["report"])["open:A+:-:+2x"]
+        self.assertEqual((arm["e2"]["selected"], arm["e3"]["simulable_fraction"]), (3, [1, 3]))
+        self.assertEqual(sum(arm["e3"]["not_simulable"].values()), 2)
+        with TemporaryDirectory() as tmp:
+            target, donor, gt = prepared(Path(tmp))
+            index = tt.DonorIndex(target, [donor])
+            ctx = tt.Context(gt, target, index, None, False, 500, True, "flagged", None, None)
+            replayed = [index.match(s) for s in tg.select(target.view_A, tg.SelectParams("uniform", 3, None))]
+            again, *_ = ctx.replay_with("A", replayed)
+            for r in replayed:
+                c = next(c for c in again.logs["i1"]["candidates"] if c["id"] == r.sample.candidate_id)
+                self.assertEqual(bool(tt.vision_items(c)), r.status == "SIMULATED")
+
+    def test_the_real_call_batch_is_the_union_of_the_named_arms(self):
+        arms = arms_of(STUDY["report"])
+        union = {(r["sample"]["part"], r["sample"]["candidate_id"]) for i in tt.BATCH_ARMS for r in arms[i]["samples"]
+                 if r["status"] == "NOT_SIMULABLE"}
+        batch = STUDY["batch"]
+        self.assertEqual({(f["part"], f["candidate_id"]) for f in batch["list"]}, union)
+        self.assertEqual((batch["frames"], batch["execution"], batch["preregistered"]), (len(union), "none; owner approval required", True))
+
+
+class KeyframeTimeTests(unittest.TestCase):
+    def analysis(self, shot_ms: int, count: int) -> scene.Analysis:
+        return scene.Analysis(shot_ms * count, tuple(range(shot_ms, shot_ms * count, shot_ms)),
+                              tuple(scene.Shot(a, a + shot_ms, 40) for a in range(0, shot_ms * count, shot_ms)), (), True, "x" * 64)
+
+    def cand(self, cid: str, start: int, end: int, keyframe: str = "k.jpg") -> shots.Candidate:
+        return shots.Candidate(cid, "s1", start, end, 0, 30, shots.Quality(120, 50, 300), 1, keyframe)
+
+    def test_a_clipped_window_of_a_long_trimmed_source(self):
+        found = self.analysis(1000, 500)  # 500 windows: more than the cap, numbered from WITHIN_BASE inside a trim
+        windows = tg.windows_by_number(found, (100_500, 200_000))
+        number = shots.WITHIN_BASE + 101
+        self.assertEqual(windows[number], (100_120, 100_880))
+        t, basis = tg.keyframe_time(self.cand(f"s1c{number}", 100_500, 100_880), windows)
+        self.assertEqual((t, basis), (100_500, "numbered_window"))  # the unclipped window's middle, not the logged one
+
+    def test_a_short_trimmed_source_is_numbered_over_the_whole_source(self):
+        found = self.analysis(6000, 20)
+        windows = tg.windows_by_number(found, (31_000, 60_000))
+        t, basis = tg.keyframe_time(self.cand("s1c6", 31_000, 35_880), windows)
+        self.assertEqual((t, basis), (33_000, "numbered_window"))
+        self.assertEqual(tg.keyframe_time(self.cand("s1c99", 1000, 3000), windows), (2000, "logged_mid"))
+
+    def test_sub_shots(self):
+        windows = tg.windows_by_number(self.analysis(12_000, 1), None)
+        self.assertEqual(windows[1], (0, 12_000))
+        three = [self.cand("s1c1f1", 0, 3900, "t-c1f1.jpg"), self.cand("s1c1f2", 3900, 8100, "t-c1.jpg"),
+                 self.cand("s1c1f3", 8100, 12_000, "t-c1f3.jpg")]
+        self.assertEqual([tg.keyframe_time(c, windows, three) for c in three],
+                         [(1800, "subshot_point"), (6000, "subshot_point"), (10_200, "subshot_point")])
+        two = [self.cand("s1c1f1", 0, 8100, "t-c1.jpg"), self.cand("s1c1f2", 8100, 12_000, "t-c1f3.jpg")]
+        self.assertEqual([tg.keyframe_time(c, windows, two)[0] for c in two], [6000, 10_200])
+
+
+class ClassificationTests(unittest.TestCase):
+    def test_broad_copies_are_kept_targeted_copies_removed(self):
+        for cache in (False, True):
+            with TemporaryDirectory() as tmp:
+                prep = tt.prepare(tt.load(make_run_k(Path(tmp), twins={8: 3, 1: 4}, cache=cache)))
+                classes = prep.classes
+                self.assertEqual(prep.classification["classification_basis"], "exact" if cache else "group")
+                self.assertEqual((classes["i1-s1c3"], classes["i1-s1c8"]), ("broad", "broad_shared"))
+                if cache:  # the cache says which frame was asked
+                    self.assertEqual((classes["i1-s1c4"], classes["i1-s1c1"]), ("targeted", "targeted_shared"))
+                else:  # the group says only that one frame was paid for
+                    self.assertEqual(sorted([classes["i1-s1c4"], classes["i1-s1c1"]]), ["targeted", "targeted_shared"])
+                self.assertEqual(prep.classification["counts"]["targeted_shared"], 1)
+                self.assertEqual(prep.classification["targeted_frames_item_parts"], 2)  # c2 and c4: c1 is a copy
+                kept = {c["id"]: bool(tt.vision_items(c)) for c in prep.A0.logs["i1"]["candidates"]}
+                self.assertTrue(kept["i1-s1c3"] and kept["i1-s1c8"])
+                self.assertFalse(kept["i1-s1c4"] or kept["i1-s1c1"] or kept["i1-s1c2"])
+
+    def test_cache_records_without_made_by_still_give_the_exact_basis(self):
+        # rc12-rc15 were made before #808: their cache records carry no made_by
+        with TemporaryDirectory() as tmp:
+            run = make_run_k(Path(tmp), cache=True)
+            for path in sorted((run / ".dubflow-work" / "mastering" / "vision").glob("*.json")):
+                record = json.loads(path.read_text(encoding="utf-8"))
+                record.pop("made_by")
+                path.write_text(json.dumps(record), encoding="utf-8")
+            prep = tt.prepare(tt.load(run))
+            self.assertEqual(prep.classification["classification_basis"], "exact")
+            self.assertEqual((prep.classes["i1-s1c2"], prep.classes["i1-s1c4"]), ("targeted", "targeted"))
+            self.assertEqual(prep.classification["targeted_frames_item_parts"], 2)
+            self.assertEqual(prep.broad["status"], "RECONSTRUCTED")
+
+    def test_cache_keys_that_match_nothing_fall_back_to_the_group_basis(self):
+        with TemporaryDirectory() as tmp:
+            run = make_run_k(Path(tmp), cache=True)
+            for path in sorted((run / ".dubflow-work" / "mastering" / "vision").glob("*.json")):
+                record = json.loads(path.read_text(encoding="utf-8"))
+                record["key"], record["made_by"]["model"] = "0" * 64, "another-model"
+                path.write_text(json.dumps(record), encoding="utf-8")
+            loaded = tt.load(run)
+            prep = tt.prepare(loaded)
+            self.assertEqual(prep.classification["classification_basis"], "group (cache keys unmatched)")
+            self.assertEqual(tt.preflight(loaded)["classification_basis"], "group (cache keys unmatched)")
+            self.assertEqual(sorted([prep.classes["i1-s1c2"], prep.classes["i1-s1c4"]]), ["targeted", "targeted"])
+            self.assertEqual(prep.broad["status"], "RECONSTRUCTED")
+
+    def test_a_broad_count_other_than_the_logged_one_is_not_reconstructed(self):
+        with TemporaryDirectory() as tmp:
+            run = make_run_k(Path(tmp))
+            program = run / ".dubflow-work" / "program.json"
+            data = json.loads(program.read_text(encoding="utf-8"))
+            data["vision"]["broad"] = 4
+            program.write_text(json.dumps(data), encoding="utf-8")
+            prep = tt.prepare(tt.load(run))
+            self.assertEqual((prep.broad["status"], prep.broad["reasons"]), ("NOT_RECONSTRUCTED", ["broad count mismatch"]))
+            self.assertIsNone(prep.A0)
+
+    def test_b0_spends_what_the_run_paid_for(self):
+        with TemporaryDirectory() as tmp:
+            prep = tt.prepare(tt.load(make_run_k(Path(tmp))))
+            self.assertEqual(prep.respend, {"budget": 2, "basis": "log_vision_reports", "targeted_paid": 2, "multi_frame_paid": 0,
+                                            "targeted_frames_item_parts": 2, "label": None})
+            for log in prep.loaded.run.logs.values():  # three multi-frame looks paid, one more targeted look logged
+                log["vision"] = {**log["vision"], "multi_frame": 3, "targeted": 3}
+            matched, basis, _ = tt.matched_budget(prep.loaded, prep.classification)
+            found = tt.respend_budget(prep.loaded, prep.classification, matched, basis)
+            self.assertEqual((found["budget"], found["targeted_paid"], found["multi_frame_paid"], found["label"]),
+                             (6, 3, 3, "budget basis differs from classification"))
+            prep.respend = found
+            b0 = [a for a in tt.arm_grid(prep, budgets="matched", windows="fwd", full=True) if a.kind == "respend"]
+            self.assertTrue(b0)
+            self.assertEqual({a.budget for a in b0}, {6})
+        for arm in arms_of(STUDY["report"]).values():
+            if arm["kind"] == "respend":
+                self.assertEqual(arm["respend_budget"]["budget"], arm["budget"])
+
+    def test_the_matched_budget_leaves_the_intro_out(self):
+        with TemporaryDirectory() as tmp:
+            prep = tt.prepare(tt.load(make_run_k(Path(tmp), parts=("intro", "i1"), intro={8: "Xe tải chở lính"})))
+            self.assertEqual(prep.targeted_per_part, {"intro": 1, "i1": 2})
+            self.assertEqual((prep.matched, prep.matched_basis), (2, "log_vision_reports"))
+
+
+class BudgetTests(unittest.TestCase):
+    def test_fair_turns_over_three_parts(self):
+        with TemporaryDirectory() as tmp:
+            prep = tt.prepare(tt.load(make_run_k(Path(tmp), parts=("i1", "i2", "i3"))))
+            for strategy in ("uniform", "production", "prior", "shuffled_prior", "anchor", "gap", "mixed"):
+                found = tg.select(prep.view_A, tg.SelectParams(strategy, 4, None))
+                per = [sum(1 for s in found if s.part == p) for p in ("i1", "i2", "i3")]
+                self.assertEqual(sum(per), 4, strategy)
+                self.assertFalse(min(per) == 0 and max(per) >= 2, (strategy, per))
+
+    def test_every_arm_spends_its_budget_or_its_eligible_shots(self):
+        for arm in arms_of(STUDY["report"]).values():
+            if "e2" not in arm:
+                continue
+            e2, e4 = arm["e2"], arm["e4"]
+            if arm["budget"] is not None:
+                self.assertEqual(e2["selected"], min(arm["budget"], e2["eligible"]), arm["id"])
+            self.assertEqual(e4["frames_job"], sum(e4["frames_per_part"].values()))
+            self.assertEqual(e4["frames_job"], sum(e4["frames_per_source"].values()))
+            paid: dict[str, int] = {}
+            for r in arm["samples"]:
+                if not r["own_cache"]:
+                    paid[r["sample"]["part"]] = paid.get(r["sample"]["part"], 0) + 1
+            self.assertEqual(e4["calls_est"], sum(-(-n // vision.BATCH) for n in paid.values()))
+            self.assertIsNone(e4["cost"])
+            self.assertEqual(e4["cost_basis"], "not given")
+
+    def test_a_given_price_is_the_only_price(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            quiet(tt.main, all_args(root, STUDY["run"], STUDY["donor"], STUDY["gt"], STUDY["lock"], "priced",
+                                    "--cost-per-call", "0.5", "--cost-unit", "unit"))
+            report = json.loads((root / "priced" / "targeted-run-a.json").read_text(encoding="utf-8"))
+        for arm in arms_of(report).values():
+            if "e4" in arm:
+                self.assertEqual(arm["e4"]["cost"], arm["e4"]["calls_est"] * 0.5)
+        for node in ast.walk(ast.parse((HERE / "targeted.py").read_text(encoding="utf-8"))):
+            if isinstance(node, (ast.Assign, ast.AnnAssign)) and isinstance(node.value, ast.Constant) \
+                    and isinstance(node.value.value, (int, float)) and not isinstance(node.value.value, bool):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                for target in targets:
+                    name = getattr(target, "id", getattr(target, "attr", "")).lower()
+                    self.assertFalse("cost" in name or "price" in name, name)
+
+
+class CeilingAndRegimeTests(unittest.TestCase):
+    def test_the_ceiling_and_the_closed_world(self):
+        report = STUDY["report"]
+        arms = arms_of(report)
+        ceiling = arms["ceiling:ALL_DONOR_ITEMS:-:all"]
+        reachable = report["runs"]["run-a"]["e1"]["donor_supply_reachable"]
+        self.assertEqual(sum(ceiling["e3"]["simulated"].values()), reachable)
+        self.assertTrue(ceiling["e3"]["evidence_limited"])
+        with TemporaryDirectory() as tmp:
+            target, donor, _ = prepared(Path(tmp))
+            index = tt.DonorIndex(target, [donor])
+            covered = {"A": index.covered(target.view_A), "A0": index.for_base("A0").covered(target.view_A0)}
+        for arm in arms.values():
+            if arm["regime"] == "closed_world" and "selection" in arm:
+                base = "A0" if "B0" in arm["id"] else "A"
+                self.assertLessEqual({s["candidate_id"] for s in arm["selection"]}, covered[base], arm["id"])
+                self.assertEqual(arm["eligible_restriction"], "closed_world_donor_covered")
+        self.assertEqual(arms["open:A+:-:+2x"]["delta_vs_A"], tt.NOT_INTERPRETABLE)
+
+
+class StrategyTests(unittest.TestCase):
+    """A part whose flagged sentences have 23 eligible shots in their forward window, so the strategies differ.
+
+    30 shots of 4 s (keyframes at 2 s + 4 s·n); u1 (0-20 s) chose c2 and u4 (90-120 s) chose c27, so the forward
+    window of the flagged u2 (20-50 s) and u3 (50-90 s) is 7880-104120 ms. c21 (keyframe 82 s) was looked at and its
+    answer says u2's words; c13 has an OCR transcript with some of them."""
+
+    WORDS = "Một chiếc xe tăng lăn bánh qua cánh đồng"
+
+    def view(self) -> tg.PlanningView:
+        from types import MappingProxyType
+        quality = shots.Quality(120, 50, 300)
+        listed, evidence = [], {}
+        for n in range(30):
+            cid = f"s1c{n + 1}"
+            c = shots.Candidate(cid, "s1", n * 4000 + 120, n * 4000 + 3880, n, 30, quality, n, f"{cid}.jpg")
+            evidence[cid] = ev.Evidence(cid)
+            listed.append(tg.ShotView(cid, "s1", "key", c.start_ms, c.end_ms, n * 4000 + 2000, "numbered_window", True, True, cid,
+                                      n + 1 == 21, c, (c.start_ms, c.end_ms)))
+        evidence["s1c21"].add(ev.Item("vision", 850, self.WORDS, ("action",), DETAIL))
+        evidence["s1c13"].add(ev.Item("transcript", 700, "xe tăng lăn bánh", (), "ocr"))
+
+        def unit(uid, text, start, end, chosen, flagged):
+            return tg.UnitView(uid, text, "narration", start, end, chosen, (), "none" if flagged else "full", flagged, 0)
+        units = (unit("i1.u1", "Mở đầu bản tin hôm nay", 0, 20_000, ("s1c2",), False),
+                 unit("i1.u2", self.WORDS, 20_000, 50_000, (), True),
+                 unit("i1.u3", "Đoàn binh sĩ đội mũ sắt hành quân", 50_000, 90_000, (), True),
+                 unit("i1.u4", "Kết thúc bản tin", 90_000, 120_000, ("s1c27",), False))
+        part = tg.PartView("i1", "item", 120_000, (("s1", 0, 120_000),), (("s1", ()),), (), units, tuple(listed),
+                           MappingProxyType(evidence))
+        return tg.PlanningView("run-s", "test", (part,), (), "open")
+
+    def test_forward_bounds_come_from_the_neighbours_choices(self):
+        part = self.view().parts[0]
+        self.assertEqual(tg.forward_bounds(part, part.units[1]), {"s1": (7880, 104120)})  # after c2, before c27
+        self.assertEqual(tg.forward_bounds(part, part.units[0]), {"s1": (0, 104120)})
+        self.assertEqual(tg.forward_bounds(part, part.units[3]), {"s1": (7880, 120_000)})
+
+    def test_each_strategy_picks_its_own_shot(self):
+        view = self.view()
+        part = view.parts[0]
+        u2 = part.units[1]
+        self.assertEqual(tg.prior_centres(part, u2), {"s1": 35_000})
+        self.assertEqual(tg.anchor_centres(part, u2, tg._scorer(view, part), tg.forward_bounds(part, u2)), {"s1": 82_000})
+        picked = {}
+        for strategy in ("prior", "shuffled_prior", "anchor", "gap", "mixed"):
+            found = tg.select(view, tg.SelectParams(strategy, 1, 5000))
+            self.assertEqual(len(found), 1, strategy)
+            picked[strategy] = (found[0].candidate_id, found[0].unit_id)
+        self.assertEqual(picked, {"prior": ("s1c9", "i1.u2"),            # keyframe 34 s, nearest the prior centre 35 s
+                                  "shuffled_prior": ("s1c18", "i1.u2"),  # u3's centre 70 s
+                                  "anchor": ("s1c20", "i1.u2"),          # beside c21, the looked-at shot that matches
+                                  "gap": ("s1c14", "i1.u2"),             # the middle of the window's fresh shots
+                                  "mixed": ("s1c13", "i1.u2")})          # the words first
+        self.assertGreaterEqual(len({c for c, _ in picked.values()}), 3)
+
+    def test_the_window_leaves_out_shots_farther_than_w(self):
+        view = self.view()
+        near = {s.candidate_id for s in tg.select(view, tg.SelectParams("prior", 100, 5000))}
+        self.assertEqual(near, {"s1c8", "s1c9", "s1c10", "s1c17", "s1c18", "s1c19"})  # within 5 s of 35 s and of 70 s
+        every = {s.candidate_id for s in tg.select(view, tg.SelectParams("prior", 100, None))}
+        self.assertEqual(len(every), 23)
+        self.assertIn("s1c11", every - near)  # keyframe 42 s: 7 s from the centre
+        self.assertNotIn("s1c21", every)      # looked at already
+
+
+class ShuffleTests(unittest.TestCase):
+    def test_the_shuffled_prior_is_a_fixed_derangement(self):
+        with TemporaryDirectory() as tmp:
+            prep = tt.prepare(tt.load(make_run_k(Path(tmp))))
+            part = next(p for p in prep.view_A0.parts if p.part == "i1")
+            units = tg.wanted_units(part, "flagged")
+            self.assertGreaterEqual(len(units), 2)
+            own = {u.unit_id: tg.prior_centres(part, u) for u in units}
+            moved = tg.shuffled_centres(part, units)
+            self.assertEqual(moved, tg.shuffled_centres(part, units))
+            self.assertEqual(sorted(map(str, moved.values())), sorted(map(str, own.values())))
+            for u in units:
+                self.assertNotEqual(moved[u.unit_id], own[u.unit_id])
+            self.assertEqual(tg.shuffled_centres(part, units[:1]), {units[0].unit_id: own[units[0].unit_id]})
+
+
+class MemoTests(unittest.TestCase):
+    def test_the_memo_changes_nothing(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            quiet(tt.main, all_args(root, STUDY["run"], STUDY["donor"], STUDY["gt"], STUDY["lock"], "nomemo", "--no-memo"))
+            self.assertEqual((root / "nomemo" / "targeted-run-a.json").read_text(encoding="utf-8"), STUDY["json"])
+
+    def test_an_arm_again_after_another_is_the_same(self):
+        with TemporaryDirectory() as tmp:
+            target, donor, gt = prepared(Path(tmp))
+            memo = tt.PlanMemo()
+            index = tt.DonorIndex(target, [donor])
+            ctx = tt.Context(gt, target, index, memo, False, 500, True, "flagged", None, None)
+            views = tt.Views(target, index)
+            x = tt.Arm("open:mixed:W=fwd:+matched", "open", "targeted", "mixed", "fwd", "+matched", 2, "A")
+            y = tt.Arm("open:A+:-:+2x", "open", "uniform", "uniform", "-", "+2x", 3, "A")
+
+            def e5(arm: tt.Arm) -> str:
+                view = views.get(arm.base, arm.regime)
+                return tt.dumps(tt.evaluate_arm(ctx, arm, tg.select_detail(view, arm.params("flagged")), view)["e5"])
+            first = e5(x)
+            e5(y)
+            self.assertEqual(e5(x), first)
+
+    def test_the_memo_hands_out_copies_and_refuses_unknown_types(self):
+        memo = tt.PlanMemo()
+        planned = memo.wrap(lambda call: ({"plan": 1}, {"candidates": [1]}))
+        _, log = planned({"part": "i1"})
+        log["candidates"].append(2)
+        _, again = planned({"part": "i1"})
+        self.assertEqual(again, {"candidates": [1]})
+        self.assertIsNot(again, log)
+        self.assertEqual((memo.hits, memo.misses), (1, 1))
+        with self.assertRaises(TypeError):
+            tt.call_key({"part": object()})
+
+
+class PatchTests(unittest.TestCase):
+    def assert_original(self):
+        self.assertEqual((w3.call_of.__module__, w3.call_of.__qualname__), (w3.__name__, "call_of"))
+        self.assertEqual((w3.plan_again.__module__, w3.plan_again.__qualname__), (w3.__name__, "plan_again"))
+        self.assertIs(w3.compiler.plan_part, planner.plan_part)
+
+    def test_nothing_is_patched_outside_a_replay(self):
+        self.assert_original()  # after import
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            def refuse(*args, **kwargs):
+                raise AssertionError("no network and no process on this path")
+            with mock.patch.object(socket, "socket", refuse), mock.patch.object(subprocess, "Popen", refuse), \
+                    mock.patch.object(subprocess, "run", refuse):
+                code = quiet(tt.main, all_args(root, STUDY["run"], STUDY["donor"], STUDY["gt"], STUDY["lock"], "offline"))
+            self.assertEqual(code, 0)
+        self.assert_original()
+        with tt.replay_context(memo=tt.PlanMemo()):
+            self.assertNotEqual(w3.call_of.__qualname__, "call_of")
+        self.assert_original()
+
+
+class DeterminismTests(unittest.TestCase):
+    def test_twice_reversed_and_with_the_primary_listed_again(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run, donor, gt, lock = STUDY["run"], STUDY["donor"], STUDY["gt"], STUDY["lock"]
+            quiet(tt.main, all_args(root, run, donor, gt, lock, "again"))
+            args = all_args(root, run, donor, gt, lock, "listed")
+            at = args.index("--runs")
+            args[at + 1:at + 2] = [str(donor), str(run)]
+            quiet(tt.main, args)
+            for out in ("again", "listed"):
+                self.assertEqual((root / out / "targeted-run-a.json").read_text(encoding="utf-8"), STUDY["json"], out)
+                self.assertEqual((root / out / "targeted-run-a.md").read_text(encoding="utf-8"), STUDY["md"], out)
+        self.assertEqual(STUDY["report"]["runs"]["run-a"]["e1"]["donor_runs"], ["run-b"])
+        self.assertEqual(STUDY["report"]["runs"]["run-b"]["e1"]["donor_runs"], ["run-a"])
+
+    def test_paths_line_ends_and_no_randomness(self):
+        loaded = tt.load(STUDY["run"])
+        for path in loaded.files:
+            self.assertNotIn("\\", path)
+            self.assertTrue(path.startswith(".dubflow-work/"), path)
+        self.assertNotIn(str(STUDY["root"]), STUDY["json"])
+        with TemporaryDirectory() as tmp:
+            lf, crlf = Path(tmp) / "lf.py", Path(tmp) / "crlf.py"
+            lf.write_bytes(b"a = 1\nb = 2\n")
+            crlf.write_bytes(b"a = 1\r\nb = 2\r\n")
+            self.assertEqual(tt.code_digest(lf), tt.code_digest(crlf))
+        for name in ("targeted.py", "targeting.py"):
+            for node in ast.walk(ast.parse((HERE / name).read_text(encoding="utf-8"))):
+                if isinstance(node, ast.Import):
+                    self.assertNotIn("random", [a.name for a in node.names])
+                elif isinstance(node, ast.ImportFrom):
+                    self.assertNotEqual(node.module, "random")
+        self.assertIsNone(STUDY["report"]["params"]["seed"])
+
+    def test_golden_fixture_digest(self):
+        """The fixture study, its code digests and pre-registration masked, is the same on Linux and Windows. After a
+        deliberate change of the harness or the planner, print the new value with ``DUBFLOW_PRINT_GOLDEN=1``."""
+        import os
+        report = json.loads(STUDY["json"])
+        report["code_sha256"] = report["preregistration"] = None
+        report["decision"].pop("label", None)  # the record's commit and the code digests, not the study
+        report["decision"]["gates"]["preregistration"] = None
+        digest = hashlib.sha256(tt.dumps(report).encode("utf-8")).hexdigest()
+        if os.environ.get("DUBFLOW_PRINT_GOLDEN"):
+            print("golden", digest)
+        self.assertEqual(digest, GOLDEN)
+
+
+def prereg_record(**changes) -> dict:
+    record = {"commit": "a" * 40, "targeting_sha256": tt.code_digest(HERE / "targeting.py"),
+              "analysis_sha256": tt.code_digest(HERE / "targeted.py"), "primary_arm": tt.PRIMARY_ARM,
+              "primary_metric": tt.PRIMARY_METRIC, "comparators": list(tt.COMPARATORS), "required_runs": tt.REQUIRED_RUNS}
+    record.update(changes)
+    return record
+
+
+class PreregistrationTests(unittest.TestCase):
+    def status(self, ancestor: bool | None = True, **changes) -> dict:
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "record.json"
+            path.write_text(json.dumps(prereg_record(**changes)), encoding="utf-8")
+            with mock.patch.object(tt, "git_is_ancestor", return_value=ancestor):
+                return tt.prereg_status(path)
+
+    def test_a_changed_selector_makes_the_results_exploratory(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            wrong, right = root / "wrong.json", root / "right.json"
+            wrong.write_text(json.dumps(prereg_record(targeting_sha256="0" * 64)), encoding="utf-8")
+            right.write_text(json.dumps(prereg_record()), encoding="utf-8")
+            with mock.patch.object(tt, "git_is_ancestor", return_value=True):
+                for name, path in (("wrong", wrong), ("right", right)):
+                    quiet(tt.main, all_args(root, STUDY["run"], STUDY["donor"], STUDY["gt"], STUDY["lock"], name, "--prereg", str(path)))
+            bad = json.loads((root / "wrong" / "targeted-run-a.json").read_text(encoding="utf-8"))
+            good = json.loads((root / "right" / "targeted-run-a.json").read_text(encoding="utf-8"))
+            self.assertEqual(bad["preregistration"]["label"], "PREREGISTRATION MISMATCH: results exploratory")
+            self.assertEqual(bad["preregistration"]["mismatches"], ["targeting_sha256"])
+            self.assertIn("PREREGISTRATION MISMATCH", (root / "wrong" / "targeted-run-a.md").read_text(encoding="utf-8"))
+            self.assertEqual(good["preregistration"]["label"], "PREREGISTERED")
+            self.assertNotIn("label", good["decision"])
+            self.assertNotIn("PREREGISTRATION MISMATCH", (root / "right" / "targeted-run-a.md").read_text(encoding="utf-8"))
+
+    def test_the_analysis_and_the_named_arms_are_registered_too(self):
+        self.assertEqual(self.status()["label"], tt.PREREGISTERED)
+        for key, value in (("analysis_sha256", "0" * 64), ("primary_arm", "open:prior:W=fwd:+matched"),
+                           ("primary_metric", "loc_hit_units_frame"), ("comparators", ["open:A+:-:+matched"]),
+                           ("required_runs", 2)):
+            found = self.status(**{key: value})
+            self.assertEqual((found["label"], found["mismatches"]), (tt.PREREG_MISMATCH, [key]), key)
+
+    def test_no_commit_or_a_commit_outside_the_history_is_not_preregistered(self):
+        self.assertEqual((self.status(commit=None)["label"], self.status(commit=None)["commit_check"]),
+                         (tt.NOT_PREREGISTERED, "no_commit"))
+        self.assertEqual((self.status(False)["label"], self.status(False)["commit_check"]), (tt.NOT_PREREGISTERED, "not_ancestor"))
+        self.assertEqual((self.status(None)["label"], self.status(None)["commit_check"]), (tt.PREREGISTERED, "git_unavailable"))
+        # until the commit after the pre-registration commit fills it in, the committed record has no commit
+        if json.loads(tt.PREREG_PATH.read_text(encoding="utf-8"))["commit"] is None:
+            self.assertEqual(STUDY["report"]["preregistration"]["commit_check"], "no_commit")
+            self.assertEqual(STUDY["report"]["preregistration"]["label"], tt.NOT_PREREGISTERED)
+
+    def test_the_committed_record_names_the_primary_arm(self):
+        record = json.loads(tt.PREREG_PATH.read_text(encoding="utf-8"))
+        self.assertEqual(record["primary_arm"], tt.PRIMARY_ARM)
+        self.assertEqual(record["primary_metric"], tt.PRIMARY_METRIC)
+        self.assertEqual(record["comparators"], list(tt.COMPARATORS))
+        self.assertEqual(record["required_runs"], tt.REQUIRED_RUNS)
+        self.assertEqual(record["targeting_sha256"], tt.code_digest(HERE / "targeting.py"),
+                         "targeting.py changed after pre-registration: update the record only before any real-data run")
+        self.assertEqual(record["analysis_sha256"], tt.code_digest(HERE / "targeted.py"),
+                         "targeted.py changed after pre-registration: update the record only before any real-data run")
+
+
+class DecisionTests(unittest.TestCase):
+    def runs(self, n: int, mine: int = 3, prod: int = 1, shuf: int = 1, p: float = 0.01) -> dict:
+        arm = {"id": tt.PRIMARY_ARM, "e2": {tt.PRIMARY_METRIC: mine, "chance_r3_units": 0.5,
+                                            "vs_production": {"arm": tt.COMPARATORS[0], "comparator_r3_with_frame": prod,
+                                                              "mcnemar_p_exact": p},
+                                            "vs_shuffled_prior": {"arm": tt.COMPARATORS[1], "comparator_r3_with_frame": shuf}}}
+        return {f"run-{k}": {"arms": [json.loads(json.dumps(arm))]} for k in range(n)}
+
+    def test_every_run_the_rule_names(self):
+        self.assertEqual(tt.decision(self.runs(5), "run-0")["result"], "supported")
+        self.assertEqual(tt.decision(self.runs(5, prod=3), "run-0")["result"], "not supported")
+        for n in (1, 2, 4):
+            found = tt.decision(self.runs(n), "run-0")
+            self.assertEqual((found["result"], found["runs_given"], found["required_runs"]), ("unavailable", n, 5))
+        missing = self.runs(5)
+        missing["run-3"]["arms"] = []
+        self.assertEqual(tt.decision(missing, "run-0")["result"], "unavailable")
+        other = self.runs(5)
+        other["run-2"]["arms"][0]["e2"]["vs_shuffled_prior"]["arm"] = "open:shuffled_prior:W=10s:+matched"
+        self.assertEqual(tt.decision(other, "run-0")["result"], "unavailable")
+
+    def test_the_gates(self):
+        passed = {f"run-{k}": "PASS" for k in range(5)}
+        gate = lambda blind, label, runs=None: tt.gate_decision(tt.decision(runs or self.runs(5), "run-0"), blind, label)  # noqa: E731
+        self.assertEqual(gate(passed, tt.PREREGISTERED)["result"], "supported")
+        self.assertEqual(gate({**passed, "run-1": "NOT_RUN"}, tt.PREREGISTERED)["result"], "unavailable: blindness check not run")
+        self.assertEqual(gate({**passed, "run-1": "FAIL"}, tt.PREREGISTERED)["result"], "BLINDNESS_CHECK_FAILED")
+        found = gate(passed, tt.NOT_PREREGISTERED)
+        self.assertEqual((found["result"], found["result_before_gates"], found["label"]),
+                         ("exploratory", "supported", tt.NOT_PREREGISTERED))
+        self.assertEqual(gate(passed, tt.PREREG_MISMATCH, self.runs(5, prod=3))["result"], "exploratory")
+        self.assertEqual(gate(passed, tt.NOT_PREREGISTERED, self.runs(2))["result"], "unavailable")
+
+    def test_the_fixture_study_is_two_runs_so_no_verdict(self):
+        found = STUDY["report"]["decision"]
+        self.assertEqual((found["result"], found["runs_given"], found["gates"]["blindness_check"]), ("unavailable", 2, "PASS"))
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            quiet(tt.main, all_args(root, STUDY["run"], STUDY["donor"], STUDY["gt"], STUDY["lock"], "off",
+                                    "--blindness-check", "off"))
+            off = json.loads((root / "off" / "targeted-run-a.json").read_text(encoding="utf-8"))
+        self.assertEqual(off["decision"]["result"], "unavailable: blindness check not run")
+
+
+class StatisticsTests(unittest.TestCase):
+    def test_exact_mcnemar_and_chance(self):
+        self.assertEqual(tt.mcnemar_exact(5, 0), 0.0625)
+        self.assertEqual(tt.mcnemar_exact(0, 0), 1.0)
+        self.assertEqual(tt.mcnemar_exact(3, 3), 1.0)
+        # 4 eligible frames, 2 drawn: a unit with 1 frame inside is hit with 1 - C(3,2)/C(4,2) = 1/2, with 2: 5/6
+        self.assertEqual(tt.chance_hits(4, [1, 2], 2), round(0.5 + 5 / 6, 4))
+        self.assertEqual(tt.chance_hits(4, [0], 2), 0.0)
+
+
+class OracleTests(unittest.TestCase):
+    def test_upper_bounds_are_apart_and_labelled(self):
+        run = STUDY["report"]["runs"]["run-a"]
+        for arm in run["arms"]:
+            self.assertFalse(arm["oracle"])
+            self.assertNotIn("ORACLE", arm["id"])
+        self.assertTrue(run["upper_bounds"])
+        for bound in run["upper_bounds"]:
+            self.assertTrue(bound["oracle"])
+            self.assertTrue(bound["id"].startswith("ORACLE_"))
+        section = None
+        for line in STUDY["md"].splitlines():
+            if line.startswith("#"):
+                section = line
+            if "ORACLE_" in line:
+                self.assertEqual(section, "### Upper bounds (use ground truth)")
+
+    def test_acquisition_oracle_tells_only_frames_inside_the_range(self):
+        with TemporaryDirectory() as tmp:
+            target, _, gt = prepared(Path(tmp))
+            samples = [tg.Sample("i1", "i1-s1c6", "i1-s1", "", 33000, "numbered_window", "i1.u3", "test", 1),
+                       tg.Sample("i1", "i1-s1c8", "i1-s1", "", 45000, "numbered_window", "i1.u3", "test", 1)]
+            told = tt.ORACLE_acq_at_selected(gt, target.A, samples, False, None)
+            items = {c["id"]: tt.vision_items(c) for c in told.logs["i1"]["candidates"]}
+            self.assertEqual([(i["text"], i["detail"]) for i in items["i1-s1c6"]], [(SENTENCES[2][0], "oracle")])
+            self.assertEqual([(i["text"], i["confidence"], i["detail"]) for i in items["i1-s1c8"]], [("", 0, "oracle-empty")])
+            # one rule for every arm: a frame selected for u2 that lies in u3's range is told u3's sentence, as a
+            # uniform (no unit) frame there is
+            for unit_id in ("i1.u2", None):
+                moved = [tg.Sample("i1", "i1-s1c6", "i1-s1", "", 33000, "numbered_window", unit_id, "test", 1)]
+                told = tt.ORACLE_acq_at_selected(gt, target.A, moved, False, None)
+                c6 = next(c for c in told.logs["i1"]["candidates"] if c["id"] == "i1-s1c6")
+                self.assertEqual([(i["text"], i["detail"]) for i in tt.vision_items(c6)], [(SENTENCES[2][0], "oracle")], unit_id)
+            empty = ev.Evidence("i1-s1c8", [ev.Item("vision", 0, "", (), "oracle-empty")])
+            c8 = target.shot("i1", "i1-s1c8").candidate
+            unit = align.Unit("i1.u3", SENTENCES[2][0], 0, 1000, "narration")
+            self.assertEqual(align.Scorer([c8], {"i1-s1c8": empty}).relevance(unit, c8)[0], 0)
+
+
+class W3UnchangedTests(unittest.TestCase):
+    def test_the_old_replay_and_the_rules_are_w3s(self):
+        gt = w3.load_gt(STUDY["gt"], STUDY["lock"])
+        run = w3.load_run(STUDY["run"])
+        self.assertEqual(STUDY["report"]["runs"]["run-a"]["e1"]["replayed_with_review"],
+                         tt.score_brief(w3.score(gt, w3.replay(run))))
+        defined = {n.name for n in ast.walk(ast.parse((HERE / "targeted.py").read_text(encoding="utf-8")))
+                   if isinstance(n, (ast.FunctionDef, ast.ClassDef))}
+        self.assertFalse(defined & {"score", "hits", "top", "overlap", "norm", "attribute", "replay"})
+        with TemporaryDirectory() as tmp, mock.patch.object(w3, "score", wraps=w3.score) as scored, \
+                mock.patch.object(w3, "attribute", wraps=w3.attribute) as attributed:
+            target, donor, gt = prepared(Path(tmp))
+            ctx = tt.Context(gt, target, tt.DonorIndex(target, [donor]), None, False, 500, True, "flagged", None, None)
+            ctx.replay_with("A", [])
+            self.assertTrue(scored.called and attributed.called)
+
+
+class AttributionDeltaTests(unittest.TestCase):
+    def test_hand_made_transitions(self):
+        def rows(*stages):
+            return {"rows": [{"unit": f"i1.u{k}", "kind": "footage", "stage": s, "r7": r7, "chosen": chosen,
+                              "chosen_hit": hit} for k, (s, r7, chosen, hit) in enumerate(stages, 1)]}
+        before = rows(("R3_NOT_LOOKED", "FLAGGED_MISS", ["a"], False), ("R3_NOT_LOOKED", "FLAGGED_MISS", ["b"], False),
+                      ("OK", "READY_HIT", ["c"], True), ("OK", "READY_HIT", ["d"], True))
+        after = rows(("OK", "FLAGGED_HIT", ["x"], True), ("R4_WEAK_MATCH", "FLAGGED_MISS", ["b"], False),
+                     ("R5_RANKING", "FLAGGED_MISS", ["c"], False), ("R5_RANKING", "SILENT_MISS", ["y"], False))
+        found = tt.attribution_delta(before, after, new_ids={"x", "y"}, shared_ids=set(), donor_of={"x": "run-b"})
+        self.assertEqual(found["transitions"], {"OK->R5_RANKING": 2, "R3_NOT_LOOKED->OK": 1, "R3_NOT_LOOKED->R4_WEAK_MATCH": 1})
+        self.assertEqual((found["fixed_r3"], found["moved_r3"], found["still_r3"]), (1, {"R4_WEAK_MATCH": 1}, 0))
+        self.assertEqual((found["fixed_via_new_evidence"], found["fixed_by_donor_run"]), (1, {"run-b": 1}))
+        self.assertEqual((found["new_silent_misses"], found["new_evidence_wrong_pick"]), (["i1.u4"], 1))
+
+    def test_the_primary_arm_on_the_fixture(self):
+        e5 = arms_of(STUDY["report"])[tt.PRIMARY_ARM]["e5"]
+        self.assertEqual((e5["fixed_r3"], e5["fixed_via_new_evidence"], e5["fixed_by_donor_run"]), (1, 1, {"run-b": 1}))
+        self.assertEqual(e5["lost_hits"], {"chosen_hit": 0, "hit_at_5": 0})
+        self.assertIn("partial simulation", e5["note"])
+
+
+class LabelTests(unittest.TestCase):
+    def test_labels_windows_and_no_best(self):
+        text, md = STUDY["json"], STUDY["md"]
+        for label in ("GENERALIZATION NOT VERIFIED", "REAL-DEV", "partial simulation"):
+            self.assertIn(label, text)
+            self.assertIn(label, md)
+        self.assertNotIn("lower bound", text.lower())
+        self.assertNotIn("lower bound", md.lower())
+        ids = set(arms_of(STUDY["report"]))
+        for window in ("W=10s", "W=fwd"):
+            self.assertTrue(any(window in i for i in ids), window)
+
+        def keys(value):
+            if isinstance(value, dict):
+                for k, v in value.items():
+                    yield k
+                    yield from keys(v)
+            elif isinstance(value, list):
+                for v in value:
+                    yield from keys(v)
+        self.assertFalse([k for k in keys(STUDY["report"]) if k.lower().startswith("best")])
+
+
+class ScopeTests(unittest.TestCase):
+    def test_no_product_path_is_changed(self):
+        """A check of the #815 pull request's scope, not of the harness: run it for that PR only."""
+        import os
+        if os.environ.get("DUBFLOW_SCOPE_CHECK") != "815":
+            self.skipTest("PR-scope check of #815; set DUBFLOW_SCOPE_CHECK=815")
+        root = HERE.parents[2]
+        try:
+            base = subprocess.run(["git", "merge-base", "origin/main", "HEAD"], cwd=root, capture_output=True, text=True, check=True)
+            changed = subprocess.run(["git", "diff", "--name-only", base.stdout.strip()], cwd=root, capture_output=True, text=True,
+                                     check=True).stdout.split()
+            changed += subprocess.run(["git", "ls-files", "--others", "--exclude-standard"], cwd=root, capture_output=True,
+                                      text=True, check=True).stdout.split()
+        except (OSError, subprocess.CalledProcessError):
+            self.skipTest("git or origin/main is not available here")
+        for path in changed:
+            self.assertFalse(path.startswith(("engine/", "contracts/", ".github/workflows/")), path)
+            self.assertNotEqual(path, "scripts/ci/component_registry.json")
+
+
+GOLDEN = "c1fd47e899ff300a25bcc3dc11521923483f5120fc78b734c429f076dc909163"
+
+
+if __name__ == "__main__":
+    unittest.main()

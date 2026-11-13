@@ -1,0 +1,29 @@
+{
+ "schema": "w3-targeted-prereg-v1",
+ "issue": "#815",
+ "commit": null,
+ "commit_note": "the commit that adds this file together with the ADR, before any real-data run, written here by the commit after it (a commit cannot name itself); the harness labels a report PREREGISTERED only when this commit is an ancestor of the checked-out HEAD (when git is there) and every digest and named value below matches the code that runs",
+ "targeting_sha256": "fd884a26e7f70e8405364c9309f0129d41abe1c21e51cc053a991b701427ee92",
+ "targeting_sha256_basis": "sha256 of tests/mastering/longform/targeting.py with CRLF normalised to LF",
+ "analysis_sha256": "4dff01c5fd1a80b9298c77439e2eb763056894e4dfecae6134cbf437d6711a7f",
+ "analysis_sha256_basis": "sha256 of tests/mastering/longform/targeted.py with CRLF normalised to LF (the primary metric, the arms and comparators, the matched budget and the decision rule)",
+ "dataset": "W3 REAL-DEV (development, not a holdout)",
+ "primary_run": "rc16",
+ "primary_arm": "open:mixed:W=fwd:+matched",
+ "primary_arm_definition": {
+  "strategy": "mixed",
+  "window": "fwd",
+  "budget": "+matched (extra, on top of the run's own spend)",
+  "target_units": "flagged",
+  "regime": "open"
+ },
+ "primary_metric": "r3_units_with_hitting_frame_selected",
+ "comparators": [
+  "open:P+:-:+matched",
+  "open:shuffled_prior:W=fwd:+matched"
+ ],
+ "required_runs": 5,
+ "decision_rule": "localisation supported on REAL-DEV only if, on rc16, the primary arm has more R3 units with a hitting frame than both P+ and shuffled_prior, with exact McNemar p < 0.05 against P+; and it beats both comparators in each of the 5 runs; and it exceeds chance_r3_units; otherwise not supported. Recall and cost (E4) are decided only by the owner-approved real-call batch.",
+ "secondary": "everything else, including recall@k from replay",
+ "conclusion": "GENERALIZATION NOT VERIFIED; Gate B not claimed"
+}
