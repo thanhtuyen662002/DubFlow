@@ -102,7 +102,7 @@ def _redirect(info: os.stat_result) -> bool:
     return bool(getattr(info, "st_file_attributes", 0) & _REPARSE_POINT and getattr(info, "st_reparse_tag", 0) & _NAME_SURROGATE)
 
 
-def _plain_file(value: Any, suffixes: frozenset[str], name: str) -> Path:
+def _plain_file(value: Any, suffixes: frozenset[str], name: str, folders: int | None = None) -> Path:
     """A file the user chose as a source, by the desktop's one source rule (Issue #816, ``product.rs::check_source``).
 
     Checked again here, when the worker reads the spec, because a re-render, a Mẫu run or an older spec reaches the
@@ -110,7 +110,8 @@ def _plain_file(value: Any, suffixes: frozenset[str], name: str) -> Path:
     - an absolute path with no ``.`` or ``..`` part (read on the text: ``Path`` hides an inner ``.``);
     - one of ``suffixes``;
     - the path itself is a regular file, never a symlink or junction;
-    - no folder on the way to it is a symlink or junction.
+    - no folder on the way to it is a symlink or junction; with ``folders``, only that many folders up from the file
+      (a library background is the app's own copy, and the data folder above its library may be a junction).
     A hard link is the file itself and is accepted; a real file anywhere on the machine is allowed (no containment rule).
     The messages are the desktop's, so the user reads the same reason from both.
 
@@ -133,7 +134,7 @@ def _plain_file(value: Any, suffixes: frozenset[str], name: str) -> Path:
         raise ProductError(f"Không tìm thấy {name}: {path.name}") from None
     if _redirect(info) or not stat.S_ISREG(info.st_mode):
         raise ProductError(f"{kind} phải là tệp thật trên máy, không phải lối tắt: {path.name}")
-    for folder in path.parents:
+    for folder in path.parents[:folders]:
         try:
             linked = _redirect(os.lstat(folder))
         except (OSError, ValueError):
@@ -216,7 +217,8 @@ def load_spec(path: Path) -> Spec:
         visuals=tuple(_visual(item) for item in visuals),
         music=None if music is None else _plain_file(music, render.MUSIC_SUFFIXES, "nhạc nền"),
         music_volume=float(volume),
-        background=None if value.get("background") is None else _file(value["background"], render.IMAGE_SUFFIXES, "ảnh nền"),
+        # a library background (the desktop's `library_file`): the app's own copy, so only its library folder is looked at
+        background=None if value.get("background") is None else _plain_file(value["background"], render.IMAGE_SUFFIXES, "ảnh nền", 1),
         template=template,
         speed=float(speed),
         features=tuple(text for text in (" ".join(_string(item, "Điểm nổi bật", MAX_FEATURE_CHARS).split()) for item in features) if text),

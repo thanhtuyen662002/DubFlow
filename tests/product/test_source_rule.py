@@ -147,6 +147,29 @@ class SpecTests(Fixture):
         self.assert_refused(self.write_spec(visuals=[os.path.join(str(self.root), "sub", "..", "a.mp4")]),
                             "Đường dẫn video nguồn không hợp lệ: a.mp4")
 
+    def test_a_background_is_a_plain_file_in_a_plain_folder(self):
+        # Issue #816 review: the background followed links and `..`. It is a library copy, the app's own file, so only its
+        # library folder is looked at: the data folder above it may be reached through a junction.
+        library = self.root / "data" / "backgrounds"
+        library.mkdir(parents=True)
+        kept = library / f"{'a' * 64}.png"
+        kept.write_bytes(b"png")
+        self.assertEqual(job.load_spec(self.write_spec(background=str(kept))).background, kept)
+        alias = self.root / "alias"
+        symlink(self.root / "data", alias, self)
+        through = alias / "backgrounds" / kept.name
+        self.assertEqual(job.load_spec(self.write_spec(background=str(through))).background, through,
+                         "a data folder reached through a junction keeps its backgrounds")
+        self.assert_refused(self.write_spec(background=os.path.join(str(library), "..", "backgrounds", kept.name)),
+                            f"Đường dẫn ảnh nền không hợp lệ: {kept.name}")
+        symlink(kept, self.root / "bg-link.png", self)
+        self.assert_refused(self.write_spec(background=str(self.root / "bg-link.png")),
+                            "Ảnh nền phải là tệp thật trên máy, không phải lối tắt: bg-link.png")
+        symlink(library, self.root / "library-link", self)
+        self.assert_refused(self.write_spec(background=str(self.root / "library-link" / kept.name)),
+                            f"Ảnh nền nằm trong thư mục là lối tắt (symlink/junction), hãy chọn tệp ở vị trí thật: {kept.name}")
+        self.assertEqual(kept.read_bytes(), b"png")
+
     @unittest.skipUnless(FFMPEG, "needs FFmpeg")
     def test_a_render_only_reads_its_sources(self):
         photo, clip = self.root / "a.png", self.root / "b.mp4"
@@ -197,6 +220,30 @@ class CompilationSourceTests(Fixture):
         symlink(self.root / "sub", self.root / "alias", self)
         self.assert_refused(str(self.root / "alias" / "b.mp4"),
                             "Video nguồn nằm trong thư mục là lối tắt (symlink/junction), hãy chọn tệp ở vị trí thật: b.mp4")
+
+    def program(self, music: str):
+        items = [{"title": f"Mục {number}", "sources": [{"video": str(self.clip)}]} for number in (1, 2)]
+        return program.load({"schema_version": 2, "title": "Tổng hợp", "layout": "toan-man-hinh", "voice_id": "vi-test",
+                             "music": music, "items": items})
+
+    def test_music_follows_the_same_rule(self):
+        # Issue #816 review: a re-render's music was read by `_file`, which follows links and `..`
+        music = self.root / "real" / "a.mp3"
+        music.parent.mkdir()
+        music.write_bytes(b"mp3")
+        self.assertEqual(self.program(str(music)).music, music, "the real file at its real place")
+        with self.assertRaises(program.CompilationError) as caught:
+            self.program(os.path.join(str(self.root), "real", "..", "real", "a.mp3"))
+        self.assertEqual(caught.exception.message, "Đường dẫn nhạc nền không hợp lệ: a.mp3")
+        symlink(music, self.root / "music-link.mp3", self)
+        with self.assertRaises(program.CompilationError) as caught:
+            self.program(str(self.root / "music-link.mp3"))
+        self.assertEqual(caught.exception.message, "Nhạc nền phải là tệp thật trên máy, không phải lối tắt: music-link.mp3")
+        symlink(music.parent, self.root / "alias", self)
+        with self.assertRaises(program.CompilationError) as caught:
+            self.program(str(self.root / "alias" / "a.mp3"))
+        self.assertEqual(caught.exception.message,
+                         "Nhạc nền nằm trong thư mục là lối tắt (symlink/junction), hãy chọn tệp ở vị trí thật: a.mp3")
 
 
 if __name__ == "__main__":

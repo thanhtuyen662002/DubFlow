@@ -31,14 +31,6 @@ fn has_extension(path: &Path, extensions: &[&str]) -> bool {
         .is_some_and(|value| extensions.iter().any(|known| known.eq_ignore_ascii_case(value)))
 }
 
-fn local_file(value: &str, extensions: &[&str]) -> Result<PathBuf, String> {
-    let path = PathBuf::from(value);
-    if !path.is_absolute() || !path.is_file() || !has_extension(&path, extensions) {
-        return Err(fail(format!("Không mở được file: {}", path.file_name().map(|name| name.to_string_lossy()).unwrap_or_default())));
-    }
-    Ok(path)
-}
-
 /// Why a file the user chose as a source is refused (Issue #816). Bán hàng and Tổng hợp use the same rule
 /// ([`check_source`]); each names the file its own way ([`SourceRefusal::message`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,6 +70,16 @@ pub(crate) fn is_redirect(metadata: &fs::Metadata) -> bool {
     metadata.file_type().is_symlink()
 }
 
+/// An absolute path made only of a prefix, a root and plain names: no `.` or `..` part, read on the text itself
+/// (`Path::components` hides an inner `.`).
+fn plain_path(path: &Path) -> bool {
+    use std::path::Component;
+    let text = path.as_os_str().to_string_lossy();
+    path.is_absolute()
+        && !text.split(std::path::is_separator).any(|part| part == "." || part == "..")
+        && path.components().all(|part| matches!(part, Component::Prefix(_) | Component::RootDir | Component::Normal(_)))
+}
+
 /// The one source rule (Issue #816) for every file the user chooses as a source in Bán hàng (photos, clips, music, a
 /// background to keep, a photo to preview) and Tổng hợp (source videos, music):
 /// - the path is absolute, made only of a prefix, a root and plain names: no `.` or `..` part, read on the text itself
@@ -93,11 +95,7 @@ pub(crate) fn is_redirect(metadata: &fs::Metadata) -> bool {
 /// checks again when it loads the spec (`product/job.py::_plain_file`); FFmpeg opens the file by path after that, and
 /// that last window cannot be closed (it is the user's own folder, outside the threat model).
 pub(crate) fn check_source(path: &Path, extensions: &[&str]) -> Result<(), SourceRefusal> {
-    use std::path::Component;
-    let text = path.as_os_str().to_string_lossy();
-    if !path.is_absolute()
-        || text.split(std::path::is_separator).any(|part| part == "." || part == "..")
-        || !path.components().all(|part| matches!(part, Component::Prefix(_) | Component::RootDir | Component::Normal(_))) {
+    if !plain_path(path) {
         return Err(SourceRefusal::BadPath);
     }
     if !has_extension(path, extensions) {
@@ -135,6 +133,42 @@ fn product_visuals(values: &[String]) -> Result<Vec<PathBuf>, String> {
     }).collect()
 }
 
+/// A background kept in the library (`library`, see [`add_to_library`]): `<sha256>.<extension>` directly in a library
+/// folder that is a plain folder, the file itself a regular file (never a link). It is the app's own copy, made from a
+/// file the user's own source rule accepted, so the folders above the library are not looked at: the data folder may
+/// itself be reached through a junction (an install root on another drive), and its backgrounds must still preview and
+/// render.
+fn library_file(library: &Path, value: &str) -> Option<PathBuf> {
+    let path = PathBuf::from(value);
+    let (id, extension) = path.file_name()?.to_str()?.split_once('.')?;
+    let known = background_id(id).is_ok() && IMAGE_EXTENSIONS.contains(&extension);
+    let regular = fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.is_file() && !is_redirect(&metadata));
+    (known && plain_path(&path) && path.parent() == Some(library) && plain_dir(library) && regular).then_some(path)
+}
+
+/// An image the UI names that is either a library background ([`library_file`]) or a file of the user's, by the one
+/// source rule (Issue #816) with the messages for a source called `kind`. `library` is `None` when the data folder is
+/// unknown: then only the source rule applies.
+fn library_or_source(library: Option<&Path>, value: &str, kind: &str) -> Result<PathBuf, String> {
+    match library.and_then(|dir| library_file(dir, value)) {
+        Some(path) => Ok(path),
+        None => plain_source_file(value, kind, &IMAGE_EXTENSIONS),
+    }
+}
+
+/// A Bán hàng request's photos and clips, music and background, as checked by [`product_sources`].
+type ProductSources = (Vec<PathBuf>, Option<PathBuf>, Option<PathBuf>);
+
+/// The files a Bán hàng request reads, checked before any run folder is made (a refused file makes no run): photos and
+/// clips, music and the background. The background the UI sends is a library entry; a run made again from the edit
+/// page may keep one the library no longer lists, which then has to pass the user's source rule like any other file.
+fn product_sources(visuals: &[String], music: Option<&str>, background: Option<&str>, library: Option<&Path>) -> Result<ProductSources, String> {
+    let visuals = product_visuals(visuals)?;
+    let music = music.map(|value| plain_source_file(value, "Nhạc nền", &MUSIC_EXTENSIONS)).transpose()?;
+    let background = background.map(|value| library_or_source(library, value, "Ảnh nền")).transpose()?;
+    Ok((visuals, music, background))
+}
+
 /// Photos, photos and clips, or music, from the file dialog.
 #[tauri::command]
 pub fn pick_product_files(kind: String) -> Result<Vec<String>, String> {
@@ -153,7 +187,8 @@ pub fn pick_product_files(kind: String) -> Result<Vec<String>, String> {
 /// at full detail), or a smaller thumbnail. Raw bytes avoid a JSON number array.
 #[tauri::command]
 pub async fn product_image(path: String, max_side: Option<u32>) -> Result<tauri::ipc::Response, String> {
-    let image = plain_source_file(&path, "Ảnh", &IMAGE_EXTENSIONS)?;
+    // a photo of the user's by the one source rule, or a background from the library (the app's own copy)
+    let image = library_or_source(library_dir().ok().as_deref(), &path, "Ảnh")?;
     let side = max_side.unwrap_or(1568).clamp(64, 1568);
     let ffmpeg = version_root()?.join("runtime").join("media").join("ffmpeg.exe");
     let mut command = Command::new(&ffmpeg);
@@ -305,10 +340,8 @@ pub fn product_render(request: ProductRequest) -> Result<String, String> {
     }
     // Issue #816: the same source rule as Tổng hợp, before any run folder is made (a refused file makes no run). The
     // spec keeps the checked paths; the worker checks them again when it reads the spec.
-    let visuals = product_visuals(&visuals)?;
-    let music = request.music.as_deref().map(|value| plain_source_file(value, "Nhạc nền", &MUSIC_EXTENSIONS)).transpose()?;
-    // The background the UI sends is a library entry, the app's own copy (`product_background_add` checked the user's file).
-    let background = request.background.as_deref().map(|value| local_file(value, &IMAGE_EXTENSIONS)).transpose()?;
+    let (visuals, music, background) =
+        product_sources(&visuals, request.music.as_deref(), request.background.as_deref(), library_dir().ok().as_deref())?;
     let reuse = request.reuse_audio_from.as_deref().map(product_dir).transpose()?;
     let beside_reuse = reuse.as_deref().and_then(|dir| dir.ancestors().find(|part| part.file_name().is_some_and(|name| name == "DubFlow Output")))
         .and_then(Path::parent).map(Path::to_path_buf);
@@ -967,6 +1000,114 @@ pub(crate) mod tests {
             fs::write(base.join("sub").join("b.jpg"), b"jpg").unwrap();
             let preview = tauri::async_runtime::block_on(product_image(alias.join("b.jpg").to_string_lossy().into_owned(), None)).err();
             assert_eq!(preview.as_deref(), Some("Ảnh nằm trong thư mục là lối tắt (symlink/junction), hãy chọn tệp ở vị trí thật: b.jpg"));
+        }
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    fn text(path: &Path) -> String {
+        path.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn a_render_checks_its_photos_clips_and_music_before_any_run() {
+        // what product_render reads, through the helper it calls before a run folder is made
+        let base = source_base("render");
+        let (clip, photo, music) = (base.join("a.mp4"), base.join("a.jpg"), base.join("a.mp3"));
+        for file in [&clip, &photo, &music] {
+            fs::write(file, b"real").unwrap();
+        }
+        fs::create_dir_all(base.join("sub")).unwrap();
+        assert_eq!(product_sources(&[text(&clip), text(&photo)], Some(&text(&music)), None, None).unwrap(),
+                   (vec![clip.clone(), photo.clone()], Some(music.clone()), None), "real files anywhere are the user's files");
+        let up = |name: &str| text(&base.join("sub").join("..").join(name));
+        assert_eq!(product_sources(&[up("a.mp4")], None, None, None).unwrap_err(), "Đường dẫn video nguồn không hợp lệ: a.mp4");
+        assert_eq!(product_sources(&[up("a.jpg")], None, None, None).unwrap_err(), "Đường dẫn ảnh không hợp lệ: a.jpg");
+        assert_eq!(product_sources(&[text(&clip)], Some(&up("a.mp3")), None, None).unwrap_err(), "Đường dẫn nhạc nền không hợp lệ: a.mp3");
+        if link_file(&clip, &base.join("clip-link.mp4")) {
+            assert!(link_file(&photo, &base.join("photo-link.jpg")) && link_file(&music, &base.join("music-link.mp3")));
+            assert_eq!(product_sources(&[text(&base.join("clip-link.mp4"))], None, None, None).unwrap_err(),
+                       "Video nguồn phải là tệp thật trên máy, không phải lối tắt: clip-link.mp4");
+            assert_eq!(product_sources(&[text(&base.join("photo-link.jpg"))], None, None, None).unwrap_err(),
+                       "Ảnh phải là tệp thật trên máy, không phải lối tắt: photo-link.jpg");
+            assert_eq!(product_sources(&[text(&clip)], Some(&text(&base.join("music-link.mp3"))), None, None).unwrap_err(),
+                       "Nhạc nền phải là tệp thật trên máy, không phải lối tắt: music-link.mp3");
+        }
+        let alias = base.join("alias");
+        let linked = link_dir(&base.join("sub"), &alias);
+        #[cfg(windows)]
+        assert!(linked, "junctions need no privilege on Windows");
+        if linked {
+            for name in ["b.mp4", "b.jpg", "b.mp3"] {
+                fs::write(base.join("sub").join(name), b"real").unwrap();
+            }
+            let below = |name: &str| text(&alias.join(name));
+            assert_eq!(product_sources(&[below("b.mp4")], None, None, None).unwrap_err(),
+                       "Video nguồn nằm trong thư mục là lối tắt (symlink/junction), hãy chọn tệp ở vị trí thật: b.mp4");
+            assert_eq!(product_sources(&[below("b.jpg")], None, None, None).unwrap_err(),
+                       "Ảnh nằm trong thư mục là lối tắt (symlink/junction), hãy chọn tệp ở vị trí thật: b.jpg");
+            assert_eq!(product_sources(&[text(&clip)], Some(&below("b.mp3")), None, None).unwrap_err(),
+                       "Nhạc nền nằm trong thư mục là lối tắt (symlink/junction), hãy chọn tệp ở vị trí thật: b.mp3");
+        }
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_background_is_a_library_copy_or_a_real_file_of_the_users() {
+        // Issue #816 review: the render's background followed links and `..`; a library background must still preview
+        // and render when the data folder is reached through a junction
+        let base = source_base("background");
+        let data = base.join("data");
+        let library = data.join("backgrounds");
+        fs::create_dir_all(&library).unwrap();
+        fs::create_dir_all(base.join("sub")).unwrap();
+        let id = "a".repeat(64);
+        let kept = library.join(format!("{id}.png"));
+        fs::write(&kept, b"png").unwrap();
+        let clip = base.join("a.mp4");
+        fs::write(&clip, b"clip").unwrap();
+        let render = |background: &Path| product_sources(&[text(&clip)], None, Some(&text(background)), Some(&library)).map(|sources| sources.2);
+        assert_eq!(render(&kept).unwrap(), Some(kept.clone()));
+        assert_eq!(library_or_source(Some(&library), &text(&kept), "Ảnh").unwrap(), kept, "its preview");
+        // a run made again from the edit page may keep a background the library no longer lists: the user's rule
+        let own = base.join("own.png");
+        fs::write(&own, b"png").unwrap();
+        assert_eq!(render(&own).unwrap(), Some(own.clone()));
+        assert_eq!(render(&base.join("sub").join("..").join("own.png")).unwrap_err(), "Đường dẫn ảnh nền không hợp lệ: own.png");
+        assert_eq!(render(&library.join("..").join("backgrounds").join(format!("{id}.png"))).unwrap_err(),
+                   format!("Đường dẫn ảnh nền không hợp lệ: {id}.png"), "`..` is never a library entry");
+        let dotted = PathBuf::from(format!("{}{}.{}{id}.png", library.display(), std::path::MAIN_SEPARATOR, std::path::MAIN_SEPARATOR));
+        assert!(library_file(&library, &text(&dotted)).is_none(), "nor a `.` part, read on the text");
+        assert_eq!(render(&base.join("missing.png")).unwrap_err(), "Không tìm thấy ảnh nền: missing.png");
+        assert!(library_file(&library, &text(&library.join(format!("{}.png", "b".repeat(64))))).is_none(), "nothing there");
+        assert!(library_file(&library, &text(&library.join("own.png"))).is_none(), "not a library name");
+        assert!(library_file(&library, &text(&data.join(format!("{id}.png")))).is_none(), "not in the library folder");
+        if link_file(&own, &library.join(format!("{}.png", "c".repeat(64)))) {
+            let entry = library.join(format!("{}.png", "c".repeat(64)));
+            assert!(library_file(&library, &text(&entry)).is_none(), "a link in the library is not the app's copy");
+            assert_eq!(render(&entry).unwrap_err(), format!("Ảnh nền phải là tệp thật trên máy, không phải lối tắt: {}.png", "c".repeat(64)));
+            assert!(link_file(&own, &base.join("own-link.png")));
+            assert_eq!(render(&base.join("own-link.png")).unwrap_err(), "Ảnh nền phải là tệp thật trên máy, không phải lối tắt: own-link.png");
+            fs::remove_file(&entry).unwrap();
+        }
+        let alias = base.join("alias");
+        let linked = link_dir(&data, &alias);
+        #[cfg(windows)]
+        assert!(linked, "junctions need no privilege on Windows");
+        if linked {
+            // the data folder reached through a junction: its library still previews and renders
+            let (library, kept) = (alias.join("backgrounds"), alias.join("backgrounds").join(format!("{id}.png")));
+            assert_eq!(library_or_source(Some(&library), &text(&kept), "Ảnh").unwrap(), kept);
+            assert_eq!(product_sources(&[text(&clip)], None, Some(&text(&kept)), Some(&library)).unwrap().2, Some(kept.clone()));
+            // ...but not when the library is not given, and a user's photo there is below a link
+            assert_eq!(library_or_source(None, &text(&kept), "Ảnh").unwrap_err(),
+                       format!("Ảnh nằm trong thư mục là lối tắt (symlink/junction), hãy chọn tệp ở vị trí thật: {id}.png"));
+            fs::write(data.join("photo.png"), b"png").unwrap();
+            assert_eq!(library_or_source(Some(&library), &text(&alias.join("photo.png")), "Ảnh").unwrap_err(),
+                       "Ảnh nằm trong thư mục là lối tắt (symlink/junction), hãy chọn tệp ở vị trí thật: photo.png");
+            // a library folder that is itself a link is not the app's own folder
+            let library_link = base.join("library-link");
+            assert!(link_dir(&library, &library_link));
+            assert!(library_file(&library_link, &text(&library_link.join(format!("{id}.png")))).is_none());
         }
         let _ = fs::remove_dir_all(&base);
     }
