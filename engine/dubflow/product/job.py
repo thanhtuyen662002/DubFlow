@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import stat
 import subprocess
 import sys
 import time
@@ -88,6 +89,66 @@ def _file(value: Any, suffixes: frozenset[str], name: str) -> Path:
     return path
 
 
+# Windows: the reparse-tag bit of a name surrogate (a symlink, a junction or a mount point), a way to somewhere else.
+# Other reparse points (OneDrive Files-On-Demand placeholders, deduplicated files) are the file itself.
+_NAME_SURROGATE = 0x20000000
+_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+
+
+def _redirect(info: os.stat_result) -> bool:
+    """A symlink, or on Windows a junction or other name-surrogate reparse point (``os.lstat`` opens those themselves)."""
+    if stat.S_ISLNK(info.st_mode):
+        return True
+    return bool(getattr(info, "st_file_attributes", 0) & _REPARSE_POINT and getattr(info, "st_reparse_tag", 0) & _NAME_SURROGATE)
+
+
+def _plain_file(value: Any, suffixes: frozenset[str], name: str) -> Path:
+    """A file the user chose as a source, by the desktop's one source rule (Issue #816, ``product.rs::check_source``).
+
+    Checked again here, when the worker reads the spec, because a re-render, a Mẫu run or an older spec reaches the
+    worker without the desktop's check, and because the file may have changed since that check:
+    - an absolute path with no ``.`` or ``..`` part (read on the text: ``Path`` hides an inner ``.``);
+    - one of ``suffixes``;
+    - the path itself is a regular file, never a symlink or junction;
+    - no folder on the way to it is a symlink or junction.
+    A hard link is the file itself and is accepted; a real file anywhere on the machine is allowed (no containment rule).
+    The messages are the desktop's, so the user reads the same reason from both.
+
+    Not closed: FFmpeg opens the file by its path after this check, so a file swapped in that last window is read. It
+    is the user's own folder (the same user could change the file itself), outside the threat model. ``_file`` keeps its
+    meaning for the other callers (transcripts, packages, the legacy compilation).
+    """
+    if type(value) is not str or not value or len(value) > 1024:
+        raise ProductError(f"{name} không hợp lệ")
+    path = Path(value)
+    kind = name[:1].upper() + name[1:]
+    parts = value.replace("\\", "/").split("/") if os.name == "nt" else value.split("/")
+    if "\x00" in value or not path.is_absolute() or any(part in (".", "..") for part in parts):
+        raise ProductError(f"Đường dẫn {name} không hợp lệ: {path.name}")
+    if path.suffix.casefold() not in suffixes:
+        raise ProductError(f"Không mở được {name}: {path.name}")
+    try:
+        info = os.lstat(path)
+    except (OSError, ValueError):
+        raise ProductError(f"Không tìm thấy {name}: {path.name}") from None
+    if _redirect(info) or not stat.S_ISREG(info.st_mode):
+        raise ProductError(f"{kind} phải là tệp thật trên máy, không phải lối tắt: {path.name}")
+    for folder in path.parents:
+        try:
+            linked = _redirect(os.lstat(folder))
+        except (OSError, ValueError):
+            linked = True  # a folder that cannot be read cannot be shown to be a plain one
+        if linked:
+            raise ProductError(f"{kind} nằm trong thư mục là lối tắt (symlink/junction), hãy chọn tệp ở vị trí thật: {path.name}")
+    return path
+
+
+def _visual(value: Any) -> Path:
+    """A photo or a clip; a clip is a "video nguồn", as in Tổng hợp."""
+    clip = type(value) is str and Path(value).suffix.casefold() in render.VIDEO_SUFFIXES
+    return _plain_file(value, render.IMAGE_SUFFIXES | render.VIDEO_SUFFIXES, "video nguồn" if clip else "ảnh")
+
+
 def load_spec(path: Path) -> Spec:
     try:
         data = path.read_bytes()
@@ -152,8 +213,8 @@ def load_spec(path: Path) -> Spec:
         price=_string(value.get("price"), "Giá", 60),
         voice_id=voice,
         variants=texts,
-        visuals=tuple(_file(item, render.IMAGE_SUFFIXES | render.VIDEO_SUFFIXES, "ảnh hoặc clip") for item in visuals),
-        music=None if music is None else _file(music, render.MUSIC_SUFFIXES, "nhạc nền"),
+        visuals=tuple(_visual(item) for item in visuals),
+        music=None if music is None else _plain_file(music, render.MUSIC_SUFFIXES, "nhạc nền"),
         music_volume=float(volume),
         background=None if value.get("background") is None else _file(value["background"], render.IMAGE_SUFFIXES, "ảnh nền"),
         template=template,
