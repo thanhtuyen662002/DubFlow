@@ -256,9 +256,8 @@ pub(crate) fn write_dubbing_options(output: &Path, level: Option<&str>) -> Resul
             if value["level"] == "dynamic" {
                 value["enable_climax_hook"] = Value::Bool(true);
             }
-            let temp = output.join(".mastering.json.tmp");
-            fs::write(&temp, serde_json::to_vec(&value).map_err(|error| fail(error.to_string()))?)
-                .and_then(|()| fs::rename(&temp, &path))
+            let bytes = serde_json::to_vec(&value).map_err(|error| fail(error.to_string()))?;
+            replace_with_unique_temp(output, &path, &bytes, temp_names(output))
                 .map_err(|error| fail(format!("Không ghi được mức tối ưu hậu kỳ: {error}")))
         }
         None => match fs::remove_file(&path) {
@@ -326,6 +325,46 @@ fn qc_view(dir: &Path) -> Result<Value, String> {
 #[tauri::command]
 pub fn dubbing_qc(output_path: String) -> Result<Value, String> {
     qc_view(&crate::review_dir(&output_path)?)
+}
+
+/// Temp names for one write in `dir`: `.mastering.json.<pid>-<n>-<nanos>.tmp`, unique per process and call. They are
+/// only candidates: the file is created exclusively, so a name someone else holds (a file, a hard link, a symlink or
+/// another writer's temp) is skipped, never opened.
+fn temp_names(dir: &Path) -> impl Iterator<Item = PathBuf> + '_ {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    (0..64).map(move |_| {
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |time| time.subsec_nanos());
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        dir.join(format!(".mastering.json.{}-{n}-{nanos}.tmp", std::process::id()))
+    })
+}
+
+/// Atomically replaces `target` with `bytes` (issue #715): the bytes go to a temp file this call creates exclusively
+/// (`create_new`: fails on any existing name, and never follows or truncates a symlink, hard link or reparse point
+/// planted there), then the temp is renamed over `target`. Only the temp created here is ever removed.
+fn replace_with_unique_temp(dir: &Path, target: &Path, bytes: &[u8], names: impl Iterator<Item = PathBuf>) -> std::io::Result<()> {
+    use std::io::Write;
+    for temp in names {
+        if temp.parent() != Some(dir) {
+            continue;
+        }
+        let mut file = match fs::OpenOptions::new().write(true).create_new(true).open(&temp) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        };
+        let written = file.write_all(bytes).and_then(|()| file.sync_all());
+        drop(file);
+        return match written.and_then(|()| fs::rename(&temp, target)) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                let _ = fs::remove_file(&temp);
+                Err(error)
+            }
+        };
+    }
+    Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "no free temp name"))
 }
 
 /// Records Giữ / Bỏ in the video's own plain `.dubflow-work\mastering` folder: nothing is created or written
@@ -481,6 +520,111 @@ mod tests {
         assert!(write_dubbing_options(&dir, Some("../x")).is_err());
         assert!(!dir.join(DUBBING_FILE).exists());
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A marker file outside the output folder: its bytes, SHA-256 and mtime, to prove a write never reached it.
+    fn marker(dir: &Path) -> (PathBuf, (Vec<u8>, String, std::time::SystemTime)) {
+        let path = dir.join("outside-marker.txt");
+        fs::write(&path, b"marker: must never change").unwrap();
+        (path.clone(), snapshot(&path))
+    }
+
+    fn snapshot(path: &Path) -> (Vec<u8>, String, std::time::SystemTime) {
+        use sha2::{Digest, Sha256};
+        let bytes = fs::read(path).unwrap();
+        let digest = format!("{:x}", Sha256::digest(&bytes));
+        (bytes, digest, fs::metadata(path).unwrap().modified().unwrap())
+    }
+
+    /// Links `link` to `target` with a symlink where the system allows one (Linux; Windows with Developer Mode);
+    /// false when it refuses. Hard links are made separately, since Windows needs no privilege for them.
+    fn try_symlink(target: &Path, link: &Path) -> bool {
+        #[cfg(unix)]
+        { std::os::unix::fs::symlink(target, link).is_ok() }
+        #[cfg(windows)]
+        { std::os::windows::fs::symlink_file(target, link).is_ok() }
+    }
+
+    fn scratch(name: &str) -> (PathBuf, PathBuf) {
+        let base = std::env::temp_dir().join(format!("dubflow-715-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let (out, outside) = (base.join("out"), base.join("outside"));
+        fs::create_dir_all(&out).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        (base, out)
+    }
+
+    #[test]
+    fn a_link_planted_at_the_old_predictable_temp_name_is_never_followed_or_truncated() {
+        let (base, out) = scratch("planted");
+        let (target, before) = marker(&base.join("outside"));
+        let old = out.join(".mastering.json.tmp");
+        fs::hard_link(&target, &old).unwrap();
+        let symlinked = try_symlink(&target, &out.join(".mastering.json.tmp2"));
+        write_dubbing_options(&out, Some("balanced")).unwrap();
+        assert_eq!(snapshot(&target), before, "the marker behind the planted hard link is untouched");
+        let written: Value = serde_json::from_slice(&fs::read(out.join(DUBBING_FILE)).unwrap()).unwrap();
+        assert_eq!(written, json!({"schema_version": 1, "level": "balanced"}));
+        assert_eq!(fs::read(&old).unwrap(), before.0, "the planted name still holds the marker's bytes");
+        let leftovers: Vec<_> = fs::read_dir(&out).unwrap().filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".tmp") && name != ".mastering.json.tmp").collect();
+        assert!(leftovers.is_empty(), "no temp of ours is left: {leftovers:?}");
+        if symlinked {
+            assert_eq!(snapshot(&target), before);
+        }
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn an_occupied_temp_name_is_skipped_and_its_holder_is_never_opened() {
+        let (base, out) = scratch("collide");
+        let (target, before) = marker(&base.join("outside"));
+        let first = out.join(".mastering.json.a.tmp");
+        let second = out.join(".mastering.json.b.tmp");
+        let third = out.join(".mastering.json.c.tmp");
+        fs::hard_link(&target, &first).unwrap(); // a hard link to an outside file
+        if !try_symlink(&target, &second) {
+            fs::write(&second, b"another writer's temp").unwrap(); // no symlink privilege: a plain occupant
+        }
+        let second_before = fs::read(&second).unwrap();
+        let path = out.join(DUBBING_FILE);
+        replace_with_unique_temp(&out, &path, b"{\"ok\":1}", [first.clone(), second.clone(), third.clone()].into_iter()).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"{\"ok\":1}");
+        assert_eq!(snapshot(&target), before, "marker bytes, SHA-256 and mtime are unchanged");
+        assert_eq!(fs::read(&second).unwrap(), second_before);
+        assert!(!third.exists(), "our temp was renamed into place");
+        // every candidate taken: the write fails safely, nothing is replaced
+        let err = replace_with_unique_temp(&out, &path, b"{\"ok\":2}", [first.clone(), second.clone()].into_iter()).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&path).unwrap(), b"{\"ok\":1}");
+        assert_eq!(snapshot(&target), before);
+        // a candidate outside the folder is never used
+        let elsewhere = base.join("outside").join("x.tmp");
+        assert!(replace_with_unique_temp(&out, &path, b"{}", [elsewhere.clone()].into_iter()).is_err());
+        assert!(!elsewhere.exists());
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn concurrent_writers_never_share_a_temp_and_leave_a_whole_file() {
+        let (base, out) = scratch("concurrent");
+        let handles: Vec<_> = (0..8).map(|k| {
+            let out = out.clone();
+            std::thread::spawn(move || {
+                for i in 0..25 {
+                    write_dubbing_options(&out, Some(if (k + i) % 2 == 0 { "light" } else { "dynamic" })).unwrap();
+                }
+            })
+        }).collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        let written: Value = serde_json::from_slice(&fs::read(out.join(DUBBING_FILE)).unwrap()).unwrap();
+        assert!(written["level"] == "light" || written["level"] == "dynamic");
+        let names: Vec<_> = fs::read_dir(&out).unwrap().filter_map(Result::ok).map(|e| e.file_name()).collect();
+        assert_eq!(names, vec![std::ffi::OsString::from(DUBBING_FILE)], "only the options file remains");
+        fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]

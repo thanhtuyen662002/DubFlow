@@ -853,7 +853,7 @@ def _output_loudness(config: WorkerConfig, video: Path) -> dict[str, Any] | None
     """What the viewer hears: the final MP4's audio after AAC, measured once for QC (mastering on only)."""
     try:
         measured = mastering_measure.loudness(config.ffmpeg_path, video)
-    except mastering_measure.MeasureError:
+    except (mastering_measure.MeasureError, ValueError):  # ValueError: a malformed loudnorm block (issue #715)
         return None
     return measured.to_dict() if measured else None
 
@@ -2475,12 +2475,15 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
             # the dubbed mix is not in the output: what mastering said about it no longer holds
             notes = [note for note in notes if not note.startswith(("Âm lượng:", "Phụ đề:"))]
             notes.append("Đã quay về âm thanh gốc (B1): không chuẩn hóa âm lượng bản lồng tiếng, phụ đề giữ thời gian nguồn.")
+        # "loudness": a normalisation filter was applied to the dubbed mix in the output (issue #715 keeps that meaning);
+        # "output_loudness": what the viewer hears, the final MP4 after AAC, measured whenever mastering is on and the
+        # output has sound: no filter needed, B2 or the B1 fallback alike. A failed measurement is None, never fatal.
         loudness_applied = bool(mastering_document["audio_filter"]) and b2_audio is not None
         qc["mastering"] = {"level": mastering_options.level, "recipe": dubbing_master.RECIPE, "notes": notes,
                            "loudness": loudness_applied,
                            "video_filters": mastering_document["video_filters"], "climax": mastering_document["climax"],
                            "measured": mastering_document["measured"],
-                           "output_loudness": _output_loudness(config, final_path) if loudness_applied else None}
+                           "output_loudness": _output_loudness(config, final_path) if output_probe.has_audio else None}
     if speaker_summary is not None:
         qc["speakers"] = speaker_summary
     qc["background"] = background_summary

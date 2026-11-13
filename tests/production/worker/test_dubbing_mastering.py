@@ -259,7 +259,9 @@ class VoiceTimedFallbackTests(unittest.TestCase):
             def validate(source_probe, candidate):
                 if failures:
                     raise failures.pop()
-            with patch.object(worker.mastering_measure, "loudness", return_value=None), \
+            final = worker.mastering_measure.Loudness(-20.5, -3.1, 4.2, -30.6, 0.0)
+            with patch.object(worker.mastering_measure, "loudness",
+                              side_effect=lambda ffmpeg, path: final if Path(path).name == "final_vi.mp4" else None), \
                     patch.object(worker.mastering_measure, "grey_frames", return_value=[]), \
                     patch.object(worker, "_validate_rendered_audio", side_effect=validate), \
                     patch.object(worker, "_separate_background_stage", return_value=(None, {"mode": "original"})):
@@ -277,8 +279,65 @@ class VoiceTimedFallbackTests(unittest.TestCase):
             notes = qc["mastering"]["notes"]
             self.assertFalse(any(note.startswith(("Âm lượng:", "Phụ đề:")) for note in notes), notes)
             self.assertTrue(any("B1" in note for note in notes))
-            self.assertFalse(qc["mastering"]["loudness"])
-            self.assertIsNone(qc["mastering"]["output_loudness"])  # nothing normalised: nothing measured after AAC
+            self.assertFalse(qc["mastering"]["loudness"])  # nothing normalised: the dubbed mix is not in the output
+            # issue #715: deliberately changed from "None". The B1 fallback's actual final MP4 is still measured after AAC.
+            self.assertEqual(qc["mastering"]["output_loudness"],
+                             {"integrated": -20.5, "true_peak": -3.1, "lra": 4.2, "threshold": -30.6, "offset": 0.0})
+
+
+class PostAacMeasurementTests(unittest.TestCase):
+    """Issue #715: with mastering on, the final MP4 is measured after AAC even when no normalisation filter was
+    needed; "loudness" still means a filter was applied; a failed measurement is None and never fails the job."""
+
+    def run_job(self, level, measure):
+        from unittest.mock import Mock
+        from tests.production.worker.test_separation import SeparationWorkerTests
+
+        helper = SeparationWorkerTests()
+        calls = []
+
+        def loudness(ffmpeg, path):
+            calls.append(Path(path).name)
+            return measure(Path(path))
+        with helper.fixture() as (root, config, probe, media), helper.pipeline(probe, media):
+            config = dataclass_replace(config, separate_background=False)
+            config.output_dir.mkdir(parents=True, exist_ok=True)
+            if level is not None:
+                (config.output_dir / worker.MASTERING_FILE).write_text(json.dumps({"schema_version": 1, "level": level}),
+                                                                       encoding="utf-8")
+            with patch.object(worker.mastering_measure, "loudness", side_effect=loudness), \
+                    patch.object(worker.mastering_measure, "grey_frames", return_value=[]), \
+                    patch.object(worker, "_separate_background_stage", return_value=(None, {"mode": "original"})):
+                result = worker.run_local_file(config, Mock())
+            work_plans = list(Path(root).rglob("dubbing-plan.json"))
+            plan = json.loads(work_plans[0].read_text(encoding="utf-8")) if work_plans else None
+            return json.loads(Path(result["qc"]).read_text(encoding="utf-8")), calls, plan
+
+    def test_b2_with_no_filter_needed_is_still_measured_after_aac(self):
+        after = worker.mastering_measure.Loudness(-16.4, -2.2, 5.0, -26.5, 0.1)
+        qc, calls, plan = self.run_job("balanced", lambda path: after if path.name == "final_vi.mp4" else None)
+        self.assertIsNone(plan["audio_filter"], "the mix needed no filter")
+        self.assertEqual(qc["audio"]["mode"], "dubbed")  # B2: the dubbed mix is in the output
+        self.assertFalse(qc["mastering"]["loudness"], "no normalisation was applied")
+        self.assertEqual(qc["mastering"]["output_loudness"],
+                         {"integrated": -16.4, "true_peak": -2.2, "lra": 5.0, "threshold": -26.5, "offset": 0.1})
+        self.assertEqual(calls.count("final_vi.mp4"), 1)
+
+    def test_a_failed_post_aac_measurement_is_none_and_the_job_passes(self):
+        def failing(path):
+            if path.name == "final_vi.mp4":
+                raise worker.mastering_measure.MeasureError("ebur128 failed")
+            return None
+        qc, calls, _ = self.run_job("light", failing)
+        self.assertEqual(qc["status"], "passed")
+        self.assertIsNone(qc["mastering"]["output_loudness"])
+        self.assertIn("final_vi.mp4", calls)
+
+    def test_mastering_off_measures_nothing_and_has_no_card(self):
+        qc, calls, plan = self.run_job(None, lambda path: None)
+        self.assertNotIn("mastering", qc)
+        self.assertEqual(calls, [])
+        self.assertIsNone(plan)
 
 
 class OutputLoudnessTests(unittest.TestCase):
@@ -295,6 +354,16 @@ class OutputLoudnessTests(unittest.TestCase):
         with patch.object(worker.mastering_measure, "loudness", side_effect=worker.mastering_measure.MeasureError("x")):
             self.assertIsNone(worker._output_loudness(config, Path("final_vi.mp4")))
         with patch.object(worker.mastering_measure, "loudness", return_value=None):
+            self.assertIsNone(worker._output_loudness(config, Path("final_vi.mp4")))
+
+    def test_a_malformed_loudnorm_block_is_none_and_never_fails_the_export(self):
+        """Issue #715: the post-AAC measurement now runs on every mastered export; a malformed print must not fail it."""
+        from types import SimpleNamespace
+        config = SimpleNamespace(ffmpeg_path=Path("ffmpeg"))
+        real = worker.mastering_measure.loudness
+        broken = b'[Parsed_loudnorm_0 @ 0] \n{"input_i" : "-16.1", "input_tp" : -2.0,, }\n'
+        with patch.object(worker.mastering_measure, "loudness",
+                          side_effect=lambda ffmpeg, video: real(ffmpeg, video, capture=lambda argv: (b"", broken))):
             self.assertIsNone(worker._output_loudness(config, Path("final_vi.mp4")))
 
 
