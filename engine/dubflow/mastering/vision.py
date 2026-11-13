@@ -171,7 +171,10 @@ class Describer:
         self.cache.mkdir(parents=True, exist_ok=True)
         path = self.cache / f"{key[:32]}.json"
         partial = path.with_name(path.name + ".partial")
-        partial.write_text(json.dumps({"key": key, **seen.to_dict()}, ensure_ascii=False), encoding="utf-8")
+        # what produced the answer, next to the key it is found by (#802): the prompt, the provider, the model asked and
+        # the model that answered. A later run with the same key reuses it as it is; the record says what it was.
+        made = {"prompt": PROMPT_VERSION, "provider": self.provider, "model": self.model, "answered_by": self.used_model}
+        partial.write_text(json.dumps({"key": key, **seen.to_dict(), "made_by": made}, ensure_ascii=False), encoding="utf-8")
         os.replace(partial, path)
 
     def describe(self, frames: Sequence[tuple[str, Path]], cancelled: Callable[[], bool] = lambda: False) -> dict[str, Seen]:
