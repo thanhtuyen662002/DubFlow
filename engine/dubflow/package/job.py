@@ -12,7 +12,7 @@ from typing import Any, Callable
 import unicodedata
 
 from engine.dubflow.product import render as narration_render, script
-from engine.dubflow.product.job import Cancelled, ProductError, Speaker, _atomic_text, _file, _string, run_ffmpeg
+from engine.dubflow.product.job import Cancelled, ProductError, Speaker, _atomic_text, _file, _picked_music, _string, run_ffmpeg
 from . import render
 
 PackageError = ProductError
@@ -56,7 +56,7 @@ def load_spec(path: Path) -> Spec:
     for number, low, high, label in ((speed, 1.0, 1.3, "Tốc độ đọc"), (volume, 0, 1, "Âm lượng nhạc")):
         if isinstance(number, bool) or not isinstance(number, (int, float)) or not low <= number <= high:
             raise PackageError(f"{label} không hợp lệ")
-    music = None if value.get("music") is None else _file(value["music"], narration_render.MUSIC_SUFFIXES, "nhạc nền")
+    music = None if value.get("music") is None else _picked_music(value["music"])
     if not intro and not outro and music is None:
         raise PackageError("Hãy nhập mở đầu, kết thúc hoặc chọn nhạc")
     background = value.get("background", "keep")

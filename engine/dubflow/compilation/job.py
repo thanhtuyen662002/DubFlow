@@ -13,7 +13,7 @@ import unicodedata
 from engine.dubflow.package.job import probe_video  # shared ffprobe adapter
 from engine.dubflow.package.render import Video, seconds, start
 from engine.dubflow.product import render as narration_render, script
-from engine.dubflow.product.job import Cancelled, ProductError, Speaker, Status, _atomic_text, _file, run_ffmpeg
+from engine.dubflow.product.job import Cancelled, ProductError, Speaker, Status, _atomic_text, _file, _picked_music, run_ffmpeg
 from . import layout, render
 
 CompilationError = ProductError
@@ -107,7 +107,7 @@ def load_spec(path: Path) -> Spec | Any:
             raise CompilationError(f"{label}: {error.message}") from error
     return Spec(text(value["title"], "Tiêu đề", 120, required=True), value["layout"],
                 text(value["voice_id"], "Giọng đọc", 96, required=True), float(value["speed"]),
-                None if value["music"] is None else _file(value["music"], narration_render.MUSIC_SUFFIXES, "nhạc nền"),
+                None if value["music"] is None else _picked_music(value["music"]),
                 float(value["music_volume"]), text(value["intro"], "Mở đầu", 800, spoken=True),
                 text(value["outro"], "Kết thúc", 800, spoken=True), tuple(items))
 
