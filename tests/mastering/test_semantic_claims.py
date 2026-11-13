@@ -243,6 +243,21 @@ class LeadFindingsTests(unittest.TestCase):
         self.assertEqual(said.check(stated, "battle scene, soldiers, snow; flag of Russia").verified, [])
 
 
+class NoteWordingTests(unittest.TestCase):  # rc16 W1: the note read "(giá lịch phim sử trị)"
+    def test_a_cards_words_are_quoted_in_the_sentences_order(self):
+        words = said.of(CARD).written
+        self.assertEqual(" ".join(words), "phim giá trị lịch sử")
+        pool, found = card_shots(with_card=False)
+        _, _, decision = plan(CARD, pool, found, length=3000)
+        self.assertTrue(any("(phim giá trị lịch sử)" in n for n in decision.notes), decision.notes)
+
+    def test_the_order_does_not_change_what_verifies(self):
+        claims = said.of(CARD)
+        flipped = said.Claims(claims.quantities, claims.phrases, tuple(reversed(claims.written)), claims.display)
+        text = "Dòng chữ: bộ phim này có giá trị lịch sử"
+        self.assertEqual(said.check(claims, text).verified != [], said.check(flipped, text).verified != [])
+
+
 class TitleTests(unittest.TestCase):
     """A1 i1.u2."""
 

@@ -252,7 +252,7 @@ def of(text: str) -> Claims:
     match = _WRITTEN.search(text)
     if match:
         clause = match.group(1)
-        written = sorted({w for w in _content_words(clause)})
+        written = list(dict.fromkeys(_content_words(clause)))  # in the sentence's order: the note quotes them
     amounts = tuple(q for q in quantities(text) if q.unit is not None or q.value >= DISTINCT_FROM)
     return Claims(amounts, tuple(dict.fromkeys(phrases)), tuple(written), display or bool(phrases or written))
 
