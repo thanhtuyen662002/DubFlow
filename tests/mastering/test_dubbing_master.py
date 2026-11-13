@@ -54,6 +54,49 @@ class DecisionTests(unittest.TestCase):
         wide = self.plan("light", mix=Loudness(-24, -10, 14.2, -34, 0.1)).audio_filter
         self.assertIn(":LRA=15:", wide)
 
+    def test_the_recipe_and_the_post_aac_trim_are_cumulative_bounded_and_never_boost(self):
+        """Issue #821: the trim after an AAC trial is counted from the PCM, cumulatively, and only ever lowers."""
+        self.assertEqual(dubbing.RECIPE, "dubbing-master-v4")  # v3 plans (no AAC trial) are planned again
+        self.assertEqual((dubbing.AAC_TRIM_MARGIN_DB, dubbing.AAC_TRIM_TRIES), (0.3, 3))
+        self.assertEqual(dubbing.aac_trim(-1.31), 0.49)  # rc17: (−1.31 + 1.5) + 0.3
+        self.assertEqual(dubbing.aac_trim(-1.40, 0.49), 0.89)  # cumulative: measured again after the first trim
+        self.assertEqual(dubbing.aac_trim(-1.5), 0.0)  # at the ceiling is within it
+        self.assertEqual(dubbing.aac_trim(-2.3, 0.49), 0.49)  # under it: nothing more, never a boost back
+        self.assertEqual(dubbing.aac_trim(None, 0.49), 0.49)  # silence: nothing to trim
+        trim = 0.0
+        for peak in (-1.0, -1.2, -1.1, -1.4):  # never smaller than the last one, whatever was measured
+            nxt = dubbing.aac_trim(peak, trim)
+            self.assertGreater(nxt, trim)
+            trim = nxt
+        for invalid in (-0.1, float("nan")):
+            with self.assertRaises(ValueError):
+                dubbing.aac_trim(-1.0, invalid)
+            with self.assertRaises(ValueError):
+                dubbing.with_trim(None, invalid)
+        self.assertEqual(dubbing.with_trim(None, 0.6), "volume=-0.60dB")
+        self.assertEqual(dubbing.with_trim("loudnorm=I=-17.2:linear=true,aresample=48000", 0.49),
+                         "loudnorm=I=-17.2:linear=true,aresample=48000,volume=-0.49dB")
+        self.assertEqual(dubbing.with_trim("loudnorm=x", 0.0), "loudnorm=x")
+        self.assertIsNone(dubbing.with_trim(None, 0.0))
+
+    def test_the_aac_note_has_its_own_prefix(self):
+        note = dubbing.aac_note({"first_true_peak": -1.31, "true_peak": -2.29, "trim_db": 0.49, "tries": 2})
+        self.assertEqual(note, "Âm lượng sau AAC: giảm thêm 0,5 dB để đỉnh ≤ −1,5 dBTP.")
+        self.assertFalse(note.startswith("Âm lượng:"))  # the planner's note (card and B1 fallback look it up)
+        failed = dubbing.aac_note({"first_true_peak": -1.31, "true_peak": -1.40, "trim_db": 0.49, "tries": 4})
+        self.assertIn("chưa đạt trần −1,5 dBTP", failed)
+        self.assertEqual(failed, "Âm lượng sau AAC: đã giảm thêm 0,5 dB qua 4 lần thử mã hóa nhưng đỉnh vẫn −1,4 dBTP, "
+                                 "chưa đạt trần −1,5 dBTP.")
+        # every trim tried and discarded (the untrimmed mix measured lowest): never "giảm thêm 0,0 dB"
+        kept = dubbing.aac_note({"first_true_peak": -1.31, "true_peak": -1.31, "trim_db": 0.0, "tries": 4})
+        self.assertEqual(kept, "Âm lượng sau AAC: đã thử giảm 3 lần nhưng không lần nào hạ được đỉnh nên giữ bản chưa "
+                               "giảm; đỉnh vẫn −1,3 dBTP, chưa đạt trần −1,5 dBTP.")
+        self.assertEqual(dubbing.aac_note({"first_true_peak": -1.31, "true_peak": -1.31, "trim_db": 0.0, "tries": 1}),
+                         "Âm lượng sau AAC: đỉnh −1,3 dBTP, chưa đạt trần −1,5 dBTP.")
+        self.assertIsNone(dubbing.aac_note({"first_true_peak": -2.6, "true_peak": -2.6, "trim_db": 0.0, "tries": 1}))
+        self.assertIsNone(self.plan("light").aac_trial)
+        self.assertIn("aac_trial", self.plan("light").to_dict())
+
     def test_colour_is_a_bounded_level_stretch(self):
         master = self.plan("light", frames=WASHED)
         (colour,) = master.video_filters
