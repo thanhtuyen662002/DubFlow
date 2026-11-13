@@ -1,4 +1,4 @@
-FORMAL Stage 1 acceptance on candidate 1.1.96-rc18 is finished. Every row marked UI ran on the rc18 DubFlow.exe, driven by CDP automation; this is not human review. Rows marked IPC were security probes sent from the page.
+Stage 1 evidence record for candidate 1.1.96-rc18: execution complete; overall Stage 1 acceptance is pending the owner's decision 7 (see RELEASE_SAFETY_CLOSURE_REPORT.md §15). Every row marked UI ran on the rc18 DubFlow.exe, driven by CDP automation; this is not human review. Rows marked IPC were security probes sent from the page.
 
 ## Environment and artifact
 
