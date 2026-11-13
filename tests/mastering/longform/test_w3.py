@@ -30,7 +30,7 @@ TEXTS = {  # shot number -> what the vision said; shots 1 and 6 were never looke
 }
 
 
-def make_run(root: Path) -> Path:
+def make_run(root: Path, texts: dict[int, str] | None = None, spec: dict | None = None) -> Path:
     """A one-part raw run as ``run_program`` saves it: editorial, plan and analysis of part i1."""
     length = 60_000
     found = scene.Analysis(length, tuple(range(6000, length, 6000)), tuple(scene.Shot(a, a + 6000, 40) for a in range(0, length, 6000)),
@@ -41,7 +41,7 @@ def make_run(root: Path) -> Path:
     pool = [shots.Candidate(f"i1-s1c{n + 1}", "i1-s1", n * 6000 + 240, n * 6000 + 5760, n, 30, quality, rng.getrandbits(64))
             for n in range(length // 6000)]
     evidence = planner.evidence_for([source], {"i1-s1": pool}, {})
-    for number, text in TEXTS.items():
+    for number, text in (TEXTS if texts is None else texts).items():
         evidence[f"i1-s1c{number}"].add(ev.Item("vision", 850, text, ("explanation",), "AI test"))
     _, narration_ms = script.captions(SENTENCES)
     made = planner.plan_part("i1", "item", SENTENCES, narration_ms, m.Options("balanced", "entertainment"),
@@ -53,13 +53,15 @@ def make_run(root: Path) -> Path:
     (folder / "editorial-i1.json").write_text(json.dumps(made.log, ensure_ascii=False), encoding="utf-8")
     (folder / "plan-i1.json").write_text(json.dumps(made.plan.to_dict(), ensure_ascii=False), encoding="utf-8")
     (folder / f"analysis-{'a' * 8}.json").write_text(json.dumps(found.to_dict()), encoding="utf-8")
+    if spec is not None:
+        (root / "run-test" / ".dubflow-work" / "spec.json").write_text(json.dumps(spec), encoding="utf-8")
     return root / "run-test"
 
 
-def make_truth(root: Path) -> tuple[Path, Path]:
+def make_truth(root: Path, extra: list[dict] | None = None, third: list | None = None) -> tuple[Path, Path]:
     truth = {"units": [{"text": SENTENCES[0][0], "ranges": [[6.5, 11.5]], "kind": "footage"},
                        {"text": SENTENCES[1][0], "ranges": [[18.5, 23.5]], "kind": "footage"},
-                       {"text": SENTENCES[2][0], "ranges": [[30.5, 35.5]], "kind": "footage"}]}
+                       {"text": SENTENCES[2][0], "ranges": third or [[30.5, 35.5]], "kind": "footage"}] + (extra or [])}
     path = root / "gt.json"
     path.write_text(json.dumps(truth, ensure_ascii=False), encoding="utf-8")
     lock = root / "gt.lock"
@@ -179,6 +181,73 @@ class ReviewFindingsTests(unittest.TestCase):  # an independent review of the to
                 w3.main(["variability", str(folder), str(folder), "--json", str(root / "v.json")])
             self.assertTrue((root / "again" / "plan-i1.json").is_file())
             self.assertEqual(json.loads((root / "v.json").read_text(encoding="utf-8"))["looked_in_all"], len(TEXTS))
+
+
+class LeadFindingsTests(unittest.TestCase):  # the Lead's review of the tool (#810)
+    ABSENT = {"text": "Một câu không có trong bản dựng.", "ranges": [[40.5, 45.5]], "kind": "footage"}
+
+    def test_a_ground_truth_sentence_the_run_lacks_is_a_miss_in_the_denominator(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run = w3.load_run(make_run(root))
+            gt = w3.load_gt(*make_truth(root, extra=[self.ABSENT]))
+            scored = w3.score(gt, run)
+            self.assertEqual(scored["recall_at_5"][1], 4)
+            self.assertEqual(scored["chosen_hit"][1], 4)
+            self.assertEqual(scored["unmatched_footage"], [1, 4])
+            self.assertEqual(scored["units_scored"], 3)
+            self.assertEqual(w3.hint(gt, run, 6.0)["units"], 4)
+
+    def test_attribution_counts_the_unmatched_sentence(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run = w3.load_run(make_run(root))
+            gt = w3.load_gt(*make_truth(root, extra=[self.ABSENT]))
+            found = w3.attribute(gt, run)
+            self.assertEqual(found["footage_units"], 4)
+            self.assertEqual(found["stages"].get("UNMATCHED"), 1)
+            self.assertEqual(found["unmatched"], 1)
+            self.assertEqual(sum(found["stages"].values()), 4)
+
+    def test_the_source_stage_reads_the_recorded_trim(self):
+        # the last shot ends 240 ms before the source does: a truth range there is inside the kept footage
+        edge = [[59.8, 59.95]]
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            kept_whole = {"items": [{"item_id": "i1", "sources": [{"start_ms": 0, "end_ms": 60000}]}]}
+            run = w3.load_run(make_run(root, spec=kept_whole))
+            gt = w3.load_gt(*make_truth(root, third=edge))
+            row = {r["unit"]: r for r in w3.attribute(gt, run)["rows"]}["i1.u3"]
+            self.assertEqual((row["stage"], row["trim_basis"]), ("R2_DISCOVERY", "spec"))
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first_half = {"items": [{"item_id": "i1", "sources": [{"start_ms": 0, "end_ms": 30000}]}]}
+            run = w3.load_run(make_run(root, spec=first_half))
+            gt = w3.load_gt(*make_truth(root, third=[[40.5, 45.5]]))
+            self.assertEqual({r["unit"]: r["stage"] for r in w3.attribute(gt, run)["rows"]}["i1.u3"], "R1_SOURCE")
+
+    def test_swap_plans_with_another_runs_answers(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run = w3.load_run(make_run(root))
+            # another cold run said something else about the "1500 MILES" map and also looked at the tank shot
+            other = {**TEXTS, 2: "Bầu trời có mây", 6: "Một chiếc xe tăng lăn bánh qua cánh đồng"}
+            donor = w3.load_run(make_run(root / "donor", texts=other))
+            gt = w3.load_gt(*make_truth(root))
+            before = json.dumps(run.logs, sort_keys=True)
+            again = w3.swap(run, donor)
+            self.assertEqual(json.dumps(run.logs, sort_keys=True), before)  # the run itself is untouched
+            used = {c["id"]: [i["text"] for i in c["evidence"]["items"] if i["origin"] == "vision"]
+                    for c in again.logs["i1"]["candidates"] if c.get("evidence")}
+            self.assertEqual(used["i1-s1c2"], ["Bầu trời có mây"])
+            self.assertIn("i1-s1c6", again.logs["i1"]["units"][2]["chosen"])
+            self.assertNotIn("i1-s1c2", again.logs["i1"]["units"][0]["chosen"])
+            # the swap's evidence decides: the map is lost, the tank is found (the same total, other sentences)
+            self.assertEqual([r["chosen_hit"] for r in w3.score(gt, run)["rows"]], [True, True, False])
+            self.assertEqual([r["chosen_hit"] for r in w3.score(gt, again)["rows"]], [False, True, True])
+            variety = w3.variability([run, donor])
+            self.assertEqual(variety["looked_in_all"], len(TEXTS))
+            self.assertEqual(variety["identical_text"], len(TEXTS) - 1)
 
 
 if __name__ == "__main__":

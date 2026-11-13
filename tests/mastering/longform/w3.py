@@ -163,7 +163,10 @@ def score(gt: Mapping[str, Any], run: Run) -> dict[str, Any]:
     for g in gt["units"]:
         hit = found.get(norm(g["text"]))
         if hit is None:
+            # a ground-truth sentence the run does not have: a miss in every denominator, never left out of it
             unmatched.append(g["text"][:80])
+            rows.append({"unit": None, "text": g["text"][:80], "kind": g["kind"], "evidence": None, "state": None,
+                         "unmatched": True, "chosen_hit": False, "hit_at_1": False, "hit_at_3": False, "hit_at_5": False})
             continue
         part, u = hit
         cands = candidates_of(run.logs[part])
@@ -184,13 +187,14 @@ def score(gt: Mapping[str, Any], run: Run) -> dict[str, Any]:
         return [sum(r[key] for r in footage), len(footage)]
 
     return {
-        "run": run.name, "ground_truth_sha256": gt.get("sha256"), "units_scored": len(rows), "unmatched": unmatched,
+        "run": run.name, "ground_truth_sha256": gt.get("sha256"), "units_scored": len(rows) - len(unmatched),
+        "unmatched": unmatched, "unmatched_footage": [sum(r.get("unmatched", False) for r in footage), len(footage)],
         "recall_at_1": share("hit_at_1"), "recall_at_3": share("hit_at_3"), "recall_at_5": share("hit_at_5"),
         "chosen_hit": share("chosen_hit"),
         "false_source_insufficient": [r["unit"] for r in footage if r["evidence"] == "SOURCE_INSUFFICIENT"],
         "serious_silent_misses": [r["unit"] for r in footage if r["state"] == "READY" and not r["chosen_hit"]]
                                  + [r["unit"] for r in missing if r["state"] == "READY"],
-        "missing_flagged": [sum(r["state"] != "READY" for r in missing), len(missing)],
+        "missing_flagged": [sum(r["state"] not in ("READY", None) for r in missing), len(missing)],
         # READY precision: READY units whose chosen shots hit / READY units with footage
         "ready_precision": [sum(r["chosen_hit"] for r in ready if r["kind"] != "missing"),
                             sum(1 for r in ready if r["kind"] != "missing")],
@@ -198,7 +202,7 @@ def score(gt: Mapping[str, Any], run: Run) -> dict[str, Any]:
         # a flag on a unit whose chosen shots do hit (the panel asks for a look that was not needed)
         "flagged_but_right": [sum(r["state"] != "READY" and r["chosen_hit"] for r in footage), len(footage)],
         "flagged_and_wrong": [sum(r["state"] != "READY" and not r["chosen_hit"] for r in footage), len(footage)],
-        "states": {s: sum(r["state"] == s for r in rows) for s in sorted({str(r["state"]) for r in rows})},
+        "states": {s: sum(str(r["state"]) == s for r in rows) for s in sorted({str(r["state"]) for r in rows})},
         "rows": rows,
     }
 
@@ -224,9 +228,25 @@ def spoken_of(units: Sequence[Mapping[str, Any]]) -> tuple[list[tuple[str, int]]
 
 
 def _trim_of(log: Mapping[str, Any], source_id: str) -> tuple[int, int] | None:
+    """The extent of a source's candidates: only a fallback for a run folder without its spec."""
     starts = [c["start_ms"] for c in log.get("candidates") or () if c["source_id"] == source_id]
     ends = [c["end_ms"] for c in log.get("candidates") or () if c["source_id"] == source_id]
     return (min(starts), max(ends)) if starts else None
+
+
+def trims_of(run: Run, part: str, source_ids: Iterable[str]) -> tuple[list[tuple[float, float]], str]:
+    """The source ranges the user kept for ``part``, as the run's spec recorded them ("spec"; a source the spec does
+    not trim is kept whole), or the candidates' extents when the run folder has no spec ("candidates")."""
+    items = run.spec.get("items") or []
+    known = any(str(item.get("id") or item.get("item_id") or f"i{n}") == part for n, item in enumerate(items, 1))
+    if not known:
+        return [t for t in (_trim_of(run.logs[part], s) for s in sorted(source_ids)) if t], "candidates"
+    given = spec_part(run.spec, part)["trims"]
+    out = []
+    for sid in sorted(source_ids):
+        start, end = given.get(sid, (0, None))
+        out.append((float(start), float(end) if end is not None else float("inf")))
+    return out, "spec"
 
 
 def spec_part(spec: Mapping[str, Any], part: str) -> dict[str, Any]:
@@ -362,14 +382,14 @@ def attribute(gt: Mapping[str, Any], run: Run) -> dict[str, Any]:
             evidence = {c["id"]: evidence_from(c["evidence"]) for c in pool if c.get("evidence")}
             cand_objs = [Candidate.from_dict(c) for c in pool]
             scorer = align.Scorer([c for c in cand_objs if c.quality.usable] or cand_objs, evidence)
-            trims = [t for t in (_trim_of(run.logs[part], s) for s in sorted({c["source_id"] for c in pool})) if t]
+            trims = trims_of(run, part, {c["source_id"] for c in pool})
             built[part] = (pool, scorer, trims)
         return built[part]
 
     for g in gt["units"]:
         match = found.get(norm(g["text"]))
         if match is None:
-            rows.append({"text": g["text"][:80], "stage": "UNMATCHED"})
+            rows.append({"unit": None, "kind": g["kind"], "text": g["text"][:80], "stage": "UNMATCHED"})
             continue
         part, u = match
         log = run.logs[part]
@@ -385,7 +405,7 @@ def attribute(gt: Mapping[str, Any], run: Run) -> dict[str, Any]:
             row["stage"] = "MISSING_OK" if review.get("state") != "READY" else "R7_MISSING_READY"
             rows.append(row)
             continue
-        pool, scorer, trims = of_part(part)
+        pool, scorer, (trims, row["trim_basis"]) = of_part(part)
         row["sources"] = len({c["source_id"] for c in pool})
         hit_ids = [c["id"] for c in pool if hits(c, ranges)]
         row["hit_ids"] = hit_ids
@@ -444,7 +464,7 @@ def attribute(gt: Mapping[str, Any], run: Run) -> dict[str, Any]:
         else:
             row["r7"] = "READY_HIT"
         rows.append(row)
-    footage = [r for r in rows if r.get("kind") == "footage" or (r.get("kind") not in ("missing", None))]
+    footage = [r for r in rows if r.get("kind") != "missing"]  # unmatched footage stays in, as its own stage
     stages: dict[str, int] = {}
     for r in footage:
         stages[r["stage"]] = stages.get(r["stage"], 0) + 1
@@ -453,7 +473,8 @@ def attribute(gt: Mapping[str, Any], run: Run) -> dict[str, Any]:
         if "r7" in r:
             r7[r["r7"]] = r7.get(r["r7"], 0) + 1
     return {"run": run.name, "ground_truth_sha256": gt.get("sha256"), "footage_units": len(footage), "stages": stages,
-            "review": r7, "multi_source_parts": sorted({r["unit"].split(".")[0] for r in rows if r.get("sources", 1) > 1}),
+            "review": r7, "unmatched": sum(r["stage"] == "UNMATCHED" for r in rows),
+            "multi_source_parts": sorted({r["unit"].split(".")[0] for r in rows if r.get("sources", 1) > 1}),
             "rows": rows}
 
 
@@ -578,14 +599,18 @@ def hint(gt: Mapping[str, Any], run: Run, window_s: float) -> dict[str, Any]:
     rows = []
     scorers: dict[str, tuple[Any, dict[str, Candidate]]] = {}
     for g in gt["units"]:
+        if not g.get("ranges"):
+            continue
         match = found.get(norm(g["text"]))
-        if match is None or not g.get("ranges"):
+        if match is None:  # a sentence the run does not have stays in the denominator as a miss
+            rows.append({"unit": None, "text": g["text"][:80], "shots_in_window": 0, "rank": None, "unmatched": True})
             continue
         part, u = match
         pool = run.logs[part].get("candidates") or []
         mid = (g["ranges"][0][0] + g["ranges"][0][1]) / 2 * 1000
         inside = [c for c in pool if overlap(c["start_ms"], c["end_ms"], mid - window_s * 1000, mid + window_s * 1000) > 0]
         if not inside:
+            rows.append({"unit": u["unit_id"], "shots_in_window": 0, "rank": None})
             continue
         if part not in scorers:
             evidence = {c["id"]: evidence_from(c["evidence"]) for c in pool if c.get("evidence")}
@@ -597,7 +622,7 @@ def hint(gt: Mapping[str, Any], run: Run, window_s: float) -> dict[str, Any]:
         first_hit = next((k + 1 for k, c in enumerate(ranked) if hits(c, g["ranges"])), None)
         rows.append({"unit": u["unit_id"], "shots_in_window": len(inside), "rank": first_hit})
     n = len(rows)
-    return {"run": run.name, "window_s": window_s, "units": n,
+    return {"run": run.name, "window_s": window_s, "units": n, "unmatched": sum(r.get("unmatched", False) for r in rows),
             "hit_at_1": [sum(1 for r in rows if r["rank"] == 1), n], "hit_at_3": [sum(1 for r in rows if r["rank"] and r["rank"] <= 3), n],
             "mean_shots_in_window": round(sum(r["shots_in_window"] for r in rows) / max(1, n), 1), "rows": rows}
 
