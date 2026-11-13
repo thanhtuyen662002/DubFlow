@@ -47,7 +47,7 @@ The decision log `editorial-<n>.json` carries, per unit, the planner's own
 written when every usable shot has content evidence and none matches;
 otherwise a missing match is `MATCH_NOT_FOUND`.
 
-The user's decisions live apart in `review-<n>.json` (`schema_version: 2`; 1 still reads,
+The user's decisions live apart in `review-<n>.json` (`schema_version: 3`; 1 and 2 still read,
 `kind: editorial_review`): per unit `approved` (the chosen shot ids the user
 saw), `pin`, `exclude` (shot ids from the log) and `invalidated` (why a
 decision no longer holds), plus `acknowledged` warning ids,
@@ -73,3 +73,21 @@ plan, and `READY` is not `USER_APPROVED`. The panel's view adds per unit
 `priority` (`critical` | `review` | `optional` | null when settled) with
 `queue_reasons`, and `queue` (most serious first), `queue_calibrated: false`,
 `position` and `shots` (every usable shot).
+
+Version 3 (#805, whole-shot exclusion) adds, per unit, `ranges`: for each
+excluded id, the footage it named when the user left it out (`[source id,
+start ms, end ms]`; a whole shot split into pieces may be excluded by its own
+id, and its range spans the pieces). The planner leaves out a shot named, every
+piece of a whole shot named, and any shot at least half inside a recorded
+range, whatever it is called now; an id renumbered onto other footage is not
+left out, and the decision says the footage is gone. An exclusion that would
+leave a part no usable footage is refused; footage used anyway is listed in the
+log's `exclusions.reused` and the sentence gets an `all_excluded` conflict.
+The action `include` ("Bỏ loại") removes every exclusion that leaves the
+given shots out, as one change (record `UNDO`, `detail: include`, `shots`). An
+`EXCLUDE` record of a whole shot has `detail: whole_shot` and `affected`
+(each shot it leaves out, with its range). The view adds per shot `parent`,
+`excluded` and `excluded_by`, plus `families` (each split shot with its pieces
+and the sentences that use them) and `exclusions` (each exclusion, the
+sentence that made it, whether it is a whole shot, what it covers now and
+what was reused). Versions 1 and 2 still read.

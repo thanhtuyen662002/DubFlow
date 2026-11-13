@@ -391,7 +391,9 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
             room = fair()
             if room > 0:
                 # Targeted look: shots not yet seen that may show what an uncovered sentence says; plan again with them.
-                ids = seeing.targets(made.log["units"], part_pools[part_id], evidence, looked,
+                # never a look at footage the user left out (#805): the frames go to shots that can still be used
+                gone = align.left_out(edits, part_pools[part_id]) if edits is not None else set()
+                ids = seeing.targets(made.log["units"], [c for c in part_pools[part_id] if c.candidate_id not in gone], evidence, looked,
                                      min(room, max(TARGETED_PER_PART, room // 2)), forward_only=True)
                 if ids:
                     status.write(message=f"{context}AI xem thêm cảnh cho câu chưa đủ hình ({index}/{len(parts)})…")
@@ -419,7 +421,8 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
                 # the user's shots keep their ids: pinned, excluded and approved (P2-N5) are never split
                 locked = ({i for ids in edits.pin.values() for i in ids} | set(edits.exclude)
                           | {p[0] for pieces in edits.keep.values() for p in pieces}) if edits is not None else set()
-                part_pool = part_pools[part_id]
+                gone = align.left_out(edits, part_pools[part_id]) if edits is not None else set()
+                part_pool = [c for c in part_pools[part_id] if c.candidate_id not in gone]
                 ids = more.wanted(made.log["units"], part_pool, evidence, sampled, limit=min(more.EXTRA_SHOTS, room // 2),
                                   forward_only=True, locked={i for i in locked if more.parent(i) == i},
                                   again={more.parent(i) for i in locked if more.parent(i) != i})

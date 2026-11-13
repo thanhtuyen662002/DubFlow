@@ -67,6 +67,13 @@ def pending(log: Mapping[str, Any], review: reviewing.Review) -> list[str]:
     for unit_id, decision in review.units.items():
         if not decision.invalidated and any(i not in used.exclude for i in decision.exclude) and unit_id not in out:
             out.append(unit_id)
+    # an exclusion the user took back after the render (#805 "Bỏ loại"): the sentence that let it back in
+    taken_back = used.exclude - wanted.exclude
+    for entry in reversed(review.records):
+        if taken_back and entry.get("detail") == "include" and set(entry.get("shots") or ()) & taken_back \
+                and entry.get("speech_ref") not in out:
+            out.append(entry["speech_ref"])
+            taken_back -= set(entry.get("shots") or ())
     return out
 
 

@@ -19,8 +19,9 @@ use std::os::windows::process::CommandExt;
 use crate::{fail, version_root, AiTranslation};
 
 pub(crate) const LEVELS: [&str; 4] = ["off", "light", "balanced", "dynamic"];
-/// The panel's decisions; "later" (REVIEW_LATER), "missing" (no suitable footage) and "focus" (remember the place).
-const ACTIONS: [&str; 8] = ["approve", "unapprove", "pin", "exclude", "reset", "later", "missing", "focus"];
+/// The panel's decisions; "later" (REVIEW_LATER), "missing" (no suitable footage), "focus" (remember the place) and
+/// "include" (let excluded footage back in, #805).
+const ACTIONS: [&str; 9] = ["approve", "unapprove", "pin", "exclude", "include", "reset", "later", "missing", "focus"];
 const MAX_IDS: usize = 20;
 const KEYFRAME_LIMIT: u64 = 8 * 1024 * 1024;
 
@@ -52,11 +53,12 @@ pub(crate) fn digits(value: &str, most: usize) -> bool {
     (1..=most).contains(&value.len()) && value.bytes().all(|b| b.is_ascii_digit())
 }
 
-/// `<n>` or `<n>f<n>`: a shot number, or a part of a long shot split by its extra frames.
+/// `<n>` or `<n>f<n>`: a shot number, or a part of a long shot split by its extra frames. Up to six digits: the
+/// shots inside a trim of a long source are numbered from 100001 by their place in the whole source (#805).
 pub(crate) fn shot_number(value: &str) -> bool {
     match value.split_once('f') {
-        Some((number, part)) => digits(number, 4) && digits(part, 1),
-        None => digits(value, 4),
+        Some((number, part)) => digits(number, 6) && digits(part, 1),
+        None => digits(value, 6),
     }
 }
 
@@ -398,6 +400,8 @@ mod tests {
         assert!(is_unit("s1") && is_unit("u12") && !is_unit("s") && !is_unit("../s1") && !is_unit("S1"));
         assert!(is_shot("v1c3") && is_shot("v12c1234") && !is_shot("v1c") && !is_shot("v1c3;rm") && !is_shot("../v1c3"));
         assert!(is_shot("v1c3f2") && !is_shot("v1c3f") && !is_shot("v1c3f12") && !is_shot("v1cf2") && !is_shot("v1c3f2f1"));
+        assert!(is_shot("v1c100509") && is_shot("v1c100509f2") && !is_shot("v1c1005091"));
+        assert!(is_keyframe("89fe52a42e57f33f-c100509.jpg") && is_keyframe("89fe52a42e57f33f-c100509f1.jpg"));
         assert!(is_keyframe("89fe52a42e57f33f-c12.jpg") && is_keyframe("89fe52a42e57f33f-still.jpg"));
         assert!(is_keyframe("89fe52a42e57f33f-c12f3.jpg") && !is_keyframe("89fe52a42e57f33f-c12f.jpg"));
         assert!(!is_keyframe("../89fe52a42e57f33f-c1.jpg") && !is_keyframe("89fe52a42e57f33f-c1.png") && !is_keyframe("x-c1.jpg"));
@@ -409,6 +413,8 @@ mod tests {
         assert_eq!(action_args("view", None, None, &[], None, None).unwrap(), vec!["view"]);
         assert_eq!(action_args("decide", Some("s2"), Some("pin"), &["v1c3".into()], None, None).unwrap(), vec!["decide", "s2", "pin", "v1c3"]);
         assert!(action_args("decide", Some("s2"), Some("filter"), &[], None, None).is_err());
+        assert_eq!(action_args("decide", Some("s2"), Some("include"), &["v1c3".into()], None, None).unwrap(),
+                   vec!["decide", "s2", "include", "v1c3"]);
         for what in ["later", "missing", "focus"] {
             assert_eq!(action_args("decide", Some("s2"), Some(what), &[], None, None).unwrap(), vec!["decide", "s2", what]);
         }

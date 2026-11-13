@@ -142,6 +142,10 @@ class Edits:
     # the sentence each approval was given on (:func:`words_digest`): an approval of a sentence whose words changed
     # (a line added above shifts every unit id) is no constraint, it was given to other words. Not in ``to_dict``.
     keep_words: dict[str, str] = field(default_factory=dict)
+    # the footage each exclusion was made on (#805): excluded id → (source id, start ms, end ms) as the log listed it
+    # when the user left it out. A new split numbers its pieces again and a new trim numbers its shots again; the
+    # footage, not the id, is what was left out. Not in ``to_dict`` (the ids are).
+    exclude_ranges: dict[str, tuple[str, int, int]] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, value: Any) -> "Edits":
@@ -388,15 +392,86 @@ def _coverage_note(milli: int, has_match: bool) -> str:
     return ""
 
 
+@dataclass
+class Exclusion:
+    """What the user's exclusions do to one pool of candidates (#805)."""
+
+    gone: set[str]                    # left out
+    by: dict[str, str]                # candidate id → the exclusion (an id, or a source id) that leaves it out
+    widened: dict[str, str]           # an unsplit shot left out for a part of it the user named (P2-N22) → that part
+    reused: list[str]                 # excluded footage used anyway: nothing else was left (a conflict, never silent)
+
+
+def _within(candidate: Candidate, span: tuple[str, int, int]) -> bool:
+    """Whether at least half of ``candidate`` lies in the recorded footage ``span`` (same source)."""
+    source, start, end = span
+    if candidate.source_id != source:
+        return False
+    inside = min(end, candidate.end_ms) - max(start, candidate.start_ms)
+    return inside > 0 and inside * 2 >= candidate.length_ms
+
+
+def _overlaps(candidate: Candidate, span: tuple[str, int, int] | None) -> bool:
+    """Whether ``candidate`` shares footage with ``span`` (always, when no footage was recorded: an older review)."""
+    if span is None:
+        return True
+    source, start, end = span
+    return candidate.source_id == source and min(end, candidate.end_ms) > max(start, candidate.start_ms)
+
+
+def exclusion(edits: Edits, candidates: Sequence[Candidate]) -> Exclusion:
+    """The candidates the user's exclusions leave out.
+
+    * a shot or a source named (where an exclusion recorded its footage, only while the id still names some of it);
+    * every piece of a whole shot named (``v1c3`` leaves out ``v1c3f1``, ``v1c3f2``…) (#805);
+    * what lies within the footage an exclusion was made on (half a candidate or more), whatever it is called now: a
+      new split or a new trim gives the same footage other ids (#805);
+    * a whole shot when a part of it is named (``v1c3f2``) and the shot is not split this time, so the excluded
+      footage is never shown (P2-N22).
+
+    When that leaves no footage at all, the shot of the last rule plays again, and when even what the user named
+    covers everything, nothing is left out: ``reused`` lists that footage and the plan says so (a conflict for the
+    user to settle, never a silent reuse)."""
+    excluded = set(edits.exclude)
+    recorded = {i: span for i, span in edits.exclude_ranges.items() if i in excluded}
+    spans = sorted(recorded.items())
+    by: dict[str, str] = {}
+    for c in candidates:
+        cid = c.candidate_id
+        # an id names footage only where it still is that footage: a shot renumbered onto other footage is not it
+        if cid in excluded and _overlaps(c, recorded.get(cid)):
+            by[cid] = cid
+        elif parent(cid) in excluded and _overlaps(c, recorded.get(parent(cid))):
+            by[cid] = parent(cid)
+        elif c.source_id in edits.exclude_sources:
+            by[cid] = c.source_id
+        else:
+            reason = next((i for i, span in spans if _within(c, span)), None)
+            if reason is not None:
+                by[cid] = reason
+    widened = {c.candidate_id: piece for piece in sorted(excluded) for c in candidates
+               if piece != parent(piece) and c.candidate_id == parent(piece) and c.candidate_id not in by
+               and _overlaps(c, recorded.get(piece))}
+    named = set(by)
+    if len(named | set(widened)) < len(candidates):
+        return Exclusion(named | set(widened), {**by, **widened}, widened, [])
+    if len(named) < len(candidates):
+        return Exclusion(named, by, {}, sorted(widened))
+    return Exclusion(set(), {}, {}, sorted(named))
+
+
+def exclusion_log(left: Exclusion | None) -> dict[str, Any]:
+    """What the user's exclusions left out of this pool, as the decision log records it (#805): each candidate left
+    out with the exclusion that did it, the shots left out whole for a part of them, and footage used anyway."""
+    if left is None or not (left.by or left.reused):
+        return {}
+    return {"exclusions": {"left_out": dict(sorted(left.by.items())), "widened": dict(sorted(left.widened.items())),
+                           "reused": list(left.reused)}}
+
+
 def left_out(edits: Edits, candidates: Sequence[Candidate]) -> set[str]:
-    """The candidates the user's exclusions leave out: the shots and sources named, and a whole shot when a part of it
-    is named (``v1c3f2``) and the shot is not split this time, so the excluded footage is never shown (P2-N22: the
-    sub-shots another part's look made are no longer the item's own). When that would leave no footage at all, only
-    what is named (the plan goes on; the decision is the user's to settle)."""
-    named = {c.candidate_id for c in candidates if c.candidate_id in edits.exclude or c.source_id in edits.exclude_sources}
-    whole = {parent(i) for i in edits.exclude} - set(edits.exclude)
-    wider = named | {c.candidate_id for c in candidates if c.candidate_id in whole}
-    return wider if len(wider) < len(candidates) else named
+    """The candidates the user's exclusions leave out (see :func:`exclusion`)."""
+    return exclusion(edits, candidates).gone
 
 
 def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidence: Mapping[str, ev.Evidence], pacing: Pacing,
@@ -411,7 +486,7 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
     keep = {unit_id: pieces for unit_id, pieces in edits.keep.items() if unit_id in texts and unit_id not in edits.pin
             and (unit_id not in edits.keep_words or edits.keep_words[unit_id] == words_digest(unit_id, texts[unit_id]))}
     kwargs = dict(forward_only=forward_only, groups=groups, stills=tuple(stills), shown=tuple(shown), product=product)
-    free = Edits(dict(edits.pin), set(edits.exclude), set(edits.exclude_sources))
+    free = Edits(dict(edits.pin), set(edits.exclude), set(edits.exclude_sources), exclude_ranges=dict(edits.exclude_ranges))
     if not keep:
         return _assign(found_units, candidates, evidence, pacing, edits=free, **kwargs)
     plain = _assign(found_units, candidates, evidence, pacing, edits=free, **kwargs)
@@ -427,7 +502,7 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
             == [(cid, offset, length, bool(again)) for cid, offset, length, again in pieces]
     if all(shown_as_approved(unit_id, pieces) for unit_id, pieces in keep.items()):
         return plain
-    held = Edits(dict(edits.pin), set(edits.exclude), set(edits.exclude_sources), keep)
+    held = Edits(dict(edits.pin), set(edits.exclude), set(edits.exclude_sources), keep, exclude_ranges=dict(edits.exclude_ranges))
     return _assign(found_units, candidates, evidence, pacing, edits=held, **kwargs)
 
 
@@ -698,8 +773,10 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
         accept = accepts[unit.unit_id]
         illustrated = 0
         user_ms = 0
-        pinned = [by_id[i] for i in edits.pin.get(unit.unit_id, []) if i in by_id]
-        if len(pinned) != len(edits.pin.get(unit.unit_id, [])):
+        pinned = [by_id[i] for i in edits.pin.get(unit.unit_id, []) if i in by_id and i not in gone]
+        if len([i for i in edits.pin.get(unit.unit_id, []) if i in by_id]) != len(pinned):
+            decision.notes.append("một cảnh đã ghim nằm trong cảnh bạn đã loại nên được bỏ qua")
+        elif len(pinned) != len(edits.pin.get(unit.unit_id, [])):
             decision.notes.append("một số cảnh đã ghim không còn trong danh sách nên được bỏ qua")
         saved = (dict(resume), dict(source_end), dict(uses), dict(group_uses))
         picks: list[dict[str, Any]] = []

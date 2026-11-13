@@ -204,6 +204,10 @@ def plan_editorial(visuals: Sequence[Visual], spoken: Sequence[tuple[str, int]],
                                             forward_only=not policy.allows(rules.REORDER), edits=edits, groups=groups, stills=stills,
                                             product=True)
     warnings: list[str] = []
+    left = align.exclusion(edits, pool) if edits else None
+    if left is not None and left.reused:
+        warnings.append(f"Mọi cảnh còn lại đều đã bị loại nên cảnh bạn đã loại ({', '.join(left.reused[:3])}) vẫn phải dùng. "
+                        "Hãy bỏ loại một cảnh hoặc chọn cảnh khác.")
     if mode == "signals_only":
         warnings.append("Chưa có bằng chứng nội dung (ghi chú clip hoặc AI nhìn hình; tên file không tính): cảnh được chọn theo "
                         "điểm cắt, độ nét và đa dạng, cần kiểm tra.")
@@ -284,6 +288,7 @@ def plan_editorial(visuals: Sequence[Visual], spoken: Sequence[tuple[str, int]],
                         "evidence": evidence[c.candidate_id].to_dict() if c.candidate_id in evidence else None,
                         "summary": evidence[c.candidate_id].summary() if c.candidate_id in evidence else ""} for c in pool],
         "edits": (edits or align.Edits()).to_dict(), "warnings": warnings,
+        **align.exclusion_log(left),
         # each source's content identity: what an approval was given on (P2-N5 materiality)
         "sources": m.source_contents({f"v{i + 1}": v.path for i, v in enumerate(visuals) if f"v{i + 1}" in inputs}),
         "source_identity": "content",  # every value in sources is a content fingerprint (no recipe); a source left out is unknown

@@ -21,7 +21,6 @@ from .. import evidence as ev
 from .. import plan as m
 from .. import policy as rules
 from ..candidates import Candidate
-from ..frames import parent
 
 PLANNER = "dubflow.mastering.compilation"
 VERSION = "7"
@@ -205,7 +204,8 @@ def plan_part(part_id: str, kind: str, spoken: Sequence[tuple[str, int]], narrat
     # the footage a source moment may come from, and the footage counted ahead of it for the narration: never a shot
     # or source the user excluded (rc12 W2: an excluded 6 s opening shot was counted ahead of the moment, leaving 7.95 s
     # of footage for 9.49 s of narration and five held frames)
-    gone = align.left_out(edits, pool) if edits else set()
+    left = align.exclusion(edits, pool) if edits else None
+    gone = left.gone if left else set()
     allowed = [c for c in pool if c.candidate_id not in gone]
     if moment and kind == "item" and policy.keep_source_audio:
         # The narration first, over all of the footage; the moment then comes from what plays after it. Only when
@@ -280,12 +280,11 @@ def plan_part(part_id: str, kind: str, spoken: Sequence[tuple[str, int]], narrat
     warnings: list[str] = []
     if mode == "signals_only":
         warnings.append(f"{part_id}: chưa có bằng chứng nội dung (phụ đề nguồn, ghi chú, AI nhìn hình; tên file không tính); cảnh chọn theo điểm cắt và chất lượng.")
-    if edits:
-        # a part of a shot left out while the shot is not split this time, kept whole because nothing else is left
-        kept_whole = sorted({c.candidate_id for c in pool if c.candidate_id in {parent(i) for i in edits.exclude}} - gone)
-        if kept_whole:
-            warnings.append(f"{part_id}: đoạn bạn đã bỏ thuộc cảnh {', '.join(kept_whole[:3])}; lần này cảnh không được chia nhỏ và "
-                            "không còn cảnh nào khác, nên cả cảnh vẫn được dùng. Hãy chọn lại cảnh cho phần này.")
+    if left is not None and left.reused:
+        # footage the user left out, used because nothing else was left: said here, and a conflict on the sentence
+        # that excluded it (review.reconcile), never a silent reuse (#805)
+        warnings.append(f"{part_id}: mọi cảnh còn lại đều đã bị loại nên cảnh bạn đã loại ({', '.join(left.reused[:3])}) vẫn phải "
+                        "dùng. Hãy bỏ loại một cảnh hoặc chọn cảnh khác cho phần này.")
     if moment and kind == "item" and policy.keep_source_audio:
         picked = reserved
         if picked is not None and picked[1] < used_end.get(picked[0].source_id, 0):
@@ -315,6 +314,7 @@ def plan_part(part_id: str, kind: str, spoken: Sequence[tuple[str, int]], narrat
                            "evidence": evidence[c.candidate_id].to_dict() if c.candidate_id in evidence else None,
                            "summary": evidence[c.candidate_id].summary() if c.candidate_id in evidence else ""} for c in pool],
            "edits": (edits or align.Edits()).to_dict(), "warnings": warnings,
+           **align.exclusion_log(left),
            # each source's content identity: what an approval was given on (P2-N5 materiality)
            "sources": m.source_contents({f.source_id: f.path for f in footage if f.source_id in inputs}),
            "source_identity": "content",  # every value in sources is a content fingerprint (no recipe); a source left out is unknown

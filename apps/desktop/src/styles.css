@@ -2566,6 +2566,7 @@ body.settings-open .rail-item.active:not(#nav-settings)::before { display: none;
 .mreview-shots { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px; margin-top: 8px; }
 .mreview-shot { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--raised); }
 .mreview-shot.unusable { opacity: .7; }
+.mreview-shot.excluded img { opacity: .4; filter: grayscale(1); }
 .mreview-shot img, .mreview-noimage { width: 100%; aspect-ratio: 16 / 9; border-radius: 6px; background: #000; object-fit: contain; }
 .mreview-noimage { display: flex; align-items: center; justify-content: center; color: var(--text-3); font-size: 12px; }
 .mreview-shot figcaption { display: grid; gap: 2px; font-size: 12px; line-height: 1.4; }

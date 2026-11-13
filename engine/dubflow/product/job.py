@@ -442,7 +442,11 @@ def _mastered(spec: Spec, visuals: Sequence[render.Visual], total_ms: int, work:
             saved, log = make()
             if vision_report is not None and describer.budget - describer.taken > 0:
                 # Targeted look: unseen shots that may show what an uncovered sentence says, then plan again.
-                ids = seeing.targets(log["units"], pool, evidence, looked, describer.budget - describer.taken, forward_only=False)
+                # never a look at footage the user left out (#805): the frames go to shots that can still be used
+                from engine.dubflow.mastering import align
+                gone = align.left_out(edits, pool)
+                ids = seeing.targets(log["units"], [c for c in pool if c.candidate_id not in gone], evidence, looked,
+                                     describer.budget - describer.taken, forward_only=False)
                 if ids:
                     by_id = {c.candidate_id: c for c in pool}
                     extra = describer.describe([(i, folder / by_id[i].keyframe) for i in ids], cancelled)
@@ -457,7 +461,9 @@ def _mastered(spec: Spec, visuals: Sequence[render.Visual], total_ms: int, work:
                 # the user's shots keep their ids: pinned, excluded and approved (P2-N5) are never split
                 locked = {i for ids in edits.pin.values() for i in ids} | set(edits.exclude) \
                     | {p[0] for pieces in edits.keep.values() for p in pieces}
-                ids = more.wanted(log["units"], pool, evidence, (), limit=min(more.EXTRA_SHOTS, (describer.budget - describer.taken) // 2),
+                from engine.dubflow.mastering import align
+                gone = align.left_out(edits, pool)
+                ids = more.wanted(log["units"], [c for c in pool if c.candidate_id not in gone], evidence, (), limit=min(more.EXTRA_SHOTS, (describer.budget - describer.taken) // 2),
                                   locked={i for i in locked if more.parent(i) == i},
                                   again={more.parent(i) for i in locked if more.parent(i) != i})
                 if ids:

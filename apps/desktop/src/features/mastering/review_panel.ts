@@ -4,8 +4,9 @@
  * call that saves it in the run (`mreview-<n>.json`); "Render lại" makes the
  * video again with the pins and exclusions, keeping its narration.
  */
+import { confirmDialog } from "../../shell/confirm.ts";
 import {
-  coverageText, evidenceHelp, nextInQueue, parseReview, PRIORITY_LABELS, provenanceText, queueSummary, seconds, startUnit, STATE_LABELS,
+  coverageText, evidenceHelp, exclusionText, familyLines, nextInQueue, parseReview, PRIORITY_LABELS, provenanceText, queueSummary, seconds, startUnit, STATE_LABELS,
   unitBadge, unitNumber, type ReviewUnit, type ReviewView, type Shot,
 } from "./model.ts";
 
@@ -71,6 +72,9 @@ export function openReviewPanel(invoke: Invoke, target: ReviewTarget): Promise<v
   player.preload = "metadata";
   const playerNote = el("p", "hint", "");
   const warnings = el("ul", "mreview-warnings");
+  const exclusionsHead = el("p", "mreview-label", "Cảnh đã loại");
+  exclusionsHead.hidden = true;
+  const exclusions = el("ul", "mreview-warnings mreview-exclusions");
   // the review queue: what is left by group, and the way to the next sentence without hunting for it
   const queueBar = el("div", "mreview-queue");
   const queueText = el("p", "hint", "");
@@ -90,7 +94,7 @@ export function openReviewPanel(invoke: Invoke, target: ReviewTarget): Promise<v
     : button("Render lại video này", "btn primary", "Dựng lại video với các cảnh bạn đã chọn hoặc loại; giữ giọng đọc");
   foot.append(status, accept, undo, rerender);
   const side = el("div", "mreview-side");
-  side.append(player, playerNote, warnings);
+  side.append(player, playerNote, warnings, exclusionsHead, exclusions);
   const body = el("div", "mreview-body");
   const main = el("div", "mreview-main");
   main.append(queueBar, list);
@@ -135,7 +139,15 @@ export function openReviewPanel(invoke: Invoke, target: ReviewTarget): Promise<v
     if (shot.problems.length) caption.append(el("span", "mreview-bad", `Ảnh kém: ${shot.problems.join(", ")}`));
     if (shot.reasons?.length) caption.append(el("span", "hint", shot.reasons.slice(0, 2).join("; ")));
     const row = el("div", "mreview-shot-actions");
-    row.append(...actions);
+    if (shot.excluded) {
+      // left out (by this cut or its whole shot): no pin or use until the user lets it back in (#805)
+      card.classList.add("excluded");
+      caption.append(el("span", "mreview-bad", `Đã loại${shot.excluded_by ? ` ở câu ${unitNumber(shot.excluded_by)}` : ""}`
+        + (shot.parent !== shot.id ? ` (cả cảnh gốc ${shot.parent})` : "")));
+      row.append(includeButton(shot));
+    } else {
+      row.append(...actions);
+    }
     card.append(image, caption, row);
     return card;
   }
@@ -170,6 +182,42 @@ export function openReviewPanel(invoke: Invoke, target: ReviewTarget): Promise<v
     const seek = () => { player.currentTime = start; void player.play().catch(() => undefined); };
     if (player.readyState >= 1) seek(); else player.addEventListener("loadedmetadata", seek, { once: true });
     playerNote.textContent = `Câu ${unitNumber(unit.unit_id)}: ${unit.text}`;
+  }
+
+  const SCOPE = target.part ? "ở mọi câu của phần này" : "ở mọi câu của video này";
+
+  /** "Bỏ loại": every exclusion that leaves this shot out goes, as one change (undo brings it back). */
+  function includeButton(shot: Shot, unitId = shot.excluded_by ?? ""): HTMLButtonElement {
+    const back = button("Bỏ loại", "btn", `Dùng lại cảnh này ${SCOPE}`);
+    back.addEventListener("click", () => void act({ action: "decide", unit: unitId || current, what: "include", ids: [shot.id] },
+      "Đã bỏ loại. Render lại để dùng lại cảnh này."));
+    return back;
+  }
+
+  function excludeButton(unit: ReviewUnit, shot: Shot, label = "Bỏ cảnh này"): HTMLButtonElement {
+    const drop = button(label, "btn danger", `Không dùng cảnh này ${SCOPE}; render lại sẽ chọn cảnh khác`);
+    drop.addEventListener("click", () => void act({ action: "decide", unit: unit.unit_id, what: "exclude", ids: [shot.id] },
+      "Đã loại cảnh. Bấm render lại để dựng lại."));
+    return drop;
+  }
+
+  /** "Bỏ cả cảnh gốc": the whole shot a piece was cut from, after the user has seen every piece it leaves out. */
+  function wholeButton(unit: ReviewUnit, shot: Shot): HTMLButtonElement | null {
+    const whole = view?.families[shot.parent];
+    if (shot.parent === shot.id || !whole) return null;
+    const drop = button("Bỏ cả cảnh gốc", "btn danger", `Không dùng mọi đoạn cắt từ cảnh gốc ${whole.id} ${SCOPE}`);
+    drop.addEventListener("click", () => {
+      void confirmDialog({
+        title: `Bỏ cả cảnh gốc ${whole.id}?`,
+        message: `${seconds(whole.start_ms)}–${seconds(whole.end_ms)} của nguồn, ${whole.pieces.length} đoạn sẽ không được dùng ${SCOPE}:\n`
+          + familyLines(whole).join("\n") + "\nCó thể hoàn tác hoặc bấm “Bỏ loại” sau.",
+        confirmLabel: "Bỏ cả cảnh gốc", danger: true,
+      }).then((yes) => {
+        if (yes) void act({ action: "decide", unit: unit.unit_id, what: "exclude", ids: [whole.id] },
+          `Đã loại cả cảnh gốc (${whole.pieces.length} đoạn). Bấm render lại để dựng lại.`);
+      });
+    });
+    return drop;
   }
 
   function unitItem(unit: ReviewUnit): HTMLElement {
@@ -221,13 +269,12 @@ export function openReviewPanel(invoke: Invoke, target: ReviewTarget): Promise<v
     const chosen = el("div", "mreview-shots");
     for (const shot of unit.chosen) {
       const pinned = unit.decision?.pin.includes(shot.id);
-      const drop = button("Bỏ cảnh này", "btn danger", "Không dùng cảnh này; render lại sẽ chọn cảnh khác");
-      drop.addEventListener("click", () => void act({ action: "decide", unit: unit.unit_id, what: "exclude", ids: [shot.id] },
-        "Đã loại cảnh. Bấm “Render lại video này” để dựng lại."));
+      const drop = excludeButton(unit, shot, shot.parent !== shot.id ? "Bỏ đoạn này" : "Bỏ cảnh này");
+      const whole = wholeButton(unit, shot);
       const keep = button(pinned ? "Đã ghim" : "Ghim", "btn", "Giữ cảnh này cho câu này ở mọi lần dựng sau");
       keep.disabled = Boolean(pinned);
       keep.addEventListener("click", () => void act({ action: "decide", unit: unit.unit_id, what: "pin", ids: [shot.id] }, "Đã ghim."));
-      chosen.append(shotCard(shot, pinned ? "Đang dùng (đã ghim)" : "Đang dùng", [keep, drop]));
+      chosen.append(shotCard(shot, pinned ? "Đang dùng (đã ghim)" : "Đang dùng", whole ? [keep, drop, whole] : [keep, drop]));
     }
     if (!unit.chosen.length) chosen.append(el("p", "hint", "Câu này chưa có cảnh."));
     const others = el("div", "mreview-shots alt");
@@ -235,7 +282,8 @@ export function openReviewPanel(invoke: Invoke, target: ReviewTarget): Promise<v
       const use = button("Dùng cảnh này", "btn primary", "Ghim cảnh này cho câu; render lại để thấy kết quả");
       use.addEventListener("click", () => void act({ action: "decide", unit: unit.unit_id, what: "pin", ids: [shot.id] },
         "Đã chọn cảnh. Bấm “Render lại video này” để dựng lại."));
-      others.append(shotCard(shot, typeof shot.score === "number" ? `Phương án · điểm ${shot.score}` : "Phương án", [use]));
+      others.append(shotCard(shot, typeof shot.score === "number" ? `Phương án · điểm ${shot.score}` : "Phương án",
+        [use, excludeButton(unit, shot)]));
     }
     const altHead = el("p", "mreview-label", unit.alternatives.length ? "Cảnh thay thế" : "Không còn cảnh thay thế");
     item.append(top, text, why, facts, actions, chosen, altHead, others);
@@ -246,7 +294,7 @@ export function openReviewPanel(invoke: Invoke, target: ReviewTarget): Promise<v
         const use = button("Dùng cảnh này", "btn primary", "Ghim cảnh này cho câu; render lại để thấy kết quả");
         use.addEventListener("click", () => void act({ action: "decide", unit: unit.unit_id, what: "pin", ids: [shot.id] },
           "Đã chọn cảnh. Bấm render lại để dựng lại."));
-        every.append(shotCard(shot, "Cảnh đã nhập", [use]));
+        every.append(shotCard(shot, "Cảnh đã nhập", [use, excludeButton(unit, shot)]));
       }
       item.append(el("p", "mreview-label", every.childElementCount ? "Mọi cảnh đã nhập" : "Không còn cảnh nào khác trong footage đã nhập"),
         el("p", "hint", "Cần cảnh mới: thêm clip ở trang tạo video rồi tạo lại; hoặc bấm “Không có cảnh phù hợp”."), every);
@@ -290,6 +338,16 @@ export function openReviewPanel(invoke: Invoke, target: ReviewTarget): Promise<v
     const voided = view.units.filter((unit) => unit.user_state === "INVALIDATED").length;
     if (voided) warnings.prepend(el("li", "", `${voided} câu cần chọn lại vì lựa chọn trước không còn hợp lệ.`));
     if (!view.warnings.length && !voided) warnings.append(el("li", "read", "Không có cảnh báo."));
+    // every exclusion, what it leaves out now and a way back: no exclusion is wider than it shows (#805)
+    exclusions.replaceChildren(...view.exclusions.map((item) => {
+      const row = el("li", item.reused.length ? "" : "read");
+      row.append(el("span", "", exclusionText(item)));
+      const back = button("Bỏ loại", "link", `Dùng lại ${item.whole ? "cả cảnh gốc" : "cảnh"} ${item.id} ${SCOPE}`);
+      back.addEventListener("click", () => void act({ action: "decide", unit: item.by, what: "include", ids: [item.id] }, "Đã bỏ loại."));
+      row.append(back);
+      return row;
+    }));
+    exclusionsHead.hidden = !view.exclusions.length;
     const scroll = list.scrollTop;
     list.replaceChildren(...view.units.map(unitItem));
     list.scrollTop = scroll;  // a change keeps the sentence the user is on in view

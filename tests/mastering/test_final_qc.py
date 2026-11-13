@@ -71,6 +71,17 @@ class PartTests(unittest.TestCase):
         made["edits"]["pin"]["u3"] = ["c3"]  # the render that applied it
         self.assertTrue(self.checks(made, plan_dict(GOOD), review)["pending"]["ok"])
 
+    def test_an_exclusion_taken_back_after_the_render_is_pending(self):  # #805
+        made, review = settled_world()
+        shot = made["candidates"][-1]["id"]
+        review.decide(made, "u3", "exclude", [shot])
+        made["edits"]["exclude"] = [shot]  # the render that applied it
+        self.assertTrue(self.checks(made, plan_dict(GOOD), review)["pending"]["ok"])
+        review.decide(made, "u3", "include", [shot])
+        check = self.checks(made, plan_dict(GOOD), review)["pending"]
+        self.assertFalse(check["ok"])
+        self.assertIn("câu 3", check["detail"])
+
     def test_unreviewed_needs_acceptance_and_critical_is_never_waved_through(self):
         made = world()
         review = rv.Review()
