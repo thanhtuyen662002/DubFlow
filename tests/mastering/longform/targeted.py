@@ -498,32 +498,48 @@ def _cache_key(prompt: str, provider: str, model: str, labels: Sequence[str], di
                                    bytes.fromhex(digest_hex)]))
 
 
+def asked_pair(loaded: Loaded) -> tuple[str, str] | None:
+    """The (provider, model) the run asked for, as the run spec records it as a pair (``editorial.ai``), or None.
+
+    Production keys the cache by the model asked (``Describer.model``: the route's model, from the spec), never by the
+    model that answered: the programme file and the part logs keep ``describer.used_model``, which a fallback changes.
+    So the reports never contribute a key, and nothing is combined across sources. A spec without both fields (no
+    provider, or no model and so a preset default that the run's own version chose) gives None: unproven."""
+    spec = loaded.run.spec if isinstance(loaded.run.spec, Mapping) else {}
+    editorial = spec.get("editorial") if isinstance(spec.get("editorial"), Mapping) else {}
+    ai = editorial.get("ai") if isinstance(editorial.get("ai"), Mapping) else {}
+    provider, model = ai.get("provider"), ai.get("model")
+    if not (isinstance(provider, str) and provider and isinstance(model, str) and model.strip()):
+        return None
+    return provider, model.strip()  # as engine.dubflow.ai.client.make_route takes them
+
+
 def cache_combos(loaded: Loaded) -> list[tuple[str, str, str]]:
-    """(prompt, provider, model asked) the run's cache keys can have been made with: what the records say (``made_by``,
-    written since #808 only) and, for the older records, the pairs the programme file, the part logs and the spec name
-    (the reports keep the model that answered, the spec the model that was asked)."""
+    """(prompt, provider, model asked) the run's cache keys can have been made with, each one a recorded tuple: what
+    the records say (``made_by``, written since #808 only) and, for the older records, the asked pair of the run spec
+    (``asked_pair``). Provider and model are never taken from different sources or crossed with each other."""
     if loaded.cache is None:
         return []
     combos: set[tuple[str, str, str]] = set()
     for r in loaded.cache.values():
         made = r.get("made_by") if isinstance(r.get("made_by"), Mapping) else {}
-        if made.get("provider"):
-            combos.add((str(made.get("prompt") or vision.PROMPT_VERSION), str(made["provider"]), str(made.get("model") or "")))
-    providers: set[str] = set()
-    models: set[str] = set()
-    reports = [loaded.program.get("vision") or {}, *((log.get("vision") or {}) for log in loaded.run.logs.values())]
-    for report in reports:
-        if report.get("provider") and report.get("model"):
-            providers.add(str(report["provider"]))
-            models.add(str(report["model"]))
-    editorial = loaded.run.spec.get("editorial") if isinstance(loaded.run.spec.get("editorial"), Mapping) else {}
-    ai = editorial.get("ai") if isinstance(editorial.get("ai"), Mapping) else {}
-    if ai.get("provider"):
-        providers.add(str(ai["provider"]))
-    if ai.get("model"):
-        models.add(str(ai["model"]))
-    combos.update((vision.PROMPT_VERSION, provider, model) for provider in providers for model in models)
+        if made.get("provider") and made.get("model"):
+            combos.add((str(made.get("prompt") or vision.PROMPT_VERSION), str(made["provider"]), str(made["model"])))
+    pair = asked_pair(loaded)
+    if pair is not None:
+        combos.add((vision.PROMPT_VERSION, *pair))
     return sorted(combos)
+
+
+def combo_sources(loaded: Loaded, combo: Sequence[str]) -> list[str]:
+    """Where a (prompt, provider, model asked) tuple is recorded: "made_by" (cache records) and/or "spec" (asked pair)."""
+    made = any(isinstance(r.get("made_by"), Mapping)
+               and (str(r["made_by"].get("prompt") or vision.PROMPT_VERSION), str(r["made_by"].get("provider") or ""),
+                    str(r["made_by"].get("model") or "")) == tuple(combo[:3])
+               for r in (loaded.cache or {}).values())
+    pair = asked_pair(loaded)
+    spec = pair is not None and (vision.PROMPT_VERSION, *pair) == tuple(combo[:3])
+    return [name for name, found in (("made_by", made), ("spec", spec)) if found]
 
 
 def cache_basis(loaded: Loaded) -> str:
@@ -906,6 +922,7 @@ class DonorIndex:
         bases = key_bases(target.loaded)
         self.key_basis = bases[0] if len(bases) == 1 else None
         self.key_basis_status = "exact" if self.key_basis is not None else ("ambiguous" if bases else "unproven")
+        self.key_basis_source = combo_sources(target.loaded, self.key_basis) if self.key_basis else []
         own, counted = donor_samples(target, parts="non_items", own=True)
         self.counts["detail_mismatch"] += counted["detail_mismatch"]
         if base == "A0":
@@ -1907,7 +1924,9 @@ def evaluate_run(gt: Mapping[str, Any], target: Prepared, donors: Sequence[Prepa
                         # the basis without names: prompt version, a digest of provider|model, and which label set
                         "key_basis": {"prompt": index.key_basis[0],
                                       "provider_model_sha12": sha256_bytes(f"{index.key_basis[1]}|{index.key_basis[2]}".encode("utf-8"))[:12],
-                                      "labels": "moment" if tuple(index.key_basis[3]) == tuple(ev.MOMENT_LABELS) else "all"}
+                                      "labels": "moment" if tuple(index.key_basis[3]) == tuple(ev.MOMENT_LABELS) else "all",
+                                      # where the asked tuple is recorded: cache made_by and/or the spec's asked pair
+                                      "source": "+".join(index.key_basis_source)}
                         if index.key_basis else None,
                         "provenance": dict(sorted(index.provenance.items()))}}
     return out, samples_json(selected), times

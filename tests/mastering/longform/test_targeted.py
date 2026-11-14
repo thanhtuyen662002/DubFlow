@@ -59,8 +59,12 @@ def make_run_k(root: Path, texts: dict[int, str] | None = None, name: str = "run
                spec: dict | None = None, review: dict | None = None, jpegs: bool = True, salt: str = "",
                intro: dict[int, str] | None = None, budget: int = 4, targeted: tuple[int, ...] = TARGETED,
                provider: tuple[str, str] = (PROVIDER, MODEL), cache: bool = True, missing_jpegs: tuple[int, ...] = (),
-               broad: tuple[int, ...] = BROAD, twins: dict[int, int] | None = None) -> Path:
-    """A raw run of item parts (and an optional intro) as ``run_program`` saves it, with keyframes and vision reports."""
+               broad: tuple[int, ...] = BROAD, twins: dict[int, int] | None = None,
+               asked: tuple[str, str] | None | bool = True) -> Path:
+    """A raw run of item parts (and an optional intro) as ``run_program`` saves it, with keyframes and vision reports.
+
+    ``provider`` is the pair that answered (reports, item details, cache keys); ``asked`` the spec's ``editorial.ai``
+    pair (True: the same as ``provider``; None: no ``editorial`` in the spec)."""
     texts = TEXTS if texts is None else texts
     detail = f"AI {provider[0]}/{provider[1]}"
     length = 60_000
@@ -159,7 +163,12 @@ def make_run_k(root: Path, texts: dict[int, str] | None = None, name: str = "run
         program_parts.append({"id": part})
     (work / "program.json").write_text(json.dumps({"parts": program_parts, "vision": dict(report)}), encoding="utf-8")
     items = [{"item_id": p, "sources": [{"start_ms": 0, "end_ms": length}]} for p in parts if p.startswith("i")]
-    (work / "spec.json").write_text(json.dumps(spec if spec is not None else {"items": items}), encoding="utf-8")
+    if spec is None:
+        spec = {"items": items}
+        if asked is not None:
+            pair = provider if asked is True else asked
+            spec["editorial"] = {"ai": {"provider": pair[0], "model": pair[1]}}
+    (work / "spec.json").write_text(json.dumps(spec), encoding="utf-8")
     if review is not None:
         (work / "review-i1.json").write_text(json.dumps(review), encoding="utf-8")
     return root / name
@@ -466,6 +475,7 @@ class MatchingTests(unittest.TestCase):
                     "own_cache_frames", "key_basis_status", "key_basis", "provenance"):
             self.assertIn(key, matching, key)
         self.assertEqual(matching["key_basis_status"], "exact")
+        self.assertEqual(matching["key_basis"]["source"], "made_by+spec")
         self.assertEqual(matching["donor_runs"], ["run-b"])
 
     def test_an_exact_production_key_is_simulated(self):
@@ -597,6 +607,67 @@ class MatchingTests(unittest.TestCase):
             index = tt.DonorIndex(target, [donor])
             self.assertEqual((index.key_basis, index.key_basis_status), (None, "ambiguous"))
             self.assertEqual(index.match(self.sample_of(target, "i1-s1c6")).reason, "target_key_ambiguous")
+
+    def fallback_run(self, root: Path, keyed: str, asked: tuple[str, str] | None | bool = (PROVIDER, "m1")) -> Path:
+        """A pre-#808 run that asked for m1 and was answered by m2 (a fallback): reports and item details say m2, no
+        record has made_by, and every record is keyed under ``keyed`` with the answer the run logged."""
+        run = make_run_k(root, name="run-a", provider=(PROVIDER, "m2"), asked=asked)
+        folder = run / ".dubflow-work" / "mastering" / "vision"
+        for path in sorted(folder.glob("*.json")):
+            path.unlink()
+        loaded = tt.load(run)
+        for c in loaded.run.logs["i1"]["candidates"]:
+            if not (tt.vision_items(c) and c.get("keyframe")):
+                continue
+            item = tt.vision_items(c)[0]
+            key = tt._cache_key(vision.PROMPT_VERSION, PROVIDER, keyed, ev.MOMENT_LABELS, loaded.jpeg[c["keyframe"]])
+            seen = vision.Seen(item["text"], (), (), "", tuple(item["labels"]), item["confidence"], "clear", None, None, 0)
+            (folder / f"{key[:32]}.json").write_text(json.dumps({"key": key, **seen.to_dict()}, ensure_ascii=False),
+                                                     encoding="utf-8")
+        return run
+
+    def test_a_stale_record_under_the_answering_model_proves_no_basis(self):
+        # production keys by the model asked (Describer.model), the reports keep the model that answered: a legacy
+        # record under the answering model reproduces the logged answer but is not what production would read
+        with TemporaryDirectory() as tmp:
+            loaded = tt.load(self.fallback_run(Path(tmp), keyed="m2"))
+            self.assertEqual(tt.cache_combos(loaded), [(vision.PROMPT_VERSION, PROVIDER, "m1")])
+            self.assertEqual(tt.key_bases(loaded), [])
+            index = tt.DonorIndex(tt.prepare(loaded), [])
+            self.assertEqual((index.key_basis, index.key_basis_status), (None, "unproven"))
+            self.assertEqual(tt.cache_basis(loaded), "group (cache keys unmatched)")
+
+    def test_the_record_under_the_asked_model_proves_the_basis(self):
+        with TemporaryDirectory() as tmp:
+            loaded = tt.load(self.fallback_run(Path(tmp), keyed="m1"))
+            self.assertEqual(tt.key_bases(loaded), [(vision.PROMPT_VERSION, PROVIDER, "m1", tuple(ev.MOMENT_LABELS))])
+            index = tt.DonorIndex(tt.prepare(loaded), [])
+            self.assertEqual((index.key_basis_status, index.key_basis_source), ("exact", ["spec"]))
+            self.assertEqual(tt.cache_basis(loaded), "exact")
+
+    def test_without_the_asked_pair_in_the_spec_a_legacy_cache_is_unproven(self):
+        # no editorial.ai, or a provider without a model (a preset default the run's own version chose): nothing is
+        # guessed from the reports, so even the asked-model records prove nothing
+        for asked, label in ((None, "no editorial"), ((PROVIDER, ""), "no model"), (("", "m1"), "no provider")):
+            with self.subTest(label), TemporaryDirectory() as tmp:
+                loaded = tt.load(self.fallback_run(Path(tmp), keyed="m1", asked=asked))
+                self.assertIsNone(tt.asked_pair(loaded))
+                self.assertEqual((tt.cache_combos(loaded), tt.key_bases(loaded)), ([], []))
+                self.assertEqual(tt.DonorIndex(tt.prepare(loaded), []).key_basis_status, "unproven")
+
+    def test_made_by_records_give_their_own_full_tuple_only(self):
+        # a made_by record names the asked tuple itself; it is never crossed with the spec or the reports
+        with TemporaryDirectory() as tmp:
+            run = self.fallback_run(Path(tmp), keyed="m1", asked=None)
+            folder = run / ".dubflow-work" / "mastering" / "vision"
+            for path in sorted(folder.glob("*.json")):
+                record = json.loads(path.read_text(encoding="utf-8"))
+                record["made_by"] = {"prompt": vision.PROMPT_VERSION, "provider": PROVIDER, "model": "m1", "answered_by": "m2"}
+                path.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+            loaded = tt.load(run)
+            self.assertEqual(tt.cache_combos(loaded), [(vision.PROMPT_VERSION, PROVIDER, "m1")])
+            index = tt.DonorIndex(tt.prepare(loaded), [])
+            self.assertEqual((index.key_basis_status, index.key_basis_source), ("exact", ["made_by"]))
 
     def test_a_target_cache_that_proves_no_basis_simulates_nothing(self):
         with TemporaryDirectory() as tmp:
@@ -1352,7 +1423,7 @@ class ScopeTests(unittest.TestCase):
             self.assertNotEqual(path, "scripts/ci/component_registry.json")
 
 
-GOLDEN = "2ec8a673d57bf0235a7870b96012abf39312ba016634e1fee74eb2c833210d50"
+GOLDEN = "fc8638ac888cd3b0b5f0a7bbf1781042c79344305ff61eba64c628d06eb94374"
 
 
 if __name__ == "__main__":
