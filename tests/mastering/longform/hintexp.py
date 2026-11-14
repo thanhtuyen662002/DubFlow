@@ -398,6 +398,9 @@ def _pairs(values: Sequence[str]) -> dict[str, str]:
 
 
 def main(argv: list[str]) -> int:
+    if any(a in ("-h", "--help") for a in argv):
+        print(__doc__)
+        return 0
     if not argv or argv[0] not in ("study", "suggest", "score-human"):
         print(__doc__)
         return 2
