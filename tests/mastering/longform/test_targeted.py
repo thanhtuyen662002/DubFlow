@@ -99,7 +99,9 @@ def make_run_k(root: Path, texts: dict[int, str] | None = None, name: str = "run
         # the production look shares an answer with the duplicates of the frame it asked about (vision.share)
         for n in [number, *[c for c, leader in (twins or {}).items() if leader == number]]:
             if not any(i.origin == "vision" for i in evidence[f"{sid}c{n}"].items):
-                evidence[f"{sid}c{n}"].add(ev.Item("vision", 850, text, ("explanation",), detail))
+                # what vision.apply writes: the item and the side metadata of the answer (no box, hook or group)
+                vision.apply({"x": vision.Seen(text, (), (), "", ("explanation",), 850, "clear", None, None, 0)},
+                             {"x": evidence[f"{sid}c{n}"]}, detail)
 
     for part in [p for p in parts if p.startswith("i")]:
         sid = f"{part}-s1"
@@ -895,6 +897,44 @@ class ClassificationTests(unittest.TestCase):
         change(record)
         path.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
         return path
+
+    def test_a_record_with_other_side_metadata_under_the_same_key_is_not_the_logged_answer(self):
+        # vision.apply writes the box, hook, product flag and product group beside the item: a record under the frame's
+        # own key with the same text but other side metadata is not the whole logged answer, so A0 keeps the answer
+        # and its metadata (fail closed)
+        box = {"x": 100, "y": 100, "w": 500, "h": 500}
+        changes = [("product box", {"product_box": box}), ("hook", {"hook": 900}), ("product group", {"product_group": "nhóm-khác"})]
+        for label, change in changes:
+            with self.subTest(label), TemporaryDirectory() as tmp:
+                run = make_run_k(Path(tmp))
+                self.rewrite_record(run, "i1-s1c2", lambda r: r.update(change))
+                loaded = tt.load(run)
+                c2 = next(c for c in loaded.run.logs["i1"]["candidates"] if c["id"] == "i1-s1c2")
+                self.assertEqual(tt.own_answer(loaded, c2), "side_mismatch")
+                prep = tt.prepare(loaded)
+                self.assertEqual(prep.classification["classification_basis"], "exact")
+                self.assertEqual(prep.classes["i1-s1c2"], "unproven")
+                self.assertEqual(prep.classes["i1-s1c4"], "targeted")
+                kept = next(c for c in prep.A0.logs["i1"]["candidates"] if c["id"] == "i1-s1c2")
+                self.assertEqual(tt.vision_items(kept), tt.vision_items(c2))
+                self.assertEqual({k: kept["evidence"].get(k) for k in tt.SIDE_FIELDS},
+                                 {k: c2["evidence"].get(k) for k in tt.SIDE_FIELDS})
+
+    def test_an_unanswered_broad_pick_is_not_the_source_of_a_shared_copy(self):
+        # another frame's record proves the run's key basis, but neither the broad pick c3 nor its same-answer mate c8
+        # has a record of its own: nothing proves the answer they share, so c8 is unproven, not targeted_shared
+        with TemporaryDirectory() as tmp:
+            run = make_run_k(Path(tmp), twins={8: 3})
+            self.rewrite_record(run, "i1-s1c3", lambda r: None).unlink()
+            loaded = tt.load(run)
+            c3, c8 = (next(c for c in loaded.run.logs["i1"]["candidates"] if c["id"] == f"i1-s1c{n}") for n in (3, 8))
+            self.assertEqual((tt.own_answer(loaded, c3), tt.own_answer(loaded, c8)), ("no_exact_key", "no_exact_key"))
+            self.assertEqual(tt.answer_identity(c3), tt.answer_identity(c8))
+            self.assertEqual(tt.cache_basis(loaded), "exact")
+            broad = tt.reconstruct_broad(loaded)
+            self.assertEqual(broad["status"], "NOT_RECONSTRUCTED")
+            classes, _ = tt.classify(loaded, {"picked": broad["picked"]})
+            self.assertEqual((classes["i1-s1c3"], classes["i1-s1c8"]), ("broad", "unproven"))
 
     def test_a_correct_key_with_another_answer_is_not_a_targeted_look(self):
         # the record sits under the frame's own full key, but its answer is not the one the run logged
@@ -1997,7 +2037,7 @@ class ScopeTests(unittest.TestCase):
             self.assertNotEqual(path, "scripts/ci/component_registry.json")
 
 
-GOLDEN = "1d3ecfd4b72bc25df599287dc345281af34bd2cea236fb0e01c0c36309af8ff1"
+GOLDEN = "c576c6bfb736413761c3449109af146273608eb7409afadc3f69e137823ce2a3"
 
 
 if __name__ == "__main__":

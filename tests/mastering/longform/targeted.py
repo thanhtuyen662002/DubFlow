@@ -653,7 +653,8 @@ def own_answer(loaded: Loaded, c: Mapping[str, Any]) -> str:
     if not items:
         return "no_answer"
     keyframe = c.get("keyframe")
-    return exact_answer(loaded, bases[0], loaded.jpeg.get(keyframe) if keyframe else None, items[0])
+    return exact_answer(loaded, bases[0], loaded.jpeg.get(keyframe) if keyframe else None, items[0],
+                        side=c.get("evidence") or {})
 
 
 def key_bases(loaded: Loaded) -> list[tuple[str, str, str, tuple[str, ...]]]:
@@ -678,10 +679,14 @@ def key_bases(loaded: Loaded) -> list[tuple[str, str, str, tuple[str, ...]]]:
 
 
 def exact_answer(loaded: Loaded, basis: tuple[str, str, str, tuple[str, ...]], jpeg_hex: str | None,
-                 item: Mapping[str, Any]) -> str:
+                 item: Mapping[str, Any], side: Mapping[str, Any] | None = None) -> str:
     """"exact" when ``loaded``'s cache holds, under the full production key of ``basis`` for these JPEG bytes, a record
     whose validated answer is this logged item (text, labels, confidence); otherwise why that is not proven. A record
-    without ``made_by`` (written before #808) is accepted only through this computed full key."""
+    without ``made_by`` (written before #808) is accepted only through this computed full key.
+
+    With ``side`` (the logged evidence) the record must also give the side metadata ``vision.apply`` wrote beside the
+    item (product box, hook, product visible, product group); a record that differs there is "side_mismatch", so the
+    whole logged answer, not only its text, is what a removal from A0 rests on."""
     if not jpeg_hex:
         return "no_jpeg"
     if loaded.cache is None:
@@ -713,11 +718,26 @@ def exact_answer(loaded: Loaded, basis: tuple[str, str, str, tuple[str, ...]], j
                                       int(record.get("hook") or 0)))
     except (KeyError, TypeError, ValueError):
         pass
+    reason = "answer_mismatch"
     for answer in candidates:
         expected = vision.item_of(answer, detail)
-        if (expected.text, list(expected.labels), expected.confidence) == logged:
+        if (expected.text, list(expected.labels), expected.confidence) != logged:
+            continue
+        if side is None or applied_side(answer, detail) == logged_side(side):
             return "exact"
-    return "answer_mismatch"
+        reason = "side_mismatch"
+    return reason
+
+
+def applied_side(answer: vision.Seen, detail: str) -> str:
+    """The side metadata ``vision.apply`` writes for ``answer``, as the part log serialises it."""
+    found = ev.Evidence("x")
+    vision.apply({"x": answer}, {"x": found}, detail)
+    return logged_side(found.to_dict())
+
+
+def logged_side(evidence: Mapping[str, Any]) -> str:
+    return json.dumps([evidence.get(k) for k in SIDE_FIELDS], ensure_ascii=False, sort_keys=True)
 
 
 def record_side(loaded: Loaded, basis: tuple[str, str, str, tuple[str, ...]], jpeg_hex: str | None) -> dict[str, Any] | None:
@@ -741,9 +761,10 @@ def record_side(loaded: Loaded, basis: tuple[str, str, str, tuple[str, ...]], jp
 def classify(loaded: Loaded, broad: Mapping[str, Any]) -> tuple[dict[str, str], dict[str, Any]]:
     """Each looked-at shot: broad, broad_shared, targeted, targeted_shared, multi_frame (§3.4) or unproven. With an
     exact basis a shot is targeted only when its own record under the proven key is the answer it logged and no frame
-    looked at before holds the same JPEG bytes and no broad pick is in its duplicate group; it is shared only when a
-    proven look in its group gave its answer; otherwise it is unproven. Without an exact basis every shot outside the reconstructed broad pass (and the logged
-    extra-frame sub-shots) is unproven: nothing is inferred from grouping alone.
+    looked at before holds the same JPEG bytes and no answered broad pick is in its duplicate group; it is shared only
+    when a look whose own record proves its answer gave its answer in its group; otherwise it is unproven. Without an
+    exact basis every shot outside the reconstructed broad pass (and the logged extra-frame sub-shots) is unproven:
+    nothing is inferred from grouping alone.
 
     A split shot's middle piece keeps the shot's own keyframe and original answer (``frames.merge``): it is broad when
     its parent was a broad pick, targeted when its own record under the proven key is its answer, and unproven
@@ -766,7 +787,9 @@ def classify(loaded: Loaded, broad: Mapping[str, Any]) -> tuple[dict[str, str], 
     digest = {i: loaded.jpeg.get(c["keyframe"]) if c.get("keyframe") else None for i, c in first.items()}
     broad_digests = {digest[i] for i in broad_ids if digest.get(i)}
     sub = {i for i, c in first.items() if _sub_parent(c) != i}
-    proven = set(broad_ids) | {i for i, value in status.items() if value == "exact" and (i not in sub or i in middles)}
+    # a source of a shared copy is a look whose own record proves its answer: a broad pick the broad pass left
+    # unanswered (no record of its own) proves nothing, like any other shot
+    proven = {i for i, value in status.items() if value == "exact" and (i in broad_ids or i not in sub or i in middles)}
     # the broad look answers every shot in an answered pick's duplicate group (vision.share) and the targeted look
     # skips the shots already answered, so no shot in such a group was targeted, whatever record its own frame has;
     # a pick the broad pass left unanswered (no record of its own) shared nothing, and its group mates stay targetable
