@@ -390,7 +390,11 @@ batch's `preregistered` flag is taken from the gate, and the perf record lists r
 `targeting.py` unchanged (`fd884a26…`) but changes `targeted.py`, so a re-run at `c1e97a5` or later is labelled
 PREREGISTRATION MISMATCH (exploratory) by design, and its output digests differ from those below. The record is frozen
 and pinned by a test; reproducing the decision of record needs a checkout of `716e984`. Any future data run, including
-the real-call batch, needs a new pre-registration committed before it runs.
+the real-call batch, needs a new pre-registration committed before it runs. Review of PR #831 changed `targeted.py`
+again (`a558396`, `b17bb53`, `468cb05`: exact production cache key, restored matching counts, legacy keys only from
+the spec's asked pair) and left `targeting.py` unchanged. The exact-key recompute ran at `468cb05` and is exploratory
+(PREREGISTRATION MISMATCH). The harness code at the final PR head is identical to `468cb05`; later commits change
+documents only.
 
 **Experiments.** E1 baseline replay; E2 GT-blind selection; E3 evidence replay from saved answers (a selected frame
 gets an answer only if some run answered the byte-identical JPEG); E4 budgets matched (+40 frames on rc16, the

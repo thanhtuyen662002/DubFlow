@@ -1,6 +1,6 @@
 # Thu bằng chứng có mục tiêu cho phim dài: báo cáo khả thi (Stage 2, #815)
 
-Epic #637 · 2026-11-14 · chỉ thị "Release Safety Closure & Targeted Evidence Acquisition ADR" (Stage 2, §14–§26, §24.B) · PR #831 (thay #830; task #829, thiết kế #815) · harness `tests/mastering/longform/targeted.py` tại head `716e984` (quyết định được ghi nhận; head PR sau rà soát là `c1e97a5`, xem §4.4) · pre-registration tại commit `c60ab02` (tổ tiên của `716e984`).
+Epic #637 · 2026-11-14 · chỉ thị "Release Safety Closure & Targeted Evidence Acquisition ADR" (Stage 2, §14–§26, §24.B) · PR #831 (thay #830; task #829, thiết kế #815) · harness `tests/mastering/longform/targeted.py` tại `716e984` (lần chạy của quyết định được ghi nhận); mã cuối cùng và lần tính lại theo khoá chính xác tại `468cb05`; head PR cuối là `831d9cc` cùng các commit chỉ sửa tài liệu sau đó, không đổi mã so với `468cb05` (xem §4.4) · pre-registration tại commit `c60ab02` (tổ tiên của `716e984`).
 
 Báo cáo này chỉ gồm **thí nghiệm offline có giới hạn** và một ADR đề xuất. Không có thay đổi nào ở planner, engine, app, contract hay giá trị mặc định của sản phẩm. Harness không gọi AI, không dùng model mới, embedding, GPU hay retrieval engine mới. Không có nhãn nào bị sửa.
 
@@ -151,6 +151,7 @@ Bằng chứng gốc (nhật ký, ảnh khung, câu trả lời vision) nằm tr
   - Chỉ số chính: số câu R3 có ít nhất một khung được chọn nằm trong đoạn đúng.
   - Đối chứng: `open:P+:-:+matched` và `open:shuffled_prior:W=fwd:+matched`.
   - Quyết định được ghi nhận là lần chạy tại `716e984`. Sau rà soát PR #830, commit `c1e97a5` làm chặt harness: đăng ký trước không kiểm chứng được (không có git) bị coi là exploratory, cờ `preregistered` của lô gọi thật lấy từ cổng, và tệp perf chỉ ghi tên lần chạy. Commit này không đổi `targeting.py` (`fd884a26…`) nhưng đổi `targeted.py`, nên chạy lại từ `c1e97a5` trở đi sẽ có nhãn PREREGISTRATION MISMATCH (exploratory) theo thiết kế và cho digest đầu ra khác. Bản ghi đăng ký trước giữ nguyên và được một test khoá. Muốn tái lập quyết định thì checkout `716e984`; mọi lần chạy dữ liệu sau này (kể cả lô gọi thật) cần một bản đăng ký trước mới, commit trước khi chạy.
+  - Lần rà soát thứ hai của Lead (PR #831) dẫn tới `a558396` (chỉ nhận câu trả lời theo khoá cache chính xác của production), `b17bb53` (đưa lại các số đếm ghép nối vào báo cáo) và `468cb05` (khoá cache cũ chỉ lấy theo cặp nhà cung cấp và model mà spec yêu cầu, không ghép chéo với model đã trả lời trong báo cáo lần chạy). Cả ba commit đều đổi `targeted.py` và không đổi `targeting.py` (`fd884a26…`). Vì vậy các lần tính lại trên máy tại `a558396`, `b17bb53` và `468cb05` đều mang nhãn PREREGISTRATION MISMATCH (exploratory) theo thiết kế: digest `analysis_sha256` hiện tại khác bản đăng ký. Chúng không được coi là đăng ký trước, `targeted_prereg.json` không bị sửa, và quyết định E2 được ghi nhận vẫn là lần chạy tại `716e984`. Mã harness ở head PR cuối giống hệt `468cb05`; các commit sau đó chỉ sửa tài liệu.
   - Luật: "được ủng hộ trên REAL-DEV" chỉ khi trên rc16 nhánh chính hơn cả hai đối chứng (McNemar chính xác p < 0,05 so với P+), hơn cả hai ở **cả 5 lần chạy**, và vượt kỳ vọng ngẫu nhiên. Recall và chi phí chỉ được quyết bằng lô gọi thật do chủ dự án duyệt.
 - **Tất định.** Chạy A và chạy B cùng lệnh cho ba tệp giống từng byte:
 
@@ -383,7 +384,7 @@ Chi tiết ở [ADR-0057](../adr/ADR-0057-targeted-evidence-acquisition.md) §18
 
 **Stage 2 Targeted Evidence Feasibility: PASS** với tư cách một nghiên cứu khả thi. Kết quả thực chất: định vị theo kịch bản/thời gian **không được ủng hộ**, khuyến nghị **không triển khai**. PASS này không gộp với Production Gate.
 
-**Windows validation (chỉ thị §22).** Thí nghiệm chạy offline bằng Python 3.12 trên PC Windows, chỉ CPU, với nguồn bằng chứng là năm lần chạy W3 đã lưu, harness tại `716e984` (quyết định được ghi nhận; xem §4.4 về `c1e97a5`), recipe `w3-targeted-v2`, replay tất định (§4.4). PoC offline này **không phải desktop E2E** và **không phải bằng chứng sẵn sàng sản xuất**. Không cần bản Windows RC riêng cho một thuật toán chưa tích hợp.
+**Windows validation (chỉ thị §22).** Thí nghiệm chạy offline bằng Python 3.12 trên PC Windows, chỉ CPU, với nguồn bằng chứng là năm lần chạy W3 đã lưu, harness tại `716e984` (quyết định được ghi nhận) và tính lại exploratory tại `468cb05` (xem §4.4), recipe `w3-targeted-v2`, replay tất định (§4.4). PoC offline này **không phải desktop E2E** và **không phải bằng chứng sẵn sàng sản xuất**. Không cần bản Windows RC riêng cho một thuật toán chưa tích hợp.
 
 | Hạng mục | Trạng thái |
 |---|---|
