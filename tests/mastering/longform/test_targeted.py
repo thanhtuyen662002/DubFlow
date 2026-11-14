@@ -1131,6 +1131,71 @@ class ClassificationTests(unittest.TestCase):
             found = tt.a0_evidence(classes)("i1", loaded.run.logs["i1"])[f3]
             self.assertFalse(any(i.origin == "vision" for i in found.items))
 
+    def test_a_broad_pick_split_without_its_middle_piece_is_not_reconstructed(self):
+        # with only extra-frame pieces logged, no piece holds the picture the broad look saw: the parent is not
+        # folded from an extra frame and the broad pass is not claimed as reconstructed (fail closed)
+        for cache in (True, False):
+            with self.subTest(cache=cache), TemporaryDirectory() as tmp:
+                run = make_run_k(Path(tmp), cache=cache)
+                f1, f2, f3 = self.split_shot(run, 3)
+                path = run / ".dubflow-work" / "mastering" / "editorial-i1.json"
+                log = json.loads(path.read_text(encoding="utf-8"))
+                log["candidates"] = [c for c in log["candidates"] if c["id"] != f2]
+                path.write_text(json.dumps(log, ensure_ascii=False), encoding="utf-8")
+                loaded = tt.load(run)
+                self.assertEqual(tt.split_without_middle(loaded.run), ["i1-s1c3"])
+                folded = next(c for pool in tt.broad_pools(loaded.run) for c in pool if c.candidate_id == "i1-s1c3")
+                self.assertIsNone(folded.keyframe)
+                broad = tt.reconstruct_broad(loaded)
+                self.assertEqual(broad["status"], "NOT_RECONSTRUCTED")
+                self.assertIn("split shot without its original keyframe", broad["reasons"])
+                prep = tt.prepare(loaded)
+                self.assertIsNone(prep.A0)
+                self.assertEqual({prep.classes[f1], prep.classes[f3]}, {"multi_frame"})
+
+    def test_an_item_parts_copy_and_group_represent_an_id_before_a_hook_or_intro_copy(self):
+        # w3 orders parts hook, intro, items, outro: the intro's copy of an item shot must not decide its proof or
+        # group; the intro copy is removed from A0 only when it carries the same whole answer
+        with TemporaryDirectory() as tmp:
+            run = make_run_k(Path(tmp))
+            clean = tt.prepare(tt.load(run))
+            self.assertEqual(clean.classes["i1-s1c4"], "targeted")
+            picks = {"picked": clean.broad["picked"]}
+            folder = run / ".dubflow-work" / "mastering"
+            program = run / ".dubflow-work" / "program.json"
+            if program.is_file():  # the programme lists the intro before the items
+                value = json.loads(program.read_text(encoding="utf-8"))
+                value["parts"] = [{"id": "intro"}] + list(value.get("parts") or ())
+                program.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
+            i1 = json.loads((folder / "editorial-i1.json").read_text(encoding="utf-8"))
+            c4 = next(c for c in i1["candidates"] if c["id"] == "i1-s1c4")
+            for label, change in (("same answer", {}), ("stale answer", {"text": "Câu trả lời cũ khác hẳn"}),
+                                  ("other hook", {"hook": 777})):
+                with self.subTest(label):
+                    copy = json.loads(json.dumps(c4))
+                    copy["group"] = "nhóm-intro"
+                    item = next(i for i in copy["evidence"]["items"] if i["origin"] == "vision")
+                    item.update({k: v for k, v in change.items() if k != "hook"})
+                    if "hook" in change:
+                        copy["evidence"]["hook"] = change["hook"]
+                    intro = dict(i1, candidates=[copy], units=[])
+                    (folder / "editorial-intro.json").write_text(json.dumps(intro, ensure_ascii=False), encoding="utf-8")
+                    loaded = tt.load(run)
+                    self.assertEqual(loaded.run.order[0], "intro")
+                    self.assertEqual(tt.job_groups(loaded.run)["i1-s1c4"], c4.get("group") or "i1-s1c4")
+                    self.assertIs(tt.first_answers(loaded.run)["i1-s1c4"], next(
+                        c for c in loaded.run.logs["i1"]["candidates"] if c["id"] == "i1-s1c4"))
+                    classes, report = tt.classify(loaded, picks)
+                    self.assertEqual(report["classification_basis"], "exact")
+                    self.assertEqual(classes["i1-s1c4"], "targeted")  # proven on the item part's copy
+                    answers = {i: tt.answer_identity(c) for i, c in tt.first_answers(loaded.run).items()}
+                    a0 = tt.a0_evidence(classes, answers)
+                    has = {part: any(i.origin == "vision" for i in a0(part, loaded.run.logs[part])["i1-s1c4"].items)
+                           for part in ("intro", "i1")}
+                    self.assertEqual(has, {"intro": bool(change), "i1": False})
+                    if change.get("hook"):
+                        self.assertEqual(a0("intro", loaded.run.logs["intro"])["i1-s1c4"].hook, 777)
+
     def test_an_extra_frames_answer_is_never_the_source_of_a_shared_copy(self):
         # frames.look_again asks the describer directly and shares nothing: a duplicate with no record of its own
         # that carries an extra frame's answer is not a shared copy of it

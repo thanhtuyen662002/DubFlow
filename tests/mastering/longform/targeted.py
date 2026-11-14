@@ -450,10 +450,16 @@ def answer_identity(c: Mapping[str, Any]) -> str:
                        [evidence.get(k) for k in SIDE_FIELDS]], ensure_ascii=False, sort_keys=True)
 
 
+def item_first(run: w3.Run) -> list[str]:
+    """The run's parts, item parts first (in run order), then hook, intro and outro: an id logged in an item part and
+    in a hook/intro/outro copy is represented by its item part's copy and group."""
+    return [p for p in run.order if is_item(p)] + [p for p in run.order if not is_item(p)]
+
+
 def first_answers(run: w3.Run) -> dict[str, dict]:
-    """Each answered id's first logged copy, in run order: the copy ``classify`` proves."""
+    """Each answered id's representative copy, item parts first (``item_first``): the copy ``classify`` proves."""
     first: dict[str, dict] = {}
-    for part in run.order:
+    for part in item_first(run):
         for c in run.logs[part].get("candidates") or ():
             if vision_items(c):
                 first.setdefault(c["id"], c)
@@ -471,18 +477,35 @@ def broad_pools(run: w3.Run) -> list[list[Candidate]]:
             if _sub_parent(c) != c["id"]:
                 subs.setdefault(_sub_parent(c), []).append(c)
         for parent, pieces in sorted(subs.items()):
-            middle = next((p for p in pieces if p.get("keyframe") and not any(
-                p["keyframe"].endswith(f"{more.SPLIT_MARK}{n}.jpg") for n in (1, 3))), pieces[len(pieces) // 2])
-            made = Candidate.from_dict(middle)
+            middle = next((p for p in pieces if _middle_piece(p)), None)
+            if middle is None:
+                # no piece kept the shot's own keyframe: the parent is folded without a keyframe (it cannot be the
+                # picture the broad look saw), and reconstruct_broad does not claim a reconstruction (fail closed)
+                made = dataclasses.replace(Candidate.from_dict(pieces[0]), keyframe=None)
+            else:
+                made = Candidate.from_dict(middle)
             plain.append(dataclasses.replace(made, candidate_id=parent, start_ms=min(p["start_ms"] for p in pieces),
                                              end_ms=max(p["end_ms"] for p in pieces)))
         pools.append(plain)
     return pools
 
 
-def job_groups(run: w3.Run) -> dict[str, str]:
-    out: dict[str, str] = {}
+def split_without_middle(run: w3.Run) -> list[str]:
+    """Split parents with a part log that holds none of the piece that kept the shot's own keyframe."""
+    out = set()
     for part in run.order:
+        subs: dict[str, list[dict]] = {}
+        for c in run.logs[part].get("candidates") or ():
+            if _sub_parent(c) != c["id"]:
+                subs.setdefault(_sub_parent(c), []).append(c)
+        out.update(parent for parent, pieces in subs.items() if not any(_middle_piece(p) for p in pieces))
+    return sorted(out)
+
+
+def job_groups(run: w3.Run) -> dict[str, str]:
+    """Each id's logged duplicate group, item parts first (``item_first``); a split parent's from its middle piece."""
+    out: dict[str, str] = {}
+    for part in item_first(run):
         for c in run.logs[part].get("candidates") or ():
             out.setdefault(c["id"], c.get("group") or c["id"])
             if not _extra_piece(c):
@@ -525,9 +548,11 @@ def reconstruct_broad(loaded: Loaded) -> dict[str, Any]:
     if logged is None or len(picked) != int(logged):
         reasons.append("broad count mismatch")
     exact = cache_basis(loaded) == "exact"
+    if split_without_middle(run):
+        reasons.append("split shot without its original keyframe")
     answered: dict[str, list[Mapping[str, Any]]] = {}
-    for log in run.logs.values():
-        for c in log.get("candidates") or ():
+    for part in item_first(run):
+        for c in run.logs[part].get("candidates") or ():
             if vision_items(c):
                 answered.setdefault(c["id"], []).append(c)
                 if _sub_parent(c) != c["id"]:
@@ -536,9 +561,9 @@ def reconstruct_broad(loaded: Loaded) -> dict[str, Any]:
     def cached(i: str) -> bool:
         # a broad pick counts as cached only when its record under the run's proven basis, for the picked frame's
         # JPEG bytes, is the answer the run logged for that frame: for a split shot, the answer of the piece that
-        # kept the picked keyframe (the middle piece), never an extra frame's answer
+        # kept the picked keyframe (the middle piece), never an extra frame's answer: no keyframe match, not cached
         logged = answered.get(i) or []
-        c = next((x for x in logged if x.get("keyframe") == used[i].keyframe), logged[0] if logged else None)
+        c = next((x for x in logged if used[i].keyframe and x.get("keyframe") == used[i].keyframe), None)
         return c is not None and own_answer(loaded, {**c, "keyframe": used[i].keyframe}) == "exact"
 
     not_cached = [i for i in picked if not cached(i)] if exact else []
