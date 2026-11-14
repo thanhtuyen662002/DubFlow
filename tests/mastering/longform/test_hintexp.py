@@ -134,6 +134,15 @@ class SuggestTests(unittest.TestCase):
             with self.assertRaises(KeyError):
                 hintexp.suggest(run, "i9.u9", 21_000, 5)
 
+    def test_help_is_printed_for_every_command_without_needing_a_run(self):
+        for argv in (["--help"], ["suggest", "--help"], ["study", "-h"], ["score-human", "--help"]):
+            with self.subTest(argv=argv):
+                out = io.StringIO()
+                with redirect_stdout(out):
+                    self.assertEqual(hintexp.main(argv), 0)
+                self.assertIn("suggest", out.getvalue())
+                self.assertNotIn("missing", out.getvalue())
+
     def test_timestamps_and_errors(self):
         self.assertEqual(hintexp.parse_time("1:05"), 65_000)
         self.assertEqual(hintexp.parse_time("1:02:03"), 3_723_000)

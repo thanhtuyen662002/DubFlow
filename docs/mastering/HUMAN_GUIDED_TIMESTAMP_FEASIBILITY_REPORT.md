@@ -129,7 +129,7 @@ set PYTHONUTF8=1
 set PYTHONDONTWRITEBYTECODE=1
 py -3.12 -B tests\mastering\longform\hintexp.py study ^
   --gt <thư mục assisted>\rc16\logs\W3-ground-truth.json ^
-  --lock <thư mục assisted>\rc16\logs\W3-ground-truth.json.lock ^
+  --lock <thư mục assisted>\rc16\logs\W3-ground-truth.lock ^
   --run rc12=<thư mục run-6206f16daf09> --run rc13=<thư mục run-76080efb6da4> ^
   --run rc14=<thư mục run-b3e7c7967a6e> --run rc15=<thư mục run-8f64b0a50e04> ^
   --run rc16=<thư mục run-f6919b04ccb3> ^
@@ -150,7 +150,7 @@ python -B -m unittest tests.mastering.longform.test_hintexp
 
 ## 8. Kiểm lại bằng bản trong repo
 
-Đang chạy trên máy dự án. Mục này được cập nhật khi có kết quả.
+Đã chạy trên máy dự án ngày 2026-11-14 (offline, 0 lời gọi AI): lệnh `study` của `hintexp.py` trong repo, với đúng các tham số ở §7, cho `hint-results.json` **giống từng byte** kết quả gốc (sha256 `9c5e36c2…e495d`, 109.850 byte), trong khoảng 74 s. Logic `study` trong repo vì vậy tái hiện đúng các số ở §3–§5. Hai lệnh mới (`suggest`, `score-human`) chỉ dùng cho bài kiểm tra người dùng, chưa có dữ liệu người tham gia nên chưa chạy thật; chúng chỉ được kiểm bằng dữ liệu tổng hợp trong `test_hintexp.py`.
 
 ## 9. Bước tiếp theo
 
