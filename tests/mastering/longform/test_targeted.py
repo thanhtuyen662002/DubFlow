@@ -1983,6 +1983,7 @@ class RunFileSafetyTests(unittest.TestCase):
                 with self.subTest(way=way, kind=kind), TemporaryDirectory() as tmp, \
                         mock.patch.object(tt, "_HANDLE_RELATIVE", by_handle):
                     run, _ = self.run_with(tmp)
+                    inside = (run / self.FRAME).read_bytes()
                     copy = self.outside_run(tmp, run)
                     tt.load(run)
                     try:
@@ -1997,7 +1998,7 @@ class RunFileSafetyTests(unittest.TestCase):
                             call()
                         self.assertNotIn(str(Path(tmp)), str(caught.exception))
                     self.put_back(run, copy, kind, Path(tmp) / "kept-run")
-                    self.assertNotEqual(tt.read_run_file(run, self.FRAME), b"OUTSIDE-BYTES")  # the pinned folder again
+                    self.assertEqual(tt.read_run_file(run, self.FRAME), inside)  # the pinned folder again
 
     def test_a_run_folder_replaced_during_a_load_fails_the_load(self):
         # the swap happens between two reads of one load: the load fails and no read returned outside bytes
@@ -2118,8 +2119,9 @@ class RunFileSafetyTests(unittest.TestCase):
                 for kind in self.kinds():
                     for back in (True, False):
                         if back and not by_handle and os.name != "nt":
-                            # by path a swap put back before the listing ends is caught only because Windows holds
-                            # every folder on the way; that way is used for real only on Windows
+                            # by path a swap put back before the listing ends is caught only on Windows, where every
+                            # folder on the way is held and the listing enumerates the held handle; that way is used
+                            # for real only on Windows
                             continue
                         with self.subTest(way=way, which=which, kind=kind, back=back), TemporaryDirectory() as tmp, \
                                 mock.patch.object(tt, "_HANDLE_RELATIVE", by_handle):
@@ -2157,6 +2159,174 @@ class RunFileSafetyTests(unittest.TestCase):
                             self.assertIn(None if names is None else sorted(names), (None, inside))
                             if not by_handle and not state["refused"]:
                                 self.assertIsNone(names)
+                            if not back and not state["refused"] and which == "run folder":
+                                self.assertIsNone(names)  # the run folder no longer the pinned one: fails after
+
+    def test_a_run_folder_replaced_before_a_read_is_refused_even_if_put_back_before_the_last_check(self):
+        # the run folder's name leads out when a read or a listing starts and is put back right before the final
+        # check against the pin: only the check at the start (a handle on the pinned folder, or the path checked
+        # against the pin) stands between the read and the outside bytes
+        for way, by_handle in self.ways():
+            for kind in self.kinds():
+                for call in ("read", "list"):
+                    with self.subTest(way=way, kind=kind, call=call), TemporaryDirectory() as tmp, \
+                            mock.patch.object(tt, "_HANDLE_RELATIVE", by_handle):
+                        run, _ = self.run_with(tmp)
+                        copy = self.outside_run(tmp, run)
+                        (copy / ".dubflow-work" / "mastering" / "outside-only.json").write_text("{}")
+                        kept = Path(tmp) / "kept"
+                        tt.pin_root(run)
+                        real_check = tt._check_root
+                        state = {"calls": 0, "back": False}
+
+                        def check_then_put_back(pinned):
+                            state["calls"] += 1
+                            if state["calls"] > 1 and not state["back"]:
+                                state["back"] = True
+                                self.put_back(run, copy, kind, kept)
+                            return real_check(pinned)
+
+                        try:
+                            self.replace(run, copy, kind, kept)
+                        except (OSError, NotImplementedError):
+                            self.skipTest(f"a {kind} cannot be made here")
+                        try:
+                            with mock.patch.object(tt, "_check_root", check_then_put_back):
+                                if call == "read":
+                                    result = tt.read_run_file(run, self.FRAME)
+                                else:
+                                    result = tt.list_run_dir(run, ".dubflow-work/mastering")
+                        except tt.UnsafeRunFile:
+                            result = None
+                        finally:
+                            if not state["back"]:
+                                self.put_back(run, copy, kind, kept)
+                        self.assertIsNone(result)
+
+    def test_a_load_whose_run_folder_is_replaced_after_its_last_read_fails(self):
+        for way, by_handle in self.ways():
+            with self.subTest(way=way), TemporaryDirectory() as tmp, \
+                    mock.patch.object(tt, "_HANDLE_RELATIVE", by_handle):
+                run, _ = self.run_with(tmp)
+                copy = self.outside_run(tmp, run)
+                real_read, real_list = tt.read_run_file, tt.list_run_dir
+                count = {"n": 0}
+
+                def counted(real):
+                    def call(root, relative):
+                        result = real(root, relative)
+                        count["n"] += 1
+                        if count["n"] == count.get("swap_at"):
+                            self.replace(run, copy, "another folder", Path(tmp) / "kept")
+                        return result
+                    return call
+
+                with mock.patch.object(tt, "read_run_file", counted(real_read)), \
+                        mock.patch.object(tt, "list_run_dir", counted(real_list)):
+                    tt.load(run)
+                    count["swap_at"], count["n"] = count["n"], 0  # the load's last read or listing
+                    with self.assertRaises(tt.UnsafeRunFile):
+                        tt.load(run)
+                self.assertEqual(count["n"], count["swap_at"])
+
+    @unittest.skipUnless(tt._HANDLE_RELATIVE, "the handle-relative walk is not available here")
+    def test_by_handle_a_folder_swapped_between_its_check_and_its_open_is_refused(self):
+        for which in (".dubflow-work", "mastering"):
+            for kind in ("symbolic link", "another folder"):
+                with self.subTest(which=which, kind=kind), TemporaryDirectory() as tmp:
+                    run, _ = self.run_with(tmp)
+                    copy = self.outside_run(tmp, run)
+                    relative = ".dubflow-work" if which == ".dubflow-work" else ".dubflow-work/mastering"
+                    at, target = run / relative, copy / relative
+                    tt.pin_root(run)
+                    real = tt._lstat_at
+                    state = {"swapped": False}
+
+                    def swap_after_check(folder_fd, part, shown):
+                        found = real(folder_fd, part, shown)
+                        if part == which and not state["swapped"]:
+                            state["swapped"] = True
+                            self.replace(at, target, kind, Path(tmp) / "kept")
+                        return found
+
+                    with mock.patch.object(tt, "_lstat_at", swap_after_check), self.assertRaises(tt.UnsafeRunFile):
+                        tt.read_run_file(run, self.FRAME)
+                    self.assertTrue(state["swapped"])
+
+    def test_a_run_folder_named_through_an_alias_stays_pinned_under_that_name(self):
+        for way, by_handle in self.ways():
+            with self.subTest(way=way), TemporaryDirectory() as tmp, \
+                    mock.patch.object(tt, "_HANDLE_RELATIVE", by_handle):
+                run, _ = self.run_with(tmp)
+                copy = self.outside_run(tmp, run)
+                alias = Path(tmp) / "alias"
+                try:
+                    os.symlink(run, alias, target_is_directory=True)
+                except (OSError, NotImplementedError):
+                    self.skipTest("symbolic links are not available here")
+                loaded = tt.load(alias)
+                self.assertEqual(tt._ROOTS[os.fspath(alias)].path, run.resolve())
+                self.assertTrue(loaded.jpeg)
+                self.replace(run, copy, "another folder", Path(tmp) / "kept")
+                with self.assertRaises(tt.UnsafeRunFile):
+                    tt.read_run_file(alias, self.FRAME)
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "named pipes are not available here")
+    def test_a_file_swapped_for_a_named_pipe_after_its_check_fails_instead_of_blocking(self):
+        import signal
+        for way, by_handle in self.ways():
+            with self.subTest(way=way), TemporaryDirectory() as tmp, \
+                    mock.patch.object(tt, "_HANDLE_RELATIVE", by_handle):
+                run, _ = self.run_with(tmp)
+                tt.pin_root(run)
+                real = tt._checked
+
+                def swap_for_pipe(st, shown, *, folder):
+                    real(st, shown, folder=folder)
+                    if not folder:
+                        (run / self.FRAME).unlink()
+                        os.mkfifo(run / self.FRAME)
+
+                def blocked(*_):
+                    raise AssertionError("the open blocked on a named pipe")
+
+                previous = signal.signal(signal.SIGALRM, blocked)
+                signal.alarm(10)
+                try:
+                    with mock.patch.object(tt, "_checked", swap_for_pipe), self.assertRaises(tt.UnsafeRunFile):
+                        tt.read_run_file(run, self.FRAME)
+                finally:
+                    signal.alarm(0)
+                    signal.signal(signal.SIGALRM, previous)
+
+    def test_a_name_windows_would_read_as_another_is_refused_everywhere(self):
+        # Windows trims a trailing space or dot from the last part of a path only: "sub /x.jpg" would be checked as
+        # "sub" and opened through "sub " (which may be a junction). Device names open a device, not a file.
+        names = ("sub /i1-s1-c2.jpg", "i1-s1-c2.jpg.", "i1-s1-c2.jpg ", "sub./i1-s1-c2.jpg", "CON", "nul.jpg",
+                 "Com1.json", "lpt9", "aux .jpg", "conin$")
+        for name in names:
+            with self.subTest(name=name), TemporaryDirectory() as tmp:
+                run, _ = self.run_with(tmp)
+                self.set_keyframe(run, "i1-s1c2", name)
+                with self.assertRaises(tt.UnsafeRunFile) as caught:
+                    tt.load(run)
+                self.assertIn("Windows would read as another", str(caught.exception))
+                self.assertNotIn(str(Path(tmp)), str(caught.exception))
+        for fine in ("console.json", "nullable.jpg", "com10.jpg", "i1-s1-c2.jpg"):
+            self.assertEqual(tt._rel_parts(fine)[0], (fine,))
+
+    @unittest.skipUnless(os.name == "nt", "folders are held open only on Windows")
+    def test_a_held_folder_is_listed_from_its_handle_on_windows(self):
+        with TemporaryDirectory() as tmp:
+            run, _ = self.run_with(tmp)
+            mdir = run / ".dubflow-work" / "mastering"
+            for index in range(1000):  # more than one 64 KiB buffer of entries
+                (mdir / f"extra-{index:04d}-{'x' * 60}.bin").write_bytes(b"")
+            with contextlib.ExitStack() as stack:
+                handle = tt._hold(stack, mdir, "mastering")
+                self.assertEqual(sorted(tt._win_list(handle, "mastering")), sorted(os.listdir(mdir)))
+            tt.pin_root(run)
+            self.assertEqual(sorted(tt.list_run_dir(run, ".dubflow-work/mastering")), sorted(os.listdir(mdir)))
 
     @unittest.skipUnless(os.name == "nt", "folders are held open only on Windows")
     def test_a_held_folder_cannot_be_renamed_or_replaced_on_windows(self):

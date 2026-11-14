@@ -45,7 +45,9 @@ import math
 import os
 from pathlib import Path, PurePath
 import pickle
+import re
 import stat
+import struct
 import subprocess
 import sys
 import time
@@ -258,8 +260,11 @@ def _linkish(st: os.stat_result) -> bool:
 
 def _rel_parts(relative: str | PurePath, *, folder: bool = False) -> tuple[tuple[str, ...], str]:
     """The parts of a run-relative path and how it is shown. ``relative`` may come from a saved log (a keyframe
-    name): an absolute path, a drive, ``..``, an empty part, ``:`` or NUL is refused before anything is touched.
-    Only a folder may be the run folder itself (no parts)."""
+    name): an absolute path, a drive, ``..``, an empty part, ``:`` or NUL is refused before anything is touched, and
+    so is a part Windows would read as another name (ending in a space or a dot, or a device name such as ``CON`` or
+    ``nul.jpg``): Windows trims a trailing space or dot from the last part of a path only, so ``sub /x.jpg`` would be
+    checked as ``sub`` but opened through ``sub ``. Refused on every platform, so a saved log reads the same
+    everywhere. Only a folder may be the run folder itself (no parts)."""
     rel = PurePath(relative)
     shown = rel.as_posix()
     if rel.is_absolute() or rel.drive or rel.root:
@@ -267,7 +272,12 @@ def _rel_parts(relative: str | PurePath, *, folder: bool = False) -> tuple[tuple
     if (not rel.parts and not folder) or any(p in ("", ".", "..") or ":" in p or "\x00" in p for p in rel.parts):
         # ":" would name an NTFS alternate data stream (frame.jpg:hidden) on Windows: never a plain file name here
         raise UnsafeRunFile(f"not a plain relative path: {shown}")
+    if any(p.endswith((" ", ".")) or _DEVICE.fullmatch(p.split(".")[0].rstrip(" ")) for p in rel.parts):
+        raise UnsafeRunFile(f"a name Windows would read as another: {shown}")
     return rel.parts, shown
+
+
+_DEVICE = re.compile(r"(?i)(con|prn|aux|nul|conin\$|conout\$|(com|lpt)[0-9\u00b9\u00b2\u00b3])")
 
 
 @dataclass(frozen=True)
@@ -340,13 +350,15 @@ def _checked(st: os.stat_result, shown: str, *, folder: bool) -> None:
 # following a link (Linux, macOS), every part is opened from the handle of the folder before it, starting from a
 # handle on the pinned run folder: nothing is looked up by path below the run folder. Elsewhere (Windows) the walk
 # goes by path, but every folder on the way, the run folder first, is held open while the file is read, sharing read
-# and write but not delete, so none of them can be renamed, deleted or replaced by a junction until the read ends;
-# the opened file must be the one checked (device and file id), the whole way is checked again after the open, and
-# the run folder is checked against its pin before and after. Tests switch _HANDLE_RELATIVE off to cover the
-# path-based way on any platform.
+# and write but not delete, so none of them can be renamed or deleted until the read ends; the opened file must be the
+# one checked (device and file id), the whole way is checked again after the open, and the run folder is checked
+# against its pin before and after. A held folder could still be made a junction in place, so a listing there
+# enumerates the held handle itself (the folder object, never a reparse target), not the path. Tests switch
+# _HANDLE_RELATIVE off to cover the path-based way on any platform (nothing is held there).
 _HANDLE_RELATIVE = (os.open in os.supports_dir_fd and os.stat in os.supports_dir_fd and os.listdir in os.supports_fd
                     and hasattr(os, "O_NOFOLLOW") and hasattr(os, "O_DIRECTORY"))
 _OPEN = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+_FILE = getattr(os, "O_NONBLOCK", 0)  # a file swapped for a FIFO after its check fails the checks instead of blocking
 
 
 def _lstat_at(folder_fd: int, part: str, shown: str) -> os.stat_result | None:
@@ -405,16 +417,19 @@ def _win_kernel() -> Any:
     kernel.CreateFileW.restype = wintypes.HANDLE
     kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
     kernel.CloseHandle.restype = wintypes.BOOL
+    kernel.GetFileInformationByHandleEx.argtypes = (wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD)
+    kernel.GetFileInformationByHandleEx.restype = wintypes.BOOL
     return kernel
 
 
 _KERNEL: list[Any] = []
 
 
-def _hold(stack: ExitStack, path: Path, shown: str) -> bool:
+def _hold(stack: ExitStack, path: Path, shown: str) -> int | bool:
     """On Windows, ``path`` itself (a link or junction is opened, never followed) held open until the read ends,
-    sharing read and write but not delete: while held it cannot be renamed, deleted or replaced. False when nothing
-    is there. Elsewhere nothing is held (the handle-relative way is used there; the path-based way is a fallback)."""
+    sharing read and write but not delete: while held it cannot be renamed or deleted. Returns the handle (a reparse
+    point could still be set on the folder in place, so a listing enumerates this handle, and reads compare file
+    ids); False when nothing is there. Elsewhere nothing is held (True): the handle-relative way is used there."""
     if os.name != "nt":
         return True
     import ctypes
@@ -430,21 +445,51 @@ def _hold(stack: ExitStack, path: Path, shown: str) -> bool:
             return False
         raise UnsafeRunFile(f"a folder on the way cannot be held: {shown}")
     stack.callback(kernel.CloseHandle, handle)
-    return True
+    return handle
+
+
+def _win_list(handle: int, shown: str) -> list[str]:
+    """The names in the folder held by ``handle`` (FileFullDirectoryInfo on the handle: the folder object itself)."""
+    import ctypes
+    kernel = _KERNEL[0]
+    buffer = ctypes.create_string_buffer(64 * 1024)
+    names: list[str] = []
+    kind = 15  # FileFullDirectoryRestartInfo, then FileFullDirectoryInfo (14)
+    while True:
+        if not kernel.GetFileInformationByHandleEx(handle, kind, buffer, len(buffer)):
+            if ctypes.get_last_error() == 18:  # ERROR_NO_MORE_FILES
+                return names
+            raise UnsafeRunFile(f"cannot be listed: {shown}")
+        raw, offset = buffer.raw, 0
+        while True:
+            # FILE_FULL_DIR_INFO: NextEntryOffset at 0, FileNameLength (bytes) at 60, FileName (UTF-16) at 68
+            following, length = struct.unpack_from("<L", raw, offset)[0], struct.unpack_from("<L", raw, offset + 60)[0]
+            name = raw[offset + 68:offset + 68 + length].decode("utf-16-le", "surrogatepass")
+            if name not in (".", ".."):
+                names.append(name)
+            if not following:
+                break
+            offset += following
+        kind = 14
 
 
 def _folder_path(pinned: PinnedRoot, folders: Sequence[str], shown: str,
-                 stack: ExitStack) -> tuple[Path, os.stat_result] | None:
+                 stack: ExitStack) -> tuple[Path, os.stat_result, int | bool] | None:
     """The folder reached through ``folders`` by path from the pinned run folder, each folder held (Windows) and
-    checked with ``lstat`` (None when a part does not exist)."""
-    if not _hold(stack, pinned.path, shown):
+    checked with ``lstat``, with the hold on the last one (None when a part does not exist)."""
+    held = _hold(stack, pinned.path, shown)
+    if not held:
         raise UnsafeRunFile(_REPLACED)
     _check_root(pinned)
     current = pinned.path
-    st = os.lstat(current)
+    try:
+        st = os.lstat(current)
+    except (OSError, ValueError):
+        raise UnsafeRunFile(_REPLACED) from None
     for part in folders:
         current = current / part
-        if not _hold(stack, current, shown):
+        held = _hold(stack, current, shown)
+        if not held:
             return None
         try:
             st = os.lstat(current)
@@ -453,13 +498,17 @@ def _folder_path(pinned: PinnedRoot, folders: Sequence[str], shown: str,
         except (OSError, ValueError):
             raise UnsafeRunFile(f"cannot be checked: {shown}") from None
         _checked(st, shown, folder=True)
-    return current, st
+    return current, st, held
 
 
 def _walk_again(pinned: PinnedRoot, parts: Sequence[str], shown: str, *, folder: bool) -> os.stat_result:
     """The path-based way once more after the open or the listing, holding nothing: the last part's ``lstat``."""
+    _check_root(pinned)
     current = pinned.path
-    st = os.lstat(current)
+    try:
+        st = os.lstat(current)
+    except (OSError, ValueError):
+        raise UnsafeRunFile(_REPLACED) from None
     for index, part in enumerate(parts):
         current = current / part
         try:
@@ -487,7 +536,7 @@ def read_run_file(root: Path, relative: str | PurePath) -> bytes | None:
             if st is None:
                 return None
             _checked(st, shown, folder=False)
-            fd = _open_at(folder_fd, parts[-1], 0, st, shown)
+            fd = _open_at(folder_fd, parts[-1], _FILE, st, shown)
         finally:
             os.close(folder_fd)
         with os.fdopen(fd, "rb") as handle:
@@ -509,7 +558,7 @@ def read_run_file(root: Path, relative: str | PurePath) -> bytes | None:
                 raise UnsafeRunFile(f"cannot be checked: {shown}") from None
             _checked(st, shown, folder=False)
             try:
-                fd = os.open(path, _OPEN)
+                fd = os.open(path, _OPEN | _FILE)
             except (OSError, ValueError):
                 raise UnsafeRunFile(f"cannot open as checked: {shown}") from None
             with os.fdopen(fd, "rb") as handle:
@@ -546,7 +595,7 @@ def list_run_dir(root: Path, relative: str | PurePath) -> list[str] | None:
             if found is None:
                 return None
             try:
-                names = os.listdir(found[0])
+                names = _win_list(found[2], shown) if os.name == "nt" else os.listdir(found[0])
             except OSError:
                 raise UnsafeRunFile(f"cannot be listed: {shown}") from None
             if not _same(found[1], _walk_again(pinned, parts, shown, folder=True)):
