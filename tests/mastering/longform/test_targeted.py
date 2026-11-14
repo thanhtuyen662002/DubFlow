@@ -869,16 +869,19 @@ class ClassificationTests(unittest.TestCase):
                 prep = tt.prepare(tt.load(make_run_k(Path(tmp), twins={8: 3, 1: 4}, cache=cache)))
                 classes = prep.classes
                 self.assertEqual(prep.classification["classification_basis"], "exact" if cache else "group")
-                self.assertEqual((classes["i1-s1c3"], classes["i1-s1c8"]), ("broad", "broad_shared"))
-                if cache:  # the cache says which frame was asked
-                    self.assertEqual((classes["i1-s1c4"], classes["i1-s1c1"]), ("targeted", "targeted_shared"))
-                else:  # the group says only that one frame was paid for
-                    self.assertEqual(sorted([classes["i1-s1c4"], classes["i1-s1c1"]]), ["targeted", "targeted_shared"])
-                self.assertEqual(prep.classification["counts"]["targeted_shared"], 1)
-                self.assertEqual(prep.classification["targeted_frames_item_parts"], 2)  # c2 and c4: c1 is a copy
                 kept = {c["id"]: bool(tt.vision_items(c)) for c in prep.A0.logs["i1"]["candidates"]}
-                self.assertTrue(kept["i1-s1c3"] and kept["i1-s1c8"])
-                self.assertFalse(kept["i1-s1c4"] or kept["i1-s1c1"] or kept["i1-s1c2"])
+                if cache:  # the cache says which frame was asked
+                    self.assertEqual((classes["i1-s1c3"], classes["i1-s1c8"]), ("broad", "broad_shared"))
+                    self.assertEqual((classes["i1-s1c4"], classes["i1-s1c1"]), ("targeted", "targeted_shared"))
+                    self.assertEqual(prep.classification["counts"]["targeted_shared"], 1)
+                    self.assertEqual(prep.classification["targeted_frames_item_parts"], 2)  # c2 and c4: c1 is a copy
+                    self.assertTrue(kept["i1-s1c3"] and kept["i1-s1c8"])
+                    self.assertFalse(kept["i1-s1c4"] or kept["i1-s1c1"] or kept["i1-s1c2"])
+                else:  # without a proven key nothing outside the broad pass is inferred: unproven, kept in A0
+                    self.assertEqual(classes["i1-s1c3"], "broad")
+                    self.assertEqual({classes[i] for i in ("i1-s1c8", "i1-s1c4", "i1-s1c1", "i1-s1c2")}, {"unproven"})
+                    self.assertEqual(prep.classification["targeted_frames_item_parts"], 0)
+                    self.assertTrue(all(kept[i] for i in ("i1-s1c3", "i1-s1c8", "i1-s1c4", "i1-s1c1", "i1-s1c2")))
 
     @staticmethod
     def rewrite_record(run: Path, candidate: str, change, labels=ev.MOMENT_LABELS) -> Path:
@@ -922,10 +925,14 @@ class ClassificationTests(unittest.TestCase):
             self.assertEqual(tt.key_bases(loaded), [])
             prep = tt.prepare(loaded)
             self.assertEqual(prep.classification["classification_basis"], "group (cache keys unmatched)")
-            self.assertNotIn("unproven", prep.classification["counts"])
+            # fail closed: no answer-proven key, so the non-broad answers are unproven and stay in A0
+            self.assertEqual((prep.classes["i1-s1c2"], prep.classes["i1-s1c4"]), ("unproven", "unproven"))
+            self.assertNotIn("targeted", prep.classification["counts"])
+            kept = {c["id"]: bool(tt.vision_items(c)) for c in prep.A0.logs["i1"]["candidates"]}
+            self.assertTrue(kept["i1-s1c2"] and kept["i1-s1c4"])
             self.assertIsNone(prep.broad["picked_not_in_cache"])
 
-    def test_an_ambiguous_basis_classifies_by_group(self):
+    def test_an_ambiguous_basis_keeps_every_non_broad_answer(self):
         # the same answers under the full label set too: two bases reproduce them, so neither is proven
         with TemporaryDirectory() as tmp:
             run = make_run_k(Path(tmp), twins={8: 3, 1: 4})
@@ -942,9 +949,20 @@ class ClassificationTests(unittest.TestCase):
             self.assertEqual(tt.own_answer(loaded, c4), "no_key_basis")
             prep = tt.prepare(loaded)
             self.assertEqual(prep.classification["classification_basis"], "group (cache basis ambiguous)")
-            self.assertEqual(sorted([prep.classes["i1-s1c4"], prep.classes["i1-s1c1"]]), ["targeted", "targeted_shared"])
-            self.assertNotIn("unproven", prep.classification["counts"])
+            self.assertEqual({prep.classes[i] for i in ("i1-s1c4", "i1-s1c1", "i1-s1c2")}, {"unproven"})
+            self.assertNotIn("targeted", prep.classification["counts"])
             self.assertIsNone(prep.broad["picked_not_in_cache"])
+            kept = {c["id"]: bool(tt.vision_items(c)) for c in prep.A0.logs["i1"]["candidates"]}
+            self.assertTrue(kept["i1-s1c4"] and kept["i1-s1c1"] and kept["i1-s1c2"])
+            # mixed: c4 also loses both of its records (no matching answer under either basis); still kept
+            for labels in (ev.MOMENT_LABELS, ev.LABELS):
+                self.rewrite_record(run, "i1-s1c4", lambda r: None, labels=labels).unlink()
+            loaded = tt.load(run)
+            self.assertEqual(len(tt.key_bases(loaded)), 2)
+            prep = tt.prepare(loaded)
+            self.assertEqual(prep.classes["i1-s1c4"], "unproven")
+            kept = {c["id"]: bool(tt.vision_items(c)) for c in prep.A0.logs["i1"]["candidates"]}
+            self.assertTrue(kept["i1-s1c4"])
 
     def test_a_broad_pick_whose_record_is_another_answer_is_not_cached(self):
         with TemporaryDirectory() as tmp:
@@ -1017,7 +1035,7 @@ class ClassificationTests(unittest.TestCase):
             self.assertEqual(prep.classification["targeted_frames_item_parts"], 2)
             self.assertEqual(prep.broad["status"], "RECONSTRUCTED")
 
-    def test_cache_keys_that_match_nothing_fall_back_to_the_group_basis(self):
+    def test_cache_keys_that_match_nothing_leave_every_non_broad_answer_unproven(self):
         with TemporaryDirectory() as tmp:
             run = make_run_k(Path(tmp), cache=True)
             for path in sorted((run / ".dubflow-work" / "mastering" / "vision").glob("*.json")):
@@ -1028,7 +1046,9 @@ class ClassificationTests(unittest.TestCase):
             prep = tt.prepare(loaded)
             self.assertEqual(prep.classification["classification_basis"], "group (cache keys unmatched)")
             self.assertEqual(tt.preflight(loaded)["classification_basis"], "group (cache keys unmatched)")
-            self.assertEqual(sorted([prep.classes["i1-s1c2"], prep.classes["i1-s1c4"]]), ["targeted", "targeted"])
+            self.assertEqual((prep.classes["i1-s1c2"], prep.classes["i1-s1c4"]), ("unproven", "unproven"))
+            kept = {c["id"]: bool(tt.vision_items(c)) for c in prep.A0.logs["i1"]["candidates"]}
+            self.assertTrue(kept["i1-s1c2"] and kept["i1-s1c4"])
             self.assertEqual(prep.broad["status"], "RECONSTRUCTED")
 
     def test_a_broad_count_other_than_the_logged_one_is_not_reconstructed(self):

@@ -667,7 +667,8 @@ def classify(loaded: Loaded, broad: Mapping[str, Any]) -> tuple[dict[str, str], 
     """Each looked-at shot: broad, broad_shared, targeted, targeted_shared, multi_frame (§3.4) or unproven. With an
     exact basis a shot is targeted only when its own record under the proven key is the answer it logged and no frame
     looked at before holds the same JPEG bytes; it is shared only when a proven look in its group gave its answer;
-    otherwise it is unproven."""
+    otherwise it is unproven. Without an exact basis every shot outside the reconstructed broad pass (and the logged
+    sub-shots) is unproven: nothing is inferred from grouping alone."""
     run = loaded.run
     groups = job_groups(run)
     broad_ids = set(broad.get("picked") or ())
@@ -716,11 +717,9 @@ def classify(loaded: Loaded, broad: Mapping[str, Any]) -> tuple[dict[str, str], 
                 # from: its provenance is unproven, and the answer is kept rather than removed as a targeted look
                 classes[i] = "unproven"
         else:
-            if any(m in broad_ids for m in mates):
-                classes[i] = "broad_shared"
-            else:
-                leader = next(m for m in mates if m not in broad_ids)
-                classes[i] = "targeted" if i == leader else "targeted_shared"
+            # no single answer-proven key basis (no cache, none proven, or more than one): grouping alone proves
+            # neither a targeted look nor a shared copy, so the answer is unproven and A0 keeps it (fail closed)
+            classes[i] = "unproven"
     counts: dict[str, int] = {}
     for value in classes.values():
         counts[value] = counts.get(value, 0) + 1
