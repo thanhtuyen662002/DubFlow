@@ -1,6 +1,6 @@
 # Human Timestamp Feasibility Test: giao thức
 
-Epic #637 · issue #832 · đề xuất #815 (Phương án D) · soạn 2026-11-14 · trạng thái: **CHƯA CHẠY**. Chưa có người tham gia, chưa có số liệu.
+Epic #637 · issue #832 · đề xuất #815 (Phương án D) · soạn 2026-11-14 · trạng thái lúc soạn: **CHƯA CHẠY**. Cập nhật 2026-11-14: đã chạy một phiên với một người (P1), kết luận §6 là **NEGATIVE**, xem [HUMAN_P1_REPORT.md](HUMAN_P1_REPORT.md). Nội dung giao thức bên dưới không đổi sau phiên.
 
 Bài kiểm tra này trả lời một câu hỏi: **người thật có đánh được mốc thời gian đủ chính xác và đủ nhanh để việc "đánh mốc rồi chọn trong danh sách gợi ý" tốt hơn cách tìm cảnh bằng Review Panel hiện tại hay không.** Thí nghiệm offline ([HUMAN_GUIDED_TIMESTAMP_FEASIBILITY_REPORT.md](../HUMAN_GUIDED_TIMESTAMP_FEASIBILITY_REPORT.md)) chỉ cho biết mốc cần chính xác đến đâu (±5–15 s). Nó không đo được người thật có làm được không, nên kết luận ở đó là INCONCLUSIVE.
 

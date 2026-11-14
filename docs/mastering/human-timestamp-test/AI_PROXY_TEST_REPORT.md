@@ -61,7 +61,7 @@ SHA-256 trên máy dự án: nhãn W3 `afa979d2…f66497`; nhãn video 2 (bản 
 
 ## 5. Tiêu chí PROTOCOL §6
 
-Script chấm chính thức (score-human) báo INCONCLUSIVE vì "7 sai lệch". Cả 7 là câu không có footage: reviewer trả lời "không có cảnh" và không ghi mốc, và script đếm việc thiếu mốc là sai lệch. Đây là lỗi của script chấm. Nó được sửa **sau khi** thấy ở vòng này (commit trong PR #834): hàng TS có `marked_missing` mà không có mốc nay là câu trả lời hợp lệ; hàng TS có footage mà thiếu mốc vẫn là sai lệch. Cùng lúc, `score-human --ai-proxy` gắn nhãn kết quả là AI proxy và luôn cho kết luận `EXPLORATORY`, chỉ ghi cách đọc §6 vào `protocol_reading`. Nếu không tính lỗi này, các ngưỡng §6 đều đạt trên số liệu AI. Kết quả vẫn không phải SUCCESS, vì §6 được viết cho người thật và thời gian đo được là thời gian của AI.
+Script chấm chính thức (score-human) báo INCONCLUSIVE vì "7 sai lệch". Cả 7 là câu không có footage: reviewer trả lời "không có cảnh" và không ghi mốc, và script đếm việc thiếu mốc là sai lệch. Đây là lỗi của script chấm. Nó được sửa **sau khi** thấy ở vòng này (commit 423d0e0 của PR #834 đã đóng, mang sang PR #835 bằng cherry-pick): hàng TS có `marked_missing` mà không có mốc nay là câu trả lời hợp lệ; hàng TS có footage mà thiếu mốc vẫn là sai lệch. Cùng lúc, `score-human --ai-proxy` gắn nhãn kết quả là AI proxy và luôn cho kết luận `EXPLORATORY`, chỉ ghi cách đọc §6 vào `protocol_reading`. Nếu không tính lỗi này, các ngưỡng §6 đều đạt trên số liệu AI. Kết quả vẫn không phải SUCCESS, vì §6 được viết cho người thật và thời gian đo được là thời gian của AI.
 
 ## 6. Giới hạn (đọc trước khi dùng số liệu)
 
@@ -83,5 +83,7 @@ Tín hiệu đủ để đáng thử với người, không đủ để kết lu
 - Cho người tham gia biết một số câu thật sự không có cảnh, nhưng không cho biết câu nào hay bao nhiêu câu.
 
 Quyết định cần chủ dự án: ai tham gia; video 2 dựng run thật (có phí dịch, TTS, vision, cần duyệt) hay giữ pool offline với giới hạn ghi rõ.
+
+Cập nhật 2026-11-14: chủ dự án chọn giữ pool offline (0 đồng) và tự tham gia. Vòng người thật dùng bộ câu mới; kết luận NEGATIVE, xem [HUMAN_P1_REPORT.md](HUMAN_P1_REPORT.md).
 
 Bản đầy đủ (có đường dẫn cục bộ) nằm trên máy dự án, ngoài repo; sha256 `30a064b3…bacc947`.

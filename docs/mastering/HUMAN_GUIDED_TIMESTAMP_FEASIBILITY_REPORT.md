@@ -12,6 +12,7 @@ Câu trả lời ngắn:
 - Ở ±15 s, lợi ích giảm còn khoảng một nửa. Ở ±30 s, lợi ích gần như không còn.
 - Mốc tự suy từ vị trí câu (POS, không dùng nhãn) chỉ cải thiện ít.
 - Chưa có người thật nào đánh mốc, nên chưa biết người dùng đạt độ chính xác nào. Vì vậy kết luận là INCONCLUSIVE, và bước tiếp theo là bài kiểm tra người dùng trong [human-timestamp-test/PROTOCOL.md](human-timestamp-test/PROTOCOL.md).
+- Cập nhật sau thí nghiệm offline: phiên người thật P1 (một người, 2026-11-14) theo PROTOCOL cho kết luận **NEGATIVE**: đánh mốc rồi chọn chậm hơn khoảng 2,7 lần mà không chọn đúng hơn (§11). Kết luận INCONCLUSIVE ở trên chỉ nói về thí nghiệm offline và không đổi.
 
 ## 1. Bốn nhóm, và nhóm nào được gọi là gì
 
@@ -154,10 +155,15 @@ python -B -m unittest tests.mastering.longform.test_hintexp
 
 ## 9. Bước tiếp theo
 
-- **Human Timestamp Feasibility Test** ([human-timestamp-test/PROTOCOL.md](human-timestamp-test/PROTOCOL.md)): 20–40 câu từ ít nhất hai video dài, so sánh Review Panel với cách đánh mốc rồi chọn trong gợi ý. Tiêu chí SUCCESS / INCONCLUSIVE / NEGATIVE được cố định trước. Trạng thái: **CHƯA CHẠY với người thật**. Video thứ hai đã chọn (public domain, xem §10); còn chờ chủ dự án chọn người tham gia và cách chuẩn bị video thứ hai.
-- Nếu bài kiểm tra người dùng thành công: cần một tập giữ riêng mới (ít nhất 2 video dài, ít nhất 40 câu) trước khi đề xuất bất kỳ thay đổi sản phẩm nào, qua ADR riêng.
+- **Human Timestamp Feasibility Test** ([human-timestamp-test/PROTOCOL.md](human-timestamp-test/PROTOCOL.md)): 20–40 câu từ ít nhất hai video dài, so sánh Review Panel với cách đánh mốc rồi chọn trong gợi ý. Tiêu chí SUCCESS / INCONCLUSIVE / NEGATIVE được cố định trước. Trạng thái: **đã chạy một phiên với một người (P1), kết luận NEGATIVE**, xem §11.
+- Không phát triển Human-Guided Timestamp thành tính năng ở thời điểm này (§11). Nếu còn theo hướng này, chỉ nên thử dạng gợi ý mốc tự động, qua ADR riêng và phép thử mới.
+- Nếu một bài kiểm tra người dùng sau này thành công: cần một tập giữ riêng mới (ít nhất 2 video dài, ít nhất 40 câu) trước khi đề xuất bất kỳ thay đổi sản phẩm nào, qua ADR riêng.
 - Không xây tính năng timestamp, không thêm UI, không mở rộng kiến trúc truy hồi, không gọi vision, không phát hành stable.
 
 ## 10. AI Proxy Test (2026-11-14)
 
 **AI PROXY TEST — EXPLORATORY, NOT HUMAN VALIDATION.** Hai agent AI đóng vai người tham gia trên 32 câu từ hai video (7 câu không có footage), thứ tự cân bằng, nhãn khoá trước. Trên 25 câu có footage: TS chọn đúng 25/25 (R@5 của gợi ý 25/25), RP chọn đúng 24/25 (R@5 của danh sách 9/25); 0 nhận nhầm; 7/7 câu không footage được nhận ra ở cả hai. Sai số mốc 0 s vì khung hình AI xem có in sẵn giờ nguồn, nên số của TS gần như chắc chắn quá lạc quan so với người thật. Chi tiết, phân loại và giới hạn: [human-timestamp-test/AI_PROXY_TEST_REPORT.md](human-timestamp-test/AI_PROXY_TEST_REPORT.md). Kết quả này không đổi gate nào và không thay bài kiểm tra người dùng.
+
+## 11. Phiên người thật P1 (2026-11-14)
+
+**HUMAN (real participant), n = 1**, người tham gia là chủ dự án, chưa xem hai phim. Bộ 32 câu mới (9 câu không có footage, số này giữ kín đến sau phiên), hai video, thứ tự ABBA, nhãn khoá trước; RP trên trang offline (không phải DubFlow.exe), TS với trình phát thật không có giờ in trên hình. Kết luận theo PROTOCOL §6: **NEGATIVE**. TS chậm hơn RP khoảng 2,7 lần (trung vị 80,7 s so với 30,0 s mỗi câu) mà không chọn đúng nhiều hơn (TS 8/12, RP 8/11); nhận nhầm TS 4, RP 1; 9/9 câu không có footage được nhận ra; sai số mốc TS trung vị 0 s, 9/12 trong ±5 s, 3/12 lệch hơn 30 s. Chi tiết, kiểm tra độc lập và giới hạn: [human-timestamp-test/HUMAN_P1_REPORT.md](human-timestamp-test/HUMAN_P1_REPORT.md). Không gate nào đổi; Gate D vẫn BLOCKED.
