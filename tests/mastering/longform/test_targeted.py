@@ -1053,6 +1053,13 @@ class ClassificationTests(unittest.TestCase):
                         self.assertEqual(evidence[key], value)  # and the metadata set with it
 
     @staticmethod
+    def a0_direct(loaded, classes) -> dict[str, dict]:
+        """A0's evidence for part i1 as ``prepare`` builds it (proven answers, own-record proof), by candidate id."""
+        answers = {i: tt.answer_identity(c) for i, c in tt.first_answers(loaded.run).items()}
+        a0 = tt.a0_evidence(classes, answers, lambda c: tt.own_answer(loaded, c) == "exact")
+        return {i: e.to_dict() for i, e in a0("i1", loaded.run.logs["i1"]).items()}
+
+    @staticmethod
     def split_shot(run: Path, number: int, keep: tuple[int, ...] = (1, 3)) -> list[str]:
         """Split shot ``number`` of part i1 the way ``frames.merge`` does: the extra frames ``keep`` (1 early, 3 late; a
         frame ``look_again`` could not use is left out), with their own JPEGs, dhashes and, when the run has a cache,
@@ -1092,29 +1099,37 @@ class ClassificationTests(unittest.TestCase):
     def test_a_split_shots_middle_piece_is_its_shot_and_only_extra_frames_are_multi_frame(self):
         # frames.merge keeps the shot's own keyframe and original answer on the middle piece: a broad pick's answer
         # stays in A0, a proven targeted look's goes, an unproven one stays; the extra frames' pieces are multi_frame.
-        # The middle piece is the one with the shot's own keyframe, wherever merge numbered it (one extra frame: f1/f2)
+        # The middle piece is the one with the shot's own keyframe, wherever merge numbered it (one extra frame: f1/f2).
+        # Under an exact basis a logged split means the groups were recomputed: the broad pass is not claimed, so the
+        # classes are checked against the broad picks of the same run before the split
         for keep in ((1, 3), (3,), (1,)):
             for cache, number, middle_class in ((True, 3, "broad"), (False, 3, "broad"), (True, 4, "targeted"),
                                                 (False, 4, "unproven")):
                 with self.subTest(keep=keep, cache=cache, shot=number), TemporaryDirectory() as tmp:
                     run = make_run_k(Path(tmp), cache=cache)
+                    picks = {"picked": tt.reconstruct_broad(tt.load(run))["picked"]}
                     pieces = self.split_shot(run, number, keep)
                     loaded = tt.load(run)
                     listed = {c["id"]: c for c in loaded.run.logs["i1"]["candidates"]}
                     middle = next(i for i in pieces if listed[i]["keyframe"] == f"i1-s1-c{number}.jpg")
                     extras = [i for i in pieces if i != middle]
                     self.assertEqual(len(extras), len(keep))
-                    prep = tt.prepare(loaded)
-                    self.assertEqual(prep.broad["status"], "RECONSTRUCTED", prep.broad.get("reasons"))
+                    broad = tt.reconstruct_broad(loaded)
                     if cache:
-                        self.assertEqual(prep.broad["picked_not_in_cache"], 0)  # checked on the middle piece's answer
-                    self.assertEqual(prep.classes[middle], middle_class)
-                    self.assertEqual({prep.classes[i] for i in extras}, {"multi_frame"})
-                    kept = {c["id"]: c for c in prep.A0.logs["i1"]["candidates"]}
-                    middle_kept = [i["text"] for i in tt.vision_items(kept[middle])]
+                        self.assertEqual(broad["status"], "NOT_RECONSTRUCTED")
+                        self.assertEqual(broad["reasons"], ["duplicate groups recomputed after a split"])
+                        self.assertEqual(broad["picked_not_in_cache"], 0)  # checked on the middle piece's answer
+                    else:
+                        self.assertEqual(broad["status"], "RECONSTRUCTED", broad.get("reasons"))
+                    self.assertEqual(broad["picked"], picks["picked"])
+                    classes, _ = tt.classify(loaded, picks)
+                    self.assertEqual(classes[middle], middle_class)
+                    self.assertEqual({classes[i] for i in extras}, {"multi_frame"})
+                    kept = self.a0_direct(loaded, classes)
+                    middle_kept = [i["text"] for i in kept[middle]["items"] if i["origin"] == "vision"]
                     self.assertEqual(middle_kept, [] if middle_class == "targeted" else [TEXTS[number]])
                     for i in extras:
-                        self.assertFalse(tt.vision_items(kept[i]))
+                        self.assertFalse([x for x in kept[i]["items"] if x["origin"] == "vision"])
 
     def test_a_log_with_only_extra_frame_pieces_has_no_middle_piece(self):
         # the trimmed log can hold an extra frame's piece alone: it is never taken for the shot's own answer
@@ -1201,14 +1216,51 @@ class ClassificationTests(unittest.TestCase):
         # that carries an extra frame's answer is not a shared copy of it
         with TemporaryDirectory() as tmp:
             run = make_run_k(Path(tmp), twins={6: 4})
+            picks = {"picked": tt.reconstruct_broad(tt.load(run))["picked"]}
             self.rewrite_logged(run, "i1-s1c6", text="Một người lính đứng gác")
             self.split_shot(run, 4)
             loaded = tt.load(run)
-            prep = tt.prepare(loaded)
-            self.assertEqual(prep.classes["i1-s1c4f1"], "multi_frame")
-            self.assertEqual(prep.classes["i1-s1c6"], "unproven")
-            kept = {c["id"]: bool(tt.vision_items(c)) for c in prep.A0.logs["i1"]["candidates"]}
-            self.assertTrue(kept["i1-s1c6"])
+            classes, _ = tt.classify(loaded, picks)
+            self.assertEqual(classes["i1-s1c4f1"], "multi_frame")
+            self.assertEqual(classes["i1-s1c6"], "unproven")
+            kept = self.a0_direct(loaded, classes)
+            self.assertTrue([x for x in kept["i1-s1c6"]["items"] if x["origin"] == "vision"])
+
+    def test_a_copy_re_asked_from_the_cache_in_another_part_is_proven_on_its_own(self):
+        # a later part that re-asks a frame gets it from the cache: its copy can carry another detail (a model
+        # fallback in between); its own record proves it, so A0 removes it like the first copy
+        with TemporaryDirectory() as tmp:
+            run = make_run_k(Path(tmp), parts=("i1", "i2"))
+            clean = tt.prepare(tt.load(run))
+            picks = {"picked": clean.broad["picked"]}
+            folder = run / ".dubflow-work" / "mastering"
+            c4 = next(c for c in json.loads((folder / "editorial-i1.json").read_text(encoding="utf-8"))["candidates"]
+                      if c["id"] == "i1-s1c4")
+            other = json.loads(json.dumps(c4))
+            next(i for i in other["evidence"]["items"] if i["origin"] == "vision")["detail"] = f"AI {PROVIDER}/fallback-model"
+            path = folder / "editorial-i2.json"
+            log = json.loads(path.read_text(encoding="utf-8"))
+            log["candidates"] = [c for c in log["candidates"] if c["id"] != "i1-s1c4"] + [other]
+            path.write_text(json.dumps(log, ensure_ascii=False), encoding="utf-8")
+            loaded = tt.load(run)
+            classes, _ = tt.classify(loaded, picks)
+            self.assertEqual(classes["i1-s1c4"], "targeted")
+            answers = {i: tt.answer_identity(c) for i, c in tt.first_answers(loaded.run).items()}
+            copy = next(c for c in loaded.run.logs["i2"]["candidates"] if c["id"] == "i1-s1c4")
+            self.assertEqual(tt.own_answer(loaded, copy), "exact")
+            for proven, kept in ((None, True), (lambda c: tt.own_answer(loaded, c) == "exact", False)):
+                found = tt.a0_evidence(classes, answers, proven)("i2", loaded.run.logs["i2"])["i1-s1c4"]
+                self.assertEqual(any(i.origin == "vision" for i in found.items), kept)
+
+    def test_under_an_exact_basis_a_logged_split_is_not_claimed_as_a_reconstruction(self):
+        # production recomputes the duplicate groups after a split; the logged groups may not be the broad pass's
+        with TemporaryDirectory() as tmp:
+            run = make_run_k(Path(tmp))
+            self.split_shot(run, 2)
+            broad = tt.reconstruct_broad(tt.load(run))
+            self.assertEqual(broad["status"], "NOT_RECONSTRUCTED")
+            self.assertIn("duplicate groups recomputed after a split", broad["reasons"])
+            self.assertIsNone(tt.prepare(tt.load(run)).A0)
 
     def test_a_split_parents_group_comes_from_its_middle_piece(self):
         # production recomputes the duplicate groups after a split: the extra frame's piece leads its own group, and
@@ -1259,10 +1311,11 @@ class ClassificationTests(unittest.TestCase):
                            for part in ("i1", "i2")}
                     self.assertEqual(has, {"i1": False, "i2": bool(change)})
                     self.assertFalse(any(i.origin == "vision" for i in a0("i1", loaded.run.logs["i1"])["i1-s1c1"].items))
-                    prep = tt.prepare(loaded)  # the replay passes the proven answers
+                    prep = tt.prepare(loaded)  # the replay passes the proven answers and the own-record proof
                     if prep.A0 is not None:
                         kept = {c["id"]: bool(tt.vision_items(c)) for c in prep.A0.logs["i2"]["candidates"]}
-                        self.assertEqual(kept["i1-s1c4"], bool(change))
+                        # another model in the detail is still proven by the copy's own record (a cache re-ask)
+                        self.assertEqual(kept["i1-s1c4"], bool(change) and "detail" not in change)
 
     def test_a_logged_answer_naming_another_provider_is_not_proven_by_the_key(self):
         # the provider is part of the cache key; the model part of the detail may differ after a fallback

@@ -550,6 +550,11 @@ def reconstruct_broad(loaded: Loaded) -> dict[str, Any]:
     exact = cache_basis(loaded) == "exact"
     if split_without_middle(run):
         reasons.append("split shot without its original keyframe")
+    if exact and any(_sub_parent(c) != c["id"] for p in run.order for c in run.logs[p].get("candidates") or ()):
+        # production recomputes the duplicate groups after a split (raw.py) and logs those for every later part: the
+        # groups the broad look used are not in the logs, and under an exact basis a wrong broad pick would remove a
+        # proven broad answer from A0, so the reconstruction is not claimed (fail closed)
+        reasons.append("duplicate groups recomputed after a split")
     answered: dict[str, list[Mapping[str, Any]]] = {}
     for part in item_first(run):
         for c in run.logs[part].get("candidates") or ():
@@ -751,7 +756,6 @@ def classify(loaded: Loaded, broad: Mapping[str, Any]) -> tuple[dict[str, str], 
     first = first_answers(run)
     middles = {i for i, c in first.items() if _middle_piece(c)}
     broad_ids = broad_picks | {i for i in middles if _sub_parent(first[i]) in broad_picks}
-    in_items = {c["id"] for p in run.order if is_item(p) for c in run.logs[p].get("candidates") or () if vision_items(c)}
     basis = cache_basis(loaded)
     exact = basis == "exact"
     answer = {i: answer_identity(c) for i, c in first.items()}
@@ -765,8 +769,7 @@ def classify(loaded: Loaded, broad: Mapping[str, Any]) -> tuple[dict[str, str], 
     proven = set(broad_ids) | {i for i, value in status.items() if value == "exact" and (i not in sub or i in middles)}
     claimed: set[str] = set()
     classes: dict[str, str] = {}
-    # the first holder of a frame's bytes is the look that was asked; an item part's look before a hook/intro copy
-    for i, c in sorted(first.items(), key=lambda kv: (kv[0] not in in_items, kv[0])):
+    for i, c in sorted(first.items()):
         if i in broad_ids:
             classes[i] = "broad"
             continue
@@ -810,13 +813,16 @@ def classify(loaded: Loaded, broad: Mapping[str, Any]) -> tuple[dict[str, str], 
     return classes, report
 
 
-def a0_evidence(classes: Mapping[str, str], answers: Mapping[str, str] | None = None
+def a0_evidence(classes: Mapping[str, str], answers: Mapping[str, str] | None = None,
+                proven_copy: Callable[[Mapping[str, Any]], bool] | None = None
                 ) -> Callable[[str, Mapping[str, Any]], dict[str, ev.Evidence]]:
     """A without the targeted and multi-frame answers: broad answers keep their first frame only. An unproven shot
     keeps its first answer too: it is not removed as a targeted answer without proof.
 
     ``answers`` (``answer_identity`` of the copy ``classify`` proved, by id): a copy in another part log whose answer
-    differs was not proven by that copy, so it is kept like an unproven one. An extra frame's piece loses its own
+    differs was not proven by that copy, so it is kept like an unproven one, unless ``proven_copy`` proves the copy
+    itself (its own record under the proven key is its answer: a later part that re-asked the frame and got it from
+    the cache can log it with another detail or a re-validated text). An extra frame's piece loses its own
     answer, but keeps the product flags ``frames.merge`` copied from its shot when the shot's middle piece keeps its
     answer."""
     removed = ("targeted", "targeted_shared", "multi_frame")
@@ -828,8 +834,9 @@ def a0_evidence(classes: Mapping[str, str], answers: Mapping[str, str] | None = 
         for c in listed:
             found = evidence_from(c["evidence"]) if c.get("evidence") else ev.Evidence(c["id"])
             kind = classes.get(c["id"])
-            if kind in removed and answers is not None and vision_items(c) and answer_identity(c) != answers.get(c["id"]):
-                kind = "unproven"  # not the answer that was proven for this id
+            if (kind in removed and answers is not None and vision_items(c) and answer_identity(c) != answers.get(c["id"])
+                    and not (kind in ("targeted", "multi_frame") and proven_copy is not None and proven_copy(c))):
+                kind = "unproven"  # not the answer that was proven for this id, nor proven on its own
             if kind in removed:
                 found.items = [i for i in found.items if i.origin != "vision"]
                 # vision.apply set these from the answers removed here: nothing else sets them (frames.merge gives an
@@ -953,7 +960,8 @@ def prepare(loaded: Loaded, *, review: bool = False, memo: PlanMemo | None = Non
         began = time.perf_counter()
         with replay_context(review=review, memo=memo):
             answers = {i: answer_identity(c) for i, c in first_answers(loaded.run).items()}
-            a0 = w3.replay(loaded.run, evidence_for=a0_evidence(classes, answers))
+            a0 = w3.replay(loaded.run, evidence_for=a0_evidence(
+                classes, answers, lambda c: own_answer(loaded, c) == "exact"))
         times["replay_A0"] = time.perf_counter() - began
         data_a0 = run_data(a0, loaded, f"A0_replay_{'with' if review else 'no'}_review")
         view_a0 = tg.planning_view(data_a0)
