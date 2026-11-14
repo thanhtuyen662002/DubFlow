@@ -1841,6 +1841,51 @@ class RunFileSafetyTests(unittest.TestCase):
                 with self.assertRaises(tt.UnsafeRunFile):
                     tt.load(run)
 
+    def test_a_link_or_junction_below_the_run_folder_is_never_followed(self):
+        # .dubflow-work, mastering or vision is already a link (POSIX) or a junction (Windows, no privilege needed) to
+        # an outside folder when the load starts: the load fails, and no outside bytes are ever returned
+        for which in (".dubflow-work", ".dubflow-work/mastering", ".dubflow-work/mastering/vision"):
+            with self.subTest(which=which), TemporaryDirectory() as tmp:
+                run, _ = self.run_with(tmp)
+                copy = self.outside_run(tmp, run)
+                at, kept = run / which, Path(tmp) / "kept"
+                os.rename(at, kept)
+                try:
+                    if os.name == "nt":
+                        import _winapi
+                        _winapi.CreateJunction(str(copy / which), str(at))
+                    else:
+                        os.symlink(copy / which, at, target_is_directory=True)
+                except (OSError, NotImplementedError, AttributeError):
+                    self.fail("a junction (Windows) or a symbolic link (POSIX) could not be made")
+                real = tt.read_run_file
+                returned: list[bytes] = []
+
+                def reading(root, relative):
+                    data = real(root, relative)
+                    if data is not None:
+                        returned.append(data)
+                    return data
+
+                with mock.patch.object(tt, "read_run_file", reading), self.assertRaises(tt.UnsafeRunFile) as caught:
+                    tt.load(run)
+                self.assertIn("symbolic link or reparse point", str(caught.exception))
+                self.assertFalse([d for d in returned if b"OUTSIDE-BYTES" in d])
+
+    def test_a_load_that_fails_leaves_the_review_snapshot_of_the_last_good_load(self):
+        decisions = reviewing.Review(units={"i1.u3": reviewing.UnitDecision(pin=["i1-s1c8"])}).to_dict()
+        with TemporaryDirectory() as tmp:
+            run = make_run_k(Path(tmp) / "runs", review=decisions)
+            loaded = tt.load(run)
+            before = tt._review_bytes(loaded.run.folder, "i1")
+            (run / ".dubflow-work" / "review-i1.json").write_text("{}", encoding="utf-8")
+            frame = run / self.FRAME
+            frame.unlink()
+            self.link(Path(tmp) / "nowhere.jpg", frame)
+            with self.assertRaises(tt.UnsafeRunFile):
+                tt.load(run)
+            self.assertEqual(tt._review_bytes(loaded.run.folder, "i1"), before)
+
     def test_a_linked_mastering_folder_is_refused(self):
         with TemporaryDirectory() as tmp:
             run, _ = self.run_with(tmp)
@@ -1944,6 +1989,13 @@ class RunFileSafetyTests(unittest.TestCase):
                 found.append("junction")
         return found
 
+    def assert_kinds_ran(self, ran: set[str]) -> None:
+        # a kind that cannot be made here is passed over (never skipping the kinds after it); the folder swap always
+        # runs, and on Windows the junction (no privilege needed) must have run too
+        self.assertIn("another folder", ran)
+        if os.name == "nt" and "junction" in self.kinds():
+            self.assertIn("junction", ran)
+
     @staticmethod
     def replace(at: Path, target: Path, kind: str, kept: Path) -> None:
         """``at`` renamed to ``kept`` and its name given to ``target`` (a link or junction to it, or ``target``
@@ -1974,6 +2026,7 @@ class RunFileSafetyTests(unittest.TestCase):
     def test_a_run_folder_replaced_after_it_was_pinned_is_never_followed(self):
         # the run folder is pinned (load pins it), then renamed and its old name given to a link, a junction or
         # another folder holding the same names: every later read or listing fails, none returns outside bytes
+        ran: set[str] = set()
         for kind in self.kinds():
             with self.subTest(kind=kind), TemporaryDirectory() as tmp:
                 run, _ = self.run_with(tmp)
@@ -1983,7 +2036,8 @@ class RunFileSafetyTests(unittest.TestCase):
                 try:
                     self.replace(run, copy, kind, Path(tmp) / "kept-run")
                 except (OSError, NotImplementedError):
-                    self.skipTest(f"a {kind} cannot be made here")
+                    continue  # this kind cannot be made here
+                ran.add(kind)
                 self.assertEqual((run / self.FRAME).read_bytes(), b"OUTSIDE-BYTES")  # the name now leads out
                 for call in (lambda: tt.read_run_file(run, self.FRAME),
                              lambda: tt.list_run_dir(run, ".dubflow-work/mastering"),
@@ -1993,6 +2047,7 @@ class RunFileSafetyTests(unittest.TestCase):
                     self.assertNotIn(str(Path(tmp)), str(caught.exception))
                 self.put_back(run, copy, kind, Path(tmp) / "kept-run")
                 self.assertEqual(tt.read_run_file(run, self.FRAME), inside)  # the pinned folder again
+        self.assert_kinds_ran(ran)
 
     def test_a_run_folder_replaced_during_a_load_fails_the_load(self):
         # the swap is tried between two reads of one load: the load fails and no read returned outside bytes. On
@@ -2029,9 +2084,8 @@ class RunFileSafetyTests(unittest.TestCase):
                     self.assertIsNone(loaded)
                 else:
                     self.assertTrue(state["refused"])
-                    if os.name != "nt":
-                        self.skipTest(f"a {kind} cannot be made here")
-                    self.assertIsNotNone(loaded)  # Windows: the held run folder could not be renamed
+                    if os.name == "nt":
+                        self.assertIsNotNone(loaded)  # Windows: the held run folder could not be renamed
 
     def test_a_folder_swapped_around_the_open_never_gives_outside_bytes(self):
         # right before the file is opened, the run folder or the mastering folder becomes a link, junction or another
@@ -2080,6 +2134,7 @@ class RunFileSafetyTests(unittest.TestCase):
     def test_the_opened_run_folder_must_be_the_pinned_one(self):
         # the run folder's name is given to a link, junction or another folder just for the open of the run folder
         # itself and put back right after: the handle is not the pinned folder, so nothing below it is read
+        ran: set[str] = set()
         for kind in self.kinds():
             with self.subTest(kind=kind), TemporaryDirectory() as tmp:
                 run, _ = self.run_with(tmp)
@@ -2092,7 +2147,11 @@ class RunFileSafetyTests(unittest.TestCase):
                 def swapping(pinned):
                     if not state["swapped"]:
                         state["swapped"] = True
-                        self.replace(run, copy, kind, kept)
+                        try:
+                            self.replace(run, copy, kind, kept)
+                        except (OSError, NotImplementedError):
+                            state["unavailable"] = True
+                            raise tt.UnsafeRunFile("not swapped") from None
                         try:
                             return real(pinned)
                         finally:
@@ -2105,6 +2164,10 @@ class RunFileSafetyTests(unittest.TestCase):
                     with mock.patch.object(tt, "_open_root_fd", swapping), self.assertRaises(tt.UnsafeRunFile):
                         call()
                     self.assertTrue(state["swapped"])
+                if state.get("unavailable"):
+                    continue  # this kind cannot be made here
+                ran.add(kind)
+        self.assert_kinds_ran(ran)
 
     def test_a_folder_swapped_while_it_is_listed_never_lists_outside_names(self):
         # right before the listing, the mastering folder (or the run folder) becomes a link, junction or another
@@ -2152,6 +2215,7 @@ class RunFileSafetyTests(unittest.TestCase):
     def test_a_run_folder_replaced_before_a_read_is_refused_even_if_put_back_before_the_last_check(self):
         # the run folder's name leads out when a read or a listing starts and is put back right before the check
         # against the pin after it: only the handle on the pinned folder stands between the read and outside bytes
+        ran: set[str] = set()
         for kind in self.kinds():
             for call in ("read", "list"):
                 with self.subTest(kind=kind, call=call), TemporaryDirectory() as tmp:
@@ -2171,7 +2235,8 @@ class RunFileSafetyTests(unittest.TestCase):
                     try:
                         self.replace(run, copy, kind, kept)
                     except (OSError, NotImplementedError):
-                        self.skipTest(f"a {kind} cannot be made here")
+                        continue  # this kind cannot be made here
+                    ran.add(kind)
                     try:
                         with mock.patch.object(tt, "_check_root", check_then_put_back):
                             if call == "read":
@@ -2184,6 +2249,7 @@ class RunFileSafetyTests(unittest.TestCase):
                         if not state["back"]:
                             self.put_back(run, copy, kind, kept)
                     self.assertIsNone(result)
+        self.assert_kinds_ran(ran)
 
     def test_a_load_whose_run_folder_is_replaced_after_its_last_read_fails(self):
         with TemporaryDirectory() as tmp:
@@ -2240,21 +2306,62 @@ class RunFileSafetyTests(unittest.TestCase):
                         tt.read_run_file(run, self.FRAME)
                     self.assertTrue(state["swapped"])
 
-    def test_a_run_folder_named_through_an_alias_stays_pinned_under_that_name(self):
+    def test_a_run_folder_reached_through_a_linked_parent_stays_pinned_under_that_name(self):
+        # a link above the run folder is the user's: it is resolved once and the run folder below it pinned
         with TemporaryDirectory() as tmp:
             run, _ = self.run_with(tmp)
             copy = self.outside_run(tmp, run)
-            alias = Path(tmp) / "alias"
+            above = Path(tmp) / "above"
             try:
-                os.symlink(run, alias, target_is_directory=True)
+                os.symlink(run.parent, above, target_is_directory=True)
             except (OSError, NotImplementedError):
                 self.skipTest("symbolic links are not available here")
-            loaded = tt.load(alias)
-            self.assertEqual(tt._ROOTS[os.fspath(alias)].path, run.resolve())
+            named = above / run.name
+            loaded = tt.load(named)
+            self.assertEqual(tt._ROOTS[os.fspath(named)].path, run.resolve())
             self.assertTrue(loaded.jpeg)
             self.replace(run, copy, "another folder", Path(tmp) / "kept")
             with self.assertRaises(tt.UnsafeRunFile):
-                tt.read_run_file(alias, self.FRAME)
+                tt.read_run_file(named, self.FRAME)
+
+    def test_a_selected_run_folder_that_is_already_a_link_is_refused_before_anything_is_read(self):
+        # the selected entry itself is a symbolic link or junction to an outside folder when the load starts: it is
+        # never followed, so the load fails before a single file (inside or outside) is read or listed
+        ran: set[str] = set()
+        for kind in self.kinds():
+            if kind == "another folder":
+                continue
+            with self.subTest(kind=kind), TemporaryDirectory() as tmp:
+                run, _ = self.run_with(tmp)
+                copy = self.outside_run(tmp, run)
+                selected = Path(tmp) / "selected"
+                try:
+                    if kind == "symbolic link":
+                        os.symlink(copy, selected, target_is_directory=True)
+                    else:
+                        import _winapi
+                        _winapi.CreateJunction(str(copy), str(selected))
+                except (OSError, NotImplementedError):
+                    continue  # this kind cannot be made here
+                ran.add(kind)
+                touched: list[str] = []
+                real_root = tt._open_root_fd
+
+                def opened(pinned):
+                    touched.append("run folder")
+                    return real_root(pinned)
+
+                with mock.patch.object(tt, "_open_root_fd", opened):
+                    for call in (lambda: tt.load(selected), lambda: tt.pin_root(selected)):
+                        with self.assertRaises(tt.UnsafeRunFile) as caught:
+                            call()
+                        self.assertNotIn(str(Path(tmp)), str(caught.exception))
+                self.assertEqual(touched, [])
+                self.assertNotIn(os.fspath(selected), tt._ROOTS)
+        if os.name == "nt" and "junction" in self.kinds():
+            self.assertIn("junction", ran)
+        if os.name != "nt":
+            self.assertIn("symbolic link", ran)
 
     @unittest.skipUnless(hasattr(os, "mkfifo") and not tt._NT_HANDLES, "named pipes are not available here")
     def test_a_file_swapped_for_a_named_pipe_after_its_check_fails_instead_of_blocking(self):

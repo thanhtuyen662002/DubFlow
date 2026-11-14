@@ -295,14 +295,22 @@ _REPLACED = "the run folder was moved or replaced"
 
 
 def pin_root(folder: Path | str) -> PinnedRoot:
-    """Pin the run folder: resolved once (links above the run folder are the user's), then the folder found there
-    must be a plain folder with a file id. ``load`` pins at its start, so one load reads one folder only."""
-    path = Path(folder).resolve(strict=True)
+    """Pin the run folder: the folders above it are resolved (links there are the user's), the selected entry itself
+    is never followed: it must be a plain folder with a file id, not a link, junction or other reparse point.
+    ``load`` pins at its start, so one load reads one folder only."""
+    named = Path(os.path.abspath(folder))
+    if not named.name:
+        raise UnsafeRunFile("the run folder cannot be a drive or root")
+    path = named.parent.resolve(strict=True) / named.name
     try:
         st = os.lstat(path)
+    except FileNotFoundError:
+        raise
     except (OSError, ValueError):
         raise UnsafeRunFile("the run folder cannot be checked") from None
-    if _linkish(st) or not stat.S_ISDIR(st.st_mode) or not st.st_ino:
+    if _linkish(st):
+        raise UnsafeRunFile("the run folder is a symbolic link, junction or reparse point")
+    if not stat.S_ISDIR(st.st_mode) or not st.st_ino:
         raise UnsafeRunFile("the run folder is not a plain folder with a file id")
     pinned = PinnedRoot(path, (st.st_dev, st.st_ino))
     _ROOTS[os.fspath(folder)] = _ROOTS[os.fspath(path)] = pinned
@@ -742,7 +750,6 @@ def _load(folder: Path) -> Loaded:
                               "pins": sum(1 for d in units.values() if d.get("pin")),
                               "excludes": sum(len(d.get("exclude") or ()) for d in units.values()),
                               "approvals": sum(1 for d in units.values() if d.get("approved") is not None)}
-    _REVIEWS[root] = reviews
     names = sorted({c["keyframe"] for log in run.logs.values() for c in log.get("candidates") or () if c.get("keyframe")})
     jpeg: dict[str, str | None] = {}
     for name in names:
@@ -766,6 +773,7 @@ def _load(folder: Path) -> Loaded:
             except ValueError:  # a record production could not parse either: skipped, as before
                 continue
     _check_root(pinned)
+    _REVIEWS[root] = reviews  # only a load that succeeded replaces the snapshot the replay reads
     return Loaded(folder, run, program, mdir, files, jpeg, cache, review_files)
 
 
