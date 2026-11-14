@@ -59,9 +59,9 @@ in every class, arm and decision value (rc16: 148 own records exact, 0 side mism
 `234a159` (after `a8d82ed`, `42b5195`, `52d9c06`, `ee277bd`, `1d4ebfb`, `567efee` and `ba9ba8b`) pins the selected run folder
 (never following the selected entry itself), opens every part relative to its folder's handle on Linux and Windows,
 reads every run file once, only as a single-named regular file inside that pinned folder, parses the run from those bytes, and makes the donor proof also
-compare the side metadata;
-its E1 classification/A0 and E3–E5 numbers are **UNVERIFIED** until its Owner-PC re-run is published (the rc16 E3–E5
-numbers here were measured at `e6d000f`).
+compare the side metadata. Its Owner-PC re-run (exploratory, A = B) equals `e6d000f` in every class, arm and decision
+value; on rc16 three donor records fail the side-metadata proof and are no longer replayed, which changes no E3–E5
+number (run record §16). The rc16 E3–E5 numbers here hold at `234a159`.
 
 The rc16 E3–E5 numbers here were only ever a partial simulation, and the recommendation does not rest on them. The pre-registered E2 decision ("not
 supported") does not use donor answers and stays the decision of record at `716e984`.
@@ -432,7 +432,7 @@ replayed answers carry the record's product and hook fields; `4607031`: without 
 is unproven) and the later fixes `2b24f93` to `e6d000f` (run record §16) are all exploratory; the PC re-runs at
 `4607031`, `4558305` and `669f298` change no rc16 arm and no decision value. Its exploratory PC re-run at
 `e6d000f` also changes none. The current code head `234a159` (run folder pinned and read by handle; run read once from checked bytes inside it;
-donor side metadata) is UNVERIFIED until its PC re-run is published; no earlier head's results are carried forward to it.
+donor side metadata) was re-run on the PC at that exact head (exploratory, A = B): no class, arm or decision value changes.
 
 **Experiments.** E1 baseline replay; E2 GT-blind selection; E3 evidence replay from saved answers (a selected frame
 gets an answer only if some run answered the byte-identical JPEG); E4 budgets matched (+40 frames on rc16, the
