@@ -1204,10 +1204,9 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
                     "needs_review": review, "matched_footage": len(accept), "best_relevance": best, "user_ms": user_ms}
         decision.coverage = coverage
         note = "" if generic else _coverage_note(milli, bool(accept))
-        if spoken_ms:
-            coverage["speech_only_ms"] = spoken_ms
-            note = ("cảnh chỉ khớp lời nói trong nguồn (phụ đề/transcript), chưa có bằng chứng hình ảnh: cần kiểm tra"
-                    + (f"; {note}" if note else ""))
+        if spoken_ms:  # said in a note, the log's coverage keys stay those of the contract (editorial-v1)
+            note = (f"{spoken_ms / 1000:.1f} giây cảnh chỉ khớp lời nói trong nguồn (phụ đề/transcript), chưa có bằng chứng "
+                    "hình ảnh: cần kiểm tra" + (f"; {note}" if note else ""))
         if pinned_by_user and user_ms:
             note = "cảnh do người dùng chọn; AI không thấy cảnh này khớp lời câu" if not milli else \
                 f"chỉ {milli // 10} % thời lượng câu có cảnh AI thấy khớp lời; phần còn lại là cảnh người dùng chọn"

@@ -71,9 +71,9 @@ class TranscriptNeverVerifiesThePicture(unittest.TestCase):
         self.assertLess(confidence, align.REVIEW_BELOW)
         # the time it is said over is not footage that illustrates the sentence, and the sentence says so
         self.assertEqual(decision.coverage["illustrated_ms"], 0)
-        self.assertEqual(decision.coverage["speech_only_ms"], 4000)
         self.assertTrue(decision.coverage["needs_review"])
-        self.assertTrue(any("lời nói trong nguồn" in note for note in decision.notes), decision.notes)
+        self.assertTrue(any(note.startswith("4.0 giây cảnh chỉ khớp lời nói trong nguồn") for note in decision.notes),
+                        decision.notes)
 
     def test_t3_transcript_never_overrides_unrelated_vision(self):
         state, confidence, decision = _one_shot(OTHER_VISION, SAID)
@@ -86,7 +86,7 @@ class TranscriptNeverVerifiesThePicture(unittest.TestCase):
         with_speech, after, decision = _one_shot(STRONG_VISION, SAID)
         self.assertEqual((alone, with_speech), (rv.READY, rv.READY))
         self.assertEqual(after, before)
-        self.assertNotIn("speech_only_ms", decision.coverage)
+        self.assertFalse([n for n in decision.notes if "lời nói trong nguồn" in n])
 
     def test_text_read_off_the_frame_is_seen_not_said(self):
         # a transcript item whose detail says it was read off the frame (provenance ocr) is visual evidence
@@ -165,8 +165,8 @@ class FragmentsAndCaptions(unittest.TestCase):
         self.assertTrue(pieces["v1c2"].needs_review)
         self.assertLess(pieces["v1c2"].confidence, align.REVIEW_BELOW)  # 3ecaf7d: 680
         self.assertGreaterEqual(pieces["v1c1"].confidence, align.REVIEW_BELOW)  # the seen piece keeps its own
-        self.assertEqual(decision.coverage["speech_only_ms"], pieces["v1c2"].length_ms)
         self.assertEqual(decision.coverage["illustrated_ms"], pieces["v1c1"].length_ms)
+        self.assertIn(f"{pieces['v1c2'].length_ms / 1000:.1f} giây cảnh chỉ khớp lời nói trong nguồn", " ".join(decision.notes))
 
     def _part(self, cues: tuple):
         found = scene.Analysis(30_000, (6000, 12_000, 18_000, 24_000),
@@ -201,6 +201,18 @@ class FragmentsAndCaptions(unittest.TestCase):
 
 
 class LegacyPaths(unittest.TestCase):
+    def test_the_log_keeps_the_contract_keys(self):
+        # a sentence planned on speech writes no key the editorial contract (additionalProperties false) does not have
+        import json
+        defs = json.loads((Path(__file__).resolve().parents[2] / "contracts" / "mastering" / "editorial-v1.json")
+                          .read_text(encoding="utf-8"))["$defs"]["unit"]["properties"]
+        for items in ((SAID,), (WEAK_VISION, SAID), (OTHER_VISION, SAID)):
+            _, _, decision = _one_shot(*items)
+            written = decision.to_dict()
+            self.assertLessEqual(set(written), set(defs))
+            self.assertLessEqual(set(written["coverage"]), set(defs["coverage"]["properties"]))
+            self.assertLessEqual(set(written["signals"]), set(defs["signals"]["properties"]))
+
     def test_t7_evidence_without_speech_is_planned_as_before(self):
         # no transcript, no file name: what is trusted and what is relevant are what they were
         pool = [_candidate("v1c1", 0, 6000), _candidate("v1c2", 6000, 12_000)]
