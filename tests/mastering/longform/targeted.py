@@ -741,8 +741,8 @@ def record_side(loaded: Loaded, basis: tuple[str, str, str, tuple[str, ...]], jp
 def classify(loaded: Loaded, broad: Mapping[str, Any]) -> tuple[dict[str, str], dict[str, Any]]:
     """Each looked-at shot: broad, broad_shared, targeted, targeted_shared, multi_frame (§3.4) or unproven. With an
     exact basis a shot is targeted only when its own record under the proven key is the answer it logged and no frame
-    looked at before holds the same JPEG bytes; it is shared only when a proven look in its group gave its answer;
-    otherwise it is unproven. Without an exact basis every shot outside the reconstructed broad pass (and the logged
+    looked at before holds the same JPEG bytes and no broad pick is in its duplicate group; it is shared only when a
+    proven look in its group gave its answer; otherwise it is unproven. Without an exact basis every shot outside the reconstructed broad pass (and the logged
     extra-frame sub-shots) is unproven: nothing is inferred from grouping alone.
 
     A split shot's middle piece keeps the shot's own keyframe and original answer (``frames.merge``): it is broad when
@@ -767,6 +767,9 @@ def classify(loaded: Loaded, broad: Mapping[str, Any]) -> tuple[dict[str, str], 
     broad_digests = {digest[i] for i in broad_ids if digest.get(i)}
     sub = {i for i, c in first.items() if _sub_parent(c) != i}
     proven = set(broad_ids) | {i for i, value in status.items() if value == "exact" and (i not in sub or i in middles)}
+    # the broad look answers every shot in its pick's duplicate group (vision.share) and the targeted look skips the
+    # shots already answered, so no shot in such a group was targeted, whatever record its own frame has
+    broad_groups = {groups.get(i, i) for i in broad_ids}
     claimed: set[str] = set()
     classes: dict[str, str] = {}
     for i, c in sorted(first.items()):
@@ -779,7 +782,10 @@ def classify(loaded: Loaded, broad: Mapping[str, Any]) -> tuple[dict[str, str], 
             continue
         mates = by_group[(groups.get(i, i), answer[i])]
         if exact:
-            if status[i] == "exact":
+            if groups.get(i, i) in broad_groups:
+                # a copy of the broad pick's answer is broad_shared; any other answer in that group is unproven
+                classes[i] = "broad_shared" if any(m in broad_ids for m in mates) else "unproven"
+            elif status[i] == "exact":
                 # its own record under the proven key is the answer it logged; byte-identical copies of a frame
                 # that was looked at share that frame's record, so only the first holder of the bytes was asked
                 if digest[i] in broad_digests:
@@ -790,8 +796,8 @@ def classify(loaded: Loaded, broad: Mapping[str, Any]) -> tuple[dict[str, str], 
                     claimed.add(digest[i])
                     classes[i] = "targeted"
             elif i not in middles and status[i] in ("no_exact_key", "no_jpeg") and any(m != i and m in proven for m in mates):
-                # no record of its own, and a proven look in its group gave the same answer: a shared copy
-                classes[i] = "broad_shared" if any(m in broad_ids for m in mates) else "targeted_shared"
+                # no record of its own, and a proven targeted look in its group gave the same answer: a shared copy
+                classes[i] = "targeted_shared"
             else:
                 # a record under its key that is not the logged answer, or no record and no proven look to share
                 # from: its provenance is unproven, and the answer is kept rather than removed as a targeted look

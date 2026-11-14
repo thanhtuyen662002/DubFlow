@@ -987,6 +987,37 @@ class ClassificationTests(unittest.TestCase):
             kept = {c["id"]: bool(tt.vision_items(c)) for c in prep.A0.logs["i1"]["candidates"]}
             self.assertTrue(kept["i1-s1c8"])
 
+    def test_a_broad_picks_duplicate_with_its_own_record_is_still_shared_not_targeted(self):
+        # the broad look answered the whole group and the targeted look skips answered shots: a record of the copy's
+        # own frame (an earlier run's look kept in the job's cache) does not make the copy a targeted look
+        with TemporaryDirectory() as tmp:
+            run = make_run_k(Path(tmp), twins={8: 3})
+            loaded = tt.load(run)
+            c3, c8 = (next(c for c in loaded.run.logs["i1"]["candidates"] if c["id"] == f"i1-s1c{n}") for n in (3, 8))
+            cache = run / ".dubflow-work" / "mastering" / "vision"
+            mine = tt._cache_key(vision.PROMPT_VERSION, PROVIDER, MODEL, ev.MOMENT_LABELS, loaded.jpeg[c3["keyframe"]])
+            record = json.loads((cache / f"{mine[:32]}.json").read_text(encoding="utf-8"))
+            key = tt._cache_key(vision.PROMPT_VERSION, PROVIDER, MODEL, ev.MOMENT_LABELS, loaded.jpeg[c8["keyframe"]])
+            self.assertNotEqual(key, mine)
+            (cache / f"{key[:32]}.json").write_text(json.dumps({**record, "key": key}, ensure_ascii=False), encoding="utf-8")
+            loaded = tt.load(run)
+            self.assertEqual(tt.own_answer(loaded, c8), "exact")
+            prep = tt.prepare(loaded)
+            self.assertEqual(prep.classification["classification_basis"], "exact")
+            self.assertEqual((prep.classes["i1-s1c3"], prep.classes["i1-s1c8"]), ("broad", "broad_shared"))
+            self.assertEqual(prep.classification["targeted_frames_item_parts"], 2)
+            kept = {c["id"]: bool(tt.vision_items(c)) for c in prep.A0.logs["i1"]["candidates"]}
+            self.assertTrue(kept["i1-s1c8"])
+            # another answer in a broad pick's group was not a targeted look either: it is unproven and kept
+            self.rewrite_logged(run, "i1-s1c8", text="Một câu trả lời khác")
+            path = cache / f"{key[:32]}.json"
+            path.write_text(json.dumps({**json.loads(path.read_text(encoding="utf-8")), "description": "Một câu trả lời khác"},
+                                       ensure_ascii=False), encoding="utf-8")
+            prep = tt.prepare(tt.load(run))
+            self.assertEqual(prep.classes["i1-s1c8"], "unproven")
+            kept = {c["id"]: bool(tt.vision_items(c)) for c in prep.A0.logs["i1"]["candidates"]}
+            self.assertTrue(kept["i1-s1c8"])
+
     def test_byte_identical_targeted_copies_count_one_look(self):
         with TemporaryDirectory() as tmp:
             run = make_run_k(Path(tmp), twins={1: 4})
