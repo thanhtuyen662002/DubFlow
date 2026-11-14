@@ -198,7 +198,8 @@ def setUpModule() -> None:  # one study on the fixture, read by the tests that o
     STUDY.update(root=root, run=run, donor=donor, gt=gt, lock=lock,
                  json=(root / "out" / "targeted-run-a.json").read_text(encoding="utf-8"),
                  md=(root / "out" / "targeted-run-a.md").read_text(encoding="utf-8"),
-                 batch=json.loads((root / "out" / "real-call-batch-run-a.json").read_text(encoding="utf-8")))
+                 batch=json.loads((root / "out" / "real-call-batch-run-a.json").read_text(encoding="utf-8")),
+                 perf=(root / "out" / "targeted-run-a.perf.json").read_text(encoding="utf-8"))
     STUDY["report"] = json.loads(STUDY["json"])
 
 
@@ -500,7 +501,16 @@ class ProvenanceAndSimulationTests(unittest.TestCase):
                  if r["status"] == "NOT_SIMULABLE"}
         batch = STUDY["batch"]
         self.assertEqual({(f["part"], f["candidate_id"]) for f in batch["list"]}, union)
-        self.assertEqual((batch["frames"], batch["execution"], batch["preregistered"]), (len(union), "none; owner approval required", True))
+        self.assertEqual((batch["frames"], batch["execution"]), (len(union), "none; owner approval required"))
+        label = STUDY["report"]["preregistration"]["label"]
+        self.assertEqual((batch["preregistered"], batch["preregistration"]), (label == tt.PREREGISTERED, label))
+
+    def test_the_batch_is_labelled_preregistered_only_when_the_gate_passed(self):
+        arms = arms_of(STUDY["report"])["open:mixed:W=fwd:+matched"]
+        options = tt.Options()
+        for label in (tt.PREREGISTERED, tt.PREREG_UNVERIFIED, tt.PREREG_MISMATCH, tt.NOT_PREREGISTERED):
+            batch = tt.real_call_batch("run-a", [arms], options, label)
+            self.assertEqual((batch["preregistered"], batch["preregistration"]), (label == tt.PREREGISTERED, label), label)
 
 
 class KeyframeTimeTests(unittest.TestCase):
@@ -850,6 +860,15 @@ class DeterminismTests(unittest.TestCase):
             self.assertNotIn("\\", path)
             self.assertTrue(path.startswith(".dubflow-work/"), path)
         self.assertNotIn(str(STUDY["root"]), STUDY["json"])
+        # the performance record leaves the machine too: run names only, no local folder (user name, home) paths
+        root = Path(STUDY["root"])
+        for form in {str(root), root.as_posix(), str(root.resolve()), root.resolve().as_posix(), str(Path.home()),
+                     Path.home().as_posix()}:
+            self.assertNotIn(form, STUDY["perf"])
+            self.assertNotIn(form.replace("\\", "\\\\"), STUDY["perf"])
+        perf = json.loads(STUDY["perf"])
+        self.assertNotIn("paths", perf)
+        self.assertEqual(perf["runs_loaded"], ["run-a", "run-b"])
         with TemporaryDirectory() as tmp:
             lf, crlf = Path(tmp) / "lf.py", Path(tmp) / "crlf.py"
             lf.write_bytes(b"a = 1\nb = 2\n")
@@ -883,6 +902,11 @@ def prereg_record(**changes) -> dict:
               "primary_metric": tt.PRIMARY_METRIC, "comparators": list(tt.COMPARATORS), "required_runs": tt.REQUIRED_RUNS}
     record.update(changes)
     return record
+
+
+FROZEN_RECORD = {"commit": "c60ab029e55ced81ebf8122ec1cfcd76f98ff0c7",
+                 "targeting_sha256": "fd884a26e7f70e8405364c9309f0129d41abe1c21e51cc053a991b701427ee92",
+                 "analysis_sha256": "4dff01c5fd1a80b9298c77439e2eb763056894e4dfecae6134cbf437d6711a7f"}
 
 
 class PreregistrationTests(unittest.TestCase):
@@ -923,7 +947,12 @@ class PreregistrationTests(unittest.TestCase):
         self.assertEqual((self.status(commit=None)["label"], self.status(commit=None)["commit_check"]),
                          (tt.NOT_PREREGISTERED, "no_commit"))
         self.assertEqual((self.status(False)["label"], self.status(False)["commit_check"]), (tt.NOT_PREREGISTERED, "not_ancestor"))
-        self.assertEqual((self.status(None)["label"], self.status(None)["commit_check"]), (tt.PREREGISTERED, "git_unavailable"))
+        # fail closed: without git the ancestry cannot be shown, so matching digests are not enough
+        self.assertEqual((self.status(None)["label"], self.status(None)["commit_check"]), (tt.PREREG_UNVERIFIED, "git_unavailable"))
+        self.assertTrue(self.status(None)["match"])
+        found = tt.gate_decision({"result": "not supported"}, {"run-a": "PASS"}, self.status(None)["label"])
+        self.assertEqual((found["result"], found["result_before_gates"], found["label"]),
+                         ("exploratory", "not supported", tt.PREREG_UNVERIFIED))
         # until the commit after the pre-registration commit fills it in, the committed record has no commit
         if json.loads(tt.PREREG_PATH.read_text(encoding="utf-8"))["commit"] is None:
             self.assertEqual(STUDY["report"]["preregistration"]["commit_check"], "no_commit")
@@ -935,10 +964,18 @@ class PreregistrationTests(unittest.TestCase):
         self.assertEqual(record["primary_metric"], tt.PRIMARY_METRIC)
         self.assertEqual(record["comparators"], list(tt.COMPARATORS))
         self.assertEqual(record["required_runs"], tt.REQUIRED_RUNS)
+        # The record is frozen: the real-data study ran at 716e984 with these digests and the commit as an ancestor
+        # (PREREGISTERED). It is never rewritten afterwards.
+        self.assertEqual({k: record[k] for k in FROZEN_RECORD}, FROZEN_RECORD)
+        # The selector is still the registered one.
         self.assertEqual(record["targeting_sha256"], tt.code_digest(HERE / "targeting.py"),
-                         "targeting.py changed after pre-registration: update the record only before any real-data run")
-        self.assertEqual(record["analysis_sha256"], tt.code_digest(HERE / "targeted.py"),
-                         "targeted.py changed after pre-registration: update the record only before any real-data run")
+                         "targeting.py changed after the real-data run: the registered selector must not change")
+        # targeted.py was hardened after that run (review of PR #830: fail-closed ancestry, batch label, no local paths
+        # in the perf record). A re-run at this head is therefore exploratory by construction, never PREREGISTERED.
+        self.assertNotEqual(record["analysis_sha256"], tt.code_digest(HERE / "targeted.py"))
+        with mock.patch.object(tt, "git_is_ancestor", return_value=True):
+            found = tt.prereg_status(tt.PREREG_PATH)
+        self.assertEqual((found["label"], found["mismatches"]), (tt.PREREG_MISMATCH, ["analysis_sha256"]))
 
 
 class DecisionTests(unittest.TestCase):

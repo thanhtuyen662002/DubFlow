@@ -1642,6 +1642,7 @@ def preflight(loaded: Loaded) -> dict[str, Any]:
 PREREGISTERED = "PREREGISTERED"
 PREREG_MISMATCH = "PREREGISTRATION MISMATCH: results exploratory"
 NOT_PREREGISTERED = "NOT PREREGISTERED: results exploratory"
+PREREG_UNVERIFIED = "PREREGISTRATION UNVERIFIED: results exploratory"
 
 
 def git_is_ancestor(commit: str) -> bool | None:
@@ -1660,7 +1661,8 @@ def git_is_ancestor(commit: str) -> bool | None:
 def prereg_status(path: Path | None) -> dict[str, Any]:
     """The pre-registration record against the code that runs: the selector (targeting.py) and the analysis
     (targeted.py: the metric, the arms, the matched budget and the decision rule) by digest, the primary arm, metric,
-    comparators and run count by value, and the record's commit as an ancestor of HEAD (when git is there)."""
+    comparators and run count by value, and the record's commit as an ancestor of HEAD. It fails closed: without git
+    (a source archive, no repository) the ancestry cannot be shown, so matching digests alone give PREREG_UNVERIFIED."""
     current = code_digest(HERE / "targeting.py")
     analysis = code_digest(HERE / "targeted.py")
     try:
@@ -1684,8 +1686,10 @@ def prereg_status(path: Path | None) -> dict[str, Any]:
         commit_check = "git_unavailable" if found is None else ("ancestor" if found else "not_ancestor")
     if mismatches:
         label = PREREG_MISMATCH
-    elif commit_check in ("ancestor", "git_unavailable"):
+    elif commit_check == "ancestor":
         label = PREREGISTERED
+    elif commit_check == "git_unavailable":
+        label = PREREG_UNVERIFIED
     else:
         label = NOT_PREREGISTERED
     return {"commit": commit, "commit_check": commit_check, "targeting_sha256": record.get("targeting_sha256"),
@@ -1890,7 +1894,9 @@ def across_runs(runs: Mapping[str, dict]) -> dict[str, Any]:
     return out
 
 
-def real_call_batch(primary: str, arms: Sequence[dict], options: Options) -> dict[str, Any]:
+def real_call_batch(primary: str, arms: Sequence[dict], options: Options, prereg_label: str) -> dict[str, Any]:
+    """The frames the named arms would send for real; ``preregistered`` is true only when the pre-registration gate of
+    this same study passed (ancestry, digests and named values)."""
     frames: dict[tuple, dict] = {}
     for a in arms:
         if a["id"] not in BATCH_ARMS:
@@ -1910,7 +1916,8 @@ def real_call_batch(primary: str, arms: Sequence[dict], options: Options) -> dic
             "cost": None if options.cost_per_call is None else r4(calls * options.cost_per_call),
             "cost_unit": options.cost_unit if options.cost_per_call is not None else None,
             "cost_basis": "given per call" if options.cost_per_call is not None else "not given",
-            "preregistered": True, "execution": "none; owner approval required", "list": listed}
+            "preregistered": prereg_label == PREREGISTERED, "preregistration": prereg_label,
+            "execution": "none; owner approval required", "list": listed}
 
 
 def run_all(gt: Mapping[str, Any], primary: Path, runs: Sequence[Path], options: Options) -> tuple[dict, dict, dict]:
@@ -1976,12 +1983,12 @@ def run_all(gt: Mapping[str, Any], primary: Path, runs: Sequence[Path], options:
         "runs": results, "across_runs": across_runs(results),
         "decision": gate_decision(decision(results, primary_name), blind, prereg["label"]),
         "real_call_batch": f"real-call-batch-{primary_name}.json", "caveats": list(CAVEATS)}
-    batch = real_call_batch(primary_name, results[primary_name]["arms"], options)
+    batch = real_call_batch(primary_name, results[primary_name]["arms"], options, prereg["label"])
     batch["targeted_report"] = f"targeted-{primary_name}.json"
     perf["total"] = time.perf_counter() - began_all
     perf["peak_ram_mb"] = peak_ram_mb()
     perf["memo"] = {"hits": memo.hits, "misses": memo.misses} if memo else None
-    perf["paths"] = {x.name: str(x.folder.resolve()) for x in loaded_all}
+    perf["runs_loaded"] = [x.name for x in loaded_all]  # run names only: no local folder paths leave the machine
     return report, batch, perf
 
 
