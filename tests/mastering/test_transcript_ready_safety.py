@@ -72,6 +72,12 @@ class TranscriptNeverVerifiesThePicture(unittest.TestCase):
         self.assertTrue(any(why in note for note in decision.notes), decision.notes)  # Windows replay: notes were empty
         self.assertFalse(any(why in note for note in alone.notes))  # no speech, no such note
 
+    def test_an_unrelated_caption_does_not_say_the_speech_matches(self):
+        unrelated = ev.Item("transcript", 850, "hôm nay trời mưa to ở thủ đô", (), "phụ đề nguồn")
+        state, _, decision = _one_shot(WEAK_VISION, unrelated)
+        self.assertNotEqual(state, rv.READY)
+        self.assertFalse(any("lời nói trong nguồn khớp câu" in note for note in decision.notes), decision.notes)  # e0cbc02: said
+
     def test_t2_transcript_only_is_never_visual_ready(self):
         state, confidence, decision = _one_shot(SAID)
         self.assertNotEqual(state, rv.READY)  # 3ecaf7d: READY at 680 on a shot nobody looked at
@@ -254,6 +260,33 @@ class SpeechNeverReweightsWhatIsSeen(unittest.TestCase):
         self.assertEqual([c.candidate.candidate_id for c in mine], ["B"])  # localised by speech ...
         self.assertTrue(all(c.needs_review for c in mine))  # ... never verified by it
         self.assertEqual(decision.coverage["illustrated_ms"], 0)
+
+
+class CaptionsAreNotALook(unittest.TestCase):
+    """Lead P2-1 on e0cbc02: ``evidence_state`` said SOURCE_INSUFFICIENT ("the footage lacks this sentence") when every
+    usable shot carried only source captions, none matching: no frame of them was seen, so it is MATCH_NOT_FOUND."""
+
+    def _state(self, *items: ev.Item) -> str:
+        pool = [_candidate("v1c1", 0, 6000), _candidate("v1c2", 6000, 12_000)]
+        found = ev.gather(["v1c1", "v1c2"])
+        for key in found:
+            for item in items:
+                found[key].add(item)
+        unit = align.Unit("u1", TEXT, 0, 4000, "narration")
+        _, (decision,), mode = align.assign([unit], pool, found, PACING, forward_only=False)
+        self.assertEqual(decision.coverage["best_relevance"], 0)
+        return rv.evidence_state({"unit_id": "u1", "coverage": decision.coverage}, _log(mode, found))
+
+    def test_captions_only_is_not_found_not_absent(self):
+        said = ev.Item("transcript", 850, "hôm nay trời mưa to ở thủ đô", (), "phụ đề nguồn")
+        self.assertEqual(self._state(said), rv.MATCH_NOT_FOUND)  # e0cbc02: SOURCE_INSUFFICIENT
+
+    def test_seen_shots_without_it_still_say_the_footage_lacks_it(self):
+        self.assertEqual(self._state(OTHER_VISION), rv.SOURCE_INSUFFICIENT)
+
+    def test_text_read_off_the_frame_is_a_look(self):
+        read = ev.Item("transcript", 850, "hôm nay trời mưa to ở thủ đô", (), "ocr")
+        self.assertEqual(self._state(read), rv.SOURCE_INSUFFICIENT)
 
 
 class LegacyPaths(unittest.TestCase):

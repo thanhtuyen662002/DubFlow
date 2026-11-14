@@ -871,6 +871,14 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
         relevance = relevance_of[(unit.unit_id, candidate.candidate_id)][0]
         return scorer.unspoken_relevance(unit, candidate, relevance) < MIN_RELEVANCE
 
+    def speech_matches(unit: Unit, candidate: Candidate) -> bool:
+        """Whether the speech over ``candidate`` is what matches it to ``unit`` more than what is known of it without
+        the speech (#836 Lead P2: an unrelated caption over a weakly seen shot says nothing about this sentence)."""
+        if candidate.candidate_id not in scorer.spoken:
+            return False
+        relevance = relevance_of[(unit.unit_id, candidate.candidate_id)][0]
+        return relevance > scorer.unspoken_relevance(unit, candidate, relevance)
+
     ahead_now = 0
     narration_left = 0
 
@@ -1235,8 +1243,8 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
             elif pick["tier"] == "pinned":
                 user_ms += pick["length"]
             needs_review = confidence < REVIEW_BELOW or not candidate.quality.usable
-            if confidence < REVIEW_BELOW and candidate.candidate_id in accept and candidate.candidate_id in scorer.spoken \
-                    and pick["tier"] != "repeat" and not spoken_only(unit, candidate):
+            if confidence < REVIEW_BELOW and candidate.candidate_id in accept and pick["tier"] != "repeat" \
+                    and speech_matches(unit, candidate) and not spoken_only(unit, candidate):
                 weak_spoken_ms += pick["length"]
             mine.append(Choice(unit.unit_id, candidate, pick["offset"], pick["length"], pick["score"], confidence, needs_review,
                                tuple(reasons[:8])))
