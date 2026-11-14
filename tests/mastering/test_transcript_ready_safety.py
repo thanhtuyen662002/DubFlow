@@ -65,6 +65,13 @@ class TranscriptNeverVerifiesThePicture(unittest.TestCase):
         self.assertNotEqual(state, rv.READY)  # 3ecaf7d: 560 -> 680, READY
         self.assertEqual(after, before)  # the speech adds nothing to the confidence
 
+    def test_t1_the_sentence_says_why_it_is_not_ready(self):
+        _, _, alone = _one_shot(WEAK_VISION)
+        _, _, decision = _one_shot(WEAK_VISION, SAID)
+        why = "giây cảnh có lời nói trong nguồn khớp câu nhưng bằng chứng hình ảnh còn yếu (độ tin cậy dưới 600): cần kiểm tra"
+        self.assertTrue(any(why in note for note in decision.notes), decision.notes)  # Windows replay: notes were empty
+        self.assertFalse(any(why in note for note in alone.notes))  # no speech, no such note
+
     def test_t2_transcript_only_is_never_visual_ready(self):
         state, confidence, decision = _one_shot(SAID)
         self.assertNotEqual(state, rv.READY)  # 3ecaf7d: READY at 680 on a shot nobody looked at
