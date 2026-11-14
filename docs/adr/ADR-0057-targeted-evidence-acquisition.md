@@ -56,7 +56,7 @@ latest completed Owner-PC re-runs, at `4558305` and `669f298` (exploratory, A = 
 arm and no rc16 class; rc12 moves one id (multi_frame to unproven) and its 6 open B0 arms. `e6d000f`
 makes the own-record proof also compare the side metadata; its Owner-PC re-run (exploratory, A = B) equals `669f298`
 in every class, arm and decision value (rc16: 148 own records exact, 0 side mismatches). The current code head
-`42b5195` (after `a8d82ed`) reads every run file once, only as a single-named regular file inside the run folder,
+`52d9c06` (after `a8d82ed` and `42b5195`) reads every run file once, only as a single-named regular file inside the run folder,
 parses the run from those bytes, and makes the donor proof also compare the side metadata;
 its E1 classification/A0 and E3–E5 numbers are **UNVERIFIED** until its Owner-PC re-run is published (the rc16 E3–E5
 numbers here were measured at `e6d000f`).
@@ -429,7 +429,7 @@ the spec's asked pair) and left `targeting.py` unchanged. The exact-key recomput
 replayed answers carry the record's product and hook fields; `4607031`: without an exact basis every non-broad answer
 is unproven) and the later fixes `2b24f93` to `e6d000f` (run record §16) are all exploratory; the PC re-runs at
 `4607031`, `4558305` and `669f298` change no rc16 arm and no decision value. Its exploratory PC re-run at
-`e6d000f` also changes none. The current code head `42b5195` (run read once from checked bytes inside the run folder; donor side metadata) is
+`e6d000f` also changes none. The current code head `52d9c06` (run read once from checked bytes inside the run folder; donor side metadata) is
 UNVERIFIED until its PC re-run is published.
 
 **Experiments.** E1 baseline replay; E2 GT-blind selection; E3 evidence replay from saved answers (a selected frame
