@@ -2984,7 +2984,7 @@ class ScopeTests(unittest.TestCase):
             self.assertNotEqual(path, "scripts/ci/component_registry.json")
 
 
-GOLDEN = "c576c6bfb736413761c3449109af146273608eb7409afadc3f69e137823ce2a3"
+GOLDEN = "99d44be47a65b2dc260386a901cc5abc22419eb02dc638c8e28f4f2a3814d653"  # #836: the fixture logs carry the new recipe and notes (study numbers unchanged)
 
 
 if __name__ == "__main__":

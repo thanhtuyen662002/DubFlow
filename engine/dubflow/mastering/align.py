@@ -216,6 +216,20 @@ COMMON_SHARE = 500  # ‰ of the described shots a word is in before it tells no
 COMMON_MIN_SHOTS = 4  # with fewer described shots every word is "common": the rule needs a few
 
 
+def _texts(items: Iterable[ev.Item]) -> dict[str, int]:
+    """Text → its best trust-weighted confidence (milli), for the names it holds."""
+    texts: dict[str, int] = {}
+    for item in items:
+        weight = item.confidence * ev.TRUST[item.origin] // 1000
+        texts[item.text] = max(texts.get(item.text, 0), weight)
+    return texts
+
+
+def _terms_without_speech(found: ev.Evidence) -> dict[str, int]:
+    """``found.terms()`` without the speech over the shot (#836)."""
+    return ev.Evidence(found.candidate_id, [i for i in found.items if ev.verifies(i) or i.origin != "transcript"]).terms()
+
+
 class Scorer:
     """Scores candidates for units from their evidence (idf over the candidates of this job)."""
 
@@ -224,12 +238,18 @@ class Scorer:
         self.evidence = evidence
         self.terms = {c.candidate_id: evidence[c.candidate_id].terms() if c.candidate_id in evidence else {} for c in self.candidates}
         self.loose = {key: ev.loose(found) for key, found in self.terms.items()}
-        # what the content evidence alone says (P2-14): a shot matched only through its file name is ranked by it,
-        # never trusted for it; only candidates that carry a file name need the second set
+        # what the evidence that can verify the picture alone says (P2-14, #836): a shot matched only through its file
+        # name or the speech over it is ranked by them, never trusted for them; only candidates that carry such
+        # evidence need the second set (``verified``), and only those with speech the third (``unspoken``: what is
+        # known of the shot without the speech, its file name kept, for the coverage)
         self.named = {c.candidate_id for c in self.candidates if c.candidate_id in evidence
-                      and any(i.origin not in ev.CONTENT_ORIGINS and i.origin != "signal" for i in evidence[c.candidate_id].items)}
-        self.content_terms = {key: evidence[key].terms(content_only=True) for key in self.named}
+                      and any(not ev.verifies(i) and i.origin != "signal" for i in evidence[c.candidate_id].items)}
+        self.spoken = {key for key in self.named if any(i.origin == "transcript" and not ev.verifies(i) and i.text.strip()
+                                                        for i in evidence[key].items)}
+        self.content_terms = {key: evidence[key].terms(verifying_only=True) for key in self.named}
         self.content_loose = {key: ev.loose(found) for key, found in self.content_terms.items()}
+        self.unspoken_terms = {key: _terms_without_speech(evidence[key]) for key in self.spoken}
+        self.unspoken_loose = {key: ev.loose(found) for key, found in self.unspoken_terms.items()}
         self.labels = {c.candidate_id: evidence[c.candidate_id].labels() if c.candidate_id in evidence else {} for c in self.candidates}
         frequency: dict[str, int] = {}
         for key, found in self.terms.items():
@@ -253,15 +273,20 @@ class Scorer:
         self._mention_cache: dict[str, list[names.Mention]] = {}
         self.entities: dict[str, dict[str, list[tuple[names.Mention, int]]]] = {}
         seen_with: dict[str, int] = {}
+        # the names a shot's verifying evidence alone shows (#836: a name said over a shot is not on it), and without
+        # the speech, for the same candidates as above
+        self.content_entities: dict[str, dict[str, list[tuple[names.Mention, int]]]] = {}
+        self.unspoken_entities: dict[str, dict[str, list[tuple[names.Mention, int]]]] = {}
         for c in self.candidates:
             info = evidence.get(c.candidate_id)
-            texts: dict[str, int] = {}
-            for item in info.items if info else ():
-                if item.origin != "signal" and item.text:
-                    weight = item.confidence * ev.TRUST[item.origin] // 1000
-                    texts[item.text] = max(texts.get(item.text, 0), weight)
-            found = names.found_in(texts, self.names)
+            items = [i for i in (info.items if info else ()) if i.origin != "signal" and i.text]
+            found = names.found_in(_texts(items), self.names)
             self.entities[c.candidate_id] = found
+            if c.candidate_id in self.named:
+                self.content_entities[c.candidate_id] = names.found_in(_texts([i for i in items if ev.verifies(i)]), self.names)
+            if c.candidate_id in self.spoken:
+                self.unspoken_entities[c.candidate_id] = names.found_in(
+                    _texts([i for i in items if not (i.origin == "transcript" and not ev.verifies(i))]), self.names)
             for entity_id in found:
                 seen_with[entity_id] = seen_with.get(entity_id, 0) + 1
         self.entity_idf = {e: math.log(1 + count / (1 + n)) for e, n in seen_with.items()}
@@ -269,19 +294,30 @@ class Scorer:
                                          if described >= COMMON_MIN_SHOTS and n * 1000 > COMMON_SHARE * described)
 
     def content_relevance(self, unit: Unit, candidate: Candidate, relevance: int) -> int:
-        """The relevance the content evidence alone gives (no file name), at most ``relevance``."""
-        if candidate.candidate_id not in self.named or relevance <= 0:
+        """The relevance the evidence that can verify the picture alone gives (no file name, no speech over the shot,
+        #836), at most ``relevance``: what the confidence of a choice is built on."""
+        key = candidate.candidate_id
+        if key not in self.named or relevance <= 0:
             return relevance
-        terms, loose = self.terms, self.loose
-        self.terms, self.loose = {**terms, candidate.candidate_id: self.content_terms[candidate.candidate_id]}, \
-            {**loose, candidate.candidate_id: self.content_loose[candidate.candidate_id]}
-        try:
-            return min(relevance, self.relevance(unit, candidate)[0])
-        finally:
-            self.terms, self.loose = terms, loose
+        return min(relevance, self._relevance(unit, self.content_terms[key], self.content_loose[key],
+                                              self.content_entities[key])[0])
+
+    def unspoken_relevance(self, unit: Unit, candidate: Candidate, relevance: int) -> int:
+        """The relevance without the speech over the shot (its file name kept), at most ``relevance`` (#836): a
+        shot that matches a sentence only through what is said over it does not illustrate the sentence."""
+        key = candidate.candidate_id
+        if key not in self.spoken or relevance <= 0:
+            return relevance
+        return min(relevance, self._relevance(unit, self.unspoken_terms[key], self.unspoken_loose[key],
+                                              self.unspoken_entities[key])[0])
 
     def relevance(self, unit: Unit, candidate: Candidate) -> tuple[int, list[str]]:
         """0–1000 and the matched words (for the reason)."""
+        key = candidate.candidate_id
+        return self._relevance(unit, self.terms[key], self.loose[key], self.entities.get(key, {}))
+
+    def _relevance(self, unit: Unit, found: Mapping[str, int], loose: Mapping[str, int],
+                   shot_names: Mapping[str, list[tuple[names.Mention, int]]]) -> tuple[int, list[str]]:
         wanted = ev.terms(unit.text)
         mentions = self._mentions(unit.text)
         if mentions:
@@ -292,9 +328,7 @@ class Scorer:
                                                             for w in t.split()))
         if not wanted and not mentions:
             return 0, []
-        found, loose = self.terms[candidate.candidate_id], self.loose[candidate.candidate_id]
         matched, total, words = 0.0, 0.0, []
-        shot_names = self.entities.get(candidate.candidate_id, {})
         for mention in {m.entity_id: m for m in mentions}.values():
             weight = 2 * self.entity_idf.get(mention.entity_id, self.default_idf)
             total += weight
@@ -760,8 +794,9 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
         info = evidence.get(candidate.candidate_id)
         if mode != "content":
             return min(SIGNALS_ONLY_CAP, 250 + candidate.quality.score // 5)
-        trusted = max([i.confidence * ev.TRUST[i.origin] // 1000 for i in info.items if i.origin in ev.CONTENT_ORIGINS] or [0]) \
-            if info else 0
+        # only what can verify the picture is trusted (#836): the speech over a shot finds and ranks it, it never
+        # vouches for it, so a shot known from its speech alone is never READY on it
+        trusted = _trusted(info)
         relevance = scorer.content_relevance(unit, candidate, relevance)
         claim = checked.get((unit.unit_id, candidate.candidate_id))
         # a shot whose evidence shows every number, title or stated words the sentence says is displayed matches it
@@ -772,6 +807,17 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
             return min(SIGNALS_ONLY_CAP, 250 + fit // 4)
         match = 1000 if proven else min(1000, relevance * 1000 // MATCH_FULL)
         return trusted * (600 + 400 * match // 1000) // 1000
+
+    def spoken_only(unit: Unit, candidate: Candidate) -> bool:
+        """Whether ``candidate`` matches ``unit`` only through the speech over it (#836): without the speech its
+        evidence shares no word with the sentence and shows none of what the sentence says is displayed."""
+        if candidate.candidate_id not in scorer.spoken:
+            return False
+        claim = checked.get((unit.unit_id, candidate.candidate_id))
+        if claim is not None and claim.verified:
+            return False
+        relevance = relevance_of[(unit.unit_id, candidate.candidate_id)][0]
+        return scorer.unspoken_relevance(unit, candidate, relevance) < MIN_RELEVANCE
 
     ahead_now = 0
     narration_left = 0
@@ -866,6 +912,8 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
         accept = accepts[unit.unit_id]
         illustrated = 0
         user_ms = 0
+        spoken_ms = 0
+        weak_spoken_ms = 0  # time of shots the speech over them matches while what is seen is too weak (#836)
         pinned = [by_id[i] for i in live_pins.get(unit.unit_id, [])]
         if len([i for i in edits.pin.get(unit.unit_id, []) if i in by_id]) != len(pinned):
             decision.notes.append("một cảnh đã ghim nằm trong cảnh bạn đã loại nên được bỏ qua")
@@ -1126,11 +1174,18 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
             # a shot shown again to fill the sentence says nothing new: it is not counted as illustrating it
             # a pinned shot the AI saw no match in is the user's illustration, never AI evidence: it counts apart (rc9
             # P2-N14: a pin of an unrelated shot turned into "MATCH_AVAILABLE, coverage 1000, READY")
-            if candidate.candidate_id in accept and pick["tier"] != "repeat":
+            if candidate.candidate_id in accept and pick["tier"] != "repeat" and spoken_only(unit, candidate):
+                # a shot that matches the sentence only through the speech over it is not footage that illustrates
+                # it (#836): the time counts apart and the sentence asks for a look (and a targeted vision look)
+                spoken_ms += pick["length"]
+            elif candidate.candidate_id in accept and pick["tier"] != "repeat":
                 illustrated += pick["length"]
             elif pick["tier"] == "pinned":
                 user_ms += pick["length"]
             needs_review = confidence < REVIEW_BELOW or not candidate.quality.usable
+            if confidence < REVIEW_BELOW and candidate.candidate_id in accept and candidate.candidate_id in scorer.spoken \
+                    and pick["tier"] != "repeat" and not spoken_only(unit, candidate):
+                weak_spoken_ms += pick["length"]
             mine.append(Choice(unit.unit_id, candidate, pick["offset"], pick["length"], pick["score"], confidence, needs_review,
                                tuple(reasons[:8])))
             decision.chosen.append(candidate.candidate_id)
@@ -1153,6 +1208,12 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
                     "needs_review": review, "matched_footage": len(accept), "best_relevance": best, "user_ms": user_ms}
         decision.coverage = coverage
         note = "" if generic else _coverage_note(milli, bool(accept))
+        if spoken_ms:  # said in a note, the log's coverage keys stay those of the contract (editorial-v1)
+            note = (f"{spoken_ms / 1000:.1f} giây cảnh chỉ khớp lời nói trong nguồn (phụ đề/transcript), chưa có bằng chứng "
+                    "hình ảnh: cần kiểm tra" + (f"; {note}" if note else ""))
+        if weak_spoken_ms:  # the speech no longer lifts a weak look over the bar: say why the sentence is not READY
+            note = (f"{weak_spoken_ms / 1000:.1f} giây cảnh có lời nói trong nguồn khớp câu nhưng bằng chứng hình ảnh còn yếu "
+                    f"(độ tin cậy dưới {REVIEW_BELOW}): cần kiểm tra" + (f"; {note}" if note else ""))
         if pinned_by_user and user_ms:
             note = "cảnh do người dùng chọn; AI không thấy cảnh này khớp lời câu" if not milli else \
                 f"chỉ {milli // 10} % thời lượng câu có cảnh AI thấy khớp lời; phần còn lại là cảnh người dùng chọn"
@@ -1228,6 +1289,12 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
     return choices, [decisions[u.unit_id] for u in found_units], mode
 
 
+def _trusted(info: ev.Evidence | None) -> int:
+    """How far what can verify a shot's picture is trusted (milli): the vision, text read off the frame, the user's
+    word; never its file name, never the speech over it (#836)."""
+    return max([i.confidence * ev.TRUST[i.origin] // 1000 for i in info.items if ev.verifies(i)] or [0]) if info else 0
+
+
 def _product_unseen(mine: Sequence[Choice], evidence: Mapping[str, ev.Evidence]) -> bool:
     """Whether the vision looked at the shots of ``mine`` and saw the product in none of them."""
     seen = [getattr(evidence.get(c.candidate.candidate_id), "product_visible", None) for c in mine]
@@ -1248,8 +1315,7 @@ def _signals(unit: Unit, mine: Sequence[Choice], accept: set[str], best: int, mi
     own = neutral = repeat = held = 0
     for c in mine:
         info = evidence.get(c.candidate.candidate_id)
-        trust.append(max([i.confidence * ev.TRUST[i.origin] // 1000 for i in info.items if i.origin in ev.CONTENT_ORIGINS] or [0])
-                     if info else 0)
+        trust.append(_trusted(info))
         if any("nhắc lại cảnh" in r for r in c.reasons):
             repeat += c.length_ms
         elif c.candidate.candidate_id in stills:
