@@ -121,7 +121,7 @@ Bằng chứng gốc (nhật ký, ảnh khung, câu trả lời vision) nằm tr
 |---|---|
 | E1 Baseline | §1: recall, độ phủ ứng viên và thu bằng chứng, bỏ sót không báo, khung/lời gọi, thời gian, RAM |
 | E2 Định vị | mỗi nhánh chọn thêm khung chỉ từ "planning view" không chứa nhãn; số câu R3 có khung trúng, so với kỳ vọng ngẫu nhiên |
-| E3 Phát lại bằng chứng | khung được chọn nhận câu trả lời đã lưu khi JPEG giống từng byte và cùng provider/model (đúng khoá cache production); nếu không có thì ghi "không mô phỏng được" |
+| E3 Phát lại bằng chứng | khung được chọn nhận câu trả lời đã lưu chỉ khi khoá cache chính xác của production được chứng minh: phiên bản prompt, nhà cung cấp, model đã yêu cầu, bộ nhãn và byte JPEG, và câu trả lời đã ghi phải khớp bản ghi cache (từ `a558396`/`468cb05`; lần tính lại exploratory, xem §4.4 và mục "Trạng thái số liệu E3–E5"); nếu không có thì ghi "không mô phỏng được". Lần chạy ban đầu `716e984` chỉ dùng phép xấp xỉ trước rà soát (JPEG giống từng byte và cùng nhà cung cấp, model ở mức lần chạy), **không** phải khoá cache production |
 | E4 Ngân sách | matched (bằng số khung có mục tiêu mà lần chạy đã trả, rc16: 40), 2x (80), 4x (160), cộng thêm trên phần đã chi; và một nhánh cùng tổng ngân sách (respend B0) |
 | E5 Gán lỗi | chuyển tầng từng câu: R3 sửa được, R3 chuyển sang R4/R5/R6, câu trúng bị mất, bỏ sót không báo mới, READY sai, cảnh báo thừa |
 

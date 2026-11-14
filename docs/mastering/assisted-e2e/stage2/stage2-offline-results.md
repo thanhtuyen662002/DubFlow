@@ -221,9 +221,12 @@ Arm A replays the saved run with review edits excluded, so it can differ from th
 
 Open condition (production-like). Rows shown: the uniform (A+) and production (P+) arms, every targeted strategy at the
 forward window, and the respend arms. The 5 s, 10 s, 15 s and 30 s windows are in the generated report and stay inside
-the ranges given below the table. "Simulated" is the number of selected frames for which some saved run has an answer
-for the byte-identical keyframe JPEG from the same provider and model; the other
-selected frames keep the baseline answer. "Fixed R3", "R3→R4/R5/R6" and "Lost" are the E5 columns of the generated
+the ranges given below the table. "Simulated" is the number of selected frames that receive a saved answer; the other
+selected frames keep the baseline answer. In the initial `716e984` run this used a pre-review approximation (an answer
+for the byte-identical keyframe JPEG from the same run-level provider and model), which is **not** the production
+cache key. The exploratory recompute (§15, final rule `468cb05`, PREREGISTRATION MISMATCH) admits an answer only under
+the exact production key (prompt version, provider, model asked, label set, JPEG bytes) with the logged answer equal to
+the cached record; for rc16 it reproduces every metric in this section; only the donor-supply and simulated-frame counts listed in §15 differ. "Fixed R3", "R3→R4/R5/R6" and "Lost" are the E5 columns of the generated
 report, copied as printed. The generated report does not split the fixed units by cause (new evidence, a duplicate
 copy, or indirectly through the cursor or ranking), so that split is not reported here.
 
