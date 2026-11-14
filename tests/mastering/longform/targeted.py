@@ -1901,7 +1901,8 @@ def evaluate_run(gt: Mapping[str, Any], target: Prepared, donors: Sequence[Prepa
         if "e2" in a:
             a["e2"].pop("_r3_with_frame", None)
     out = {"e1": e1, "arms": results, "upper_bounds": bounds,
-           "matching": {"tolerance_ms": options.tolerance_ms,  # labels near misses only; never admits an answer "donor_runs": index.donor_runs, **index.counts,
+           # tolerance_ms labels near misses only; it never admits an answer
+           "matching": {"tolerance_ms": options.tolerance_ms, "donor_runs": index.donor_runs, **index.counts,
                         "key_basis_status": index.key_basis_status,
                         # the basis without names: prompt version, a digest of provider|model, and which label set
                         "key_basis": {"prompt": index.key_basis[0],

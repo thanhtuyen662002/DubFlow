@@ -460,6 +460,14 @@ class MatchingTests(unittest.TestCase):
             (path.parent / f"{key[:32]}.json").write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
         return change
 
+    def test_the_report_keeps_every_matching_count(self):
+        matching = STUDY["report"]["runs"]["run-a"]["matching"]
+        for key in ("tolerance_ms", "donor_runs", "donor_shared_excluded", "donor_provider_mismatch", "detail_mismatch",
+                    "own_cache_frames", "key_basis_status", "key_basis", "provenance"):
+            self.assertIn(key, matching, key)
+        self.assertEqual(matching["key_basis_status"], "exact")
+        self.assertEqual(matching["donor_runs"], ["run-b"])
+
     def test_an_exact_production_key_is_simulated(self):
         with TemporaryDirectory() as tmp:
             index, target = self.donor_with(Path(tmp), lambda path, record, loaded: None)
@@ -1344,7 +1352,7 @@ class ScopeTests(unittest.TestCase):
             self.assertNotEqual(path, "scripts/ci/component_registry.json")
 
 
-GOLDEN = "f9a2af50778ba00fd89519367f3758525f03bbc33304fe3fbd82c8cf53eb6f15"
+GOLDEN = "2ec8a673d57bf0235a7870b96012abf39312ba016634e1fee74eb2c833210d50"
 
 
 if __name__ == "__main__":
