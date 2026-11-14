@@ -8,9 +8,16 @@ Báo cáo này chỉ gồm **thí nghiệm offline có giới hạn** và một 
 
 Các số E3–E5 trong báo cáo này đều lấy từ lần chạy `716e984`: recall từ câu trả lời đã lưu, độ phủ cache và chênh lệch quy nguyên E5. Lần chạy đó ghép câu trả lời của lần chạy cho bằng byte JPEG cộng nhà cung cấp và model ở mức lần chạy, **chưa** kiểm khoá cache đầy đủ của production. Khoá đầy đủ gồm phiên bản prompt, nhà cung cấp, model, bộ nhãn và byte JPEG, và câu trả lời đã ghi phải khớp bản ghi cache.
 
-Rà soát của Lead đã chỉ ra thiếu sót này. Harness nay chỉ nhận câu trả lời khi khoá chính xác được chứng minh (`a558396`, PR #831). Trước khi E3–E5 được tính lại theo quy tắc mới, mọi số E3–E5 ở đây là **UNVERIFIED**. Chúng vốn chỉ là mô phỏng một phần, và khuyến nghị không dựa vào chúng.
+Rà soát của Lead đã chỉ ra thiếu sót này. Harness nay chỉ nhận câu trả lời khi khoá chính xác được chứng minh (`a558396`, PR #831).
 
-Quyết định E2 đã đăng ký trước ("not supported") không dùng câu trả lời của lần chạy cho, nên vẫn là quyết định được ghi nhận tại `716e984`. Mọi lần chạy lại ở head sau đều là exploratory theo thiết kế.
+**Tính lại theo khoá chính xác (exploratory, 2026-11-14).** E3–E5 đã được tính lại trên máy của chủ dự án từ đúng năm lần chạy đã lưu, tại `a558396`, `b17bb53` và, sau lần rà soát thứ hai của Lead, tại `468cb05`. Quy tắc cuối cùng chỉ lấy khoá cache cũ từ cặp nhà cung cấp và model mà spec của lần chạy yêu cầu, hoặc từ `made_by` của chính bản ghi. Báo cáo của lần chạy ghi model đã trả lời nên không bao giờ được dùng làm khoá. Cả ba lần đều mang nhãn PREREGISTRATION MISMATCH (exploratory) theo thiết kế, và lần chạy A, B giống nhau từng byte.
+
+- rc16 là lần chạy chính và là nguồn của mọi số E3–E5 trong báo cáo này. Khoá của rc16 được chứng minh bằng `made_by`, và phần rc16 không đổi dưới quy tắc cuối. So với `716e984` chỉ có `open:A+` ở 4x mô phỏng được 5/160 khung (trước là 6/160), và nhánh `A+` closed world cùng trần mô phỏng còn 19 khung (trước là 20). Không có giá trị recall, fixed, broken, silent miss, READY hay cảnh báo nào thay đổi.
+- rc12–rc15 là các lần chạy hỗ trợ. Spec của chúng không ghi model và bản ghi cache không có `made_by`, nên không chứng minh được khoá nào. Chúng không mô phỏng được khung nào, và số E3–E5 của chúng trở về baseline của chính lần chạy. Chúng chỉ phục vụ quyết định E2, vốn dựa trên việc chọn khung và giống hệt ở mọi head.
+
+Vì vậy các số E3–E5 của rc16 trong báo cáo này được giữ, với tư cách mô phỏng một phần đã kiểm khoá chính xác (exploratory). Khuyến nghị vẫn không dựa vào chúng.
+
+Quyết định E2 đã đăng ký trước ("not supported") không dùng câu trả lời của lần chạy cho, nên vẫn là quyết định được ghi nhận tại `716e984`.
 
 ## Kết luận
 

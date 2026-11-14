@@ -42,7 +42,7 @@
 
 **E3–E5 provenance (Lead review, 2026-11-14).** At `716e984` donor answers were matched by JPEG bytes and by the run-level provider and model. That does not prove the full production cache key: prompt version, provider, model, label set and JPEG bytes, with the logged answer equal to the cached record. The harness now requires that proof (`a558396`, PR #831).
 
-Every E3–E5 number in this record (§10 onwards: simulated counts, open-world recall, E5 deltas) is therefore **UNVERIFIED** until it is recomputed from the saved runs with the exact-key rule. That recompute is exploratory by design. The E2 decision of record does not use donor answers and is unchanged.
+The E3–E5 numbers in this record (§10 onwards: simulated counts, open-world recall, E5 deltas) were therefore recomputed from the same saved runs with the exact-key rule; see §15. The recompute is exploratory by design. It changes no rc16 metric (rc16 is the run behind every E3–E5 number here): only two simulated-frame counts drop by one. The supporting runs rc12–rc15 record no asked model, so no cache key can be proven for them and they simulate nothing. The E2 decision of record does not use donor answers and is unchanged.
 
 Timeline (UTC, 2026-11-14, from the output files' write times on the PC):
 
@@ -60,9 +60,9 @@ Experiment status:
 |---|---|---|
 | E1 baseline replay | **RAN** (exit 0, rc12 to rc16) | full: recall@1/3/5, attribution, READY precision, oracle bounds |
 | E2 targeted sampling simulation | **RAN** (exit 0, 5 runs, blindness PASS on all 5) | full for selection; pre-registered decision "not supported" |
-| E3 evidence replay | **RAN** at `716e984` as a partial simulation under the old matching rule, now **UNVERIFIED** (no exact production cache-key proof; see below); real vision calls **NOT_RUN** | only frames with a saved answer could be replayed (open arms: at most 7.5 % matched, 5.6 % at 4x) |
-| E4 budget comparison | **RAN**; frames and call estimates stand, the recall replay is **UNVERIFIED** (as E3); real-call cost **NOT_RUN** | frames and estimated calls per arm; recall replay partial; no price given, cost null |
-| E5 failure attribution | **RAN** at `716e984`, now **UNVERIFIED** (as E3) | per-arm R3 fixed, moves to R4/R5/R6, lost hits, silent misses, false READY, warnings |
+| E3 evidence replay | **RAN** at `716e984` as a partial simulation; **recomputed** with the exact production cache key (exploratory, §15), rc16 metrics unchanged, rc12–rc15 not simulable (no provable key); real vision calls **NOT_RUN** | only frames with a saved answer could be replayed (open arms: at most 7.5 % matched, 5.6 % at 4x) |
+| E4 budget comparison | **RAN**; frames and call estimates stand, the recall replay was recomputed as E3 (unchanged); real-call cost **NOT_RUN** | frames and estimated calls per arm; recall replay partial; no price given, cost null |
+| E5 failure attribution | **RAN** at `716e984`; recomputed as E3, unchanged | per-arm R3 fixed, moves to R4/R5/R6, lost hits, silent misses, false READY, warnings |
 | Owner-approved real-call batch | **NOT_RUN** | batch file written with `execution: none`; needs the owner's approval and a new pre-registration at the head that runs it |
 
 Runs:
@@ -219,7 +219,7 @@ Arm A replays the saved run with review edits excluded, so it can differ from th
 Open condition (production-like). Rows shown: the uniform (A+) and production (P+) arms, every targeted strategy at the
 forward window, and the respend arms. The 5 s, 10 s, 15 s and 30 s windows are in the generated report and stay inside
 the ranges given below the table. "Simulated" is the number of selected frames for which some saved run has an answer
-for the byte-identical keyframe JPEG from the same provider and model (the production cache-key basis); the other
+for the byte-identical keyframe JPEG from the same provider and model; the other
 selected frames keep the baseline answer. "Fixed R3", "R3→R4/R5/R6" and "Lost" are the E5 columns of the generated
 report, copied as printed. The generated report does not split the fixed units by cause (new evidence, a duplicate
 copy, or indirectly through the cursor or ranking), so that split is not reported here.
@@ -339,7 +339,76 @@ run: candidate ids, times and keyframe digests only. It was **not executed**; ru
 - A0 keeps the logged sub-shots (the replay does not re-split them) with their non-vision evidence only
 - runs not independent (shared footage, ground truth, 4/5 donors)
 
+At `716e984` "simulated" meant a donor answer for the same JPEG bytes from the same run-level provider and model. The
+exact-key recompute (§15) also requires the prompt version, the label set and the logged answer to equal the cached
+record, and adds the caveat line: "an answer is replayed only under its exact production cache key (prompt version,
+provider, model, label set, JPEG bytes) with the logged answer equal to the cached record; no match by time or by
+run-level provider and model".
+
 The four supporting-run sections of the generated report are summarised by the decision table in §8; their full rows
 are not reproduced here.
+
+## 15. Exact-key recompute of E3–E5 (exploratory)
+
+Lead review of PR #830 found that §10–§11 matched donor answers without proving the full production cache key. PR #831
+admits an answer only when its exact key (prompt version, provider, model, label set, JPEG bytes) is proven and the
+logged answer equals the cached record (`a558396`). A second Lead review found that, for legacy records without
+`made_by`, the candidate keys still crossed every provider with every model named by the run reports (the model that
+answered) and the spec (the model asked). From `468cb05` a legacy basis comes only from the provider and model the run
+spec records as a pair; a `made_by` record gives its own full tuple; the reports never contribute a key. The same five
+saved runs were recomputed on the owner's PC, CPU only, offline, with the same command as §4, at each of these heads.
+
+| Item | `a558396` | `b17bb53` | `468cb05` (final rule) |
+|---|---|---|---|
+| Tests | `OK (skipped=1)`, 82 tests | `OK (skipped=1)`, 83 tests | `OK (skipped=1)`, 87 tests |
+| Label | PREREGISTRATION MISMATCH: results exploratory (`targeting_sha256` equals the record; `analysis_sha256` differs, as designed) | same | same |
+| `result_before_gates` | not supported | not supported | not supported |
+| Run A = run B | yes, byte-identical on all three outputs | yes | yes (JSON `28ca66ba…`, markdown `ad6140b5…`, batch `ccfc6deb…` unchanged) |
+| Perf (run A) | 568.4 s, peak RAM 350 MB | 615.6 s (run B 568.6 s), 350 MB | 364.4 s (run B 363.0 s), 340 MB |
+| Leak scans (key, e-mail, local paths) | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |
+
+`b17bb53` only restores the donor-run and match counts that a comment had dropped from the report's `matching` object
+at `a558396`. At `a558396` and `b17bb53` all five runs showed an `exact` key basis, but for rc12–rc15 that basis rested
+on the crossed reports, which `468cb05` no longer accepts.
+
+What the saved runs record (counts only):
+
+| Run | Spec `editorial.ai`: provider / model | Cache records | With `made_by` |
+|---|---|---|---|
+| rc12 | yes / **no** | 141 | 0 |
+| rc13 | yes / **no** | 139 | 0 |
+| rc14 | yes / **no** | 139 | 0 |
+| rc15 | yes / **no** | 139 | 0 |
+| rc16 | yes / **no** | 138 | 138 |
+
+Matching under the final rule (`468cb05`):
+
+| Run | Key basis | Basis source | Admitted (`exact`) | Refused | Donor runs |
+|---|---|---|---|---|---|
+| rc12 | none (`unproven`) | – | 0 | 528 `no_key_basis` | none |
+| rc13 | none (`unproven`) | – | 0 | 529 `no_key_basis` | none |
+| rc14 | none (`unproven`) | – | 0 | 529 `no_key_basis` | none |
+| rc15 | none (`unproven`) | – | 0 | 529 `no_key_basis` | none |
+| rc16 (primary) | `exact` (prompt `vision-v3`, one provider and model, moment labels) | `made_by` | 521 | 1 `no_exact_key` | rc12–rc15 |
+
+For rc16 the donors' legacy records are admitted only under rc16's proven full key, with the logged answer equal to
+the record. No item detail or provider mismatch was found in any run.
+
+Result against `716e984`:
+
+- E2: the per-run decision table (§8) is identical at all three heads; it is a selection metric and uses no donor
+  answer.
+- rc16, the run behind every E3–E5 number in §10–§12: its whole markdown section is byte-identical between
+  `b17bb53` and `468cb05`. Against `716e984` it differs only in: donor supply 19 frames (was 20);
+  `open:A+:-:+4x` simulated 5/160 (was 6/160) with recall, fixed/broken and READY unchanged (r@5 33/60, fixed 2 /
+  broken 0, p 0.5); closed-world `A+` and the ceiling `ALL_DONOR_ITEMS` 19 frames (was 20) with metrics unchanged
+  (closed-world `A+` r@1/3/5 21/26/30, fixed 3 / broken 4, READY 5/5; ceiling r@5 30/60, fixed 3 / broken 4); and the
+  new caveat line in §14. Every rc16 frame that could not be simulated lacks a donor answer (`no_donor_answer`).
+- rc12–rc15 (supporting runs): their specs name no model and their records have no `made_by`, so no cache key can be
+  proven. Under the final rule they simulate nothing (`target_key_unproven`), and their E3, E4 recall and E5 values
+  equal each run's own replayed baseline. Earlier simulated values for them (up to 40 frames in some respend arms) are
+  withdrawn. This record and the report never used those values; the supporting runs serve only the E2 decision.
+- So §10–§12 stand as printed (rc16 only), as an exact-key-verified partial simulation. The recommendation does not
+  rest on these numbers.
 
 W3 REAL-DEV (development, not a holdout). GENERALIZATION NOT VERIFIED; Gate B not claimed.

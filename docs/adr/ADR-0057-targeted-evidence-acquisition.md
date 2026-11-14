@@ -17,10 +17,23 @@ verify the full production cache key: prompt version, provider, model, label set
 equal to the cached record. Lead review found this gap. The harness now admits an answer only under that exact key
 (`a558396`, PR #831).
 
-Until E3–E5 are recomputed with the exact-key rule, every E3–E5 number here is **UNVERIFIED**. They were already only
-a partial simulation, and the recommendation does not rest on them. The pre-registered E2 decision ("not supported")
-does not use donor answers and stays the decision of record at `716e984`. Any re-run at a later head is exploratory by
-design.
+**Exact-key recompute (exploratory, 2026-11-14).** E3–E5 were recomputed from the same five saved runs on the owner's
+PC at `a558396`, `b17bb53` and, after a second Lead review, at `468cb05`. The final rule takes a legacy key basis only
+from the provider and model the run spec asks for as a pair, or from a record's own `made_by`, never from the run
+reports (which keep the model that answered). All three re-runs are labelled PREREGISTRATION MISMATCH (exploratory) by
+design, and runs A and B were byte-identical each time.
+
+- rc16, the primary run and the source of every E3–E5 number in this ADR: the key basis is proven from `made_by`. Its
+  report section is unchanged by the final rule. Against `716e984` only one simulated frame fewer in `open:A+` at 4x
+  (5/160, was 6/160) and in the closed-world `A+` and ceiling arms (19 frames, was 20); no recall, fixed, broken,
+  silent-miss, READY or warning value changed.
+- rc12–rc15, the supporting runs: their specs name no model and their records have no `made_by`, so no key can be
+  proven. They simulate nothing, and their E3–E5 values fall back to their own baseline. They serve only the E2
+  decision, which is selection-based and identical at every head.
+
+The rc16 E3–E5 numbers here therefore stand as an exploratory, exact-key-verified partial simulation. They were only
+ever a partial simulation, and the recommendation does not rest on them. The pre-registered E2 decision ("not
+supported") does not use donor answers and stays the decision of record at `716e984`.
 
 ## Decision (proposed)
 
@@ -281,6 +294,10 @@ written to reports only as a 12-character digest.
     is the logged item.
   - When `made_by` is present it must agree. A legacy record without `made_by` counts only through the computed full
     key.
+  - A candidate basis is a recorded tuple only: the `made_by` of a record, or, for legacy records, the provider and
+    model the run spec asked for as a pair (`468cb05`). Production keys by the model asked; the run reports keep the
+    model that answered, which a fallback changes, so they never contribute a key and provider and model are never
+    crossed across sources. A spec without both fields leaves a legacy run unproven.
   - Items whose `detail` names another provider or model are left out.
   - A record in the target's own cache for the same bytes wins over a donor.
   - Nothing is matched by time.
