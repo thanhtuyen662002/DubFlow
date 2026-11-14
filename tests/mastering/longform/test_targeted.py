@@ -469,6 +469,51 @@ class MatchingTests(unittest.TestCase):
             (path.parent / f"{key[:32]}.json").write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
         return change
 
+    def test_a_replayed_answer_carries_what_vision_apply_sets(self):
+        box = {"x": 100, "y": 100, "w": 300, "h": 300}
+        with TemporaryDirectory() as tmp:
+            index, target = self.donor_with(Path(tmp), lambda path, record, loaded: path.write_text(json.dumps(
+                {**record, "hook": 900, "product_box": box, "product_group": "g1"}, ensure_ascii=False), encoding="utf-8"))
+            found = index.match(self.sample_of(target, "i1-s1c6"))
+            self.assertEqual(found.status, "SIMULATED")
+            item = index.item_of(found)
+            self.assertEqual(item["side"], {"product_box": box, "hook": 900, "product_visible": True, "same_product": "g1"})
+            evidence_for, new_ids, _ = tt.augmented_evidence(target.A, {"i1": {"i1-s1c6": item}})
+            got = evidence_for("i1", target.A.logs["i1"])["i1-s1c6"]
+            self.assertEqual((got.hook, got.product_visible, got.same_product, got.product_box is not None),
+                             (900, True, "g1", True))
+            self.assertIn("i1-s1c6", new_ids)
+
+    def test_a_record_production_would_not_validate_is_not_exact(self):
+        # vision.Describer._cached reuses only validate(record): its raw fields must not prove an answer
+        with TemporaryDirectory() as tmp:
+            loaded = tt.load(make_run_k(Path(tmp), name="run-a"))
+            c2 = next(c for c in loaded.run.logs["i1"]["candidates"] if c["id"] == "i1-s1c2")
+            basis = (vision.PROMPT_VERSION, PROVIDER, MODEL, tuple(ev.MOMENT_LABELS))
+            key = tt._cache_key(*basis, loaded.jpeg[c2["keyframe"]])
+            loaded.cache[key[:32]] = {"key": key, "description": "", "objects": ["Xe tăng"], "actions": [], "visible_text": "",
+                                      "labels": ["not-a-label"], "confidence": 850, "clarity": "clear"}
+            self.assertIsNone(vision.validate(loaded.cache[key[:32]], ev.MOMENT_LABELS))
+            item = {"origin": "vision", "text": "Xe tăng", "labels": ["not-a-label"], "confidence": 850, "detail": DETAIL}
+            self.assertEqual(tt.exact_answer(loaded, basis, loaded.jpeg[c2["keyframe"]], item), "answer_mismatch")
+
+    def test_made_by_and_the_spec_pair_are_never_crossed(self):
+        # made_by names (provider, m1), the spec (other-provider, m2): only those two tuples, never a mix of them
+        with TemporaryDirectory() as tmp:
+            run = make_run_k(Path(tmp), name="run-a", asked=("other-provider", "m2"))
+            loaded = tt.load(run)
+            self.assertEqual(tt.cache_combos(loaded), sorted([(vision.PROMPT_VERSION, PROVIDER, MODEL),
+                                                              (vision.PROMPT_VERSION, "other-provider", "m2")]))
+            # a stale record under a crossed tuple that reproduces a logged answer proves nothing
+            c2 = next(c for c in loaded.run.logs["i1"]["candidates"] if c["id"] == "i1-s1c2")
+            item = tt.vision_items(c2)[0]
+            for provider, model in ((PROVIDER, "m2"), ("other-provider", MODEL)):
+                key = tt._cache_key(vision.PROMPT_VERSION, provider, model, ev.MOMENT_LABELS, loaded.jpeg[c2["keyframe"]])
+                seen = vision.Seen(item["text"], (), (), "", tuple(item["labels"]), item["confidence"], "clear", None, None, 0)
+                (run / ".dubflow-work" / "mastering" / "vision" / f"{key[:32]}.json").write_text(
+                    json.dumps({"key": key, **seen.to_dict()}, ensure_ascii=False), encoding="utf-8")
+            self.assertEqual(tt.key_bases(tt.load(run)), [(vision.PROMPT_VERSION, PROVIDER, MODEL, tuple(ev.MOMENT_LABELS))])
+
     def test_the_report_keeps_every_matching_count(self):
         matching = STUDY["report"]["runs"]["run-a"]["matching"]
         for key in ("tolerance_ms", "donor_runs", "donor_shared_excluded", "donor_provider_mismatch", "detail_mismatch",
@@ -834,6 +879,129 @@ class ClassificationTests(unittest.TestCase):
                 kept = {c["id"]: bool(tt.vision_items(c)) for c in prep.A0.logs["i1"]["candidates"]}
                 self.assertTrue(kept["i1-s1c3"] and kept["i1-s1c8"])
                 self.assertFalse(kept["i1-s1c4"] or kept["i1-s1c1"] or kept["i1-s1c2"])
+
+    @staticmethod
+    def rewrite_record(run: Path, candidate: str, change, labels=ev.MOMENT_LABELS) -> Path:
+        """Apply ``change`` to the record under ``candidate``'s full production key (and write it back)."""
+        loaded = tt.load(run)
+        c = next(c for log in loaded.run.logs.values() for c in log.get("candidates") or () if c["id"] == candidate)
+        key = tt._cache_key(vision.PROMPT_VERSION, PROVIDER, MODEL, labels, loaded.jpeg[c["keyframe"]])
+        path = run / ".dubflow-work" / "mastering" / "vision" / f"{key[:32]}.json"
+        record = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {"key": key}
+        change(record)
+        path.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+        return path
+
+    def test_a_correct_key_with_another_answer_is_not_a_targeted_look(self):
+        # the record sits under the frame's own full key, but its answer is not the one the run logged
+        with TemporaryDirectory() as tmp:
+            run = make_run_k(Path(tmp))
+            self.rewrite_record(run, "i1-s1c2", lambda r: r.update(description="Một cảnh khác hẳn"))
+            loaded = tt.load(run)
+            c2 = next(c for c in loaded.run.logs["i1"]["candidates"] if c["id"] == "i1-s1c2")
+            self.assertEqual(tt.own_answer(loaded, c2), "answer_mismatch")
+            prep = tt.prepare(loaded)
+            self.assertEqual(prep.classification["classification_basis"], "exact")  # other frames still prove it
+            self.assertEqual(prep.classes["i1-s1c2"], "unproven")
+            self.assertEqual(prep.classes["i1-s1c4"], "targeted")
+            self.assertEqual(prep.classification["counts"]["unproven"], 1)
+            self.assertEqual(prep.classification["targeted_frames_item_parts"], 1)
+            kept = {c["id"]: bool(tt.vision_items(c)) for c in prep.A0.logs["i1"]["candidates"]}
+            self.assertTrue(kept["i1-s1c2"])  # not dropped from A0 as a proven targeted answer
+            self.assertFalse(kept["i1-s1c4"])
+
+    def test_key_presence_alone_never_gives_the_exact_basis(self):
+        # every record is under its correct full key, but none holds the answer the run logged
+        with TemporaryDirectory() as tmp:
+            run = make_run_k(Path(tmp))
+            for path in sorted((run / ".dubflow-work" / "mastering" / "vision").glob("*.json")):
+                record = json.loads(path.read_text(encoding="utf-8"))
+                record["description"] = "Không phải câu trả lời đã ghi"
+                path.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+            loaded = tt.load(run)
+            self.assertEqual(tt.key_bases(loaded), [])
+            prep = tt.prepare(loaded)
+            self.assertEqual(prep.classification["classification_basis"], "group (cache keys unmatched)")
+            self.assertNotIn("unproven", prep.classification["counts"])
+            self.assertIsNone(prep.broad["picked_not_in_cache"])
+
+    def test_an_ambiguous_basis_classifies_by_group(self):
+        # the same answers under the full label set too: two bases reproduce them, so neither is proven
+        with TemporaryDirectory() as tmp:
+            run = make_run_k(Path(tmp), twins={8: 3, 1: 4})
+            loaded = tt.load(run)
+            for c in loaded.run.logs["i1"]["candidates"]:
+                if not (tt.vision_items(c) and c.get("keyframe")):
+                    continue
+                item = tt.vision_items(c)[0]
+                seen = vision.Seen(item["text"], (), (), "", tuple(item["labels"]), item["confidence"], "clear", None, None, 0)
+                self.rewrite_record(run, c["id"], lambda r, seen=seen: r.update(seen.to_dict()), labels=ev.LABELS)
+            loaded = tt.load(run)
+            self.assertEqual(len(tt.key_bases(loaded)), 2)
+            c4 = next(c for c in loaded.run.logs["i1"]["candidates"] if c["id"] == "i1-s1c4")
+            self.assertEqual(tt.own_answer(loaded, c4), "no_key_basis")
+            prep = tt.prepare(loaded)
+            self.assertEqual(prep.classification["classification_basis"], "group (cache basis ambiguous)")
+            self.assertEqual(sorted([prep.classes["i1-s1c4"], prep.classes["i1-s1c1"]]), ["targeted", "targeted_shared"])
+            self.assertNotIn("unproven", prep.classification["counts"])
+            self.assertIsNone(prep.broad["picked_not_in_cache"])
+
+    def test_a_broad_pick_whose_record_is_another_answer_is_not_cached(self):
+        with TemporaryDirectory() as tmp:
+            run = make_run_k(Path(tmp))
+            self.rewrite_record(run, "i1-s1c3", lambda r: r.update(confidence=120))
+            prep = tt.prepare(tt.load(run))
+            self.assertEqual(prep.classification["classification_basis"], "exact")
+            self.assertEqual((prep.broad["status"], prep.broad["picked_not_in_cache"]), ("NOT_RECONSTRUCTED", 1))
+            self.assertIn("picked not in cache", prep.broad["reasons"])
+
+    def test_a_byte_identical_copy_of_a_broad_frame_is_shared_not_targeted(self):
+        # the copy's full key is the broad frame's key: the record there proves the broad look, not a look at the copy
+        with TemporaryDirectory() as tmp:
+            run = make_run_k(Path(tmp), twins={8: 3})
+            folder = run / ".dubflow-work" / "mastering"
+            (folder / "i1-s1-c8.jpg").write_bytes((folder / "i1-s1-c3.jpg").read_bytes())
+            prep = tt.prepare(tt.load(run))
+            self.assertEqual(prep.classification["classification_basis"], "exact")
+            self.assertEqual((prep.classes["i1-s1c3"], prep.classes["i1-s1c8"]), ("broad", "broad_shared"))
+            self.assertEqual(prep.classification["targeted_frames_item_parts"], 2)
+            kept = {c["id"]: bool(tt.vision_items(c)) for c in prep.A0.logs["i1"]["candidates"]}
+            self.assertTrue(kept["i1-s1c8"])
+
+    def test_byte_identical_targeted_copies_count_one_look(self):
+        with TemporaryDirectory() as tmp:
+            run = make_run_k(Path(tmp), twins={1: 4})
+            folder = run / ".dubflow-work" / "mastering"
+            (folder / "i1-s1-c1.jpg").write_bytes((folder / "i1-s1-c4.jpg").read_bytes())
+            prep = tt.prepare(tt.load(run))
+            self.assertEqual(sorted([prep.classes["i1-s1c1"], prep.classes["i1-s1c4"]]), ["targeted", "targeted_shared"])
+            self.assertEqual(prep.classification["targeted_frames_item_parts"], 2)  # c2 and one of the copies
+
+    def test_no_record_and_no_proven_look_to_share_from_is_unproven(self):
+        for label in ("record deleted", "keyframe missing"):
+            with self.subTest(label), TemporaryDirectory() as tmp:
+                if label == "record deleted":
+                    run = make_run_k(Path(tmp))
+                    self.rewrite_record(run, "i1-s1c4", lambda r: None).unlink()
+                else:
+                    run = make_run_k(Path(tmp), missing_jpegs=(4,))
+                prep = tt.prepare(tt.load(run))
+                self.assertEqual(prep.classification["classification_basis"], "exact")
+                self.assertEqual(prep.classes["i1-s1c4"], "unproven")
+                self.assertNotIn("targeted_shared", prep.classification["counts"])
+                kept = {c["id"]: bool(tt.vision_items(c)) for c in prep.A0.logs["i1"]["candidates"]}
+                self.assertTrue(kept["i1-s1c4"])
+
+    def test_a0_clears_what_the_removed_answers_set(self):
+        evidence = {"candidate_id": "x", "items": [{"origin": "vision", "confidence": 850, "text": "Xe tăng",
+                                                     "labels": ["explanation"], "detail": DETAIL}],
+                    "product_box": {"x": 100, "y": 100, "w": 300, "h": 300}, "hook": 900, "product_visible": True,
+                    "same_product": "g1"}
+        log = {"candidates": [{"id": "x", "evidence": evidence}, {"id": "y", "evidence": {**evidence, "candidate_id": "y"}}]}
+        out = tt.a0_evidence({"x": "targeted", "y": "broad"})("i1", log)
+        self.assertEqual((out["x"].items, out["x"].product_box, out["x"].hook, out["x"].product_visible, out["x"].same_product),
+                         ([], None, 0, None, None))
+        self.assertEqual((len(out["y"].items), out["y"].hook, out["y"].product_visible, out["y"].same_product), (1, 900, True, "g1"))
 
     def test_cache_records_without_made_by_still_give_the_exact_basis(self):
         # rc12-rc15 were made before #808: their cache records carry no made_by

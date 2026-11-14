@@ -2,8 +2,11 @@
 
 Reads saved run folders and a locked ground truth only: no media, no network, no model, no key. Every number is a
 replay of ``plan_part`` with the code checked out now (``w3.replay``), with evidence taken from the run itself, from
-the other saved runs (the same JPEG bytes, provider and model: the production vision cache rule) or, in the labelled
-upper bounds only, from the ground truth.
+the other saved runs, or, in the labelled upper bounds only, from the ground truth. A saved answer is reused only under
+its exact production cache key (``vision.Describer._key``: prompt version, provider, model asked, label set, JPEG
+bytes): the target run must prove a single key basis from its own records, and the record under the full key must hold
+the answer the run logged. Legacy bases come only from a record's ``made_by`` or the spec's asked provider and model;
+nothing is matched by time or by run-level provider and model, and key presence alone proves nothing.
 
 * E1 ``baseline``: what each run looked at, a review-free replay A, the broad pass reconstructed, A0 (A without the
   targeted and multi-frame answers), evidence-acquisition coverage.
@@ -484,7 +487,20 @@ def reconstruct_broad(loaded: Loaded) -> dict[str, Any]:
     if logged is None or len(picked) != int(logged):
         reasons.append("broad count mismatch")
     exact = cache_basis(loaded) == "exact"
-    not_cached = [i for i in picked if not asked_in_cache(loaded, used[i].keyframe)] if exact else []
+    answered: dict[str, Mapping[str, Any]] = {}
+    for log in run.logs.values():
+        for c in log.get("candidates") or ():
+            if vision_items(c):
+                answered.setdefault(c["id"], c)
+                answered.setdefault(_sub_parent(c), c)
+
+    def cached(i: str) -> bool:
+        # a broad pick counts as cached only when its record under the run's proven basis, for the picked frame's
+        # JPEG bytes, is the answer the run logged for it
+        c = answered.get(i)
+        return c is not None and own_answer(loaded, {**c, "keyframe": used[i].keyframe}) == "exact"
+
+    not_cached = [i for i in picked if not cached(i)] if exact else []
     if not_cached:
         reasons.append("picked not in cache")
     return {"status": "NOT_RECONSTRUCTED" if reasons else "RECONSTRUCTED", "reasons": reasons, "budget": budget,
@@ -543,30 +559,30 @@ def combo_sources(loaded: Loaded, combo: Sequence[str]) -> list[str]:
 
 
 def cache_basis(loaded: Loaded) -> str:
-    """How looks are classified: "exact" when the run's cache answers some observed keyframe by its production key,
-    "group" without a cache folder, "group (cache keys unmatched)" when the folder exists but no key is found."""
+    """How looks are classified: "exact" when the run's own cache proves a single key basis (``key_bases``: a record
+    under the full production key reproduces a logged answer), "group" without a cache folder, "group (cache basis
+    ambiguous)" when more than one basis reproduces the logged answers, "group (cache keys unmatched)" when none does.
+    The presence of a key alone proves nothing."""
     if loaded.cache is None:
         return "group"
-    if not hasattr(loaded, "_cache_basis"):
-        frames = sorted({c["keyframe"] for log in loaded.run.logs.values() for c in log.get("candidates") or ()
-                         if c.get("keyframe") and vision_items(c)})
-        loaded._cache_basis = "exact" if any(asked_in_cache(loaded, k) for k in frames) else "group (cache keys unmatched)"
-    return loaded._cache_basis
+    bases = key_bases(loaded)
+    if len(bases) == 1:
+        return "exact"
+    return "group (cache basis ambiguous)" if bases else "group (cache keys unmatched)"
 
 
-def asked_in_cache(loaded: Loaded, keyframe: str | None) -> bool:
-    """Whether the run's vision cache holds an answer for exactly these JPEG bytes (the production cache key)."""
-    if loaded.cache is None or not keyframe or not loaded.jpeg.get(keyframe):
-        return False
-    if not hasattr(loaded, "_combos"):
-        loaded._combos = cache_combos(loaded)
-    for prompt, provider, model in loaded._combos:
-        for labels in (ev.MOMENT_LABELS, ev.LABELS):
-            key = _cache_key(prompt, provider, model, labels, loaded.jpeg[keyframe])
-            record = loaded.cache.get(key[:32])
-            if record is not None and record.get("key") == key:
-                return True
-    return False
+def own_answer(loaded: Loaded, c: Mapping[str, Any]) -> str:
+    """``exact_answer`` for a logged candidate's own first vision answer under the run's single proven basis:
+    "exact" only when the record under the full production key for its JPEG bytes is the answer the run logged;
+    "no_key_basis" when the run proves no single basis; "no_answer" when the candidate logged none."""
+    bases = key_bases(loaded)
+    if len(bases) != 1:
+        return "no_key_basis"
+    items = vision_items(c)
+    if not items:
+        return "no_answer"
+    keyframe = c.get("keyframe")
+    return exact_answer(loaded, bases[0], loaded.jpeg.get(keyframe) if keyframe else None, items[0])
 
 
 def key_bases(loaded: Loaded) -> list[tuple[str, str, str, tuple[str, ...]]]:
@@ -629,8 +645,29 @@ def exact_answer(loaded: Loaded, basis: tuple[str, str, str, tuple[str, ...]], j
     return "answer_mismatch"
 
 
+def record_side(loaded: Loaded, basis: tuple[str, str, str, tuple[str, ...]], jpeg_hex: str | None) -> dict[str, Any] | None:
+    """What ``vision.apply`` sets besides the evidence item, from the record under the full key as production's
+    ``_cached`` returns it (``vision.validate``): product box, hook, product visible, product group."""
+    if not jpeg_hex or loaded.cache is None:
+        return None
+    prompt, provider, model, labels = basis
+    key = _cache_key(prompt, provider, model, labels, jpeg_hex)
+    record = loaded.cache.get(key[:32])
+    if record is None or record.get("key") != key:
+        return None
+    seen = vision.validate(record, labels)
+    if seen is None:
+        return None
+    return {"product_box": dict(seen.product_box) if isinstance(seen.product_box, Mapping) else None, "hook": seen.hook,
+            "product_visible": seen.product_box is not None or any(label.startswith("product_") for label in seen.labels),
+            "same_product": seen.product_group}
+
+
 def classify(loaded: Loaded, broad: Mapping[str, Any]) -> tuple[dict[str, str], dict[str, Any]]:
-    """Each looked-at shot: broad, broad_shared, targeted, targeted_shared or multi_frame (§3.4)."""
+    """Each looked-at shot: broad, broad_shared, targeted, targeted_shared, multi_frame (§3.4) or unproven. With an
+    exact basis a shot is targeted only when its own record under the proven key is the answer it logged and no frame
+    looked at before holds the same JPEG bytes; it is shared only when a proven look in its group gave its answer;
+    otherwise it is unproven."""
     run = loaded.run
     groups = job_groups(run)
     broad_ids = set(broad.get("picked") or ())
@@ -646,6 +683,11 @@ def classify(loaded: Loaded, broad: Mapping[str, Any]) -> tuple[dict[str, str], 
     by_group: dict[tuple[str, str], list[str]] = {}
     for i in sorted(first):
         by_group.setdefault((groups.get(i, i), answer[i]), []).append(i)
+    status = {i: own_answer(loaded, c) for i, c in first.items()} if exact else {}
+    digest = {i: loaded.jpeg.get(c["keyframe"]) if c.get("keyframe") else None for i, c in first.items()}
+    broad_digests = {digest[i] for i in broad_ids if digest.get(i)}
+    proven = set(broad_ids) | {i for i, value in status.items() if value == "exact"}
+    claimed: set[str] = set()
     classes: dict[str, str] = {}
     for i, c in sorted(first.items()):
         if _sub_parent(c) != i:
@@ -656,10 +698,23 @@ def classify(loaded: Loaded, broad: Mapping[str, Any]) -> tuple[dict[str, str], 
             continue
         mates = by_group[(groups.get(i, i), answer[i])]
         if exact:
-            if asked_in_cache(loaded, c.get("keyframe")):
-                classes[i] = "targeted"
-            else:
+            if status[i] == "exact":
+                # its own record under the proven key is the answer it logged; byte-identical copies of a frame
+                # that was looked at share that frame's record, so only the first holder of the bytes was asked
+                if digest[i] in broad_digests:
+                    classes[i] = "broad_shared"
+                elif digest[i] in claimed:
+                    classes[i] = "targeted_shared"
+                else:
+                    claimed.add(digest[i])
+                    classes[i] = "targeted"
+            elif status[i] in ("no_exact_key", "no_jpeg") and any(m != i and m in proven for m in mates):
+                # no record of its own, and a proven look in its group gave the same answer: a shared copy
                 classes[i] = "broad_shared" if any(m in broad_ids for m in mates) else "targeted_shared"
+            else:
+                # a record under its key that is not the logged answer, or no record and no proven look to share
+                # from: its provenance is unproven, and the answer is kept rather than removed as a targeted look
+                classes[i] = "unproven"
         else:
             if any(m in broad_ids for m in mates):
                 classes[i] = "broad_shared"
@@ -680,7 +735,8 @@ def classify(loaded: Loaded, broad: Mapping[str, Any]) -> tuple[dict[str, str], 
 
 
 def a0_evidence(classes: Mapping[str, str]) -> Callable[[str, Mapping[str, Any]], dict[str, ev.Evidence]]:
-    """A without the targeted and multi-frame answers: broad answers keep their first frame only."""
+    """A without the targeted and multi-frame answers: broad answers keep their first frame only. An unproven shot
+    keeps its first answer too: it is not removed as a targeted answer without proof."""
     def evidence_for(part: str, log: Mapping[str, Any]) -> dict[str, ev.Evidence]:
         out = {}
         for c in log.get("candidates") or ():
@@ -688,7 +744,9 @@ def a0_evidence(classes: Mapping[str, str]) -> Callable[[str, Mapping[str, Any]]
             kind = classes.get(c["id"])
             if kind in ("targeted", "targeted_shared", "multi_frame"):
                 found.items = [i for i in found.items if i.origin != "vision"]
-            elif kind in ("broad", "broad_shared"):
+                # vision.apply set these from the answers removed here: nothing else sets them
+                found.product_box, found.hook, found.product_visible, found.same_product = None, 0, None, None
+            elif kind in ("broad", "broad_shared", "unproven"):
                 kept, seen_vision = [], False
                 for i in found.items:
                     if i.origin == "vision":
@@ -1021,12 +1079,15 @@ class DonorIndex:
         return frozenset(out)
 
     def item_of(self, r: Replayed) -> dict[str, Any] | None:
+        """The replayed answer: the logged item, plus under ``side`` what ``vision.apply`` also sets from the record."""
         if r.status != "SIMULATED":
             return None
+        loaded = {self.target.loaded.name: self.target.loaded, **{p.loaded.name: p.loaded for p in self.donors}}
         for d in self.pool:
             if (d.run, d.part, d.candidate_id, d.item_index, d.own_cache) == (r.donor_run, r.donor_part, r.donor_candidate_id,
                                                                              r.donor_item_index, r.own_cache):
-                return dict(d.item)
+                side = record_side(loaded[d.run], self.key_basis, d.jpeg_sha256) if self.key_basis and d.run in loaded else None
+                return {**dict(d.item), "side": side}
         return None
 
 
@@ -1034,7 +1095,8 @@ def augmented_evidence(base: w3.Run, additions: Mapping[str, Mapping[str, Mappin
                        ) -> tuple[Callable[[str, Mapping[str, Any]], dict[str, ev.Evidence] | None], set[str], set[str]]:
     """``evidence_for`` for ``w3.replay``: the base replay's evidence with each matched answer appended verbatim to the
     selected candidate of the selecting part (and, with ``share_duplicates``, to the same-group shots of that part that
-    have no vision answer). Returns the function, the ids given an answer, and the ids given a shared copy."""
+    have no vision answer), with the record's product box, hook, product visibility and group set as ``vision.apply``
+    sets them. Returns the function, the ids given an answer, and the ids given a shared copy."""
     new_ids: set[str] = set()
     shared_ids: set[str] = set()
     planned: dict[str, dict[str, ev.Evidence]] = {}
@@ -1044,16 +1106,26 @@ def augmented_evidence(base: w3.Run, additions: Mapping[str, Mapping[str, Mappin
         for c in log.get("candidates") or ():
             out[c["id"]] = evidence_from(c["evidence"]) if c.get("evidence") else ev.Evidence(c["id"])
         groups = {c["id"]: c.get("group") or c["id"] for c in log.get("candidates") or ()}
+        def apply_side(found: ev.Evidence, side: Mapping[str, Any] | None) -> None:
+            # as vision.apply does for every frame an answer reaches (the asked frame and its shared copies)
+            if side is not None:
+                found.product_box = ev.box_from(side.get("product_box"))
+                found.hook = int(side.get("hook") or 0)
+                found.product_visible = side.get("product_visible")
+                found.same_product = side.get("same_product")
+
         for candidate_id, item in sorted(added.items()):
             made = ev.Item(item["origin"], int(item["confidence"]), item.get("text", ""), tuple(item.get("labels") or ()),
                            item.get("detail", ""))
             out.setdefault(candidate_id, ev.Evidence(candidate_id)).add(made)
+            apply_side(out[candidate_id], item.get("side"))
             new_ids.add(candidate_id)
             if share_duplicates:
                 for other, group in sorted(groups.items()):
                     if other != candidate_id and other not in added and group == groups.get(candidate_id) \
                             and not any(i.origin == "vision" for i in out[other].items):
                         out[other].add(made)
+                        apply_side(out[other], item.get("side"))
                         shared_ids.add(other)
         planned[part] = out
 
