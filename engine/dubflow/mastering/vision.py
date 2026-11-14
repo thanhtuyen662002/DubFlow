@@ -405,8 +405,9 @@ def look(describer: Any, frames: Sequence[tuple[str, Path]], groups: Mapping[str
 
 def coverage_map(pool: Sequence[Candidate], evidence: Mapping[str, ev.Evidence], *, gaps: int = 5) -> dict[str, Any]:
     """What of a part's footage has content evidence (P2-N11): shots and ms with evidence, and the largest stretches
-    no evidence covers (where a sentence's footage may be without anyone having looked)."""
-    content = {c.candidate_id for c in pool if c.candidate_id in evidence and evidence[c.candidate_id].content}
+    no evidence covers (where a sentence's footage may be without anyone having looked). Evidence that can verify the
+    picture only (#836): a shot known only from the speech over it was never looked at."""
+    content = {c.candidate_id for c in pool if c.candidate_id in evidence and evidence[c.candidate_id].seen}
     total = sum(c.length_ms for c in pool)
     seen_ms = sum(c.length_ms for c in pool if c.candidate_id in content)
     stretches: list[list[Any]] = []
