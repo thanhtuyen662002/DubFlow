@@ -58,7 +58,7 @@ def jpeg_bytes(part: str, number: int, salt: str = "") -> bytes:
 def make_run_k(root: Path, texts: dict[int, str] | None = None, name: str = "run-test", parts: tuple[str, ...] = ("i1",),
                spec: dict | None = None, review: dict | None = None, jpegs: bool = True, salt: str = "",
                intro: dict[int, str] | None = None, budget: int = 4, targeted: tuple[int, ...] = TARGETED,
-               provider: tuple[str, str] = (PROVIDER, MODEL), cache: bool = False, missing_jpegs: tuple[int, ...] = (),
+               provider: tuple[str, str] = (PROVIDER, MODEL), cache: bool = True, missing_jpegs: tuple[int, ...] = (),
                broad: tuple[int, ...] = BROAD, twins: dict[int, int] | None = None) -> Path:
     """A raw run of item parts (and an optional intro) as ``run_program`` saves it, with keyframes and vision reports."""
     texts = TEXTS if texts is None else texts
@@ -107,27 +107,31 @@ def make_run_k(root: Path, texts: dict[int, str] | None = None, name: str = "run
               "shared_duplicates": 0}
     report["frames"] = report["broad"]
 
-    def remember(part: str, number: int) -> None:
-        if not cache:
+    def remember(part: str, number: int, text: str | None) -> None:
+        # what vision.Describer._store writes: the full production key, the validated answer and who made it
+        if not cache or text is None:
             return
         digest = hashlib.sha256(jpeg_bytes(part, number, salt)).digest()
         key = hashlib.sha256(b"|".join([vision.PROMPT_VERSION.encode(), provider[0].encode(), provider[1].encode(),
                                         ",".join(ev.MOMENT_LABELS).encode(), digest])).hexdigest()
         cache_dir.mkdir(exist_ok=True)
-        (cache_dir / f"{key[:32]}.json").write_text(json.dumps({"key": key, "made_by": {"prompt": vision.PROMPT_VERSION,
-                                                                                         "provider": provider[0], "model": provider[1]}}),
-                                                     encoding="utf-8")
+        seen = vision.Seen(text, (), (), "", ("explanation",), 850, "clear", None, None, 0)
+        (cache_dir / f"{key[:32]}.json").write_text(json.dumps({"key": key, **seen.to_dict(),
+                                                                 "made_by": {"prompt": vision.PROMPT_VERSION, "provider": provider[0],
+                                                                             "model": provider[1], "answered_by": provider[1]}},
+                                                                ensure_ascii=False), encoding="utf-8")
 
     program_parts = []
     for part in parts:
         if part.startswith("i"):
             for number in broad:
-                remember(part, number)
+                remember(part, number, texts.get(number))
     for part in parts:
         if part == "intro":
             evidence = {k: dataclasses.replace(v, items=list(v.items)) for k, v in base.items()}
             for number, text in (intro or {}).items():
                 answer(evidence, "i1-s1", number, text)
+                remember("i1", number, text)
             report["targeted"] += len(intro or {})
             report["frames"] = report["broad"] + report["targeted"]
             spoken = INTRO
@@ -137,7 +141,7 @@ def make_run_k(root: Path, texts: dict[int, str] | None = None, name: str = "run
             for number in targeted:
                 if number in texts:
                     answer(base, sid, number, texts[number])
-                    remember(part, number)
+                    remember(part, number, texts[number])
             report["targeted"] += len([n for n in targeted if n in texts])
             report["frames"] = report["broad"] + report["targeted"]
             evidence, spoken = base, SENTENCES
@@ -402,7 +406,7 @@ class MatchingTests(unittest.TestCase):
         arm = arms_of(STUDY["report"])[tt.PRIMARY_ARM]
         tank = next(r for r in arm["samples"] if r["sample"]["candidate_id"] == "i1-s1c6")
         self.assertEqual((tank["status"], tank["match_basis"], tank["donor_run"], tank["own_cache"]),
-                         ("SIMULATED", "jpeg", "run-b", False))
+                         ("SIMULATED", "exact_key", "run-b", False))
 
     def test_other_bytes_another_provider_or_a_shared_answer_are_not(self):
         with TemporaryDirectory() as tmp:
@@ -424,33 +428,209 @@ class MatchingTests(unittest.TestCase):
             self.assertGreater(index.counts["donor_shared_excluded"], 0)
             self.assertEqual(index.match(self.sample_of(target, "i1-s1c6")).status, "NOT_SIMULABLE")
 
-    def test_a_missing_jpeg_falls_back_to_time_with_its_reasons(self):
+    def test_a_missing_jpeg_is_never_matched_by_time(self):
+        # no bytes, no production key: a donor answer near the same time is not proof of the same cached answer
         with TemporaryDirectory() as tmp:
-            target = tt.prepare(tt.load(make_run_k(Path(tmp), name="run-a", missing_jpegs=(6,))))
-            index = tt.DonorIndex(target, [])
-            shot = target.shot("i1", "i1-s1c6")
-            self.assertEqual((shot.start_ms, shot.end_ms, shot.keyframe_ms), (30120, 35880, 33000))
+            root = Path(tmp)
+            target = tt.prepare(tt.load(make_run_k(root, name="run-a", missing_jpegs=(6,))))
+            donor = tt.prepare(tt.load(make_run_k(root, name="run-b", texts=donor_texts(), targeted=(2, 6))))
+            index = tt.DonorIndex(target, [donor])
+            self.assertIsNotNone(index.key_basis)
+            found = index.match(self.sample_of(target, "i1-s1c6"))
+            self.assertEqual((found.status, found.reason), ("NOT_SIMULABLE", "target_jpeg_unknown"))
 
-            def donor(t_ms: int, key: str | None = None) -> tt.DonorSample:
-                item = {"origin": "vision", "confidence": 850, "text": TANK, "labels": ["action"], "detail": DETAIL}
-                return tt.DonorSample("run-b", "i1", "i1-s1c6", 0, None, t_ms, "numbered_window", PROVIDER, MODEL, item,
-                                      shot.source_key if key is None else key, False)
+    def donor_with(self, root: Path, change) -> tuple[tt.DonorIndex, tt.Prepared]:
+        """The fixture pair (c6 answered only by the donor) with ``change`` applied to the donor's c6 cache record."""
+        target = tt.prepare(tt.load(make_run_k(root, name="run-a")))
+        run = make_run_k(root, name="run-b", texts=donor_texts(), targeted=(2, 6))
+        loaded = tt.load(run)
+        c6 = next(c for c in loaded.run.logs["i1"]["candidates"] if c["id"] == "i1-s1c6")
+        key = tt._cache_key(vision.PROMPT_VERSION, PROVIDER, MODEL, ev.MOMENT_LABELS, loaded.jpeg[c6["keyframe"]])
+        path = run / ".dubflow-work" / "mastering" / "vision" / f"{key[:32]}.json"
+        change(path, json.loads(path.read_text(encoding="utf-8")), loaded)
+        return tt.DonorIndex(target, [tt.prepare(tt.load(run))]), target
 
-            def outcome(t_donor: int, t_sample: int = 33000, key: str | None = None) -> tuple:
-                index.pool, index.by_jpeg = [donor(t_donor, key)], {}
-                r = index.match(self.sample_of(target, "i1-s1c6", t_sample))
-                return r.status, r.reason or r.match_basis
+    def rekeyed(self, prompt: str = vision.PROMPT_VERSION, labels=ev.MOMENT_LABELS, model: str = MODEL):
+        def change(path: Path, record: dict, loaded: tt.Loaded) -> None:
+            c6 = next(c for c in loaded.run.logs["i1"]["candidates"] if c["id"] == "i1-s1c6")
+            key = tt._cache_key(prompt, PROVIDER, model, labels, loaded.jpeg[c6["keyframe"]])
+            path.unlink()
+            record["key"] = key
+            record["made_by"] = {**record["made_by"], "prompt": prompt, "model": model}
+            (path.parent / f"{key[:32]}.json").write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+        return change
 
-            self.assertEqual(outcome(33400), ("SIMULATED", "time_fallback"))
-            self.assertEqual(outcome(33500), ("SIMULATED", "time_fallback"))  # the boundary is inclusive
-            self.assertEqual(outcome(33600), ("NOT_SIMULABLE", "beyond_tolerance"))
-            self.assertEqual(outcome(35950, 35850), ("NOT_SIMULABLE", "cross_cut"))  # 100 ms, past the cut
-            self.assertEqual(outcome(33100, key="another-source"), ("NOT_SIMULABLE", "source_unknown"))
-            # a trim that clips the logged range past the keyframe: the unclipped window decides, not the logged range
-            self.assertEqual(shot.window, (30120, 35880))
-            target._shots[("i1", "i1-s1c6")] = dataclasses.replace(shot, start_ms=33500)
-            self.assertEqual(outcome(33000), ("SIMULATED", "time_fallback"))
-            self.assertEqual(outcome(33000, 33200), ("SIMULATED", "time_fallback"))
+    def test_an_exact_production_key_is_simulated(self):
+        with TemporaryDirectory() as tmp:
+            index, target = self.donor_with(Path(tmp), lambda path, record, loaded: None)
+            found = index.match(self.sample_of(target, "i1-s1c6"))
+            self.assertEqual((found.status, found.match_basis, found.donor_run), ("SIMULATED", "exact_key", "run-b"))
+            self.assertGreater(index.provenance["exact"], 0)
+
+    def test_another_prompt_version_label_set_or_model_in_the_key_is_not(self):
+        for change, label in ((self.rekeyed(prompt="vision-v2"), "prompt"), (self.rekeyed(labels=ev.LABELS), "labels"),
+                              (self.rekeyed(model="another-model"), "model")):
+            with self.subTest(label), TemporaryDirectory() as tmp:
+                index, target = self.donor_with(Path(tmp), change)
+                found = index.match(self.sample_of(target, "i1-s1c6"))
+                self.assertEqual((found.status, found.reason), ("NOT_SIMULABLE", "no_donor_answer"))
+                self.assertGreater(index.provenance["no_exact_key"], 0)
+
+    def test_a_record_whose_made_by_or_answer_disagrees_is_not(self):
+        def edit(field: str, key: str, value) -> object:
+            def change(path: Path, record: dict, loaded: tt.Loaded) -> None:
+                (record if field == "" else record[field])[key] = value
+                path.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+            return change
+
+        cases = ((edit("made_by", "prompt", "vision-v2"), "made_by_mismatch"),
+                 (edit("made_by", "provider", "other-provider"), "made_by_mismatch"),
+                 (edit("made_by", "model", "another-model"), "made_by_mismatch"),
+                 (edit("", "description", "Một cảnh khác"), "answer_mismatch"),
+                 (edit("", "labels", ["reaction"]), "answer_mismatch"),
+                 (edit("", "confidence", 300), "answer_mismatch"),
+                 (edit("", "clarity", "blurry"), "answer_mismatch"))
+        for change, reason in cases:
+            with self.subTest(reason), TemporaryDirectory() as tmp:
+                index, target = self.donor_with(Path(tmp), change)
+                self.assertEqual(index.match(self.sample_of(target, "i1-s1c6")).status, "NOT_SIMULABLE")
+                self.assertGreater(index.provenance[reason], 0)
+
+    def test_a_legacy_record_without_made_by_counts_only_through_its_full_key(self):
+        def legacy(path: Path, record: dict, loaded: tt.Loaded) -> None:
+            record.pop("made_by")
+            path.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+
+        with TemporaryDirectory() as tmp:
+            index, target = self.donor_with(Path(tmp), legacy)
+            self.assertEqual(index.match(self.sample_of(target, "i1-s1c6")).status, "SIMULATED")
+
+        def legacy_other_prompt(path: Path, record: dict, loaded: tt.Loaded) -> None:
+            self.rekeyed(prompt="vision-v2")(path, record, loaded)
+            for other in path.parent.glob("*.json"):
+                data = json.loads(other.read_text(encoding="utf-8"))
+                data.pop("made_by", None)
+                other.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+        with TemporaryDirectory() as tmp:
+            index, target = self.donor_with(Path(tmp), legacy_other_prompt)
+            self.assertEqual(index.match(self.sample_of(target, "i1-s1c6")).status, "NOT_SIMULABLE")
+
+        def legacy_wrong_stored_key(path: Path, record: dict, loaded: tt.Loaded) -> None:
+            # the file keeps its v3 name (the first 32 hex digits): only the stored full key can tell it apart
+            c6 = next(c for c in loaded.run.logs["i1"]["candidates"] if c["id"] == "i1-s1c6")
+            record.pop("made_by")
+            record["key"] = tt._cache_key("vision-v2", PROVIDER, MODEL, ev.MOMENT_LABELS, loaded.jpeg[c6["keyframe"]])
+            path.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+
+        with TemporaryDirectory() as tmp:
+            index, target = self.donor_with(Path(tmp), legacy_wrong_stored_key)
+            self.assertEqual(index.match(self.sample_of(target, "i1-s1c6")).status, "NOT_SIMULABLE")
+            # and the proof itself compares the stored full key, not only the file name
+            donor = tt.load(Path(tmp) / "run-b")
+            c6 = next(c for c in donor.run.logs["i1"]["candidates"] if c["id"] == "i1-s1c6")
+            basis = (vision.PROMPT_VERSION, PROVIDER, MODEL, tuple(ev.MOMENT_LABELS))
+            self.assertEqual(tt.exact_answer(donor, basis, donor.jpeg[c6["keyframe"]], tt.vision_items(c6)[0]), "no_exact_key")
+
+    def test_a_clipped_answer_ending_in_a_space_still_matches_its_record(self):
+        # vision.validate is not idempotent at a clipped field that ends in a space; the run logged the fresh answer
+        fresh = vision.validate({"description": "Xe tăng", "visible_text": "chữ " * 60, "labels": ["explanation"],
+                                 "confidence": 850}, ev.MOMENT_LABELS)
+        self.assertTrue(fresh.visible_text.endswith(" "))
+        logged = vision.item_of(fresh, DETAIL).to_dict()
+        with TemporaryDirectory() as tmp:
+            run = make_run_k(Path(tmp), name="run-a")
+            loaded = tt.load(run)
+            c2 = next(c for c in loaded.run.logs["i1"]["candidates"] if c["id"] == "i1-s1c2")
+            basis = (vision.PROMPT_VERSION, PROVIDER, MODEL, tuple(ev.MOMENT_LABELS))
+            key = tt._cache_key(*basis, loaded.jpeg[c2["keyframe"]])
+            loaded.cache[key[:32]] = {"key": key, **fresh.to_dict()}
+            self.assertEqual(tt.exact_answer(loaded, basis, loaded.jpeg[c2["keyframe"]], logged), "exact")
+
+    def test_a_target_record_for_the_same_bytes_wins_over_a_donor(self):
+        # production reads the target folder's own cache first: a donor answer there is not what it would reuse
+        def target_also(path: Path, record: dict, loaded: tt.Loaded) -> None:
+            pass
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            index, target = self.donor_with(root, target_also)
+            c6 = target.shot("i1", "i1-s1c6").candidate.keyframe
+            jpeg = target.loaded.jpeg[c6]
+            key = tt._cache_key(vision.PROMPT_VERSION, PROVIDER, MODEL, ev.MOMENT_LABELS, jpeg)
+            target.loaded.cache[key[:32]] = {"key": key, **vision.Seen("Cảnh cũ khác hẳn", (), (), "", ("reaction",), 300,
+                                                                       "clear", None, None, 0).to_dict()}
+            found = index.match(self.sample_of(target, "i1-s1c6"))
+            self.assertEqual((found.status, found.reason), ("NOT_SIMULABLE", "target_cache_conflict"))
+
+    def test_the_target_basis_is_proven_by_its_own_logged_answers(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run = make_run_k(root, name="run-a")
+            donor = tt.prepare(tt.load(make_run_k(root, name="run-b", texts=donor_texts(), targeted=(2, 6))))
+            loaded = tt.load(run)
+            answered = [c for c in loaded.run.logs["i1"]["candidates"] if tt.vision_items(c) and c.get("keyframe")]
+            # a leftover record from another model, with another answer, proves nothing
+            stale = tt._cache_key(vision.PROMPT_VERSION, PROVIDER, "old-model", ev.MOMENT_LABELS, loaded.jpeg[answered[0]["keyframe"]])
+            (run / ".dubflow-work" / "mastering" / "vision" / f"{stale[:32]}.json").write_text(json.dumps(
+                {"key": stale, **vision.Seen("cũ", (), (), "", ("reaction",), 100, "clear", None, None, 0).to_dict(),
+                 "made_by": {"prompt": vision.PROMPT_VERSION, "provider": PROVIDER, "model": "old-model"}}), encoding="utf-8")
+            with mock.patch.object(tt, "cache_combos", lambda _: [(vision.PROMPT_VERSION, PROVIDER, "old-model"),
+                                                                  (vision.PROMPT_VERSION, PROVIDER, MODEL)]):
+                index = tt.DonorIndex(tt.prepare(tt.load(run)), [donor])
+                self.assertEqual(index.key_basis, (vision.PROMPT_VERSION, PROVIDER, MODEL, tuple(ev.MOMENT_LABELS)))
+            # the same answer under the full label set too: two bases reproduce it, so nothing is simulated
+            item = tt.vision_items(answered[0])[0]
+            both = tt._cache_key(vision.PROMPT_VERSION, PROVIDER, MODEL, ev.LABELS, loaded.jpeg[answered[0]["keyframe"]])
+            (run / ".dubflow-work" / "mastering" / "vision" / f"{both[:32]}.json").write_text(json.dumps(
+                {"key": both, **vision.Seen(item["text"], (), (), "", tuple(item["labels"]), item["confidence"], "clear", None, None,
+                                            0).to_dict()}, ensure_ascii=False), encoding="utf-8")
+            target = tt.prepare(tt.load(run))
+            index = tt.DonorIndex(target, [donor])
+            self.assertEqual((index.key_basis, index.key_basis_status), (None, "ambiguous"))
+            self.assertEqual(index.match(self.sample_of(target, "i1-s1c6")).reason, "target_key_ambiguous")
+
+    def test_a_target_cache_that_proves_no_basis_simulates_nothing(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run = make_run_k(root, name="run-a")
+            for path in sorted((run / ".dubflow-work" / "mastering" / "vision").glob("*.json")):
+                record = json.loads(path.read_text(encoding="utf-8"))
+                record["key"] = "0" * 64
+                path.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+            target = tt.prepare(tt.load(run))
+            donor = tt.prepare(tt.load(make_run_k(root, name="run-b", texts=donor_texts(), targeted=(2, 6))))
+            index = tt.DonorIndex(target, [donor])
+            self.assertEqual((index.key_basis, index.key_basis_status, index.pool), (None, "unproven", []))
+            self.assertEqual(index.match(self.sample_of(target, "i1-s1c6")).reason, "target_key_unproven")
+
+    def test_an_item_answered_by_another_model_is_left_out(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = tt.prepare(tt.load(make_run_k(root, name="run-a")))
+            run = make_run_k(root, name="run-b", texts=donor_texts(), targeted=(2, 6))
+            log_path = run / ".dubflow-work" / "mastering" / "editorial-i1.json"
+            log = json.loads(log_path.read_text(encoding="utf-8"))
+            for c in log["candidates"]:
+                if c["id"] == "i1-s1c6":
+                    for item in tt.vision_items(c):
+                        item["detail"] = f"AI {PROVIDER}/another-model"
+            log_path.write_text(json.dumps(log, ensure_ascii=False), encoding="utf-8")
+            index = tt.DonorIndex(target, [tt.prepare(tt.load(run))])
+            self.assertGreater(index.counts["detail_mismatch"], 0)
+            self.assertFalse(any(d.candidate_id == "i1-s1c6" for d in index.pool))
+            self.assertEqual(index.match(self.sample_of(target, "i1-s1c6")).status, "NOT_SIMULABLE")
+
+    def test_a_target_without_a_proven_key_basis_simulates_nothing(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = tt.prepare(tt.load(make_run_k(root, name="run-a", cache=False)))
+            donor = tt.prepare(tt.load(make_run_k(root, name="run-b", texts=donor_texts(), targeted=(2, 6))))
+            index = tt.DonorIndex(target, [donor])
+            self.assertIsNone(index.key_basis)
+            self.assertEqual(index.pool, [])
+            found = index.match(self.sample_of(target, "i1-s1c6"))
+            self.assertEqual((found.status, found.reason), ("NOT_SIMULABLE", "target_key_unproven"))
 
     def test_the_runs_own_intro_answer_is_its_cache(self):
         with TemporaryDirectory() as tmp:
@@ -461,6 +641,17 @@ class MatchingTests(unittest.TestCase):
             self.assertEqual((found.status, found.own_cache, found.donor_part), ("SIMULATED", True, "intro"))
             cost = tt.e4_cost([found], None, None)
             self.assertEqual((cost["frames_job"], cost["calls_est"]), (1, 0))
+            # the run's own answer needs its own exact record too: a record under the right key with another answer
+            c8 = target.loaded.jpeg[target.shot("i1", "i1-s1c8").candidate.keyframe]
+            key = tt._cache_key(vision.PROMPT_VERSION, PROVIDER, MODEL, ev.MOMENT_LABELS, c8)
+            path = run / ".dubflow-work" / "mastering" / "vision" / f"{key[:32]}.json"
+            record = json.loads(path.read_text(encoding="utf-8"))
+            record["description"] = "Một cảnh khác"
+            path.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+            target = tt.prepare(tt.load(run))
+            index = tt.DonorIndex(target, [])
+            self.assertEqual(index.match(self.sample_of(target, "i1-s1c8")).status, "NOT_SIMULABLE")
+            self.assertGreater(index.provenance["answer_mismatch"], 0)
 
 
 class ProvenanceAndSimulationTests(unittest.TestCase):
@@ -1153,7 +1344,7 @@ class ScopeTests(unittest.TestCase):
             self.assertNotEqual(path, "scripts/ci/component_registry.json")
 
 
-GOLDEN = "c1fd47e899ff300a25bcc3dc11521923483f5120fc78b734c429f076dc909163"
+GOLDEN = "f9a2af50778ba00fd89519367f3758525f03bbc33304fe3fbd82c8cf53eb6f15"
 
 
 if __name__ == "__main__":

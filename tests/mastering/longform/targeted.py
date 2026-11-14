@@ -87,6 +87,8 @@ CAVEATS = (
     "intro/outro looks are excluded from the item parts' observed set, as in production",
     "A0 keeps the logged sub-shots (the replay does not re-split them) with their non-vision evidence only",
     "runs not independent (shared footage, ground truth, 4/5 donors)",
+    "an answer is replayed only under its exact production cache key (prompt version, provider, model, label set, JPEG "
+    "bytes) with the logged answer equal to the cached record; no match by time or by run-level provider and model",
 )
 CODE_FILES = ("targeted.py", "targeting.py", "w3.py")
 
@@ -551,6 +553,66 @@ def asked_in_cache(loaded: Loaded, keyframe: str | None) -> bool:
     return False
 
 
+def key_bases(loaded: Loaded) -> list[tuple[str, str, str, tuple[str, ...]]]:
+    """The production cache-key bases (prompt version, provider, model asked, label set) this run's own cache proves:
+    a basis counts only when, for one of the run's own answered keyframes, the record under the full key it gives
+    (``vision.Describer._key``) reproduces the answer the run logged for that frame. A leftover record from another
+    prompt version or model in the same folder proves nothing. Nothing is inferred from run-level fields alone."""
+    if loaded.cache is None:
+        return []
+    if not hasattr(loaded, "_key_bases"):
+        answered = sorted({(c["keyframe"], json.dumps(vision_items(c)[0], sort_keys=True, ensure_ascii=False))
+                           for log in loaded.run.logs.values() for c in log.get("candidates") or ()
+                           if c.get("keyframe") and vision_items(c) and loaded.jpeg.get(c["keyframe"])})
+        found: set[tuple[str, str, str, tuple[str, ...]]] = set()
+        for prompt, provider, model in cache_combos(loaded):
+            for labels in (ev.MOMENT_LABELS, ev.LABELS):
+                basis = (prompt, provider, model, tuple(labels))
+                if any(exact_answer(loaded, basis, loaded.jpeg[name], json.loads(item)) == "exact" for name, item in answered):
+                    found.add(basis)
+        loaded._key_bases = sorted(found)
+    return loaded._key_bases
+
+
+def exact_answer(loaded: Loaded, basis: tuple[str, str, str, tuple[str, ...]], jpeg_hex: str | None,
+                 item: Mapping[str, Any]) -> str:
+    """"exact" when ``loaded``'s cache holds, under the full production key of ``basis`` for these JPEG bytes, a record
+    whose validated answer is this logged item (text, labels, confidence); otherwise why that is not proven. A record
+    without ``made_by`` (written before #808) is accepted only through this computed full key."""
+    if not jpeg_hex:
+        return "no_jpeg"
+    if loaded.cache is None:
+        return "no_cache"
+    prompt, provider, model, labels = basis
+    key = _cache_key(prompt, provider, model, labels, jpeg_hex)
+    record = loaded.cache.get(key[:32])
+    if record is None or record.get("key") != key:
+        return "no_exact_key"
+    made = record.get("made_by")
+    if isinstance(made, Mapping) and (made.get("prompt"), made.get("provider"), made.get("model")) != (prompt, provider, model):
+        return "made_by_mismatch"
+    seen = vision.validate(record, labels)  # what production's _cached requires before it reuses a record
+    if seen is None:
+        return "answer_mismatch"
+    logged = (item.get("text"), list(item.get("labels") or ()), item.get("confidence"))
+    detail = str(item.get("detail") or "")
+    # The run that asked logged item_of(the fresh answer), and the record stores that answer's fields as they were;
+    # validating them again can differ at a clipped field ending in a space, so the stored fields count as they are.
+    candidates = [seen]
+    try:
+        candidates.append(vision.Seen(str(record["description"]), tuple(record["objects"]), tuple(record["actions"]),
+                                      str(record["visible_text"]), tuple(record["labels"]), int(record["confidence"]),
+                                      str(record["clarity"]), record.get("product_box"), record.get("product_group"),
+                                      int(record.get("hook") or 0)))
+    except (KeyError, TypeError, ValueError):
+        pass
+    for answer in candidates:
+        expected = vision.item_of(answer, detail)
+        if (expected.text, list(expected.labels), expected.confidence) == logged:
+            return "exact"
+    return "answer_mismatch"
+
+
 def classify(loaded: Loaded, broad: Mapping[str, Any]) -> tuple[dict[str, str], dict[str, Any]]:
     """Each looked-at shot: broad, broad_shared, targeted, targeted_shared or multi_frame (§3.4)."""
     run = loaded.run
@@ -757,7 +819,7 @@ class Replayed:
     sample: tg.Sample
     status: str                   # "SIMULATED" | "NOT_SIMULABLE"
     reason: str | None
-    match_basis: str | None       # "jpeg" | "time_fallback"
+    match_basis: str | None       # "exact_key": the same JPEG bytes under the proven production cache key
     donor_run: str | None
     donor_part: str | None
     donor_candidate_id: str | None
@@ -774,7 +836,8 @@ class Replayed:
 def donor_samples(prep: Prepared, *, parts: str, own: bool, only: Sequence[str] | None = None
                   ) -> tuple[list[DonorSample], dict[str, int]]:
     """Every answered frame of ``prep``'s saved logs: ``parts`` "items" or "all" (or "non_items", the run's own
-    intro/outro looks); a shared copy of another frame's answer is left out (it says nothing of its own bytes)."""
+    intro/outro looks); a shared copy of another frame's answer is left out (it says nothing of its own bytes), and so
+    is an answer whose recorded ``detail`` names another provider or model than the run's."""
     loaded = prep.loaded
     pm = loaded.provider_model
     counts = {"donor_shared_excluded": 0, "detail_mismatch": 0}
@@ -810,7 +873,8 @@ def donor_samples(prep: Prepared, *, parts: str, own: bool, only: Sequence[str] 
                     continue
                 done.add((c["id"], index))
                 if item.get("detail") and item.get("detail") != f"AI {provider}/{model}":
-                    counts["detail_mismatch"] += 1
+                    counts["detail_mismatch"] += 1  # answered by another provider or model than the run asked: left out
+                    continue
                 if index == 0:
                     name, t, basis = c.get("keyframe"), s.keyframe_ms, s.keyframe_basis
                 elif index - 1 < len(extras):
@@ -825,7 +889,11 @@ def donor_samples(prep: Prepared, *, parts: str, own: bool, only: Sequence[str] 
 
 class DonorIndex:
     """Answers for selected frames: the run's own cached answers first (its intro/outro looks; for an arm that
-    starts from A0, also the targeted answers A0 removed), then the donors' answers to the same JPEG bytes."""
+    starts from A0, also the targeted answers A0 removed), then the donors' answers to the same JPEG bytes. An answer
+    is admitted only when its exact production cache key is proven: the target run's own cache fixes one key basis
+    (prompt version, provider, model, label set), and the answering run's cache must hold, under that basis's full key
+    for the frame's JPEG bytes, a record whose answer is the logged item. Without that proof the frame is
+    NOT_SIMULABLE; nothing is matched by time or by run-level provider and model alone."""
 
     def __init__(self, target: Prepared, donors: Sequence[Prepared], *, scope: str = "items", tolerance_ms: int = 500,
                  base: str = "A") -> None:
@@ -833,10 +901,18 @@ class DonorIndex:
         self.tolerance_ms = tolerance_ms
         self.pm = target.loaded.provider_model
         self.counts = {"donor_shared_excluded": 0, "donor_provider_mismatch": 0, "detail_mismatch": 0}
+        self.provenance: dict[str, int] = {}
         self._a0: DonorIndex | None = None
+        bases = key_bases(target.loaded)
+        self.key_basis = bases[0] if len(bases) == 1 else None
+        self.key_basis_status = "exact" if self.key_basis is not None else ("ambiguous" if bases else "unproven")
         own, counted = donor_samples(target, parts="non_items", own=True)
+        self.counts["detail_mismatch"] += counted["detail_mismatch"]
         if base == "A0":
-            own += donor_samples(target, parts="items", own=True, only=("targeted", "multi_frame"))[0]
+            extra, counted = donor_samples(target, parts="items", own=True, only=("targeted", "multi_frame"))
+            own += extra
+            self.counts["detail_mismatch"] += counted["detail_mismatch"]
+        own = [d for d in own if self._proven(target.loaded, d)]
         pool = list(own)
         self.counts["own_cache_frames"] = len(own)
         mine = target.loaded.run_sha256
@@ -852,16 +928,19 @@ class DonorIndex:
                 if self.pm is None or (d.provider, d.model) != self.pm:
                     self.counts["donor_provider_mismatch"] += 1
                     continue
-                pool.append(d)
+                if self._proven(donor.loaded, d):
+                    pool.append(d)
         self.donor_runs = sorted({d.run for d in pool if not d.own_cache})
         self.pool = sorted(pool, key=self._order)
         self.by_jpeg: dict[str, list[DonorSample]] = {}
         for d in self.pool:
             if d.jpeg_sha256:
                 self.by_jpeg.setdefault(d.jpeg_sha256, []).append(d)
-        self.prompt_version_basis = "recorded" if all(
-            any((r.get("made_by") or {}).get("prompt") for r in (p.cache or {}).values()) for p in
-            [target.loaded, *(d.loaded for d in donors)]) else "unknown"
+
+    def _proven(self, loaded: Loaded, d: DonorSample) -> bool:
+        reason = "no_key_basis" if self.key_basis is None else exact_answer(loaded, self.key_basis, d.jpeg_sha256, d.item)
+        self.provenance[reason] = self.provenance.get(reason, 0) + 1
+        return reason == "exact"
 
     def for_base(self, base: str) -> "DonorIndex":
         if base == self.base:
@@ -881,7 +960,6 @@ class DonorIndex:
 
     def match(self, sample: tg.Sample) -> Replayed:
         tj = self.target_jpeg(sample.part, sample.candidate_id)
-        shot = self.target.shot(sample.part, sample.candidate_id)
 
         def done(d: DonorSample | None, reason: str | None, basis: str | None) -> Replayed:
             if d is None:
@@ -890,24 +968,30 @@ class DonorIndex:
 
         if self.pm is None:
             return done(None, "source_unknown", None)
-        if tj is not None and self.by_jpeg.get(tj):
-            return done(self.by_jpeg[tj][0], None, "jpeg")
-        fallback = [d for d in self.pool if tj is None or d.jpeg_sha256 is None]
+        if self.key_basis is None:
+            return done(None, f"target_key_{self.key_basis_status}", None)
+        if tj is None:
+            return done(None, "target_jpeg_unknown", None)  # no bytes, no production key: never matched by time
+        found = self.by_jpeg.get(tj)
+        if found:
+            if not found[0].own_cache and self.target_record(tj) is not None:
+                # production would reuse the target folder's own record for these bytes, not the donor's answer
+                return done(None, "target_cache_conflict", None)
+            return done(found[0], None, "exact_key")
+        # diagnostic only: tolerance_ms never admits an answer, it only tells a near miss from no answer at all
         near = lambda d: abs(d.t_ms - sample.t_ms) <= self.tolerance_ms  # noqa: E731
-        if tj is not None and any(d.jpeg_sha256 and d.source_key == sample.source_key and near(d) for d in self.pool):
+        if any(d.source_key == sample.source_key and near(d) for d in self.pool):
             return done(None, "jpeg_mismatch", None)
-        if not fallback:
-            return done(None, "no_donor_answer", None)
-        same = [d for d in fallback if d.source_key and d.source_key == sample.source_key]
-        if not same:
-            return done(None, "source_unknown", None)
-        within = [d for d in same if near(d)]
-        # inside the candidate's unclipped window (a trim can clip the logged range past the keyframe)
-        lo, hi = (shot.window or (shot.start_ms, shot.end_ms)) if shot is not None else (sample.t_ms, sample.t_ms)
-        inside = [d for d in within if lo <= d.t_ms <= hi]
-        if inside:
-            return done(sorted(inside, key=lambda d: (abs(d.t_ms - sample.t_ms), *self._order(d)))[0], None, "time_fallback")
-        return done(None, "cross_cut" if within else "beyond_tolerance", None)
+        return done(None, "no_donor_answer", None)
+
+    def target_record(self, jpeg_hex: str) -> Mapping[str, Any] | None:
+        """The target folder's own cache record under the full production key for these bytes, if it has one."""
+        if self.key_basis is None or self.target.loaded.cache is None:
+            return None
+        prompt, provider, model, labels = self.key_basis
+        key = _cache_key(prompt, provider, model, labels, jpeg_hex)
+        record = self.target.loaded.cache.get(key[:32])
+        return record if record is not None and record.get("key") == key and vision.validate(record, labels) else None
 
     def covered(self, view: tg.PlanningView) -> frozenset[str]:
         """Open-world eligible shots some donor (or the run's own intro/outro look) answered."""
@@ -1817,8 +1901,14 @@ def evaluate_run(gt: Mapping[str, Any], target: Prepared, donors: Sequence[Prepa
         if "e2" in a:
             a["e2"].pop("_r3_with_frame", None)
     out = {"e1": e1, "arms": results, "upper_bounds": bounds,
-           "matching": {"tolerance_ms": options.tolerance_ms, "donor_runs": index.donor_runs, **index.counts,
-                        "prompt_version_basis": index.prompt_version_basis}}
+           "matching": {"tolerance_ms": options.tolerance_ms,  # labels near misses only; never admits an answer "donor_runs": index.donor_runs, **index.counts,
+                        "key_basis_status": index.key_basis_status,
+                        # the basis without names: prompt version, a digest of provider|model, and which label set
+                        "key_basis": {"prompt": index.key_basis[0],
+                                      "provider_model_sha12": sha256_bytes(f"{index.key_basis[1]}|{index.key_basis[2]}".encode("utf-8"))[:12],
+                                      "labels": "moment" if tuple(index.key_basis[3]) == tuple(ev.MOMENT_LABELS) else "all"}
+                        if index.key_basis else None,
+                        "provenance": dict(sorted(index.provenance.items()))}}
     return out, samples_json(selected), times
 
 
