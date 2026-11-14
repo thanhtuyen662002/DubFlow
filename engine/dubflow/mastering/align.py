@@ -1251,6 +1251,7 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
         # kind, is never READY on shared words alone (#802). A pin is the user's choice and says so already.
         claim_result = None
         unproven = False
+        astray_ids: set[int] = set()
         if stated[unit.unit_id].any and mode == "content" and not pinned_by_user:
             per_piece = [checked.get((unit.unit_id, c.candidate.candidate_id)) or said.Check() for c in mine]
             claim_result = said.merged(per_piece)
@@ -1264,9 +1265,21 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
             if unproven:
                 decision.notes.append(said.note(claim_result))
                 coverage["needs_review"] = True
+            if stated[unit.unit_id].display:
+                # what a sentence says is displayed is shown by the piece that shows it, not by the sentence (#837): a
+                # piece that shows none of it (a title card, then a quotation card on the same crest: rc16 i1.u2, 960 ms
+                # right, 2730 ms another card, READY) does not ride on the piece that does. A sentence that says two
+                # things are displayed may show each in its own piece (a montage); a piece showing neither is looked at.
+                astray = [c for c, piece in zip(mine, per_piece) if not piece.verified]
+                astray_ids = {id(c) for c in astray}
+                if astray:  # said in a note: the log's claim keys stay those of the contract (editorial-v1)
+                    coverage["needs_review"] = True
+                    decision.notes.append(said.piece_note([*claim_result.verified, *claim_result.unverified,
+                                                           *claim_result.conflicts], sum(c.length_ms for c in astray),
+                                                          unit.length_ms))
 
         def flag(c: Choice) -> bool:
-            if not c.candidate.quality.usable or mode != "content" or spoiler or unproven:
+            if not c.candidate.quality.usable or mode != "content" or spoiler or unproven or id(c) in astray_ids:
                 return True
             if generic:
                 # its pieces carry the flag too: the plan and the checks read the pieces (rc5: still silent on rc4 data)

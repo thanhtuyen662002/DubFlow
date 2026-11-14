@@ -11,8 +11,17 @@ scoring rules are those of the locked Windows harness (``score_w3.py``, fixed be
 
 * top 5 of a unit = its chosen shots in order, then its alternatives in order, distinct, first five;
 * a candidate hits a range when they overlap by >= 1000 ms or by >= half of the shorter of the two;
-* recall@k = units with footage whose top k has a hit / units with footage;
-* serious silent miss = a unit with footage, READY, whose chosen shots hit nothing; a "missing" unit READY too.
+* recall@k = units with footage whose top k has a hit / units with footage.
+
+Correctness of what a unit *shows* follows one evaluation contract (#837, ``judge``), used by ``score``, ``attribute``
+and every report built on them. It is measured on the **timeline pieces** (the part of a shot actually placed under the
+sentence: ``pieces`` offset/length), never on a candidate's whole extent; a piece hits by the rule above:
+
+* lenient: at least one piece hits; strict: every piece hits;
+* duration: milli of the unit's timeline on pieces that hit;
+* severe: READY and (a "missing" unit, or no piece, or no piece hits, or duration < 500 milli (> 50 % of its time on
+  footage that misses), or a displayed claim the pieces leave unshown or contradict). ``serious_silent_misses`` is
+  this list. It is an acceptance metric, not an editorial threshold of the planner.
 
 The ground truth gives times without a source: a part with more than one source is listed apart
 (``multi_source_parts``), since its ranges cannot be told apart (every W3 item has one source). A replay has no source
@@ -49,6 +58,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from engine.dubflow.mastering import align  # noqa: E402
+from engine.dubflow.mastering import claims as said  # noqa: E402
 from engine.dubflow.mastering import evidence as ev  # noqa: E402
 from engine.dubflow.mastering import plan as m  # noqa: E402
 from engine.dubflow.mastering.candidates import Candidate  # noqa: E402
@@ -155,6 +165,57 @@ def units_by_text(run: Run) -> dict[str, tuple[str, dict]]:
     return out
 
 
+# --- the evaluation contract (#837) ---
+
+SEVERE_DURATION_MILLI = 500  # a READY unit with less of its time on footage that hits (more than half wrong) is severe
+
+
+def timeline_pieces(unit: Mapping[str, Any], cands: Mapping[str, Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """The pieces a unit shows: id, offset and length in its source, as placed on the timeline. A log without
+    ``pieces`` (older runs) falls back to the chosen shots' whole extents, said so (``extent``)."""
+    pieces = [{"id": str(p["id"]), "offset_ms": int(p["offset_ms"]), "length_ms": int(p["length_ms"])}
+              for p in unit.get("pieces") or () if int(p.get("length_ms") or 0) > 0]
+    if pieces or not unit.get("chosen"):
+        return pieces
+    return [{"id": i, "offset_ms": int(cands[i]["start_ms"]), "length_ms": int(cands[i]["end_ms"]) - int(cands[i]["start_ms"]),
+             "extent": True} for i in unit.get("chosen") or () if i in cands]
+
+
+def judge(unit: Mapping[str, Any], g: Mapping[str, Any], cands: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+    """One unit under the evaluation contract: lenient, strict, duration (milli), the claim check and ``severe`` with
+    its reasons. Reads the run's own evidence for the claims, the ground truth only for the hits."""
+    ranges = g.get("ranges") or []
+    pieces = timeline_pieces(unit, cands)
+    for p in pieces:
+        p["hit"] = bool(ranges) and hits({"start_ms": p["offset_ms"], "end_ms": p["offset_ms"] + p["length_ms"]}, ranges)
+    total = sum(p["length_ms"] for p in pieces)
+    duration = sum(p["length_ms"] for p in pieces if p["hit"]) * 1000 // total if total else 0
+    stated = said.of(str(unit.get("text") or ""))
+    claim_failure = False
+    if stated.display and stated.any:
+        checks = [said.check(stated, said.content_text(evidence_from((cands.get(p["id"]) or {}).get("evidence") or {})))
+                  for p in pieces]
+        together = said.merged(checks)
+        claim_failure = not checks or bool(together.unverified or together.conflicts or together.disputed)
+    ready = (unit.get("review") or {}).get("state") == "READY"
+    reasons = []
+    if ready:
+        if g["kind"] == "missing":
+            reasons.append("ready_on_missing")
+        else:
+            if not pieces:
+                reasons.append("no_footage")
+            elif not any(p["hit"] for p in pieces):
+                reasons.append("no_piece_hits")
+            elif duration < SEVERE_DURATION_MILLI:
+                reasons.append("majority_wrong_duration")
+            if claim_failure:
+                reasons.append("claim_unshown_or_contradicted")
+    return {"pieces": pieces, "lenient": any(p["hit"] for p in pieces), "strict": bool(pieces) and all(p["hit"] for p in pieces),
+            "duration_milli": duration, "claim_failure": claim_failure, "severe": bool(reasons), "severe_reasons": reasons,
+            "extent_fallback": any(p.get("extent") for p in pieces)}
+
+
 # --- score (the locked rules) ---
 
 def score(gt: Mapping[str, Any], run: Run) -> dict[str, Any]:
@@ -166,7 +227,9 @@ def score(gt: Mapping[str, Any], run: Run) -> dict[str, Any]:
             # a ground-truth sentence the run does not have: a miss in every denominator, never left out of it
             unmatched.append(g["text"][:80])
             rows.append({"unit": None, "text": g["text"][:80], "kind": g["kind"], "evidence": None, "state": None,
-                         "unmatched": True, "chosen_hit": False, "hit_at_1": False, "hit_at_3": False, "hit_at_5": False})
+                         "unmatched": True, "chosen_hit": False, "hit_at_1": False, "hit_at_3": False, "hit_at_5": False,
+                         "lenient": False, "strict": False, "duration_milli": 0, "claim_failure": False, "severe": False,
+                         "severe_reasons": [], "pieces": []})
             continue
         part, u = hit
         cands = candidates_of(run.logs[part])
@@ -174,8 +237,13 @@ def score(gt: Mapping[str, Any], run: Run) -> dict[str, Any]:
         ranges = g.get("ranges") or []
         order = [i for i in top(u) if i in cands]
         chosen = [cands[i] for i in u.get("chosen") or () if i in cands]
+        verdict = judge(u, g, cands)
+        # chosen_hit reads the chosen shots' whole extents (a retrieval measure, comparable with older reports); what
+        # the unit shows is judged on its timeline pieces (lenient, strict, duration, severe)
         row = {"unit": u["unit_id"], "kind": g["kind"], "evidence": review.get("evidence"), "state": review.get("state"),
-               "chosen_hit": bool(ranges) and any(hits(c, ranges) for c in chosen)}
+               "chosen_hit": bool(ranges) and any(hits(c, ranges) for c in chosen),
+               **{k: verdict[k] for k in ("lenient", "strict", "duration_milli", "claim_failure", "severe", "severe_reasons")},
+               "pieces": [[p["id"], p["offset_ms"], p["length_ms"], p["hit"]] for p in verdict["pieces"]]}
         for k in (1, 3, 5):
             row[f"hit_at_{k}"] = bool(ranges) and any(hits(cands[i], ranges) for i in order[:k])
         rows.append(row)
@@ -192,8 +260,17 @@ def score(gt: Mapping[str, Any], run: Run) -> dict[str, Any]:
         "recall_at_1": share("hit_at_1"), "recall_at_3": share("hit_at_3"), "recall_at_5": share("hit_at_5"),
         "chosen_hit": share("chosen_hit"),
         "false_source_insufficient": [r["unit"] for r in footage if r["evidence"] == "SOURCE_INSUFFICIENT"],
-        "serious_silent_misses": [r["unit"] for r in footage if r["state"] == "READY" and not r["chosen_hit"]]
-                                 + [r["unit"] for r in missing if r["state"] == "READY"],
+        # one contract (#837): severe READY on the timeline pieces, footage and missing units alike
+        "severe": [r["unit"] for r in rows if r["severe"]],
+        "severe_reasons": {r["unit"]: r["severe_reasons"] for r in rows if r["severe"]},
+        "serious_silent_misses": [r["unit"] for r in rows if r["severe"]],
+        "denominators": {"units": len(rows), "footage": len(footage), "missing": len(missing), "ready": len(ready),
+                         "ready_footage": sum(1 for r in ready if r["kind"] != "missing")},
+        "lenient_correct": [sum(r["lenient"] for r in ready if r["kind"] != "missing"), sum(1 for r in ready if r["kind"] != "missing")],
+        "strict_correct": [sum(r["strict"] for r in ready if r["kind"] != "missing"), sum(1 for r in ready if r["kind"] != "missing")],
+        "duration_weighted_ready": [sum(r["duration_milli"] for r in ready if r["kind"] != "missing"),
+                                    1000 * sum(1 for r in ready if r["kind"] != "missing")],
+        "claim_failures_ready": [r["unit"] for r in ready if r["claim_failure"]],
         "missing_flagged": [sum(r["state"] not in ("READY", None) for r in missing), len(missing)],
         # READY precision: READY units whose chosen shots hit / READY units with footage
         "ready_precision": [sum(r["chosen_hit"] for r in ready if r["kind"] != "missing"),
@@ -412,8 +489,8 @@ def attribute(gt: Mapping[str, Any], run: Run) -> dict[str, Any]:
         rank = next((k + 1 for k, i in enumerate(order) if i in hit_ids), None)
         row["rank"] = rank
         row["chosen_hit"] = any(i in hit_ids for i in chosen)
-        looked = {c["id"] for c in pool if any(i["origin"] in ev.CONTENT_ORIGINS and (i.get("text") or i.get("labels"))
-                                                  for i in (c.get("evidence") or {}).get("items") or ())}
+        # looked at = something that can verify the picture says what the shot shows (#836: not the speech over it)
+        looked = {c["id"] for c in pool if c.get("evidence") and evidence_from(c["evidence"]).seen}
         row["hit_looked"] = [i for i in hit_ids if i in looked]
         usable = [i for i in hit_ids if not (cands[i].get("quality") or {}).get("problems")]
         # a Scorer over the part's usable candidates, as the planner built it at its final call (built once per part)
@@ -455,7 +532,9 @@ def attribute(gt: Mapping[str, Any], run: Run) -> dict[str, Any]:
         else:
             stage = "R5_RANKING"
         row["stage"] = stage
-        if review.get("state") == "READY" and not row["chosen_hit"]:
+        verdict = judge(u, g, cands)
+        row["severe_reasons"] = verdict["severe_reasons"]
+        if verdict["severe"]:  # the evaluation contract (#837): no piece hits, most of the time wrong, or a claim unshown
             row["r7"] = "SILENT_MISS"
         elif review.get("state") != "READY" and not row["chosen_hit"]:
             row["r7"] = "FLAGGED_MISS"
