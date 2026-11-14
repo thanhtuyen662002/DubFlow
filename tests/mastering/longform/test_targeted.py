@@ -472,11 +472,29 @@ class MatchingTests(unittest.TestCase):
             (path.parent / f"{key[:32]}.json").write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
         return change
 
+    @staticmethod
+    def side_change(box: dict, log_too: bool):
+        """A donor change: the c6 record gets a hook, a box and a product group; with ``log_too`` the donor's log
+        carries the side metadata vision.apply wrote for that record (the donor really answered so)."""
+        def change(path: Path, record: dict, loaded: tt.Loaded) -> None:
+            changed = {**record, "hook": 900, "product_box": box, "product_group": "g1"}
+            path.write_text(json.dumps(changed, ensure_ascii=False), encoding="utf-8")
+            if not log_too:
+                return
+            applied = ev.Evidence("x")
+            vision.apply({"x": vision.validate(changed, ev.MOMENT_LABELS)}, {"x": applied}, DETAIL)
+            log_path = loaded.folder / ".dubflow-work" / "mastering" / "editorial-i1.json"
+            log = json.loads(log_path.read_text(encoding="utf-8"))
+            for c in log["candidates"]:
+                if c["id"] == "i1-s1c6":
+                    c["evidence"].update({k: applied.to_dict()[k] for k in tt.SIDE_FIELDS})
+            log_path.write_text(json.dumps(log, ensure_ascii=False), encoding="utf-8")
+        return change
+
     def test_a_replayed_answer_carries_what_vision_apply_sets(self):
         box = {"x": 100, "y": 100, "w": 300, "h": 300}
         with TemporaryDirectory() as tmp:
-            index, target = self.donor_with(Path(tmp), lambda path, record, loaded: path.write_text(json.dumps(
-                {**record, "hook": 900, "product_box": box, "product_group": "g1"}, ensure_ascii=False), encoding="utf-8"))
+            index, target = self.donor_with(Path(tmp), self.side_change(box, log_too=True))
             found = index.match(self.sample_of(target, "i1-s1c6"))
             self.assertEqual(found.status, "SIMULATED")
             item = index.item_of(found)
@@ -486,6 +504,17 @@ class MatchingTests(unittest.TestCase):
             self.assertEqual((got.hook, got.product_visible, got.same_product, got.product_box is not None),
                              (900, True, "g1", True))
             self.assertIn("i1-s1c6", new_ids)
+
+    def test_a_donor_record_whose_side_metadata_the_donor_did_not_log_is_not_replayed(self):
+        # same key and the same item, but the record's box, hook and group are not what the donor's log carries:
+        # replaying it would add a whole answer the donor never logged
+        box = {"x": 100, "y": 100, "w": 300, "h": 300}
+        with TemporaryDirectory() as tmp:
+            index, target = self.donor_with(Path(tmp), self.side_change(box, log_too=False))
+            found = index.match(self.sample_of(target, "i1-s1c6"))
+            self.assertEqual(found.status, "NOT_SIMULABLE")
+            self.assertGreaterEqual(index.provenance.get("side_mismatch", 0), 1)
+            self.assertIsNone(index.item_of(found))
 
     def test_a_record_production_would_not_validate_is_not_exact(self):
         # vision.Describer._cached reuses only validate(record): its raw fields must not prove an answer
@@ -1720,6 +1749,100 @@ class PatchTests(unittest.TestCase):
         with tt.replay_context(memo=tt.PlanMemo()):
             self.assertNotEqual(w3.call_of.__qualname__, "call_of")
         self.assert_original()
+
+
+class RunFileSafetyTests(unittest.TestCase):
+    """Every file the harness reads stays inside the selected run folder: no traversal from a logged keyframe name, no
+    symbolic link or reparse point, only regular files, and a size cap (``tt.load`` fails instead of reading)."""
+
+    def run_with(self, tmp: str) -> tuple[Path, Path]:
+        run = make_run_k(Path(tmp) / "runs")
+        outside = Path(tmp) / "outside.jpg"
+        outside.write_bytes(b"\xff\xd8 private bytes outside the run \xff\xd9")
+        return run, outside
+
+    @staticmethod
+    def set_keyframe(run: Path, candidate: str, name: str) -> None:
+        path = run / ".dubflow-work" / "mastering" / "editorial-i1.json"
+        log = json.loads(path.read_text(encoding="utf-8"))
+        for c in log["candidates"]:
+            if c["id"] == candidate:
+                c["keyframe"] = name
+        path.write_text(json.dumps(log, ensure_ascii=False), encoding="utf-8")
+
+    def link(self, target: Path, at: Path) -> None:
+        try:
+            at.symlink_to(target)
+        except (OSError, NotImplementedError):
+            self.skipTest("symbolic links are not available here")
+
+    def test_a_clean_run_loads(self):
+        with TemporaryDirectory() as tmp:
+            run, _ = self.run_with(tmp)
+            loaded = tt.load(run)
+            self.assertTrue(all(loaded.jpeg.values()))
+            self.assertIsNone(tt.read_run_file(run, ".dubflow-work/review-i1.json"))
+
+    def test_a_logged_keyframe_name_cannot_leave_the_run_folder(self):
+        with TemporaryDirectory() as tmp:
+            run, outside = self.run_with(tmp)
+            for name in ("../../../outside.jpg", str(outside), "sub/../../../../outside.jpg"):
+                with self.subTest(name):
+                    self.set_keyframe(run, "i1-s1c2", name)
+                    with self.assertRaises(tt.UnsafeRunFile) as caught:
+                        tt.load(run)
+                    self.assertNotIn(str(Path(tmp)), str(caught.exception))
+
+    def test_a_symbolic_link_anywhere_on_the_way_is_refused(self):
+        with TemporaryDirectory() as tmp:
+            run, outside = self.run_with(tmp)
+            mdir = run / ".dubflow-work" / "mastering"
+            frame = mdir / "i1-s1-c2.jpg"
+            frame.unlink()
+            self.link(outside, frame)
+            with self.assertRaises(tt.UnsafeRunFile):
+                tt.load(run)
+        cases = [("editorial log", "editorial-i1.json"), ("cache record", None), ("review file", "review")]
+        for label, name in cases:
+            with self.subTest(label), TemporaryDirectory() as tmp:
+                run, _ = self.run_with(tmp)
+                mdir = run / ".dubflow-work" / "mastering"
+                if name is None:
+                    path = next((mdir / "vision").glob("*.json"))
+                elif name == "review":
+                    path = run / ".dubflow-work" / "review-i1.json"
+                    path.write_text("{}", encoding="utf-8")
+                else:
+                    path = mdir / name
+                copy = Path(tmp) / "elsewhere.json"
+                copy.write_bytes(path.read_bytes())
+                path.unlink()
+                self.link(copy, path)
+                with self.assertRaises(tt.UnsafeRunFile):
+                    tt.load(run)
+
+    def test_a_linked_mastering_folder_is_refused(self):
+        with TemporaryDirectory() as tmp:
+            run, _ = self.run_with(tmp)
+            mdir = run / ".dubflow-work" / "mastering"
+            moved = Path(tmp) / "moved-mastering"
+            mdir.rename(moved)
+            self.link(moved, mdir)
+            with self.assertRaises(tt.UnsafeRunFile):
+                tt.load(run)
+
+    def test_only_regular_files_under_the_size_cap_are_read(self):
+        with TemporaryDirectory() as tmp:
+            run, _ = self.run_with(tmp)
+            (run / ".dubflow-work" / "mastering" / "a-folder.jpg").mkdir()
+            self.set_keyframe(run, "i1-s1c2", "a-folder.jpg")
+            with self.assertRaises(tt.UnsafeRunFile):
+                tt.load(run)
+        with TemporaryDirectory() as tmp:
+            run, _ = self.run_with(tmp)
+            with mock.patch.object(tt, "MAX_INPUT_BYTES", 64):
+                with self.assertRaises(tt.UnsafeRunFile):
+                    tt.load(run)
 
 
 class DeterminismTests(unittest.TestCase):

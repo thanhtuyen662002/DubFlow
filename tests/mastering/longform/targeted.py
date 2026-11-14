@@ -44,6 +44,7 @@ import math
 import os
 from pathlib import Path, PurePath
 import pickle
+import stat
 import subprocess
 import sys
 import time
@@ -238,21 +239,119 @@ def _extra_names(keyframe: str) -> list[str]:
     return [f"{stem}{more.SPLIT_MARK}1.jpg", f"{stem}{more.SPLIT_MARK}3.jpg"]
 
 
+MAX_INPUT_BYTES = 256 * 1024 * 1024  # a saved log, plan, keyframe or cache record; far above any real one
+_REPARSE_POINT = 0x400  # FILE_ATTRIBUTE_REPARSE_POINT (Windows junctions, symlinks, cloud placeholders)
+
+
+class UnsafeRunFile(ValueError):
+    """A file the harness would read is not a regular file inside the selected run folder (traversal, a symbolic
+    link or reparse point on the way, another kind of file, or larger than ``MAX_INPUT_BYTES``). The message names
+    the path relative to the run folder only."""
+
+
+def _linkish(st: os.stat_result) -> bool:
+    return stat.S_ISLNK(st.st_mode) or bool(getattr(st, "st_file_attributes", 0) & _REPARSE_POINT)
+
+
+def run_file(root: Path, relative: str | PurePath) -> Path | None:
+    """``root / relative`` when it is a regular file reached from the resolved run folder ``root`` without leaving it
+    and without a symbolic link or reparse point on the way (the file itself included); None when it does not exist.
+    Raises ``UnsafeRunFile`` otherwise. ``relative`` may come from a saved log (a keyframe name): an absolute path, a
+    drive, ``..`` or an empty part is refused before anything is touched."""
+    root = Path(root).resolve(strict=True)
+    rel = PurePath(relative)
+    shown = rel.as_posix()
+    if rel.is_absolute() or rel.drive or rel.root:
+        raise UnsafeRunFile("an absolute path is refused")  # never echoed: it would name a place on the machine
+    if not rel.parts or any(p in ("", ".", "..") for p in rel.parts):
+        raise UnsafeRunFile(f"not a plain relative path: {shown}")
+    current = root
+    st = None
+    for part in rel.parts:
+        current = current / part
+        try:
+            st = os.lstat(current)
+        except FileNotFoundError:
+            return None
+        if _linkish(st):
+            raise UnsafeRunFile(f"symbolic link or reparse point: {shown}")
+    assert st is not None
+    if not stat.S_ISREG(st.st_mode):
+        raise UnsafeRunFile(f"not a regular file: {shown}")
+    if st.st_size > MAX_INPUT_BYTES:
+        raise UnsafeRunFile(f"larger than {MAX_INPUT_BYTES} bytes: {shown}")
+    try:
+        current.resolve(strict=True).relative_to(root)
+    except (OSError, ValueError):
+        raise UnsafeRunFile(f"outside the run folder: {shown}") from None
+    return current
+
+
+def read_run_file(root: Path, relative: str | PurePath) -> bytes | None:
+    """The bytes of ``run_file(root, relative)`` (None when absent), read from the file that was checked: the opened
+    file must be the same regular file, and no more than ``MAX_INPUT_BYTES`` are read."""
+    path = run_file(root, relative)
+    if path is None:
+        return None
+    root = Path(root).resolve(strict=True)
+    before = os.lstat(path)
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError:
+        raise UnsafeRunFile(f"cannot open as a regular file: {PurePath(relative).as_posix()}") from None
+    with os.fdopen(fd, "rb") as handle:
+        opened = os.fstat(handle.fileno())
+        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+            raise UnsafeRunFile(f"changed while it was read: {PurePath(relative).as_posix()}")
+        data = handle.read(MAX_INPUT_BYTES + 1)
+    if len(data) > MAX_INPUT_BYTES:
+        raise UnsafeRunFile(f"larger than {MAX_INPUT_BYTES} bytes: {PurePath(relative).as_posix()}")
+    return data
+
+
+def _run_inputs(root: Path) -> list[str]:
+    """Every file ``w3.load_run`` and ``load`` read by pattern, relative to the resolved run folder."""
+    mdir = w3.mastering_dir(root)
+    work = root / ".dubflow-work"
+    names = [p for pattern in ("editorial-*.json", "plan-*.json", "analysis-*.json") for p in sorted(mdir.glob(pattern))]
+    names += [work / n for n in ("program.json", "spec.json")]
+    names += sorted(work.glob("review-*.json")) if work.is_dir() else []
+    names += sorted((mdir / "vision").glob("*.json")) if (mdir / "vision").is_dir() else []
+    return [p.relative_to(root).as_posix() for p in names]
+
+
 def load(folder: Path) -> Loaded:
+    """The saved run, every file read only from inside the resolved run folder (``run_file``): a log, plan, cache
+    record or keyframe reached through a symbolic link or reparse point, outside the folder, or of another kind
+    fails the whole load (``UnsafeRunFile``) instead of being read."""
     folder = Path(folder)
-    run = w3.load_run(folder)
-    mdir = w3.mastering_dir(folder)
-    work = folder / ".dubflow-work"
+    root = folder.resolve(strict=True)
+    for name in ("", ".dubflow-work", ".dubflow-work/mastering", ".dubflow-work/mastering/vision"):
+        here = root / name if name else root
+        if name and os.path.lexists(here) and (_linkish(os.lstat(here)) or not stat.S_ISDIR(os.lstat(here).st_mode)):
+            raise UnsafeRunFile(f"symbolic link, reparse point or not a folder: {name}")
+    inputs = _run_inputs(root)
+    for name in inputs:  # checked before w3.load_run reads them, and read again below from the checked file
+        run_file(root, name)
+    run = w3.load_run(root)
+    mdir = w3.mastering_dir(root)
+    work = root / ".dubflow-work"
     files: dict[str, str] = {}
 
     def read(path: Path) -> bytes:
-        data = path.read_bytes()
-        files[path.relative_to(folder).as_posix()] = sha256_bytes(data)
+        relative = path.relative_to(root).as_posix()
+        data = read_run_file(root, relative)
+        if data is None:
+            raise UnsafeRunFile(f"disappeared while it was read: {relative}")
+        files[relative] = sha256_bytes(data)
         return data
 
     for pattern in ("editorial-*.json", "plan-*.json", "analysis-*.json"):
         for path in sorted(mdir.glob(pattern)):
-            read(path)
+            data = read(path)
+            if pattern == "editorial-*.json" and json.loads(data.decode("utf-8")) != run.logs.get(path.stem.removeprefix("editorial-")):
+                raise UnsafeRunFile(f"changed while it was read: {path.relative_to(root).as_posix()}")
     program: dict = {}
     for name in ("program.json", "spec.json"):
         if (work / name).is_file():
@@ -273,11 +372,16 @@ def load(folder: Path) -> Loaded:
                               "approvals": sum(1 for d in units.values() if d.get("approved") is not None)}
     names = sorted({c["keyframe"] for log in run.logs.values() for c in log.get("candidates") or () if c.get("keyframe")})
     jpeg: dict[str, str | None] = {}
+    base = mdir.relative_to(root)
     for name in names:
-        jpeg[name] = sha256_bytes(read(mdir / name)) if (mdir / name).is_file() else None
+        # a keyframe name comes from a saved log: only a plain file inside the run folder is read (run_file)
+        found = run_file(root, base / name)
+        jpeg[name] = sha256_bytes(read(found)) if found is not None else None
         for extra in _extra_names(name):
-            if extra not in jpeg and (mdir / extra).is_file():
-                jpeg[extra] = sha256_bytes(read(mdir / extra))
+            if extra not in jpeg:
+                found = run_file(root, base / extra)
+                if found is not None:
+                    jpeg[extra] = sha256_bytes(read(found))
     cache = None
     if (mdir / "vision").is_dir():
         cache = {}
@@ -298,11 +402,14 @@ def no_review_edits(run: w3.Run, part: str, log: Mapping[str, Any]) -> tuple[ali
         given = ((run.spec.get("editorial") or {}).get("edits") or {}).get(part)
         return align.Edits.from_dict(given), "spec"
     edits = align.Edits.from_dict(log.get("edits") or {})
-    path = run.folder / ".dubflow-work" / f"review-{part}.json"
-    if not path.is_file():
+    try:
+        data = read_run_file(run.folder, f".dubflow-work/review-{part}.json")
+    except UnsafeRunFile:
+        return edits, "log_review_unreadable"
+    if data is None:
         return edits, "log"
     try:
-        units = (json.loads(path.read_text(encoding="utf-8")) or {}).get("units") or {}
+        units = (json.loads(data.decode("utf-8")) or {}).get("units") or {}
     except (OSError, ValueError):
         return edits, "log_review_unreadable"
     for unit_id, decision in units.items():
@@ -1016,6 +1123,7 @@ class DonorSample:
     item: Mapping[str, Any]
     source_key: str
     own_cache: bool
+    side: Mapping[str, Any] = MappingProxyType({})  # the answering candidate's logged side metadata (SIDE_FIELDS)
 
 
 @dataclass(frozen=True)
@@ -1086,8 +1194,10 @@ def donor_samples(prep: Prepared, *, parts: str, own: bool, only: Sequence[str] 
                     t, basis = (early if name.endswith(f"{more.SPLIT_MARK}1.jpg") else late), "extra_frame"
                 else:
                     continue
+                evidence = c.get("evidence") or {}
                 out.append(DonorSample(loaded.name, part, c["id"], index, loaded.jpeg.get(name) if name else None, t, basis,
-                                       provider, model, MappingProxyType(dict(item)), s.source_key, own))
+                                       provider, model, MappingProxyType(dict(item)), s.source_key, own,
+                                       MappingProxyType({k: evidence.get(k) for k in SIDE_FIELDS})))
     return out, counts
 
 
@@ -1096,7 +1206,7 @@ class DonorIndex:
     starts from A0, also the targeted answers A0 removed), then the donors' answers to the same JPEG bytes. An answer
     is admitted only when its exact production cache key is proven: the target run's own cache fixes one key basis
     (prompt version, provider, model, label set), and the answering run's cache must hold, under that basis's full key
-    for the frame's JPEG bytes, a record whose answer is the logged item. Without that proof the frame is
+    for the frame's JPEG bytes, a record whose answer is the logged item and its side metadata. Without that proof the frame is
     NOT_SIMULABLE; nothing is matched by time or by run-level provider and model alone."""
 
     def __init__(self, target: Prepared, donors: Sequence[Prepared], *, scope: str = "items", tolerance_ms: int = 500,
@@ -1143,7 +1253,10 @@ class DonorIndex:
                 self.by_jpeg.setdefault(d.jpeg_sha256, []).append(d)
 
     def _proven(self, loaded: Loaded, d: DonorSample) -> bool:
-        reason = "no_key_basis" if self.key_basis is None else exact_answer(loaded, self.key_basis, d.jpeg_sha256, d.item)
+        # the whole logged answer: the item and the side metadata vision.apply wrote beside it, so a replayed answer
+        # (item_of adds record_side) is one the donor run logged, never a record that differs from its log
+        reason = "no_key_basis" if self.key_basis is None else exact_answer(loaded, self.key_basis, d.jpeg_sha256, d.item,
+                                                                             side=d.side)
         self.provenance[reason] = self.provenance.get(reason, 0) + 1
         return reason == "exact"
 
