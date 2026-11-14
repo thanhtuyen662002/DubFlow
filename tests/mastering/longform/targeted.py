@@ -259,8 +259,10 @@ def run_file(root: Path, relative: str | PurePath) -> Path | None:
     """``root / relative`` when it is a regular file reached from the resolved run folder ``root`` without leaving it
     and without a symbolic link or reparse point on the way (the file itself included); None when it does not exist.
     Raises ``UnsafeRunFile`` otherwise. ``relative`` may come from a saved log (a keyframe name): an absolute path, a
-    drive, ``..`` or an empty part is refused before anything is touched."""
-    root = Path(root).resolve(strict=True)
+    drive, ``..`` or an empty part is refused before anything is touched. Every part is checked with ``lstat`` from
+    the resolved root: each folder on the way must be a real folder and nothing may be a link or reparse point, so the
+    path cannot leave the root (no costly per-file ``resolve``)."""
+    root = _resolved_root(root)
     rel = PurePath(relative)
     shown = rel.as_posix()
     if rel.is_absolute() or rel.drive or rel.root:
@@ -270,17 +272,21 @@ def run_file(root: Path, relative: str | PurePath) -> Path | None:
         raise UnsafeRunFile(f"not a plain relative path: {shown}")
     current = root
     st = None
-    for part in rel.parts:
+    last = len(rel.parts) - 1
+    for index, part in enumerate(rel.parts):
         current = current / part
         try:
             st = os.lstat(current)
         except FileNotFoundError:
             return None
         except (OSError, ValueError):
-            # not a folder on the way, a name too long or not allowed here: never echo the absolute path
+            # a name too long or not allowed here: never echo the absolute path
             raise UnsafeRunFile(f"cannot be checked: {shown}") from None
         if _linkish(st):
             raise UnsafeRunFile(f"symbolic link or reparse point: {shown}")
+        if index < last and not stat.S_ISDIR(st.st_mode):
+            # a file used as a folder (POSIX says "not a directory", Windows "not found"): refused on both
+            raise UnsafeRunFile(f"not a folder on the way: {shown}")
     assert st is not None
     if not stat.S_ISREG(st.st_mode):
         raise UnsafeRunFile(f"not a regular file: {shown}")
@@ -288,11 +294,18 @@ def run_file(root: Path, relative: str | PurePath) -> Path | None:
         raise UnsafeRunFile(f"hard link (another name may sit outside the run folder): {shown}")
     if st.st_size > MAX_INPUT_BYTES:
         raise UnsafeRunFile(f"larger than {MAX_INPUT_BYTES} bytes: {shown}")
-    try:
-        current.resolve(strict=True).relative_to(root)
-    except (OSError, ValueError):
-        raise UnsafeRunFile(f"outside the run folder: {shown}") from None
     return current
+
+
+_ROOTS: dict[str, Path] = {}
+
+
+def _resolved_root(root: Path | str) -> Path:
+    """The run folder as the user named it, resolved once per process (links above the run folder are the user's)."""
+    key = os.fspath(root)
+    if key not in _ROOTS:
+        _ROOTS[key] = Path(root).resolve(strict=True)
+    return _ROOTS[key]
 
 
 def read_run_file(root: Path, relative: str | PurePath) -> bytes | None:
