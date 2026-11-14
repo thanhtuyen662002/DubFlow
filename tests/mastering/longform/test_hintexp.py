@@ -198,6 +198,34 @@ class ScoreHumanTests(unittest.TestCase):
         result = self.score(form_rows(ts_time=90, rp_time=60))
         self.assertEqual(result["verdict"], "NEGATIVE")
 
+    def test_a_timestamp_row_marked_without_footage_needs_no_timestamp(self):
+        rows = form_rows()
+        for row in rows:
+            if row["condition"] == "TS" and row["marked_missing"]:
+                row["ts_hint"] = row["ts_precision_s"] = ""
+        result = self.score(rows)
+        self.assertEqual(result["deviations"], [])
+        self.assertEqual(result["verdict"], "SUCCESS", result["reasons"])
+        self.assertEqual(result["TS"]["missing_detected"], result["TS"]["missing"])
+        for row in rows:
+            if row["condition"] == "TS" and not row["marked_missing"]:
+                row["ts_hint"] = ""
+                break
+        result = self.score(rows)
+        self.assertEqual(result["verdict"], "INCONCLUSIVE")
+        self.assertTrue(any("without a timestamp" in d for d in result["deviations"]))
+
+    def test_an_ai_playing_the_participant_never_gets_a_human_verdict(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = {v: w3.load_run(make_run(root / v)) for v in ("v1", "v2")}
+            gt = w3.load_gt(*truth_with_missing(root))
+            result = hintexp.score_human(form_rows(), {"v1": gt, "v2": gt}, runs, ai_proxy=True)
+        self.assertEqual(result["label"], "AI PROXY TEST \u2014 EXPLORATORY, NOT HUMAN VALIDATION")
+        self.assertEqual(result["verdict"], "EXPLORATORY")
+        self.assertEqual(result["protocol_reading"], "SUCCESS")
+        self.assertNotIn("HUMAN (real", json.dumps(result))
+
     def test_the_same_person_on_the_same_sentence_twice_voids_the_verdict(self):
         rows = form_rows()
         rows.append(dict(rows[0], condition="TS" if rows[0]["condition"] == "RP" else "RP", ts_hint="0:09", ts_precision_s="5"))

@@ -28,7 +28,7 @@ Mọi lệnh dưới đây chỉ đọc file run đã lưu. Chúng không gọi 
 | `session_id`, `participant_code` | mã phiên, mã người (P1, P2); không ghi tên |
 | `block`, `video`, `unit_id`, `condition` | chép từ `selection.csv` (`video` là tên ngắn, ví dụ `v1`, khớp với tham số `--run`/`--gt` khi chấm) |
 | `position` | thứ tự câu trong phiên (1, 2, 3…) |
-| `ts_hint` | **TS:** mốc **đầu tiên** người tham gia ghi, dạng `mm:ss` hoặc `h:mm:ss`. Mốc sau (nếu đánh lại) ghi vào `notes` |
+| `ts_hint` | **TS:** mốc **đầu tiên** người tham gia ghi, dạng `mm:ss` hoặc `h:mm:ss`. Mốc sau (nếu đánh lại) ghi vào `notes`. Để trống nếu người tham gia không tìm được chỗ nào để đánh mốc và ghi "không có cảnh phù hợp" (`marked_missing` = 1) |
 | `ts_precision_s` | **TS:** độ chắc chắn người tham gia chọn: 5, 15 hoặc 30 |
 | `ts_step1_s` | **TS:** số giây từ lúc đọc câu tới lúc ghi xong mốc |
 | `ts_retries` | **TS:** số lần đánh mốc lại |
@@ -78,6 +78,8 @@ py -3.12 -B tests\mastering\longform\hintexp.py score-human ^
    Lệnh kiểm sha256 của mỗi nhãn, chấm từng câu, áp tiêu chí PROTOCOL.md §6 và in kết luận (SUCCESS, INCONCLUSIVE hoặc NEGATIVE) cùng lý do. Kết quả có nhãn `HUMAN (real participants)`.
 
    Lệnh này chỉ được chạy trên biểu mẫu do người thật điền. Không chạy nó trên số tự tạo hay trên kết quả tự động hoá CDP rồi gọi đó là kết quả người dùng.
+
+   Khi AI đóng vai người tham gia (AI proxy, xem [AI_PROXY_TEST_REPORT.md](AI_PROXY_TEST_REPORT.md)), thêm `--ai-proxy`. Kết quả khi đó mang nhãn `AI PROXY TEST — EXPLORATORY, NOT HUMAN VALIDATION`, kết luận luôn là `EXPLORATORY`, và cách đọc theo §6 chỉ nằm ở `protocol_reading`. Kết quả AI proxy không bao giờ đổi Gate D.
 
 3. **Giới hạn cần ghi trong báo cáo:** TS không có giao diện riêng (chọn trên biểu mẫu); mẫu nhỏ, chỉ có số mô tả; mức quen phim của người tham gia.
 4. **Đưa vào repo:** chỉ số tổng hợp từ `human-results.json` và sha256 của các biểu mẫu, qua một PR riêng, sau khi quét rò rỉ bằng 0 (đường dẫn máy, e-mail, chuỗi giống khoá, nội dung câu). Biểu mẫu đã điền, video và khung hình ở lại trên máy.

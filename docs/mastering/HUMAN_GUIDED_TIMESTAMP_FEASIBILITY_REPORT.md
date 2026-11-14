@@ -154,6 +154,10 @@ python -B -m unittest tests.mastering.longform.test_hintexp
 
 ## 9. Bước tiếp theo
 
-- **Human Timestamp Feasibility Test** ([human-timestamp-test/PROTOCOL.md](human-timestamp-test/PROTOCOL.md)): 20–40 câu từ ít nhất hai video dài, so sánh Review Panel với cách đánh mốc rồi chọn trong gợi ý. Tiêu chí SUCCESS / INCONCLUSIVE / NEGATIVE được cố định trước. Trạng thái: **CHƯA CHẠY**, chờ chủ dự án duyệt người tham gia, video thứ hai và nhãn của nó.
+- **Human Timestamp Feasibility Test** ([human-timestamp-test/PROTOCOL.md](human-timestamp-test/PROTOCOL.md)): 20–40 câu từ ít nhất hai video dài, so sánh Review Panel với cách đánh mốc rồi chọn trong gợi ý. Tiêu chí SUCCESS / INCONCLUSIVE / NEGATIVE được cố định trước. Trạng thái: **CHƯA CHẠY với người thật**. Video thứ hai đã chọn (public domain, xem §10); còn chờ chủ dự án chọn người tham gia và cách chuẩn bị video thứ hai.
 - Nếu bài kiểm tra người dùng thành công: cần một tập giữ riêng mới (ít nhất 2 video dài, ít nhất 40 câu) trước khi đề xuất bất kỳ thay đổi sản phẩm nào, qua ADR riêng.
 - Không xây tính năng timestamp, không thêm UI, không mở rộng kiến trúc truy hồi, không gọi vision, không phát hành stable.
+
+## 10. AI Proxy Test (2026-11-14)
+
+**AI PROXY TEST — EXPLORATORY, NOT HUMAN VALIDATION.** Hai agent AI đóng vai người tham gia trên 32 câu từ hai video (7 câu không có footage), thứ tự cân bằng, nhãn khoá trước. Trên 25 câu có footage: TS chọn đúng 25/25 (R@5 của gợi ý 25/25), RP chọn đúng 24/25 (R@5 của danh sách 9/25); 0 nhận nhầm; 7/7 câu không footage được nhận ra ở cả hai. Sai số mốc 0 s vì khung hình AI xem có in sẵn giờ nguồn, nên số của TS gần như chắc chắn quá lạc quan so với người thật. Chi tiết, phân loại và giới hạn: [human-timestamp-test/AI_PROXY_TEST_REPORT.md](human-timestamp-test/AI_PROXY_TEST_REPORT.md). Kết quả này không đổi gate nào và không thay bài kiểm tra người dùng.

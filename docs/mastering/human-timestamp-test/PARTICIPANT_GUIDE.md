@@ -7,7 +7,7 @@ Cảm ơn bạn tham gia. Bài kiểm tra so sánh hai cách tìm cảnh minh ho
 Khoảng 32 câu, từ hai video dài, chia thành bốn khối. Mỗi khối dùng một trong hai cách:
 
 - **Review Panel (RP):** trong DubFlow, đọc câu, xem cảnh đang dùng và "Cảnh thay thế". Nếu cần, bấm "Chọn cảnh khác…" để xem mọi cảnh đã nhập. Chọn bằng "Dùng cảnh này", hoặc giữ cảnh đang dùng bằng "Duyệt cảnh này". Nếu footage không có cảnh nào hợp, bấm "Không có cảnh phù hợp".
-- **Đánh mốc (TS):** đọc câu, mở video nguồn trong trình phát và tìm chỗ bạn nghĩ có cảnh hợp. Ghi mốc thời gian (phút:giây) và độ chắc chắn: ±5, ±15 hoặc ±30 giây. Người điều phối sẽ đưa bạn tối đa 5 khoảng thời gian gợi ý quanh mốc đó. Xem chúng trong trình phát, rồi chọn một khoảng, hoặc ghi "không có cảnh phù hợp". Nếu không thấy cảnh đúng, bạn được đánh mốc lại.
+- **Đánh mốc (TS):** đọc câu, mở video nguồn trong trình phát và tìm chỗ bạn nghĩ có cảnh hợp. Ghi mốc thời gian (phút:giây) và độ chắc chắn: ±5, ±15 hoặc ±30 giây. Người điều phối sẽ đưa bạn tối đa 5 khoảng thời gian gợi ý quanh mốc đó. Xem chúng trong trình phát, rồi chọn một khoảng, hoặc ghi "không có cảnh phù hợp". Nếu không thấy cảnh đúng, bạn được đánh mốc lại. Nếu xem video mà không tìm được chỗ nào hợp, bạn có thể ghi "không có cảnh phù hợp" mà không cần mốc.
 
 ## Lưu ý
 

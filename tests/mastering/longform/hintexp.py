@@ -17,7 +17,9 @@ Read-only on saved W3 run folders. Three commands:
   suggest      For the human test: the shots inside ``--within`` seconds of a timestamp a PERSON gave, ranked
                like ``rel``. Prints candidate ids and source times only.
   score-human  For the human test: score a filled ``units.csv`` against locked ground truth, and apply the
-               pre-registered criteria of docs/mastering/human-timestamp-test/PROTOCOL.md §6.
+               pre-registered criteria of docs/mastering/human-timestamp-test/PROTOCOL.md §6. With
+               ``--ai-proxy`` (an AI played the participant) the result is labelled exploratory and the verdict
+               is EXPLORATORY: §6 is only reported as ``protocol_reading``, since §6 is written for people.
 
 No output carries sentence text, file names or absolute paths.
 """
@@ -253,8 +255,12 @@ def _share(n: int, d: int) -> float | None:
     return round(n / d, 3) if d else None
 
 
+HUMAN_LABEL = "HUMAN (real participants)"
+AI_PROXY_LABEL = "AI PROXY TEST \u2014 EXPLORATORY, NOT HUMAN VALIDATION"
+
+
 def score_human(rows: Sequence[Mapping[str, Any]], gts: Mapping[str, Mapping[str, Any]],
-                runs: Mapping[str, w3.Run]) -> dict[str, Any]:
+                runs: Mapping[str, w3.Run], *, ai_proxy: bool = False) -> dict[str, Any]:
     """Score the filled form of a human session (one row per sentence and condition) and apply PROTOCOL.md §6."""
     per: dict[str, list[dict]] = {"RP": [], "TS": []}
     deviations = []
@@ -301,7 +307,9 @@ def score_human(rows: Sequence[Mapping[str, Any]], gts: Mapping[str, Mapping[str
                 for k in (1, 3, 5):
                     out[f"h{k}"] = footage and any(hits(cands[i], ranges) for i in got[:k])
             else:
-                deviations.append(f"{video}/{unit_id}: TS row without a timestamp")
+                # "no matching scene" without a mark is a valid TS answer: the person found no place to mark
+                if not marked_missing:
+                    deviations.append(f"{video}/{unit_id}: TS row without a timestamp")
                 for k in (1, 3, 5):
                     out[f"h{k}"] = False
         per[cond].append(out)
@@ -328,7 +336,10 @@ def score_human(rows: Sequence[Mapping[str, Any]], gts: Mapping[str, Mapping[str
 
     rp, ts = summary(per["RP"]), summary(per["TS"])
     verdict, reasons = decide(rp, ts, videos=len({x["video"] for x in per["RP"] + per["TS"]}), deviations=deviations)
-    return {"label": "HUMAN (real participants)", "RP": rp, "TS": ts, "verdict": verdict, "reasons": reasons,
+    if ai_proxy:  # an AI playing the participant never yields a human verdict (Gate D stays BLOCKED)
+        return {"label": AI_PROXY_LABEL, "RP": rp, "TS": ts, "verdict": "EXPLORATORY", "protocol_reading": verdict,
+                "reasons": reasons, "deviations": deviations}
+    return {"label": HUMAN_LABEL, "RP": rp, "TS": ts, "verdict": verdict, "reasons": reasons,
             "deviations": deviations}
 
 
@@ -428,7 +439,7 @@ def main(argv: list[str]) -> int:
     runs = {name: w3.load_run(Path(path)) for name, path in _pairs(_arg(rest, "--run", many=True)).items()}
     with open(_arg(rest, "--units"), encoding="utf-8-sig", newline="") as handle:
         rows = list(csv.DictReader(handle))
-    result = score_human(rows, gts, runs)
+    result = score_human(rows, gts, runs, ai_proxy="--ai-proxy" in rest)
     result["ground_truth_sha256"] = {name: gt["sha256"] for name, gt in gts.items()}
     Path(_arg(rest, "--out")).write_text(dumps(result), encoding="utf-8")
     print(result["verdict"], "; ".join(result["reasons"]))
