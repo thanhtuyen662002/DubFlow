@@ -1,0 +1,1 @@
+session_id,participant_code,role,dubflow_familiarity,film_familiarity_v1,film_familiarity_v2,date_utc,app_version,run_v1,run_v2,gt_sha256_v1,gt_sha256_v2,selection_sha256,order,deviations,notes
