@@ -767,9 +767,10 @@ def classify(loaded: Loaded, broad: Mapping[str, Any]) -> tuple[dict[str, str], 
     broad_digests = {digest[i] for i in broad_ids if digest.get(i)}
     sub = {i for i, c in first.items() if _sub_parent(c) != i}
     proven = set(broad_ids) | {i for i, value in status.items() if value == "exact" and (i not in sub or i in middles)}
-    # the broad look answers every shot in its pick's duplicate group (vision.share) and the targeted look skips the
-    # shots already answered, so no shot in such a group was targeted, whatever record its own frame has
-    broad_groups = {groups.get(i, i) for i in broad_ids}
+    # the broad look answers every shot in an answered pick's duplicate group (vision.share) and the targeted look
+    # skips the shots already answered, so no shot in such a group was targeted, whatever record its own frame has;
+    # a pick the broad pass left unanswered (no record of its own) shared nothing, and its group mates stay targetable
+    broad_groups = {groups.get(i, i) for i in broad_ids if status.get(i) == "exact"}
     claimed: set[str] = set()
     classes: dict[str, str] = {}
     for i, c in sorted(first.items()):

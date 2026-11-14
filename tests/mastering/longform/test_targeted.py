@@ -1018,6 +1018,23 @@ class ClassificationTests(unittest.TestCase):
             kept = {c["id"]: bool(tt.vision_items(c)) for c in prep.A0.logs["i1"]["candidates"]}
             self.assertTrue(kept["i1-s1c8"])
 
+    def test_a_targeted_look_in_the_group_of_an_unanswered_broad_pick_stays_targeted(self):
+        # the broad pass got no answer for c3 (a dropped or rejected frame): nothing was shared to c8, so the targeted
+        # look could ask c8 and share its answer back to c3; c8 is the targeted look, c3 its shared copy
+        with TemporaryDirectory() as tmp:
+            texts = {k: v for k, v in TEXTS.items() if k != 3}
+            texts[8] = "Cờ đỏ trên tháp"
+            run = make_run_k(Path(tmp), texts=texts, twins={3: 8}, targeted=(2, 4, 8))
+            loaded = tt.load(run)
+            c3 = next(c for c in loaded.run.logs["i1"]["candidates"] if c["id"] == "i1-s1c3")
+            self.assertEqual(tt.own_answer(loaded, c3), "no_exact_key")
+            broad = tt.reconstruct_broad(loaded)
+            self.assertEqual(broad["status"], "NOT_RECONSTRUCTED")
+            self.assertIn("picked not in cache", broad["reasons"])
+            classes, report = tt.classify(loaded, {"picked": broad["picked"]})
+            self.assertEqual((classes["i1-s1c3"], classes["i1-s1c8"]), ("broad", "targeted"))
+            self.assertEqual(report["targeted_frames_item_parts"], 3)
+
     def test_byte_identical_targeted_copies_count_one_look(self):
         with TemporaryDirectory() as tmp:
             run = make_run_k(Path(tmp), twins={1: 4})
