@@ -14,12 +14,13 @@ import dataclasses
 import hashlib
 import io
 import json
-from pathlib import Path
+from pathlib import Path, PurePath
 import random
 import shutil
 import socket
 import subprocess
 from tempfile import TemporaryDirectory
+import os
 import unittest
 from unittest import mock
 
@@ -504,6 +505,25 @@ class MatchingTests(unittest.TestCase):
             self.assertEqual((got.hook, got.product_visible, got.same_product, got.product_box is not None),
                              (900, True, "g1", True))
             self.assertIn("i1-s1c6", new_ids)
+
+    def test_the_replayed_side_is_the_one_of_the_answer_that_proved_the_log(self):
+        # production logs a product group clipped at 40 characters with its trailing space and stores it so;
+        # validating the record again strips the space: the stored answer proves the log, and its side is replayed
+        group = "k" * 39 + " "
+        with TemporaryDirectory() as tmp:
+            def change(path: Path, record: dict, loaded: tt.Loaded) -> None:
+                changed = {**record, "product_group": group}
+                path.write_text(json.dumps(changed, ensure_ascii=False), encoding="utf-8")
+                log_path = loaded.folder / ".dubflow-work" / "mastering" / "editorial-i1.json"
+                log = json.loads(log_path.read_text(encoding="utf-8"))
+                for c in log["candidates"]:
+                    if c["id"] == "i1-s1c6":
+                        c["evidence"]["same_product"] = group
+                log_path.write_text(json.dumps(log, ensure_ascii=False), encoding="utf-8")
+            index, target = self.donor_with(Path(tmp), change)
+            found = index.match(self.sample_of(target, "i1-s1c6"))
+            self.assertEqual(found.status, "SIMULATED")
+            self.assertEqual(index.item_of(found)["side"]["same_product"], group)
 
     def test_a_donor_record_whose_side_metadata_the_donor_did_not_log_is_not_replayed(self):
         # same key and the same item, but the record's box, hook and group are not what the donor's log carries:
@@ -1830,6 +1850,104 @@ class RunFileSafetyTests(unittest.TestCase):
             self.link(moved, mdir)
             with self.assertRaises(tt.UnsafeRunFile):
                 tt.load(run)
+
+    def test_a_stream_name_is_refused(self):
+        # frame.jpg:hidden names an NTFS alternate data stream on Windows: never a plain file inside the run folder
+        with TemporaryDirectory() as tmp:
+            run, _ = self.run_with(tmp)
+            self.set_keyframe(run, "i1-s1c2", "i1-s1-c2.jpg:hidden")
+            with self.assertRaises(tt.UnsafeRunFile):
+                tt.load(run)
+
+    def test_the_run_is_parsed_from_the_checked_bytes_and_never_reopened(self):
+        # every input is read once through read_run_file (w3.load_run is never called), and nothing reads the run
+        # folder by path afterwards: swapping the files after load changes no replay, with or without review files
+        decisions = reviewing.Review(units={"i1.u3": reviewing.UnitDecision(pin=["i1-s1c8"])}).to_dict()
+        other = reviewing.Review(units={"i1.u3": reviewing.UnitDecision(pin=["i1-s1c5"])}).to_dict()
+        with TemporaryDirectory() as tmp:
+            run = make_run_k(Path(tmp) / "runs", review=decisions)
+            calls: dict[str, int] = {}
+            real = tt.read_run_file
+
+            def counted(root, relative):
+                key = PurePath(relative).as_posix()
+                calls[key] = calls.get(key, 0) + 1
+                return real(root, relative)
+
+            with mock.patch.object(tt, "read_run_file", counted), \
+                    mock.patch.object(w3, "load_run", side_effect=AssertionError("path-based reopen")):
+                loaded = tt.load(run)
+            self.assertLessEqual(set(loaded.files), set(calls))  # every digested file came from read_run_file
+            self.assertEqual(max(calls.values()), 1)
+            self.assertIn(".dubflow-work/review-i1.json", loaded.files)
+            baseline = {review: tt.prepare(tt.load(run), review=review) for review in (False, True)}
+            swapped = {review: tt.load(run) for review in (False, True)}
+            work = run / ".dubflow-work"
+            outside = Path(tmp) / "other-review.json"
+            outside.write_text(json.dumps(other), encoding="utf-8")
+            (work / "review-i1.json").unlink()
+            try:
+                (work / "review-i1.json").symlink_to(outside)
+            except (OSError, NotImplementedError):
+                (work / "review-i1.json").write_text(json.dumps(other), encoding="utf-8")
+            for path in (work / "mastering").glob("editorial-*.json"):
+                path.write_text("not json", encoding="utf-8")
+            (work / "spec.json").write_text("not json", encoding="utf-8")
+            for review in (False, True):
+                with self.subTest(review=review):
+                    prep = tt.prepare(swapped[review], review=review)
+                    self.assertEqual(tt.dumps(prep.A.plans), tt.dumps(baseline[review].A.plans))
+                    self.assertEqual(tt.dumps(prep.A.logs), tt.dumps(baseline[review].A.logs))
+            self.assertNotEqual(tt.dumps(baseline[False].A.plans), tt.dumps(baseline[True].A.plans))
+
+    def test_a_hard_link_and_an_unusable_name_are_refused_without_naming_the_machine(self):
+        with TemporaryDirectory() as tmp:
+            run, outside = self.run_with(tmp)
+            frame = run / ".dubflow-work" / "mastering" / "i1-s1-c2.jpg"
+            frame.unlink()
+            try:
+                os.link(outside, frame)
+            except (OSError, NotImplementedError):
+                self.skipTest("hard links are not available here")
+            with self.assertRaises(tt.UnsafeRunFile):
+                tt.load(run)
+        for name in ("editorial-i1.json/x.jpg", "x" * 300 + ".jpg", "nul\x00.jpg"):
+            with self.subTest(name=name[:20]), TemporaryDirectory() as tmp:
+                run, _ = self.run_with(tmp)
+                self.set_keyframe(run, "i1-s1c2", name)
+                with self.assertRaises(tt.UnsafeRunFile) as caught:
+                    tt.load(run)
+                self.assertNotIn(str(Path(tmp)), str(caught.exception))
+
+    def test_a_folder_swapped_for_a_link_around_the_open_is_caught(self):
+        # the check walks the path, then a folder on the way becomes a link to another place holding the same name:
+        # the handle is not the file that was checked, so nothing is returned
+        with TemporaryDirectory() as tmp:
+            run, _ = self.run_with(tmp)
+            mdir = run / ".dubflow-work" / "mastering"
+            elsewhere = Path(tmp) / "elsewhere"
+            elsewhere.mkdir()
+            (elsewhere / "i1-s1-c2.jpg").write_bytes(b"OUTSIDE-BYTES")
+            real = tt.run_file
+            state = {"calls": 0}
+
+            def swap_after_check(root, relative):
+                found = real(root, relative)
+                state["calls"] += 1
+                if state["calls"] == 1:
+                    mdir.rename(Path(tmp) / "kept-mastering")
+                    try:
+                        mdir.symlink_to(elsewhere)
+                    except (OSError, NotImplementedError):
+                        self.skipTest("symbolic links are not available here")
+                elif state["calls"] == 2:
+                    mdir.unlink()
+                    (Path(tmp) / "kept-mastering").rename(mdir)
+                return found
+
+            with mock.patch.object(tt, "run_file", swap_after_check):
+                with self.assertRaises(tt.UnsafeRunFile):
+                    tt.read_run_file(run, ".dubflow-work/mastering/i1-s1-c2.jpg")
 
     def test_only_regular_files_under_the_size_cap_are_read(self):
         with TemporaryDirectory() as tmp:

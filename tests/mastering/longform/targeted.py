@@ -61,6 +61,7 @@ from engine.dubflow.mastering import align  # noqa: E402
 from engine.dubflow.mastering import candidates as cands  # noqa: E402
 from engine.dubflow.mastering import evidence as ev  # noqa: E402
 from engine.dubflow.mastering import frames as more  # noqa: E402
+from engine.dubflow.mastering import review as reviewing  # noqa: E402
 from engine.dubflow.mastering import vision  # noqa: E402
 from engine.dubflow.mastering.candidates import Candidate  # noqa: E402
 from tests.mastering.longform import targeting as tg  # noqa: E402
@@ -243,10 +244,11 @@ MAX_INPUT_BYTES = 256 * 1024 * 1024  # a saved log, plan, keyframe or cache reco
 _REPARSE_POINT = 0x400  # FILE_ATTRIBUTE_REPARSE_POINT (Windows junctions, symlinks, cloud placeholders)
 
 
-class UnsafeRunFile(ValueError):
+class UnsafeRunFile(Exception):
     """A file the harness would read is not a regular file inside the selected run folder (traversal, a symbolic
     link or reparse point on the way, another kind of file, or larger than ``MAX_INPUT_BYTES``). The message names
-    the path relative to the run folder only."""
+    the path relative to the run folder only. Not a ValueError or OSError, so no "unreadable file" handler (here or
+    in ``w3``) can swallow it: the run fails instead."""
 
 
 def _linkish(st: os.stat_result) -> bool:
@@ -263,7 +265,8 @@ def run_file(root: Path, relative: str | PurePath) -> Path | None:
     shown = rel.as_posix()
     if rel.is_absolute() or rel.drive or rel.root:
         raise UnsafeRunFile("an absolute path is refused")  # never echoed: it would name a place on the machine
-    if not rel.parts or any(p in ("", ".", "..") for p in rel.parts):
+    if not rel.parts or any(p in ("", ".", "..") or ":" in p or "\x00" in p for p in rel.parts):
+        # ":" would name an NTFS alternate data stream (frame.jpg:hidden) on Windows: never a plain file name here
         raise UnsafeRunFile(f"not a plain relative path: {shown}")
     current = root
     st = None
@@ -273,11 +276,16 @@ def run_file(root: Path, relative: str | PurePath) -> Path | None:
             st = os.lstat(current)
         except FileNotFoundError:
             return None
+        except (OSError, ValueError):
+            # not a folder on the way, a name too long or not allowed here: never echo the absolute path
+            raise UnsafeRunFile(f"cannot be checked: {shown}") from None
         if _linkish(st):
             raise UnsafeRunFile(f"symbolic link or reparse point: {shown}")
     assert st is not None
     if not stat.S_ISREG(st.st_mode):
         raise UnsafeRunFile(f"not a regular file: {shown}")
+    if st.st_nlink > 1:
+        raise UnsafeRunFile(f"hard link (another name may sit outside the run folder): {shown}")
     if st.st_size > MAX_INPUT_BYTES:
         raise UnsafeRunFile(f"larger than {MAX_INPUT_BYTES} bytes: {shown}")
     try:
@@ -288,80 +296,108 @@ def run_file(root: Path, relative: str | PurePath) -> Path | None:
 
 
 def read_run_file(root: Path, relative: str | PurePath) -> bytes | None:
-    """The bytes of ``run_file(root, relative)`` (None when absent), read from the file that was checked: the opened
-    file must be the same regular file, and no more than ``MAX_INPUT_BYTES`` are read."""
+    """The bytes of ``run_file(root, relative)`` (None when absent), read from the file that was checked. The path
+    is checked before the open and again after it, and the opened handle must be that same single-named regular
+    file (device and file id): a folder on the way swapped for a link around the open, or a hard link, fails
+    (``UnsafeRunFile``). No more than ``MAX_INPUT_BYTES`` are read."""
+    shown = PurePath(relative).as_posix()
     path = run_file(root, relative)
     if path is None:
         return None
-    root = Path(root).resolve(strict=True)
-    before = os.lstat(path)
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
         fd = os.open(path, flags)
-    except OSError:
-        raise UnsafeRunFile(f"cannot open as a regular file: {PurePath(relative).as_posix()}") from None
+    except (OSError, ValueError):
+        raise UnsafeRunFile(f"cannot open as a regular file: {shown}") from None
     with os.fdopen(fd, "rb") as handle:
         opened = os.fstat(handle.fileno())
-        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
-            raise UnsafeRunFile(f"changed while it was read: {PurePath(relative).as_posix()}")
+        if not stat.S_ISREG(opened.st_mode) or opened.st_nlink > 1:
+            raise UnsafeRunFile(f"not a single-named regular file: {shown}")
+        again = run_file(root, relative)  # the whole way checked again, now that the handle is open
+        if again is None:
+            raise UnsafeRunFile(f"changed while it was read: {shown}")
+        try:
+            now = os.lstat(again)
+        except (OSError, ValueError):
+            raise UnsafeRunFile(f"changed while it was read: {shown}") from None
+        if (opened.st_dev, opened.st_ino) != (now.st_dev, now.st_ino):
+            raise UnsafeRunFile(f"changed while it was read: {shown}")
         data = handle.read(MAX_INPUT_BYTES + 1)
     if len(data) > MAX_INPUT_BYTES:
-        raise UnsafeRunFile(f"larger than {MAX_INPUT_BYTES} bytes: {PurePath(relative).as_posix()}")
+        raise UnsafeRunFile(f"larger than {MAX_INPUT_BYTES} bytes: {shown}")
     return data
 
 
-def _run_inputs(root: Path) -> list[str]:
-    """Every file ``w3.load_run`` and ``load`` read by pattern, relative to the resolved run folder."""
-    mdir = w3.mastering_dir(root)
-    work = root / ".dubflow-work"
-    names = [p for pattern in ("editorial-*.json", "plan-*.json", "analysis-*.json") for p in sorted(mdir.glob(pattern))]
-    names += [work / n for n in ("program.json", "spec.json")]
-    names += sorted(work.glob("review-*.json")) if work.is_dir() else []
-    names += sorted((mdir / "vision").glob("*.json")) if (mdir / "vision").is_dir() else []
-    return [p.relative_to(root).as_posix() for p in names]
+_REVIEWS: dict[Path, dict[str, bytes]] = {}  # resolved run folder -> review-<part>.json bytes as ``load`` read them
+
+
+def _review_bytes(folder: Path, part: str) -> bytes | None:
+    """A part's review file as ``load`` read it (the bytes behind ``Loaded.files``); a run folder ``load`` never
+    read is read once more through ``read_run_file``."""
+    root = Path(folder)
+    if root in _REVIEWS:
+        return _REVIEWS[root].get(part)
+    return read_run_file(root, f".dubflow-work/review-{part}.json")
 
 
 def load(folder: Path) -> Loaded:
-    """The saved run, every file read only from inside the resolved run folder (``run_file``): a log, plan, cache
-    record or keyframe reached through a symbolic link or reparse point, outside the folder, or of another kind
+    """The saved run, read once: every file comes from ``read_run_file`` (a regular file inside the resolved run
+    folder, no symbolic link or reparse point on the way, size-capped, checked on the opened handle), and the run is
+    parsed from those same bytes, whose digests ``Loaded.files`` records. Nothing is reopened by path afterwards
+    (``w3.load_run`` is not used; the replay's review files come from this snapshot). A file that fails the check
     fails the whole load (``UnsafeRunFile``) instead of being read."""
     folder = Path(folder)
     root = folder.resolve(strict=True)
-    for name in ("", ".dubflow-work", ".dubflow-work/mastering", ".dubflow-work/mastering/vision"):
-        here = root / name if name else root
-        if name and os.path.lexists(here) and (_linkish(os.lstat(here)) or not stat.S_ISDIR(os.lstat(here).st_mode)):
+    for name in (".dubflow-work", ".dubflow-work/mastering", ".dubflow-work/mastering/vision"):
+        here = root / name
+        if os.path.lexists(here) and (_linkish(os.lstat(here)) or not stat.S_ISDIR(os.lstat(here).st_mode)):
             raise UnsafeRunFile(f"symbolic link, reparse point or not a folder: {name}")
-    inputs = _run_inputs(root)
-    for name in inputs:  # checked before w3.load_run reads them, and read again below from the checked file
-        run_file(root, name)
-    run = w3.load_run(root)
     mdir = w3.mastering_dir(root)
     work = root / ".dubflow-work"
+    base = mdir.relative_to(root)
     files: dict[str, str] = {}
 
-    def read(path: Path) -> bytes:
-        relative = path.relative_to(root).as_posix()
+    def read(relative: str | PurePath) -> bytes | None:
+        relative = PurePath(relative).as_posix()
         data = read_run_file(root, relative)
-        if data is None:
-            raise UnsafeRunFile(f"disappeared while it was read: {relative}")
-        files[relative] = sha256_bytes(data)
+        if data is not None:
+            files[relative] = sha256_bytes(data)
         return data
 
-    for pattern in ("editorial-*.json", "plan-*.json", "analysis-*.json"):
-        for path in sorted(mdir.glob(pattern)):
-            data = read(path)
-            if pattern == "editorial-*.json" and json.loads(data.decode("utf-8")) != run.logs.get(path.stem.removeprefix("editorial-")):
-                raise UnsafeRunFile(f"changed while it was read: {path.relative_to(root).as_posix()}")
+    def parsed(relative: str | PurePath) -> Any:
+        data = read(relative)
+        if data is None:
+            raise UnsafeRunFile(f"disappeared while it was read: {PurePath(relative).as_posix()}")
+        return json.loads(data.decode("utf-8"))
+
+    def listed(pattern: str, where: Path) -> list[PurePath]:
+        return [p.relative_to(root) for p in sorted(where.glob(pattern))] if where.is_dir() else []
+
+    # as w3.load_run builds the run, but from the checked bytes
+    logs = {p.stem.removeprefix("editorial-"): parsed(p) for p in listed("editorial-*.json", mdir)}
+    plans = {p.stem.removeprefix("plan-"): parsed(p) for p in listed("plan-*.json", mdir)}
+    analyses = {}
+    for p in listed("analysis-*.json", mdir):
+        value = parsed(p)
+        analyses[value["identity"]] = value
+    order = sorted(logs, key=w3._part_key)
     program: dict = {}
-    for name in ("program.json", "spec.json"):
-        if (work / name).is_file():
-            data = read(work / name)
-            if name == "program.json":
-                program = json.loads(data.decode("utf-8"))
+    data = read(".dubflow-work/program.json")
+    if data is not None:
+        program = json.loads(data.decode("utf-8"))
+        named = [p["id"] for p in program.get("parts") or ()]
+        order = [p for p in named if p in logs] + [p for p in order if p not in named]
+    data = read(".dubflow-work/spec.json")
+    spec = json.loads(data.decode("utf-8")) if data is not None else {}
+    run = w3.Run(root, logs, plans, analyses, order, spec)
     review_files = {}
-    for path in sorted(work.glob("review-*.json")) if work.is_dir() else ():
+    reviews: dict[str, bytes] = {}
+    for path in listed("review-*.json", work):
         part = path.stem.removeprefix("review-")
         data = read(path)
+        if data is None:
+            raise UnsafeRunFile(f"disappeared while it was read: {path.as_posix()}")
+        reviews[part] = data
         try:
             units = (json.loads(data.decode("utf-8")) or {}).get("units") or {}
         except ValueError:
@@ -370,25 +406,28 @@ def load(folder: Path) -> Loaded:
                               "pins": sum(1 for d in units.values() if d.get("pin")),
                               "excludes": sum(len(d.get("exclude") or ()) for d in units.values()),
                               "approvals": sum(1 for d in units.values() if d.get("approved") is not None)}
+    _REVIEWS[root] = reviews
     names = sorted({c["keyframe"] for log in run.logs.values() for c in log.get("candidates") or () if c.get("keyframe")})
     jpeg: dict[str, str | None] = {}
-    base = mdir.relative_to(root)
     for name in names:
-        # a keyframe name comes from a saved log: only a plain file inside the run folder is read (run_file)
-        found = run_file(root, base / name)
-        jpeg[name] = sha256_bytes(read(found)) if found is not None else None
+        # a keyframe name comes from a saved log: only a plain file inside the run folder is read (read_run_file)
+        data = read(base / name)
+        jpeg[name] = sha256_bytes(data) if data is not None else None
         for extra in _extra_names(name):
             if extra not in jpeg:
-                found = run_file(root, base / extra)
-                if found is not None:
-                    jpeg[extra] = sha256_bytes(read(found))
+                data = read(base / extra)
+                if data is not None:
+                    jpeg[extra] = sha256_bytes(data)
     cache = None
     if (mdir / "vision").is_dir():
         cache = {}
-        for path in sorted((mdir / "vision").glob("*.json")):
+        for path in listed("*.json", mdir / "vision"):
+            data = read(path)  # an unsafe record fails the load (UnsafeRunFile is not swallowed below)
+            if data is None:
+                raise UnsafeRunFile(f"disappeared while it was read: {path.as_posix()}")
             try:
-                cache[path.stem] = json.loads(read(path).decode("utf-8"))
-            except ValueError:
+                cache[path.stem] = json.loads(data.decode("utf-8"))
+            except ValueError:  # a record production could not parse either: skipped, as before
                 continue
     return Loaded(folder, run, program, mdir, files, jpeg, cache, review_files)
 
@@ -402,10 +441,7 @@ def no_review_edits(run: w3.Run, part: str, log: Mapping[str, Any]) -> tuple[ali
         given = ((run.spec.get("editorial") or {}).get("edits") or {}).get(part)
         return align.Edits.from_dict(given), "spec"
     edits = align.Edits.from_dict(log.get("edits") or {})
-    try:
-        data = read_run_file(run.folder, f".dubflow-work/review-{part}.json")
-    except UnsafeRunFile:
-        return edits, "log_review_unreadable"
+    data = _review_bytes(run.folder, part)  # an unsafe review file fails the run (UnsafeRunFile)
     if data is None:
         return edits, "log"
     try:
@@ -469,7 +505,21 @@ class PlanMemo:
 def replay_context(*, review: bool = False, memo: PlanMemo | None = None) -> Iterator[None]:
     """``w3.call_of`` without the review files' decisions and a remembered ``w3.plan_again``, for the block only."""
     saved_call, saved_plan = w3.call_of, w3.plan_again
+    saved_review_load = reviewing.load
+
+    def review_from_snapshot(path: Path) -> reviewing.Review:
+        # w3.call_of reads <run>/.dubflow-work/review-<part>.json by path: serve the bytes load() read instead
+        path = Path(path)
+        if path.parent.name != ".dubflow-work" or not (path.name.startswith("review-") and path.name.endswith(".json")):
+            return saved_review_load(path)
+        data = _review_bytes(path.parent.parent, path.name[len("review-"):-len(".json")])  # UnsafeRunFile propagates
+        if data is None:
+            return reviewing.Review()
+        if len(data) > 1024 * 1024:
+            raise reviewing.ReviewError("review file too large")
+        return reviewing.Review.from_dict(json.loads(data.decode("utf-8")))
     try:
+        reviewing.load = review_from_snapshot
         if not review:
             def call_of_no_review(run: w3.Run, part: str, shown: Sequence[str], **kwargs: Any) -> dict[str, Any]:
                 call = saved_call(run, part, shown, **kwargs)
@@ -481,6 +531,7 @@ def replay_context(*, review: bool = False, memo: PlanMemo | None = None) -> Ite
         yield
     finally:
         w3.call_of, w3.plan_again = saved_call, saved_plan
+        reviewing.load = saved_review_load
 
 
 # --- run data for the planning view (no ground truth here) ---
@@ -787,34 +838,40 @@ def key_bases(loaded: Loaded) -> list[tuple[str, str, str, tuple[str, ...]]]:
 
 def exact_answer(loaded: Loaded, basis: tuple[str, str, str, tuple[str, ...]], jpeg_hex: str | None,
                  item: Mapping[str, Any], side: Mapping[str, Any] | None = None) -> str:
+    return proving_answer(loaded, basis, jpeg_hex, item, side)[0]
+
+
+def proving_answer(loaded: Loaded, basis: tuple[str, str, str, tuple[str, ...]], jpeg_hex: str | None,
+                   item: Mapping[str, Any], side: Mapping[str, Any] | None = None) -> tuple[str, vision.Seen | None]:
     """"exact" when ``loaded``'s cache holds, under the full production key of ``basis`` for these JPEG bytes, a record
     whose validated answer is this logged item (text, labels, confidence); otherwise why that is not proven. A record
     without ``made_by`` (written before #808) is accepted only through this computed full key.
 
     With ``side`` (the logged evidence) the record must also give the side metadata ``vision.apply`` wrote beside the
     item (product box, hook, product visible, product group); a record that differs there is "side_mismatch", so the
-    whole logged answer, not only its text, is what a removal from A0 rests on."""
+    whole logged answer, not only its text, is what a removal from A0 rests on. Returns the reason and, when it is
+    "exact", the answer (as validated, or as stored) that proved it."""
     if not jpeg_hex:
-        return "no_jpeg"
+        return "no_jpeg", None
     if loaded.cache is None:
-        return "no_cache"
+        return "no_cache", None
     prompt, provider, model, labels = basis
     key = _cache_key(prompt, provider, model, labels, jpeg_hex)
     record = loaded.cache.get(key[:32])
     if record is None or record.get("key") != key:
-        return "no_exact_key"
+        return "no_exact_key", None
     made = record.get("made_by")
     if isinstance(made, Mapping) and (made.get("prompt"), made.get("provider"), made.get("model")) != (prompt, provider, model):
-        return "made_by_mismatch"
+        return "made_by_mismatch", None
     seen = vision.validate(record, labels)  # what production's _cached requires before it reuses a record
     if seen is None:
-        return "answer_mismatch"
+        return "answer_mismatch", None
     logged = (item.get("text"), list(item.get("labels") or ()), item.get("confidence"))
     detail = str(item.get("detail") or "")
     if detail and not detail.startswith(f"AI {provider}/"):
         # production writes f"AI {provider}/{used model}" and the provider is part of the key: an item naming another
         # provider was not written by a look under this key (the model part may differ after a fallback)
-        return "detail_mismatch"
+        return "detail_mismatch", None
     # The run that asked logged item_of(the fresh answer), and the record stores that answer's fields as they were;
     # validating them again can differ at a clipped field ending in a space, so the stored fields count as they are.
     candidates = [seen]
@@ -831,9 +888,16 @@ def exact_answer(loaded: Loaded, basis: tuple[str, str, str, tuple[str, ...]], j
         if (expected.text, list(expected.labels), expected.confidence) != logged:
             continue
         if side is None or applied_side(answer, detail) == logged_side(side):
-            return "exact"
+            return "exact", answer
         reason = "side_mismatch"
-    return reason
+    return reason, None
+
+
+def side_of(seen: vision.Seen) -> dict[str, Any]:
+    """What ``vision.apply`` sets besides the evidence item for ``seen``, in the record's 0-1000 box units."""
+    return {"product_box": dict(seen.product_box) if isinstance(seen.product_box, Mapping) else None, "hook": seen.hook,
+            "product_visible": seen.product_box is not None or any(label.startswith("product_") for label in seen.labels),
+            "same_product": seen.product_group}
 
 
 def applied_side(answer: vision.Seen, detail: str) -> str:
@@ -858,11 +922,7 @@ def record_side(loaded: Loaded, basis: tuple[str, str, str, tuple[str, ...]], jp
     if record is None or record.get("key") != key:
         return None
     seen = vision.validate(record, labels)
-    if seen is None:
-        return None
-    return {"product_box": dict(seen.product_box) if isinstance(seen.product_box, Mapping) else None, "hook": seen.hook,
-            "product_visible": seen.product_box is not None or any(label.startswith("product_") for label in seen.labels),
-            "same_product": seen.product_group}
+    return side_of(seen) if seen is not None else None
 
 
 def classify(loaded: Loaded, broad: Mapping[str, Any]) -> tuple[dict[str, str], dict[str, Any]]:
@@ -1329,8 +1389,10 @@ class DonorIndex:
         for d in self.pool:
             if (d.run, d.part, d.candidate_id, d.item_index, d.own_cache) == (r.donor_run, r.donor_part, r.donor_candidate_id,
                                                                              r.donor_item_index, r.own_cache):
-                side = record_side(loaded[d.run], self.key_basis, d.jpeg_sha256) if self.key_basis and d.run in loaded else None
-                return {**dict(d.item), "side": side}
+                # the side of the very answer (validated or as stored) that proved the donor's whole logged answer
+                _, proved = (proving_answer(loaded[d.run], self.key_basis, d.jpeg_sha256, d.item, side=d.side)
+                             if self.key_basis and d.run in loaded else (None, None))
+                return {**dict(d.item), "side": side_of(proved) if proved is not None else None}
         return None
 
 
@@ -1900,7 +1962,8 @@ def upper_bounds(ctx: Context, arms: Sequence[dict], windows: Sequence[str], sel
 def e1_baseline(gt: Mapping[str, Any], prep: Prepared, index: DonorIndex, ctx: Context | None = None) -> dict[str, Any]:
     loaded, run, A = prep.loaded, prep.loaded.run, prep.A
     saved = w3.score(gt, run)
-    replayed_with_review = w3.score(gt, w3.replay(run))
+    with replay_context(review=True):  # the review files as load() read them, never reopened by path
+        replayed_with_review = w3.score(gt, w3.replay(run))
     scored_a = ctx.scores["A"] if ctx else w3.score(gt, A)
     attributed = ctx.attributions["A"] if ctx else w3.attribute(gt, A)
     equal = {p: w3.same_plan(run.plans[p], A.plans[p]) for p in run.order}
