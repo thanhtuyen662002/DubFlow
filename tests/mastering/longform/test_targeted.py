@@ -27,6 +27,7 @@ from engine.dubflow.mastering import align
 from engine.dubflow.mastering import analysis as scene
 from engine.dubflow.mastering import candidates as shots
 from engine.dubflow.mastering import evidence as ev
+from engine.dubflow.mastering import frames as more_frames
 from engine.dubflow.mastering import plan as m
 from engine.dubflow.mastering import review as reviewing
 from engine.dubflow.mastering import vision
@@ -995,6 +996,225 @@ class ClassificationTests(unittest.TestCase):
             self.assertEqual(sorted([prep.classes["i1-s1c1"], prep.classes["i1-s1c4"]]), ["targeted", "targeted_shared"])
             self.assertEqual(prep.classification["targeted_frames_item_parts"], 2)  # c2 and one of the copies
 
+    @staticmethod
+    def rewrite_logged(run: Path, candidate: str, side: dict | None = None, **fields) -> None:
+        """Change the first logged vision item of ``candidate`` (and its evidence ``side`` fields) in every saved
+        editorial log (no cache record moves)."""
+        for path in sorted((run / ".dubflow-work" / "mastering").glob("editorial-*.json")):
+            log = json.loads(path.read_text(encoding="utf-8"))
+            for c in log.get("candidates") or ():
+                if c["id"] == candidate and c.get("evidence"):
+                    item = next(i for i in c["evidence"]["items"] if i["origin"] == "vision")
+                    item.update(fields)
+                    c["evidence"].update(side or {})
+            path.write_text(json.dumps(log, ensure_ascii=False), encoding="utf-8")
+
+    def test_a_shared_copy_must_be_the_whole_answer_its_proven_mate_gave(self):
+        # same duplicate group, same text and labels, no record of its own, but another confidence or detail: that is
+        # not the Seen production's vision.share() handed on, so it is unproven and A0 keeps it
+        cases = [("targeted mate", {1: 4}, "i1-s1c1", "i1-s1c4", "targeted_shared"),
+                 ("broad mate", {8: 3}, "i1-s1c8", "i1-s1c3", "broad_shared")]
+        box = {"x": 100, "y": 100, "w": 500, "h": 500, "label": "subject"}
+        changes = [("confidence", {"confidence": 600}), ("detail", {"detail": "AI other-provider/other-model"}),
+                   ("both", {"confidence": 600, "detail": "AI other-provider/other-model"}),
+                   ("hook", {"side": {"hook": 900}}), ("product box", {"side": {"product_box": box, "product_visible": True}}),
+                   ("product group", {"side": {"same_product": "nhóm-khác"}})]
+        for label, twins, copy, mate, shared in cases:
+            with self.subTest(label, change="none"), TemporaryDirectory() as tmp:
+                # the positive case: the exact copy of the mate's logged answer is still a shared copy
+                loaded = tt.load(make_run_k(Path(tmp), twins=twins))
+                c = next(c for c in loaded.run.logs["i1"]["candidates"] if c["id"] == copy)
+                self.assertEqual(tt.own_answer(loaded, c), "no_exact_key")
+                prep = tt.prepare(loaded)
+                self.assertEqual(prep.classification["classification_basis"], "exact")
+                self.assertEqual(prep.classes[copy], shared)
+            for name, fields in changes:
+                with self.subTest(label, change=name), TemporaryDirectory() as tmp:
+                    run = make_run_k(Path(tmp), twins=twins)
+                    self.rewrite_logged(run, copy, **fields)
+                    loaded = tt.load(run)
+                    c = next(c for c in loaded.run.logs["i1"]["candidates"] if c["id"] == copy)
+                    m = next(c for c in loaded.run.logs["i1"]["candidates"] if c["id"] == mate)
+                    self.assertEqual((tt.vision_items(c)[0]["text"], tt.vision_items(c)[0]["labels"]),
+                                     (tt.vision_items(m)[0]["text"], tt.vision_items(m)[0]["labels"]))
+                    self.assertEqual(tt.own_answer(loaded, c), "no_exact_key")
+                    prep = tt.prepare(loaded)
+                    self.assertEqual(prep.classification["classification_basis"], "exact")
+                    self.assertEqual(prep.classes[copy], "unproven")
+                    self.assertEqual(prep.classes[mate], "targeted" if shared == "targeted_shared" else "broad")
+                    self.assertNotIn(shared, prep.classification["counts"])
+                    kept = {x["id"]: tt.vision_items(x) for x in prep.A0.logs["i1"]["candidates"]}
+                    self.assertTrue(kept[copy])  # A0 retains the answer
+                    for key, value in fields.items():
+                        if key != "side":
+                            self.assertEqual(kept[copy][0][key], value)
+                    evidence = next(x for x in prep.A0.logs["i1"]["candidates"] if x["id"] == copy)["evidence"]
+                    for key, value in (fields.get("side") or {}).items():
+                        self.assertEqual(evidence[key], value)  # and the metadata set with it
+
+    @staticmethod
+    def split_shot(run: Path, number: int, keep: tuple[int, ...] = (1, 3)) -> list[str]:
+        """Split shot ``number`` of part i1 the way ``frames.merge`` does: the extra frames ``keep`` (1 early, 3 late; a
+        frame ``look_again`` could not use is left out), with their own JPEGs, dhashes and, when the run has a cache,
+        records under the full key, that show something else. Returns the piece ids in log order."""
+        folder = run / ".dubflow-work" / "mastering"
+        path = folder / "editorial-i1.json"
+        log = json.loads(path.read_text(encoding="utf-8"))
+        index = next(n for n, c in enumerate(log["candidates"]) if c["id"] == f"i1-s1c{number}")
+        shot = log["candidates"][index]
+        found = tt.evidence_from(shot["evidence"])
+        made = shots.Candidate.from_dict(shot)
+        texts = {1: "Một người lính đứng gác", 3: "Chiếc thuyền trên sông"}
+        extra = []
+        for n, at in zip((1, 3), more_frames.extra_times(made)):
+            if n not in keep:
+                continue
+            name = f"i1-s1-c{number}{more_frames.SPLIT_MARK}{n}.jpg"
+            data = b"\xff\xd8" + f"extra{number}-{n}".encode() + b"\xff\xd9"
+            (folder / name).write_bytes(data)
+            seen = vision.Seen(texts[n], (), (), "", ("explanation",), 850, "clear", None, None, 0)
+            if (folder / "vision").is_dir():
+                key = tt._cache_key(vision.PROMPT_VERSION, PROVIDER, MODEL, ev.MOMENT_LABELS, hashlib.sha256(data).hexdigest())
+                (folder / "vision" / f"{key[:32]}.json").write_text(json.dumps(
+                    {"key": key, **seen.to_dict(), "made_by": {"prompt": vision.PROMPT_VERSION, "provider": PROVIDER,
+                                                               "model": MODEL, "answered_by": MODEL}}, ensure_ascii=False),
+                    encoding="utf-8")
+            extra.append((at, vision.item_of(seen, DETAIL), name, 12345 + n))
+        pieces = []
+        for part, evidence in more_frames.merge(made, found.summary(), extra, found):
+            piece = dict(shot, id=part.candidate_id, start_ms=part.start_ms, end_ms=part.end_ms, keyframe=part.keyframe,
+                         evidence=evidence.to_dict())
+            pieces.append(piece)
+        log["candidates"][index:index + 1] = pieces
+        path.write_text(json.dumps(log, ensure_ascii=False), encoding="utf-8")
+        return [piece["id"] for piece in pieces]
+
+    def test_a_split_shots_middle_piece_is_its_shot_and_only_extra_frames_are_multi_frame(self):
+        # frames.merge keeps the shot's own keyframe and original answer on the middle piece: a broad pick's answer
+        # stays in A0, a proven targeted look's goes, an unproven one stays; the extra frames' pieces are multi_frame.
+        # The middle piece is the one with the shot's own keyframe, wherever merge numbered it (one extra frame: f1/f2)
+        for keep in ((1, 3), (3,), (1,)):
+            for cache, number, middle_class in ((True, 3, "broad"), (False, 3, "broad"), (True, 4, "targeted"),
+                                                (False, 4, "unproven")):
+                with self.subTest(keep=keep, cache=cache, shot=number), TemporaryDirectory() as tmp:
+                    run = make_run_k(Path(tmp), cache=cache)
+                    pieces = self.split_shot(run, number, keep)
+                    loaded = tt.load(run)
+                    listed = {c["id"]: c for c in loaded.run.logs["i1"]["candidates"]}
+                    middle = next(i for i in pieces if listed[i]["keyframe"] == f"i1-s1-c{number}.jpg")
+                    extras = [i for i in pieces if i != middle]
+                    self.assertEqual(len(extras), len(keep))
+                    prep = tt.prepare(loaded)
+                    self.assertEqual(prep.broad["status"], "RECONSTRUCTED", prep.broad.get("reasons"))
+                    if cache:
+                        self.assertEqual(prep.broad["picked_not_in_cache"], 0)  # checked on the middle piece's answer
+                    self.assertEqual(prep.classes[middle], middle_class)
+                    self.assertEqual({prep.classes[i] for i in extras}, {"multi_frame"})
+                    kept = {c["id"]: c for c in prep.A0.logs["i1"]["candidates"]}
+                    middle_kept = [i["text"] for i in tt.vision_items(kept[middle])]
+                    self.assertEqual(middle_kept, [] if middle_class == "targeted" else [TEXTS[number]])
+                    for i in extras:
+                        self.assertFalse(tt.vision_items(kept[i]))
+
+    def test_a_log_with_only_extra_frame_pieces_has_no_middle_piece(self):
+        # the trimmed log can hold an extra frame's piece alone: it is never taken for the shot's own answer
+        with TemporaryDirectory() as tmp:
+            run = make_run_k(Path(tmp))
+            f1, f2, f3 = self.split_shot(run, 3)
+            path = run / ".dubflow-work" / "mastering" / "editorial-i1.json"
+            log = json.loads(path.read_text(encoding="utf-8"))
+            log["candidates"] = [c for c in log["candidates"] if c["id"] not in (f1, f2)]
+            path.write_text(json.dumps(log, ensure_ascii=False), encoding="utf-8")
+            loaded = tt.load(run)
+            classes, _ = tt.classify(loaded, {"picked": ["i1-s1c3", "i1-s1c5", "i1-s1c7"]})
+            self.assertEqual(classes[f3], "multi_frame")
+            found = tt.a0_evidence(classes)("i1", loaded.run.logs["i1"])[f3]
+            self.assertFalse(any(i.origin == "vision" for i in found.items))
+
+    def test_an_extra_frames_answer_is_never_the_source_of_a_shared_copy(self):
+        # frames.look_again asks the describer directly and shares nothing: a duplicate with no record of its own
+        # that carries an extra frame's answer is not a shared copy of it
+        with TemporaryDirectory() as tmp:
+            run = make_run_k(Path(tmp), twins={6: 4})
+            self.rewrite_logged(run, "i1-s1c6", text="Một người lính đứng gác")
+            self.split_shot(run, 4)
+            loaded = tt.load(run)
+            prep = tt.prepare(loaded)
+            self.assertEqual(prep.classes["i1-s1c4f1"], "multi_frame")
+            self.assertEqual(prep.classes["i1-s1c6"], "unproven")
+            kept = {c["id"]: bool(tt.vision_items(c)) for c in prep.A0.logs["i1"]["candidates"]}
+            self.assertTrue(kept["i1-s1c6"])
+
+    def test_a_split_parents_group_comes_from_its_middle_piece(self):
+        # production recomputes the duplicate groups after a split: the extra frame's piece leads its own group, and
+        # the broad pass grouped the picture that the middle piece kept
+        with TemporaryDirectory() as tmp:
+            run = make_run_k(Path(tmp))
+            f1, f2, f3 = self.split_shot(run, 5)
+            path = run / ".dubflow-work" / "mastering" / "editorial-i1.json"
+            log = json.loads(path.read_text(encoding="utf-8"))
+            for c in log["candidates"]:
+                if c["id"] in (f1, f3):
+                    c["group"] = c["id"]
+                elif c["id"] == f2:
+                    c["group"] = "i1-s1c5"
+            path.write_text(json.dumps(log, ensure_ascii=False), encoding="utf-8")
+            groups = tt.job_groups(tt.load(run).run)
+            self.assertEqual(groups["i1-s1c5"], "i1-s1c5")
+            self.assertEqual(groups[f1], f1)
+
+    def test_a0_removes_only_the_copies_that_carry_the_proven_answer(self):
+        # A0 removes answers by id in every part log: one part's proven answer proves nothing of another part's, so a
+        # copy with another answer is kept, while the proven copy (and an equal copy) still goes
+        with TemporaryDirectory() as tmp:
+            run = make_run_k(Path(tmp), parts=("i1", "i2"), twins={1: 4})
+            clean = tt.prepare(tt.load(run))
+            self.assertEqual((clean.classes["i1-s1c4"], clean.classes["i1-s1c1"]), ("targeted", "targeted_shared"))
+            picks = {"picked": clean.broad["picked"]}
+            folder = run / ".dubflow-work" / "mastering"
+            c4 = next(c for c in json.loads((folder / "editorial-i1.json").read_text(encoding="utf-8"))["candidates"]
+                      if c["id"] == "i1-s1c4")
+            for label, change in (("same answer", {}), ("stale answer", {"text": "Câu trả lời cũ khác hẳn"}),
+                                  ("other detail", {"detail": "AI test-provider/other-model"}), ("other confidence", {"confidence": 600})):
+                with self.subTest(label):
+                    other = json.loads(json.dumps(c4))
+                    next(i for i in other["evidence"]["items"] if i["origin"] == "vision").update(change)
+                    path = folder / "editorial-i2.json"
+                    log = json.loads(path.read_text(encoding="utf-8"))
+                    log["candidates"] = [c for c in log["candidates"] if c["id"] != "i1-s1c4"] + [other]
+                    path.write_text(json.dumps(log, ensure_ascii=False), encoding="utf-8")
+                    loaded = tt.load(run)
+                    classes, report = tt.classify(loaded, picks)
+                    self.assertEqual(report["classification_basis"], "exact")
+                    # proven on its first copy (i1); its duplicate shares that proven answer
+                    self.assertEqual((classes["i1-s1c4"], classes["i1-s1c1"]), ("targeted", "targeted_shared"))
+                    answers = {i: tt.answer_identity(c) for i, c in tt.first_answers(loaded.run).items()}
+                    a0 = tt.a0_evidence(classes, answers)
+                    has = {part: any(i.origin == "vision" for i in a0(part, loaded.run.logs[part])["i1-s1c4"].items)
+                           for part in ("i1", "i2")}
+                    self.assertEqual(has, {"i1": False, "i2": bool(change)})
+                    self.assertFalse(any(i.origin == "vision" for i in a0("i1", loaded.run.logs["i1"])["i1-s1c1"].items))
+                    prep = tt.prepare(loaded)  # the replay passes the proven answers
+                    if prep.A0 is not None:
+                        kept = {c["id"]: bool(tt.vision_items(c)) for c in prep.A0.logs["i2"]["candidates"]}
+                        self.assertEqual(kept["i1-s1c4"], bool(change))
+
+    def test_a_logged_answer_naming_another_provider_is_not_proven_by_the_key(self):
+        # the provider is part of the cache key; the model part of the detail may differ after a fallback
+        for detail, expected in (("AI other-provider/test-model", "detail_mismatch"), (f"AI {PROVIDER}-b/{MODEL}", "detail_mismatch"),
+                                 (f"AI x/{PROVIDER}", "detail_mismatch"), (f"AI {PROVIDER}/fallback-model", "exact")):
+            with self.subTest(detail), TemporaryDirectory() as tmp:
+                run = make_run_k(Path(tmp))
+                self.rewrite_logged(run, "i1-s1c2", detail=detail)
+                loaded = tt.load(run)
+                c2 = next(c for c in loaded.run.logs["i1"]["candidates"] if c["id"] == "i1-s1c2")
+                self.assertEqual(tt.own_answer(loaded, c2), expected)
+                prep = tt.prepare(loaded)
+                self.assertEqual(prep.classification["classification_basis"], "exact")
+                self.assertEqual(prep.classes["i1-s1c2"], "unproven" if expected != "exact" else "targeted")
+                kept = {c["id"]: bool(tt.vision_items(c)) for c in prep.A0.logs["i1"]["candidates"]}
+                self.assertEqual(kept["i1-s1c2"], expected != "exact")
+
     def test_no_record_and_no_proven_look_to_share_from_is_unproven(self):
         for label in ("record deleted", "keyframe missing"):
             with self.subTest(label), TemporaryDirectory() as tmp:
@@ -1611,7 +1831,7 @@ class ScopeTests(unittest.TestCase):
             self.assertNotEqual(path, "scripts/ci/component_registry.json")
 
 
-GOLDEN = "fc8638ac888cd3b0b5f0a7bbf1781042c79344305ff61eba64c628d06eb94374"
+GOLDEN = "1d3ecfd4b72bc25df599287dc345281af34bd2cea236fb0e01c0c36309af8ff1"
 
 
 if __name__ == "__main__":

@@ -88,7 +88,7 @@ CAVEATS = (
     "partial simulation: benefits and harms both under-sampled",
     "review edits (pins, exclusions, approvals made after viewing) are excluded from every arm by default",
     "intro/outro looks are excluded from the item parts' observed set, as in production",
-    "A0 keeps the logged sub-shots (the replay does not re-split them) with their non-vision evidence only",
+    "A0 keeps the logged sub-shots (the replay does not re-split them): a split shot's middle piece is classed like the shot, the extra frames' pieces keep their non-vision evidence only",
     "runs not independent (shared footage, ground truth, 4/5 donors)",
     "an answer is replayed only under its exact production cache key (prompt version, provider, model, label set, JPEG "
     "bytes) with the logged answer equal to the cached record; no match by time or by run-level provider and model",
@@ -425,6 +425,41 @@ def _sub_parent(c: Mapping[str, Any]) -> str:
     return tg.parent_id(c["id"], c["source_id"])
 
 
+def _extra_piece(c: Mapping[str, Any]) -> bool:
+    """A sub-shot ``frames.merge`` built from an extra frame: its keyframe is that frame's file (``…f1.jpg``/``…f3.jpg``)."""
+    keyframe = c.get("keyframe") or ""
+    return "source_id" in c and _sub_parent(c) != c["id"] and any(keyframe.endswith(f"{more.SPLIT_MARK}{n}.jpg") for n in (1, 3))
+
+
+def _middle_piece(c: Mapping[str, Any]) -> bool:
+    """The sub-shot ``frames.merge`` built from the shot's own keyframe: it keeps that keyframe (no extra-frame mark)
+    and the shot's original single-frame answer. A sub-shot without a keyframe is neither: it cannot be told apart."""
+    return "source_id" in c and _sub_parent(c) != c["id"] and bool(c.get("keyframe")) and not _extra_piece(c)
+
+
+SIDE_FIELDS = ("product_box", "hook", "product_visible", "same_product")
+
+
+def answer_identity(c: Mapping[str, Any]) -> str:
+    """The identity of a logged answer: the whole first vision item and the side metadata. Production's
+    vision.share() hands the same Seen to every shot of a duplicate group, and vision.apply() writes from it, with one
+    detail, the item (text, labels, confidence, detail) and the product box, hook, product visibility and product
+    group; a genuine shared copy carries all of them alike, and an answer differing in any of them is not that copy."""
+    evidence = c.get("evidence") or {}
+    return json.dumps([[(v.get("text"), v.get("labels"), v.get("confidence"), v.get("detail")) for v in vision_items(c)[:1]],
+                       [evidence.get(k) for k in SIDE_FIELDS]], ensure_ascii=False, sort_keys=True)
+
+
+def first_answers(run: w3.Run) -> dict[str, dict]:
+    """Each answered id's first logged copy, in run order: the copy ``classify`` proves."""
+    first: dict[str, dict] = {}
+    for part in run.order:
+        for c in run.logs[part].get("candidates") or ():
+            if vision_items(c):
+                first.setdefault(c["id"], c)
+    return first
+
+
 def broad_pools(run: w3.Run) -> list[list[Candidate]]:
     """Each part's pool as the broad look saw it: sub-shots folded back into their parent shot."""
     pools = []
@@ -450,7 +485,10 @@ def job_groups(run: w3.Run) -> dict[str, str]:
     for part in run.order:
         for c in run.logs[part].get("candidates") or ():
             out.setdefault(c["id"], c.get("group") or c["id"])
-            out.setdefault(_sub_parent(c), c.get("group") or c["id"])
+            if not _extra_piece(c):
+                # a split parent takes the group of the piece that kept its keyframe: the groups logged after a split
+                # are recomputed, and an extra frame's piece is not the picture the broad look grouped
+                out.setdefault(_sub_parent(c), c.get("group") or c["id"])
     return out
 
 
@@ -487,17 +525,20 @@ def reconstruct_broad(loaded: Loaded) -> dict[str, Any]:
     if logged is None or len(picked) != int(logged):
         reasons.append("broad count mismatch")
     exact = cache_basis(loaded) == "exact"
-    answered: dict[str, Mapping[str, Any]] = {}
+    answered: dict[str, list[Mapping[str, Any]]] = {}
     for log in run.logs.values():
         for c in log.get("candidates") or ():
             if vision_items(c):
-                answered.setdefault(c["id"], c)
-                answered.setdefault(_sub_parent(c), c)
+                answered.setdefault(c["id"], []).append(c)
+                if _sub_parent(c) != c["id"]:
+                    answered.setdefault(_sub_parent(c), []).append(c)
 
     def cached(i: str) -> bool:
         # a broad pick counts as cached only when its record under the run's proven basis, for the picked frame's
-        # JPEG bytes, is the answer the run logged for it
-        c = answered.get(i)
+        # JPEG bytes, is the answer the run logged for that frame: for a split shot, the answer of the piece that
+        # kept the picked keyframe (the middle piece), never an extra frame's answer
+        logged = answered.get(i) or []
+        c = next((x for x in logged if x.get("keyframe") == used[i].keyframe), logged[0] if logged else None)
         return c is not None and own_answer(loaded, {**c, "keyframe": used[i].keyframe}) == "exact"
 
     not_cached = [i for i in picked if not cached(i)] if exact else []
@@ -628,6 +669,10 @@ def exact_answer(loaded: Loaded, basis: tuple[str, str, str, tuple[str, ...]], j
         return "answer_mismatch"
     logged = (item.get("text"), list(item.get("labels") or ()), item.get("confidence"))
     detail = str(item.get("detail") or "")
+    if detail and not detail.startswith(f"AI {provider}/"):
+        # production writes f"AI {provider}/{used model}" and the provider is part of the key: an item naming another
+        # provider was not written by a look under this key (the model part may differ after a fallback)
+        return "detail_mismatch"
     # The run that asked logged item_of(the fresh answer), and the record stores that answer's fields as they were;
     # validating them again can differ at a clipped field ending in a space, so the stored fields count as they are.
     candidates = [seen]
@@ -668,34 +713,41 @@ def classify(loaded: Loaded, broad: Mapping[str, Any]) -> tuple[dict[str, str], 
     exact basis a shot is targeted only when its own record under the proven key is the answer it logged and no frame
     looked at before holds the same JPEG bytes; it is shared only when a proven look in its group gave its answer;
     otherwise it is unproven. Without an exact basis every shot outside the reconstructed broad pass (and the logged
-    sub-shots) is unproven: nothing is inferred from grouping alone."""
+    extra-frame sub-shots) is unproven: nothing is inferred from grouping alone.
+
+    A split shot's middle piece keeps the shot's own keyframe and original answer (``frames.merge``): it is broad when
+    its parent was a broad pick, targeted when its own record under the proven key is its answer, and unproven
+    otherwise; only the extra frames' pieces are multi_frame, and they never count as the source of a shared copy
+    (``frames.look_again`` shares nothing). Each id is proven on its first logged copy; ``a0_evidence`` removes only the
+    copies that carry that same answer."""
     run = loaded.run
     groups = job_groups(run)
-    broad_ids = set(broad.get("picked") or ())
-    first: dict[str, dict] = {}
-    for part in run.order:
-        for c in run.logs[part].get("candidates") or ():
-            if vision_items(c):
-                first.setdefault(c["id"], c)
+    broad_picks = set(broad.get("picked") or ())
+    first = first_answers(run)
+    middles = {i for i, c in first.items() if _middle_piece(c)}
+    broad_ids = broad_picks | {i for i in middles if _sub_parent(first[i]) in broad_picks}
+    in_items = {c["id"] for p in run.order if is_item(p) for c in run.logs[p].get("candidates") or () if vision_items(c)}
     basis = cache_basis(loaded)
     exact = basis == "exact"
-    answer = {i: json.dumps([(v.get("text"), v.get("labels")) for v in vision_items(c)[:1]], ensure_ascii=False)
-              for i, c in first.items()}
+    answer = {i: answer_identity(c) for i, c in first.items()}
     by_group: dict[tuple[str, str], list[str]] = {}
     for i in sorted(first):
         by_group.setdefault((groups.get(i, i), answer[i]), []).append(i)
     status = {i: own_answer(loaded, c) for i, c in first.items()} if exact else {}
     digest = {i: loaded.jpeg.get(c["keyframe"]) if c.get("keyframe") else None for i, c in first.items()}
     broad_digests = {digest[i] for i in broad_ids if digest.get(i)}
-    proven = set(broad_ids) | {i for i, value in status.items() if value == "exact"}
+    sub = {i for i, c in first.items() if _sub_parent(c) != i}
+    proven = set(broad_ids) | {i for i, value in status.items() if value == "exact" and (i not in sub or i in middles)}
     claimed: set[str] = set()
     classes: dict[str, str] = {}
-    for i, c in sorted(first.items()):
-        if _sub_parent(c) != i:
-            classes[i] = "multi_frame"
-            continue
+    # the first holder of a frame's bytes is the look that was asked; an item part's look before a hook/intro copy
+    for i, c in sorted(first.items(), key=lambda kv: (kv[0] not in in_items, kv[0])):
         if i in broad_ids:
             classes[i] = "broad"
+            continue
+        if i in sub and i not in middles:
+            # an extra frame's piece is multi_frame; a sub-shot with no keyframe cannot be told apart: unproven
+            classes[i] = "multi_frame" if _extra_piece(c) else "unproven"
             continue
         mates = by_group[(groups.get(i, i), answer[i])]
         if exact:
@@ -709,7 +761,7 @@ def classify(loaded: Loaded, broad: Mapping[str, Any]) -> tuple[dict[str, str], 
                 else:
                     claimed.add(digest[i])
                     classes[i] = "targeted"
-            elif status[i] in ("no_exact_key", "no_jpeg") and any(m != i and m in proven for m in mates):
+            elif i not in middles and status[i] in ("no_exact_key", "no_jpeg") and any(m != i and m in proven for m in mates):
                 # no record of its own, and a proven look in its group gave the same answer: a shared copy
                 classes[i] = "broad_shared" if any(m in broad_ids for m in mates) else "targeted_shared"
             else:
@@ -733,18 +785,33 @@ def classify(loaded: Loaded, broad: Mapping[str, Any]) -> tuple[dict[str, str], 
     return classes, report
 
 
-def a0_evidence(classes: Mapping[str, str]) -> Callable[[str, Mapping[str, Any]], dict[str, ev.Evidence]]:
+def a0_evidence(classes: Mapping[str, str], answers: Mapping[str, str] | None = None
+                ) -> Callable[[str, Mapping[str, Any]], dict[str, ev.Evidence]]:
     """A without the targeted and multi-frame answers: broad answers keep their first frame only. An unproven shot
-    keeps its first answer too: it is not removed as a targeted answer without proof."""
+    keeps its first answer too: it is not removed as a targeted answer without proof.
+
+    ``answers`` (``answer_identity`` of the copy ``classify`` proved, by id): a copy in another part log whose answer
+    differs was not proven by that copy, so it is kept like an unproven one. An extra frame's piece loses its own
+    answer, but keeps the product flags ``frames.merge`` copied from its shot when the shot's middle piece keeps its
+    answer."""
+    removed = ("targeted", "targeted_shared", "multi_frame")
+
     def evidence_for(part: str, log: Mapping[str, Any]) -> dict[str, ev.Evidence]:
         out = {}
-        for c in log.get("candidates") or ():
+        listed = log.get("candidates") or ()
+        kept_parent = {_sub_parent(c) for c in listed if _middle_piece(c) and classes.get(c["id"]) not in removed}
+        for c in listed:
             found = evidence_from(c["evidence"]) if c.get("evidence") else ev.Evidence(c["id"])
             kind = classes.get(c["id"])
-            if kind in ("targeted", "targeted_shared", "multi_frame"):
+            if kind in removed and answers is not None and vision_items(c) and answer_identity(c) != answers.get(c["id"]):
+                kind = "unproven"  # not the answer that was proven for this id
+            if kind in removed:
                 found.items = [i for i in found.items if i.origin != "vision"]
-                # vision.apply set these from the answers removed here: nothing else sets them
-                found.product_box, found.hook, found.product_visible, found.same_product = None, 0, None, None
+                # vision.apply set these from the answers removed here: nothing else sets them (frames.merge gives an
+                # extra frame's piece no box or hook, and its shot's product flags)
+                found.product_box, found.hook = None, 0
+                if not (kind == "multi_frame" and _extra_piece(c) and _sub_parent(c) in kept_parent):
+                    found.product_visible, found.same_product = None, None
             elif kind in ("broad", "broad_shared", "unproven"):
                 kept, seen_vision = [], False
                 for i in found.items:
@@ -860,7 +927,8 @@ def prepare(loaded: Loaded, *, review: bool = False, memo: PlanMemo | None = Non
     if broad["status"] == "RECONSTRUCTED" and not light:
         began = time.perf_counter()
         with replay_context(review=review, memo=memo):
-            a0 = w3.replay(loaded.run, evidence_for=a0_evidence(classes))
+            answers = {i: answer_identity(c) for i, c in first_answers(loaded.run).items()}
+            a0 = w3.replay(loaded.run, evidence_for=a0_evidence(classes, answers))
         times["replay_A0"] = time.perf_counter() - began
         data_a0 = run_data(a0, loaded, f"A0_replay_{'with' if review else 'no'}_review")
         view_a0 = tg.planning_view(data_a0)
