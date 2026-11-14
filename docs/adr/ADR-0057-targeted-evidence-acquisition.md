@@ -31,8 +31,16 @@ design, and runs A and B were byte-identical each time.
   proven. They simulate nothing, and their E3–E5 values fall back to their own baseline. They serve only the E2
   decision, which is selection-based and identical at every head.
 
-The rc16 E3–E5 numbers here therefore stand as an exploratory, exact-key-verified partial simulation. They were only
-ever a partial simulation, and the recommendation does not rest on them. The pre-registered E2 decision ("not
+**Classification fix after the recompute (`7d90f35`).** A further Lead review found that frame classification (which
+looks count as targeted, and so what A0 removes) still took the presence of a key as proof. At `7d90f35` it needs the
+same answer proof as donor matching: a frame is targeted only when its own record under the proven key is the answer it
+logged and no broad or earlier frame holds the same JPEG bytes; otherwise it is shared (a proven look in its group gave
+the answer) or unproven (kept in A0). A0 also clears the product box, hook and product fields of the answers it
+removes, and replayed answers set them from the record, as production does. No PC re-run at `7d90f35` has been made
+yet. Until one is, the E1 classification and A0 numbers and every E3–E5 number here are **UNVERIFIED at the final
+code head**; the `468cb05` recompute above used the earlier classification.
+
+The rc16 E3–E5 numbers here were only ever a partial simulation, and the recommendation does not rest on them. The pre-registered E2 decision ("not
 supported") does not use donor answers and stays the decision of record at `716e984`.
 
 ## Decision (proposed)
@@ -300,6 +308,9 @@ written to reports only as a 12-character digest.
     crossed across sources. A spec without both fields leaves a legacy run unproven.
   - Items whose `detail` names another provider or model are left out.
   - A record in the target's own cache for the same bytes wins over a donor.
+  - The same proof decides which of the run's own looks count as targeted (and so what A0 removes): key presence alone
+    never does, a byte-identical copy of a looked-at frame is shared, and a look without proof is kept as unproven
+    (`7d90f35`).
   - Nothing is matched by time.
 
   Without that proof the frame is NOT_SIMULABLE, with a specific reason.
@@ -393,8 +404,9 @@ and pinned by a test; reproducing the decision of record needs a checkout of `71
 the real-call batch, needs a new pre-registration committed before it runs. Review of PR #831 changed `targeted.py`
 again (`a558396`, `b17bb53`, `468cb05`: exact production cache key, restored matching counts, legacy keys only from
 the spec's asked pair) and left `targeting.py` unchanged. The exact-key recompute ran at `468cb05` and is exploratory
-(PREREGISTRATION MISMATCH). The harness code at the final PR head is identical to `468cb05`; later commits change
-documents only.
+(PREREGISTRATION MISMATCH). A later review fix (`7d90f35`: classification and A0 need the same answer proof, and
+replayed answers carry the record's product and hook fields) is the final code head; it has not been re-run on the PC.
+Later commits change documents only.
 
 **Experiments.** E1 baseline replay; E2 GT-blind selection; E3 evidence replay from saved answers (a selected frame
 gets an answer only if some run answered the byte-identical JPEG); E4 budgets matched (+40 frames on rc16, the

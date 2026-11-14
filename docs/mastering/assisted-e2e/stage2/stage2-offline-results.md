@@ -40,8 +40,9 @@
 | E1 baseline tool | `tests.mastering.longform.w3` on main `cf0c2a9` (a separate worktree); the E1 block inside the `targeted` report was computed at `716e984` |
 | Decision-of-record run | `716e984`: the PREREGISTERED run of §2–§14. **The decision of record is this run.** The pre-registration record is unchanged and pinned by a test |
 | Review fixes after the run | `c1e97a5` (PR #830 review: an unverifiable pre-registration fails closed, the batch's `preregistered` flag comes from the gate, the perf record lists run names only); `a558396`, `b17bb53` and `468cb05` (PR #831 review: exact production cache key, restored matching counts, legacy keys only from the spec's asked pair). Each changes `targeted.py` and none changes `targeting.py`, so a re-run at any of them is labelled PREREGISTRATION MISMATCH (exploratory) by design and does not reproduce the §5 digests |
-| Final code and recompute head | `468cb05`: the exploratory exact-key recompute of §15 ran at this head |
-| Final PR head | `831d9cc` and later documentation-only commits; the harness code at the PR head is identical to `468cb05` |
+| Last recompute head | `468cb05`: the exploratory exact-key recompute of §15 ran at this head |
+| Final code head | `7d90f35`: classification and A0 need the same answer proof as donor matching, A0 clears the product and hook fields of removed answers, replayed answers carry the record's; **not re-run on the PC** (see §15) |
+| Final PR head | later documentation-only commits; the harness code at the PR head is identical to `7d90f35` |
 
 **E3–E5 provenance (Lead review, 2026-11-14).** At `716e984` donor answers were matched by JPEG bytes and by the run-level provider and model. That does not prove the full production cache key: prompt version, provider, model, label set and JPEG bytes, with the logged answer equal to the cached record. The harness now requires that proof (`a558396`, PR #831).
 
@@ -63,9 +64,9 @@ Experiment status:
 |---|---|---|
 | E1 baseline replay | **RAN** (exit 0, rc12 to rc16) | full: recall@1/3/5, attribution, READY precision, oracle bounds |
 | E2 targeted sampling simulation | **RAN** (exit 0, 5 runs, blindness PASS on all 5) | full for selection; pre-registered decision "not supported" |
-| E3 evidence replay | **RAN** at `716e984` as a partial simulation; **recomputed** with the exact production cache key (exploratory, §15), rc16 metrics unchanged, rc12–rc15 not simulable (no provable key); real vision calls **NOT_RUN** | only frames with a saved answer could be replayed (open arms: at most 7.5 % matched, 5.6 % at 4x) |
-| E4 budget comparison | **RAN**; frames and call estimates stand, the recall replay was recomputed as E3 (unchanged); real-call cost **NOT_RUN** | frames and estimated calls per arm; recall replay partial; no price given, cost null |
-| E5 failure attribution | **RAN** at `716e984`; recomputed as E3, unchanged | per-arm R3 fixed, moves to R4/R5/R6, lost hits, silent misses, false READY, warnings |
+| E3 evidence replay | **RAN** at `716e984` as a partial simulation; **recomputed** with the exact production cache key at `468cb05` (exploratory, §15), rc16 metrics unchanged, rc12–rc15 not simulable (no provable key); **UNVERIFIED** at the final code head `7d90f35` (not re-run); real vision calls **NOT_RUN** | only frames with a saved answer could be replayed (open arms: at most 7.5 % matched, 5.6 % at 4x) |
+| E4 budget comparison | **RAN**; frames and call estimates stand, the recall replay was recomputed as E3 at `468cb05` (unchanged), **UNVERIFIED** at `7d90f35`; real-call cost **NOT_RUN** | frames and estimated calls per arm; recall replay partial; no price given, cost null |
+| E5 failure attribution | **RAN** at `716e984`; recomputed as E3 at `468cb05`, unchanged; **UNVERIFIED** at `7d90f35` | per-arm R3 fixed, moves to R4/R5/R6, lost hits, silent misses, false READY, warnings |
 | Owner-approved real-call batch | **NOT_RUN** | batch file written with `execution: none`; needs the owner's approval and a new pre-registration at the head that runs it |
 
 Runs:
@@ -88,8 +89,8 @@ that runs.
 |---|---|
 | `label` | **PREREGISTERED** |
 | `commit` / `commit_check` | `c60ab029e55ced81ebf8122ec1cfcd76f98ff0c7` / `ancestor` |
-| `targeting_sha256` (`targeting.py`, LF) | `fd884a26e7f70e8405364c9309f0129d41abe1c21e51cc053a991b701427ee92` = current at `716e984`, and unchanged at `c1e97a5` and `468cb05` |
-| `analysis_sha256` (`targeted.py`, LF) | `4dff01c5fd1a80b9298c77439e2eb763056894e4dfecae6134cbf437d6711a7f` = current at `716e984` only; the later exploratory code at `c1e97a5` and `468cb05` has other digests (`468cb05`: `f370e3376bccf5f0aa150f559c0fe0b736f969e3a428bcba399a56d8d4d16e8a`), see §1 and §15 |
+| `targeting_sha256` (`targeting.py`, LF) | `fd884a26e7f70e8405364c9309f0129d41abe1c21e51cc053a991b701427ee92` = current at `716e984`, and unchanged at `c1e97a5`, `468cb05` and `7d90f35` |
+| `analysis_sha256` (`targeted.py`, LF) | `4dff01c5fd1a80b9298c77439e2eb763056894e4dfecae6134cbf437d6711a7f` = current at `716e984` only; the later exploratory code at `c1e97a5`, `468cb05` and `7d90f35` has other digests (`468cb05`: `f370e3376bccf5f0aa150f559c0fe0b736f969e3a428bcba399a56d8d4d16e8a`; `7d90f35`: `5948625f9ca82c997db32735c747b9955ead11e8e4653e34afa1bb7e88765d1d`), see §1 and §15 |
 | `match` / `mismatches` | `true` / `[]` |
 | Primary run | rc16 |
 | Primary arm | `open:mixed:W=fwd:+matched` (strategy mixed, forward window, extra budget equal to the run's own targeted spend, flagged units, open condition) |
@@ -414,7 +415,17 @@ Result against `716e984`:
   proven. Under the final rule they simulate nothing (`target_key_unproven`), and their E3, E4 recall and E5 values
   equal each run's own replayed baseline. Earlier simulated values for them (up to 40 frames in some respend arms) are
   withdrawn. This record and the report never used those values; the supporting runs serve only the E2 decision.
-- So §10–§12 stand as printed (rc16 only), as an exact-key-verified partial simulation. The recommendation does not
-  rest on these numbers.
+- So, at `468cb05`, §10–§12 stand as printed (rc16 only), as an exact-key-verified partial simulation. The
+  recommendation does not rest on these numbers.
+
+**Classification fix after the recompute (`7d90f35`, not re-run).** A further Lead review found that the frame
+classification (E1: which looks count as targeted, and so what A0 removes) and the broad reconstruction still took the
+presence of a key as proof. At `7d90f35` the classification basis is exact only from a single answer-proven basis; a
+frame is targeted only when its own record under that key is the answer it logged and no broad or earlier frame holds
+the same JPEG bytes; it is shared only when a proven look in its group gave its answer; otherwise it is `unproven` and
+A0 keeps its answer. A0 also clears the product box, hook, product visibility and group of the answers it removes, and
+replayed answers set them from the validated record, as `vision.apply` does. No PC re-run at `7d90f35` has been made
+yet: the PC session was not available. Until one is made, the E1 classification and A0 rows (§7, §9) and every E3–E5
+number in this record are **UNVERIFIED at the final code head**. The E2 decision of record (`716e984`) is unchanged.
 
 W3 REAL-DEV (development, not a holdout). GENERALIZATION NOT VERIFIED; Gate B not claimed.
