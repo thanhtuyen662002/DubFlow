@@ -1987,6 +1987,67 @@ class RunFileSafetyTests(unittest.TestCase):
                     self.assertEqual(tt.dumps(prep.A.logs), tt.dumps(baseline[review].A.logs))
             self.assertNotEqual(tt.dumps(baseline[False].A.plans), tt.dumps(baseline[True].A.plans))
 
+    def test_a_replay_takes_the_review_file_from_the_snapshot_never_the_live_path(self):
+        # w3.call_of looks the review file up by path: a review file in the snapshot still counts when the live file
+        # is removed after the load, a review file that appears only after the load never counts, and the replay
+        # makes no live lookup of either (Path.is_file is not called while the parts are re-planned)
+        decisions = reviewing.Review(units={"i1.u3": reviewing.UnitDecision(pin=["i1-s1c8"])}).to_dict()
+        for had_review in (True, False):
+            with self.subTest(had_review=had_review), TemporaryDirectory() as tmp:
+                run = make_run_k(Path(tmp) / "runs", review=decisions if had_review else None)
+                live = run / ".dubflow-work" / "review-i1.json"
+                baseline = {review: tt.prepare(tt.load(run), review=review) for review in (False, True)}
+                loaded = {review: tt.load(run) for review in (False, True)}
+                self.assertEqual(".dubflow-work/review-i1.json" in loaded[True].files, had_review)
+                if had_review:
+                    live.unlink()
+                else:
+                    live.write_text(json.dumps(decisions), encoding="utf-8")
+                for review in (False, True):
+                    with mock.patch.object(Path, "is_file", side_effect=AssertionError("live path lookup")):
+                        prep = tt.prepare(loaded[review], review=review)
+                    self.assertEqual(tt.dumps(prep.A.plans), tt.dumps(baseline[review].A.plans))
+                    self.assertEqual(tt.dumps(prep.A.logs), tt.dumps(baseline[review].A.logs))
+                chosen = {u["unit_id"]: u["chosen"] for u in baseline[True].A.logs["i1"]["units"]}["i1.u3"]
+                self.assertEqual(chosen == ["i1-s1c8"], had_review)  # the review is real when the snapshot has it
+
+    def test_a_later_load_with_other_review_files_fails_and_leaves_the_earlier_snapshot(self):
+        # review bytes are kept by run folder for the replay: a second load of the folder that read other review
+        # files (written, changed or removed after the first load) fails, and the first snapshot replays as before
+        decisions = reviewing.Review(units={"i1.u3": reviewing.UnitDecision(pin=["i1-s1c8"])}).to_dict()
+        for had_review, change in ((False, "written"), (True, "changed"), (True, "removed")):
+            with self.subTest(change=change), TemporaryDirectory() as tmp:
+                run = make_run_k(Path(tmp) / "runs", review=decisions if had_review else None)
+                live = run / ".dubflow-work" / "review-i1.json"
+                first = tt.load(run)
+                before = tt.prepare(first, review=True)
+                self.assertEqual(tt.dumps(tt.load(run).files), tt.dumps(first.files))  # an unchanged reload is fine
+                if change == "removed":
+                    live.unlink()
+                else:
+                    other = reviewing.Review(units={"i1.u3": reviewing.UnitDecision(pin=["i1-s1c5"])}).to_dict()
+                    live.write_text(json.dumps(other), encoding="utf-8")
+                with self.assertRaises(tt.UnsafeRunFile) as caught:
+                    tt.load(run)
+                self.assertIn("review files changed", str(caught.exception))
+                again = tt.prepare(first, review=True)
+                self.assertEqual(tt.dumps(again.A.plans), tt.dumps(before.A.plans))
+                self.assertEqual(tt.dumps(again.A.logs), tt.dumps(before.A.logs))
+
+    def test_a_nested_replay_context_replays_with_the_inner_review_choice(self):
+        decisions = reviewing.Review(units={"i1.u3": reviewing.UnitDecision(pin=["i1-s1c8"])}).to_dict()
+        with TemporaryDirectory() as tmp:
+            loaded = tt.load(make_run_k(Path(tmp) / "runs", review=decisions))
+            run = dataclasses.replace(loaded.run, spec={k: v for k, v in loaded.run.spec.items() if k != "editorial"})
+            for outer in (False, True):
+                for inner in (False, True):
+                    with self.subTest(outer=outer, inner=inner):
+                        with tt.replay_context(review=inner):
+                            alone = w3.call_of(run, "i1", [])["edits"]
+                        with tt.replay_context(review=outer), tt.replay_context(review=inner):
+                            nested = w3.call_of(run, "i1", [])["edits"]
+                        self.assertEqual(nested.to_dict(), alone.to_dict())
+
     def test_a_hard_link_and_an_unusable_name_are_refused_without_naming_the_machine(self):
         with TemporaryDirectory() as tmp:
             run, outside = self.run_with(tmp)
@@ -2089,6 +2150,37 @@ class RunFileSafetyTests(unittest.TestCase):
                     self.assertNotIn(str(Path(tmp)), str(caught.exception))
                 self.put_back(run, copy, kind, Path(tmp) / "kept-run")
                 self.assertEqual(tt.read_run_file(run, self.FRAME), inside)  # the pinned folder again
+        self.assert_kinds_ran(ran)
+
+    def test_preflight_reads_the_spec_from_the_loaded_snapshot_never_the_live_path(self):
+        # preflight reports what load() read: a run loaded without a spec stays MISSING_SPEC when its folder or its
+        # .dubflow-work is then replaced by a link, a junction or another folder holding a spec, and a run loaded with
+        # a spec keeps it when the live spec is then removed or its folder replaced by one without a spec
+        ran: set[str] = set()
+        for kind in self.kinds():
+            for where in (".", ".dubflow-work"):
+                for had_spec in (False, True):
+                    with self.subTest(kind=kind, where=where, had_spec=had_spec), TemporaryDirectory() as tmp:
+                        run, _ = self.run_with(tmp)
+                        copy = self.outside_run(tmp, run)
+                        spec, outside_spec = run / ".dubflow-work" / "spec.json", copy / ".dubflow-work" / "spec.json"
+                        (outside_spec if had_spec else spec).unlink()  # the outside tree says the opposite
+                        loaded = tt.load(run)
+                        self.assertEqual(".dubflow-work/spec.json" in loaded.files, had_spec)
+                        before = tt.preflight(loaded)
+                        self.assertEqual(("MISSING_SPEC" in before["failures"], before["spec"]), (not had_spec, had_spec))
+                        at, target = (run, copy) if where == "." else (run / where, copy / where)
+                        try:
+                            self.replace(at, target, kind, Path(tmp) / "kept")
+                        except (OSError, NotImplementedError):
+                            continue  # this kind cannot be made here
+                        ran.add(kind)
+                        self.assertEqual(spec.is_file(), not had_spec)  # the live path now says the opposite
+                        self.assertEqual(tt.preflight(loaded), before)
+                        self.put_back(at, target, kind, Path(tmp) / "kept")
+                        if had_spec:
+                            spec.unlink()  # removed after a valid load: the snapshot still has it
+                            self.assertEqual(tt.preflight(loaded), before)
         self.assert_kinds_ran(ran)
 
     def test_a_run_folder_replaced_during_a_load_fails_the_load(self):

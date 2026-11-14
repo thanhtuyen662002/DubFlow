@@ -211,6 +211,9 @@ def peak_ram_mb() -> int | None:
 
 # --- loading ---
 
+SPEC_FILE = ".dubflow-work/spec.json"  # the run's spec, as ``Loaded.files`` names it
+
+
 @dataclass
 class Loaded:
     folder: Path
@@ -731,7 +734,7 @@ def _load(folder: Path) -> Loaded:
         program = json.loads(data.decode("utf-8"))
         named = [p["id"] for p in program.get("parts") or ()]
         order = [p for p in named if p in logs] + [p for p in order if p not in named]
-    data = read(".dubflow-work/spec.json")
+    data = read(SPEC_FILE)
     spec = json.loads(data.decode("utf-8")) if data is not None else {}
     run = w3.Run(root, logs, plans, analyses, order, spec)
     review_files = {}
@@ -773,7 +776,12 @@ def _load(folder: Path) -> Loaded:
             except ValueError:  # a record production could not parse either: skipped, as before
                 continue
     _check_root(pinned)
-    _REVIEWS[root] = reviews  # only a load that succeeded replaces the snapshot the replay reads
+    # the replay reads review bytes by run folder: every Loaded of a folder in this process must see the bytes its own
+    # load read, so a later load that read other review files fails instead of changing an earlier snapshot's replay
+    held = _REVIEWS.get(root)
+    if held is not None and held != reviews:
+        raise UnsafeRunFile("the review files changed since this run folder was loaded in this process")
+    _REVIEWS[root] = reviews  # only a load that succeeded (and agrees with any earlier one) sets the snapshot
     return Loaded(folder, run, program, mdir, files, jpeg, cache, review_files)
 
 
@@ -846,6 +854,34 @@ class PlanMemo:
         return plan_again
 
 
+_W3_CALL_OF = w3.call_of  # the unwrapped w3.call_of: a nested replay_context never hands a stand-in folder on
+
+
+class _NoLivePath:
+    """The run folder as ``w3.call_of`` sees it during a replay: a path joined to it is itself, and it is never a file,
+    so the review lookup by path touches nothing; any other use fails loudly (AttributeError)."""
+    __slots__ = ()
+
+    def __truediv__(self, other: Any) -> "_NoLivePath":
+        return self
+
+    def is_file(self) -> bool:
+        return False
+
+
+def snapshot_review_edits(run: w3.Run, part: str, log: Mapping[str, Any]) -> align.Edits:
+    """The log's edits with the part's review file merged in, as ``w3.call_of`` merges it, from the bytes ``load``
+    read (``_review_bytes``); an unreadable or oversized review leaves the log's edits, as there."""
+    edits = align.Edits.from_dict(log.get("edits") or {})
+    data = _review_bytes(run.folder, part)  # an unsafe review file fails the run (UnsafeRunFile)
+    if data is None or len(data) > 1024 * 1024:
+        return edits
+    try:
+        return reviewing.Review.from_dict(json.loads(data.decode("utf-8"))).edits(edits)
+    except (reviewing.ReviewError, ValueError):
+        return edits
+
+
 @contextmanager
 def replay_context(*, review: bool = False, memo: PlanMemo | None = None) -> Iterator[None]:
     """``w3.call_of`` without the review files' decisions and a remembered ``w3.plan_again``, for the block only."""
@@ -863,14 +899,16 @@ def replay_context(*, review: bool = False, memo: PlanMemo | None = None) -> Ite
         if len(data) > 1024 * 1024:
             raise reviewing.ReviewError("review file too large")
         return reviewing.Review.from_dict(json.loads(data.decode("utf-8")))
+    def call_of_snapshot(run: w3.Run, part: str, shown: Sequence[str], **kwargs: Any) -> dict[str, Any]:
+        # w3.call_of looks <run>/.dubflow-work/review-<part>.json up by path: it gets a folder that answers no
+        # lookup, and the edits come from the review bytes load() read (or none, without review)
+        call = _W3_CALL_OF(dataclasses.replace(run, folder=_NoLivePath()), part, shown, **kwargs)
+        log = kwargs.get("log") or run.logs[part]
+        call["edits"] = snapshot_review_edits(run, part, log) if review else no_review_edits(run, part, log)[0]
+        return call
     try:
         reviewing.load = review_from_snapshot
-        if not review:
-            def call_of_no_review(run: w3.Run, part: str, shown: Sequence[str], **kwargs: Any) -> dict[str, Any]:
-                call = saved_call(run, part, shown, **kwargs)
-                call["edits"] = no_review_edits(run, part, kwargs.get("log") or run.logs[part])[0]
-                return call
-            w3.call_of = call_of_no_review
+        w3.call_of = call_of_snapshot
         if memo is not None:
             w3.plan_again = memo.wrap(saved_plan)
         yield
@@ -2427,9 +2465,10 @@ def e1_baseline(gt: Mapping[str, Any], prep: Prepared, index: DonorIndex, ctx: C
 
 def preflight(loaded: Loaded) -> dict[str, Any]:
     run = loaded.run
-    work = loaded.folder / ".dubflow-work"
+    # every input comes from the snapshot load() read inside the pinned run folder, never from the live path
+    has_spec = SPEC_FILE in loaded.files
     failures = []
-    if not (work / "spec.json").is_file():
+    if not has_spec:
         failures.append("MISSING_SPEC")
     single = False
     for part in run.order:
@@ -2454,7 +2493,7 @@ def preflight(loaded: Loaded) -> dict[str, Any]:
     keys = {source_keys(loaded, p)[1] for p in run.order}
     prompt = "recorded" if loaded.cache and any((r.get("made_by") or {}).get("prompt") for r in loaded.cache.values()) else "unknown"
     return {"status": "FAIL" if failures else "PASS", "failures": sorted(dict.fromkeys(failures)), "parts": len(run.order),
-            "spec": (work / "spec.json").is_file(), "analysis_basis": "single_analysis" if single else "provenance",
+            "spec": has_spec, "analysis_basis": "single_analysis" if single else "provenance",
             "keyframes_referenced": len(referenced), "keyframes_missing": len(missing),
             "program_vision_report": loaded.provider_model is not None,
             "part_logs_without_vision_report": sum(1 for p in run.order if not run.logs[p].get("vision")),
