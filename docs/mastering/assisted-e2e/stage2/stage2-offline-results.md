@@ -43,13 +43,14 @@
 | Last recompute head | `468cb05`: the exploratory exact-key recompute of §15 ran at this head |
 | Classification fix (historical) | `7d90f35`: classification and A0 need the same answer proof as donor matching, A0 clears the product and hook fields of removed answers, replayed answers carry the record's; exploratory PC re-run changes no arm (see §15) |
 | Fail-closed fallback (historical) | `4607031`: without a single answer-proven basis every non-broad answer is unproven and kept in A0; exploratory PC re-run changes no rc16 arm and no decision value (see §15) |
-| Later review fixes | `2b24f93`, `a061581`, `4558305`, `c2c8e26`, `669f298`, `e6d000f`, `a8d82ed`, `42b5195`, `52d9c06`, `ee277bd`, `1d4ebfb`, `567efee`, `ba9ba8b`, `234a159`, `a41ccef` (Lead and independent reviews of classification, A0, donor proof and file reads; see §16). Each changes `targeted.py` only |
+| Later review fixes | `2b24f93`, `a061581`, `4558305`, `c2c8e26`, `669f298`, `e6d000f`, `a8d82ed`, `42b5195`, `52d9c06`, `ee277bd`, `1d4ebfb`, `567efee`, `ba9ba8b`, `234a159`, `a41ccef`, `db1c6d5` (Lead and independent reviews of classification, A0, donor proof and file reads; see §16). Each changes `targeted.py` only |
 | Earlier PC re-runs after `4607031` | `4558305` and `669f298` (exploratory, A = B; §16): no decision value changes |
 | Earlier completed PC re-run | `e6d000f` (own-record proof also covers the side metadata; an unanswered broad pick proves no shared copy). Exploratory, A = B (§16): E1 classification/A0 and every arm equal `669f298`; no decision value changes |
-| Current code head | `a41ccef` (only a broad pick whose own answer is proven by its record claims its JPEG bytes for `broad_shared`; with `234a159`: the selected run folder is pinned and its selected entry is never followed; every part is opened relative to its folder's handle on Linux and Windows; the run is read once, from checked bytes inside it, and never reopened by path; the donor proof also covers the side metadata) |
-| Latest completed PC re-run | `a41ccef`, the current code head. Exploratory, one run (determinism shown by A = B at `234a159`): every class, arm and decision value equals `234a159`; the only JSON differences are the two analysis-digest fields (§16) |
+| Current code head | `db1c6d5` (preflight and the replay take the spec and the review files from the load snapshot only, never from the live path; a later load of the same folder with other review files fails; with `a41ccef`: only a broad pick whose own answer is proven by its record claims its JPEG bytes for `broad_shared`; with `234a159`: the selected run folder is pinned and its selected entry is never followed; every part is opened relative to its folder's handle on Linux and Windows; the run is read once, from checked bytes inside it, and never reopened by path; the donor proof also covers the side metadata) |
+| Latest completed PC re-run | `db1c6d5`, the current code head. Exploratory, one run (determinism shown by A = B at `234a159`): every class, arm and decision value equals `a41ccef`; the only JSON differences are the two analysis-digest fields (§16) |
+| Earlier completed PC re-run (`a41ccef`) | Exploratory, one run: every class, arm and decision value equals `234a159` (§16) |
 | Earlier completed PC re-run (`234a159`) | Exploratory, A = B (§16): E1 classification/A0 and every arm equal `e6d000f`; on rc16 3 donor records fail the side-metadata proof and are no longer replayed, which changes no E3–E5 number; no decision value changes |
-| PR head | the harness code at the PR head is identical to `a41ccef`; later commits change documents only |
+| PR head | the harness code at the PR head is identical to `db1c6d5`; later commits change documents only |
 
 **E3–E5 provenance (Lead review, 2026-11-14).** At `716e984` donor answers were matched by JPEG bytes and by the run-level provider and model. That does not prove the full production cache key: prompt version, provider, model, label set and JPEG bytes, with the logged answer equal to the cached record. The harness now requires that proof (`a558396`, PR #831).
 
@@ -508,6 +509,7 @@ Every re-run below is labelled PREREGISTRATION MISMATCH (exploratory) by design.
 | `c2c8e26` | a copy in a broad pick's duplicate group is never targeted (broad_shared with the pick's answer, otherwise unproven) |
 | `669f298` | that rule applies only to a broad pick the broad pass answered |
 | `234a159` | Lead review: the selected run-folder entry itself is never followed (only the folders above it are resolved); a selected entry that is a link or junction fails before any handle is opened. Independent review of `567efee`: a link or junction at `.dubflow-work`, `mastering` or `vision` fails the load with no outside bytes; the review snapshot is replaced only by a load that succeeded |
+| `db1c6d5` | Lead review 5905030611: `preflight()` takes spec presence from the load snapshot (`Loaded.files`), not `Path.is_file()` on the live run. From an independent sweep of the same class: the replay hands `w3.call_of` a folder stand-in that answers no lookup and takes the edits from the review bytes `load()` read; a later load of the same folder that read other review files fails (`UnsafeRunFile`) instead of changing an earlier snapshot's replay |
 | `a41ccef` | Lead review 5904815884: the JPEG bytes that make a byte-identical frame in another duplicate group a `broad_shared` copy come only from broad picks whose own logged answer is their record under the proven key; an unproven broad pick (no record, another answer, other side metadata) shares nothing, so a targeted look there with its own exact record stays `targeted` and is removed from A0 |
 | `ba9ba8b` | each file is read as the size its handle reports plus one byte (then 1 MiB pieces if it grew), not one 256 MiB buffer per file: the Owner-PC profile at `1d4ebfb` (historical) put 56 of 58 s of one rc16 load (895 files) in those reads |
 | `567efee` | Windows opens every part relative to its folder's handle (NtCreateFile with FILE_OPEN_REPARSE_POINT; names matched without regard to case, as Windows paths are) and lists folders from their handles; during a load every folder handle is opened once and kept until the load ends; the path-based fallback is removed. Owner-PC unit tests at `567efee` (historical): 138 OK (skipped=3: ScopeTests and two POSIX-only tests), the three Windows-only tests ran and passed |
@@ -520,23 +522,23 @@ Every re-run below is labelled PREREGISTRATION MISMATCH (exploratory) by design.
 
 Owner-PC re-runs (same commands as §4, two runs each, offline, 0 AI calls; leak scans 0):
 
-| Item | `4558305` | `669f298` | `e6d000f` | `234a159` | `a41ccef` (current code head) |
-|---|---|---|---|---|---|
-| Tests (`test_targeted` + `test_w3`) | 109 OK (skipped=1) | 111 OK (skipped=1) | 113 OK (skipped=1) | 142 OK (skipped=3: ScopeTests and two POSIX-only tests); every Windows-only test ran and passed | 143 OK (skipped=3: ScopeTests and two POSIX-only tests) |
-| Scope check (`DUBFLOW_SCOPE_CHECK=815`) | 94 OK | 96 OK | 98 OK | 127 OK (skipped=2: the two POSIX-only tests) | 128 OK (skipped=2) |
-| Run A = run B (except perf) | yes: JSON `0ef48d23…`, markdown `e5696a98…` | yes: JSON `9f06d85a…`, markdown `317f76df…` | yes: JSON `10d95a2c…`, markdown `e7b59b90…` | yes: JSON `891b3723…`, markdown `caa580df…` | one run (A only): JSON `4a5339c3…`, markdown `c94b9107…` |
-| Real-call batch | `ccfc6deb…` (unchanged) | `ccfc6deb…` (unchanged) | `ccfc6deb…` (unchanged) | `ccfc6deb…` (unchanged) | `ccfc6deb…` (unchanged) |
-| `analysis_sha256` | `2eb3f425…` | `99af3157…` | `5b103661…` | `19370c23…` | `8109a943…` |
-| Perf (run A / B), peak RAM | 462.2 s / 452.4 s, 341 MB | 510.0 s / 354.0 s, 340 MB | 359.7 s / 350.5 s, 341 MB | 445.2 s / 473.9 s, 342 MB (one rc16 load 0.19 s, 895 files) | 544.0 s (run A only), 341 MB |
-| `result_before_gates`, per-run decision table | not supported; identical | not supported; identical | not supported; identical | not supported; identical | not supported; identical |
-| Broad pass and A0 | RECONSTRUCTED in all five runs | RECONSTRUCTED in all five runs | RECONSTRUCTED in all five runs (rc16: 0 picks not in cache) | RECONSTRUCTED in all five runs | RECONSTRUCTED in all five runs |
-| Classification | rc12 broad 95, multi_frame 2, unproven 64; rc13 95/63; rc14 95/60; rc15 95/59; rc16 broad 95, broad_shared 5, targeted 43, targeted_shared 14 (item-part targeted frames 31) | identical to `4558305` (0 ids change in any run) | identical to `669f298` (0 ids change in any run) | identical to `e6d000f` (0 ids change in any run) | identical to `234a159` (0 ids change in any run; no id moves from `broad_shared` to `targeted`) |
-| Ids whose class changes vs `4607031` | rc12: 1 (multi_frame to unproven); rc13–rc16: 0 | same | same | same | same |
-| Differing arms vs `4607031` | rc12 6 of 59 (the open B0 arms: r3hit at W=10 s/15 s/30 s/fwd 1 to 2, chance 2.7884 to 2.8006; r@5 32/60 and fixed/broken 0/0 unchanged); rc13–rc15 0 of 59; rc16 0 of 151 | 0 of 59 / 0 of 151 vs `4558305` | 0 of 59 / 0 of 151 vs `669f298` | 0 of 59 / 0 of 151 vs `e6d000f` | 0 of 59 / 0 of 151 vs `234a159` |
-| Donor matching provenance (rc16) | | | exact 559, no_exact_key 30 | exact 556, no_exact_key 30, side_mismatch 3 (own cache 12); rc12–rc15 no key basis (572/571/572/573), as before | identical to `234a159` |
+| Item | `4558305` | `669f298` | `e6d000f` | `234a159` | `a41ccef` | `db1c6d5` (current code head) |
+|---|---|---|---|---|---|---|
+| Tests (`test_targeted` + `test_w3`) | 109 OK (skipped=1) | 111 OK (skipped=1) | 113 OK (skipped=1) | 142 OK (skipped=3: ScopeTests and two POSIX-only tests); every Windows-only test ran and passed | 143 OK (skipped=3: ScopeTests and two POSIX-only tests) | 147 OK (skipped=3: ScopeTests and two POSIX-only tests) |
+| Scope check (`DUBFLOW_SCOPE_CHECK=815`) | 94 OK | 96 OK | 98 OK | 127 OK (skipped=2: the two POSIX-only tests) | 128 OK (skipped=2) | 132 OK (skipped=2) |
+| Run A = run B (except perf) | yes: JSON `0ef48d23…`, markdown `e5696a98…` | yes: JSON `9f06d85a…`, markdown `317f76df…` | yes: JSON `10d95a2c…`, markdown `e7b59b90…` | yes: JSON `891b3723…`, markdown `caa580df…` | one run (A only): JSON `4a5339c3…`, markdown `c94b9107…` | one run (A only): JSON `d551317f…`, markdown `738fb5e0…` |
+| Real-call batch | `ccfc6deb…` (unchanged) | `ccfc6deb…` (unchanged) | `ccfc6deb…` (unchanged) | `ccfc6deb…` (unchanged) | `ccfc6deb…` (unchanged) | `ccfc6deb…` (unchanged) |
+| `analysis_sha256` | `2eb3f425…` | `99af3157…` | `5b103661…` | `19370c23…` | `8109a943…` | `8d118f84…` |
+| Perf (run A / B), peak RAM | 462.2 s / 452.4 s, 341 MB | 510.0 s / 354.0 s, 340 MB | 359.7 s / 350.5 s, 341 MB | 445.2 s / 473.9 s, 342 MB (one rc16 load 0.19 s, 895 files) | 544.0 s (run A only), 341 MB | 346.0 s (run A only), 341 MB |
+| `result_before_gates`, per-run decision table | not supported; identical | not supported; identical | not supported; identical | not supported; identical | not supported; identical | not supported; identical |
+| Broad pass and A0 | RECONSTRUCTED in all five runs | RECONSTRUCTED in all five runs | RECONSTRUCTED in all five runs (rc16: 0 picks not in cache) | RECONSTRUCTED in all five runs | RECONSTRUCTED in all five runs | RECONSTRUCTED in all five runs |
+| Classification | rc12 broad 95, multi_frame 2, unproven 64; rc13 95/63; rc14 95/60; rc15 95/59; rc16 broad 95, broad_shared 5, targeted 43, targeted_shared 14 (item-part targeted frames 31) | identical to `4558305` (0 ids change in any run) | identical to `669f298` (0 ids change in any run) | identical to `e6d000f` (0 ids change in any run) | identical to `234a159` (0 ids change in any run; no id moves from `broad_shared` to `targeted`) | identical to `a41ccef` (0 ids change in any run) |
+| Ids whose class changes vs `4607031` | rc12: 1 (multi_frame to unproven); rc13–rc16: 0 | same | same | same | same | same |
+| Differing arms vs `4607031` | rc12 6 of 59 (the open B0 arms: r3hit at W=10 s/15 s/30 s/fwd 1 to 2, chance 2.7884 to 2.8006; r@5 32/60 and fixed/broken 0/0 unchanged); rc13–rc15 0 of 59; rc16 0 of 151 | 0 of 59 / 0 of 151 vs `4558305` | 0 of 59 / 0 of 151 vs `669f298` | 0 of 59 / 0 of 151 vs `e6d000f` | 0 of 59 / 0 of 151 vs `234a159` | 0 of 59 / 0 of 151 vs `a41ccef` |
+| Donor matching provenance (rc16) | | | exact 559, no_exact_key 30 | exact 556, no_exact_key 30, side_mismatch 3 (own cache 12); rc12–rc15 no key basis (572/571/572/573), as before | identical to `234a159` | identical to `a41ccef` |
 
 The primary arm and both comparators, A scores, attribution and the matched budget (40) are unchanged in every run at
-all five heads. At `e6d000f` the own-record proof also compares the side metadata; on rc16 the first copy of each of
+all six heads. At `e6d000f` the own-record proof also compares the side metadata; on rc16 the first copy of each of
 the 157 answered ids gives `exact` 148 and `no_exact_key` 9 (shared copies without a record of their own), and no
 record fails on its side metadata (`side_mismatch` 0, `answer_mismatch` 0). So the E1 classification/A0 and the E3–E5
 numbers in §9–§12 (rc16) held at `e6d000f`, as exploratory results; the E2 decision of record (`716e984`) is
@@ -550,13 +552,20 @@ code/analysis digest and the rc16 donor matching provenance: 3 donor records who
 donor's log are now `side_mismatch` and no longer replayed (exact 559 to 556), and no E3–E5 number changes. The
 markdown differs only in the pre-registration header line (the analysis digest). So the E1 classification/A0 and the
 E3–E5 numbers in §9–§12 (rc16) hold at `234a159`, as exploratory results; the E2 decision of record (`716e984`) is
-unchanged. **Current code head `a41ccef`: measured (exploratory).** It builds the set of JPEG bytes that make a byte-identical
+unchanged. **Code head `a41ccef` (historical): measured (exploratory).** It builds the set of JPEG bytes that make a byte-identical
 frame in another duplicate group a `broad_shared` copy only from broad picks whose own logged answer is their record
 under the proven key (Lead review 5904815884). Its Owner-PC re-run (one run, leak scans 0; determinism was shown by
 A = B at `234a159`) equals `234a159` in every class (0 ids change in any of the five runs), every arm and every
 decision value; the only JSON differences are the two analysis-digest fields, and the markdown differs only in the
 pre-registration header line. So the E1 classification/A0 and the E3–E5 numbers in §9–§12 (rc16) hold at `a41ccef`,
 as exploratory results; the E2 decision of record (`716e984`) is unchanged.
+
+**Current code head `db1c6d5`: measured (exploratory).** Preflight and the replay read the spec and the review
+files only from the load snapshot (Lead review 5905030611 and an independent sweep). Its Owner-PC re-run (one run,
+leak scans 0) equals `a41ccef` in every class (0 ids change in any of the five runs), every arm and every decision
+value; the only JSON differences are the two analysis-digest fields (`8109a943…` to `8d118f84…`), and the markdown
+differs only in the pre-registration header line. So the E1 classification/A0 and the E3–E5 numbers in §9–§12 (rc16)
+hold at `db1c6d5`, as exploratory results; the E2 decision of record (`716e984`) is unchanged.
 
 Owner-PC history at the intermediate heads: `52d9c06` and `567efee`/`ba9ba8b` were stopped before run A
 for later findings (tests passed); the `1d4ebfb` profile (58.2 s per rc16 load, 56 s in cap-sized reads) led to
