@@ -41,7 +41,7 @@
 | Decision-of-record run | `716e984`: the PREREGISTERED run of §2–§14. **The decision of record is this run.** The pre-registration record is unchanged and pinned by a test |
 | Review fixes after the run | `c1e97a5` (PR #830 review: an unverifiable pre-registration fails closed, the batch's `preregistered` flag comes from the gate, the perf record lists run names only); `a558396`, `b17bb53` and `468cb05` (PR #831 review: exact production cache key, restored matching counts, legacy keys only from the spec's asked pair). Each changes `targeted.py` and none changes `targeting.py`, so a re-run at any of them is labelled PREREGISTRATION MISMATCH (exploratory) by design and does not reproduce the §5 digests |
 | Last recompute head | `468cb05`: the exploratory exact-key recompute of §15 ran at this head |
-| Final code head | `7d90f35`: classification and A0 need the same answer proof as donor matching, A0 clears the product and hook fields of removed answers, replayed answers carry the record's; **not re-run on the PC** (see §15) |
+| Final code head | `7d90f35`: classification and A0 need the same answer proof as donor matching, A0 clears the product and hook fields of removed answers, replayed answers carry the record's; exploratory PC re-run changes no arm (see §15) |
 | Final PR head | later documentation-only commits; the harness code at the PR head is identical to `7d90f35` |
 
 **E3–E5 provenance (Lead review, 2026-11-14).** At `716e984` donor answers were matched by JPEG bytes and by the run-level provider and model. That does not prove the full production cache key: prompt version, provider, model, label set and JPEG bytes, with the logged answer equal to the cached record. The harness now requires that proof (`a558396`, PR #831).
@@ -64,9 +64,9 @@ Experiment status:
 |---|---|---|
 | E1 baseline replay | **RAN** (exit 0, rc12 to rc16) | full: recall@1/3/5, attribution, READY precision, oracle bounds |
 | E2 targeted sampling simulation | **RAN** (exit 0, 5 runs, blindness PASS on all 5) | full for selection; pre-registered decision "not supported" |
-| E3 evidence replay | **RAN** at `716e984` as a partial simulation; **recomputed** with the exact production cache key at `468cb05` (exploratory, §15), rc16 metrics unchanged, rc12–rc15 not simulable (no provable key); **UNVERIFIED** at the final code head `7d90f35` (not re-run); real vision calls **NOT_RUN** | only frames with a saved answer could be replayed (open arms: at most 7.5 % matched, 5.6 % at 4x) |
-| E4 budget comparison | **RAN**; frames and call estimates stand, the recall replay was recomputed as E3 at `468cb05` (unchanged), **UNVERIFIED** at `7d90f35`; real-call cost **NOT_RUN** | frames and estimated calls per arm; recall replay partial; no price given, cost null |
-| E5 failure attribution | **RAN** at `716e984`; recomputed as E3 at `468cb05`, unchanged; **UNVERIFIED** at `7d90f35` | per-arm R3 fixed, moves to R4/R5/R6, lost hits, silent misses, false READY, warnings |
+| E3 evidence replay | **RAN** at `716e984` as a partial simulation; **recomputed** with the exact production cache key at `468cb05` and `7d90f35` (exploratory, §15), rc16 metrics unchanged, rc12–rc15 not simulable (no provable key); real vision calls **NOT_RUN** | only frames with a saved answer could be replayed (open arms: at most 7.5 % matched, 5.6 % at 4x) |
+| E4 budget comparison | **RAN**; frames and call estimates stand, the recall replay was recomputed as E3 at `468cb05` and `7d90f35` (unchanged); real-call cost **NOT_RUN** | frames and estimated calls per arm; recall replay partial; no price given, cost null |
+| E5 failure attribution | **RAN** at `716e984`; recomputed as E3 at `468cb05` and `7d90f35`, unchanged | per-arm R3 fixed, moves to R4/R5/R6, lost hits, silent misses, false READY, warnings |
 | Owner-approved real-call batch | **NOT_RUN** | batch file written with `execution: none`; needs the owner's approval and a new pre-registration at the head that runs it |
 
 Runs:
@@ -210,12 +210,12 @@ Arm A replays the saved run with review edits excluded, so it can differ from th
 | Saved / replayed with review / A | r@5 31/60 / 31/60 / 31/60 |
 | Matched budget | 40 (from the log vision reports); B0 budget 40 |
 | A0 (broad pass only) | RECONSTRUCTED: budget 142, logged broad 95, picked 95, picked and observed 95, not in cache 0, frames with keyframe 710 |
-| Classification (exact basis) | broad 95, broad_shared 5, targeted 53, targeted_shared 4, targeted frames in item parts 40, multi-frame extra 0, A0 sub-shots kept 0 |
+| Classification (exact basis) | at `7d90f35`: broad 95, broad_shared 5, targeted 43, targeted_shared 14, unproven 0, targeted frames in item parts 31 (B0 budget note: "budget basis differs from classification"); at `716e984`: broad 95, broad_shared 5, targeted 53, targeted_shared 4, targeted frames in item parts 40, multi-frame extra 0, A0 sub-shots kept 0 |
 | Attribution | OK 24, R3 26, R5 3, R6 behind cursor 3, R4 weak 2, R4 no words 1, R2 1 |
 | Review buckets | READY_HIT 5, FLAGGED_HIT 19, FLAGGED_MISS 36 |
 | Evidence acquisition coverage | frame 27/60, candidate 29/60 |
 | Donor supply | reachable 20, shared and excluded 29, provider mismatch 0; donors rc12–rc15 |
-| Early bias (A0 view, flagged units, n 39) | quartile histogram [20, 5, 5, 9]; q1 / median / q3 (thousandths) 40 / 201 / 642 |
+| Early bias (A0 view, flagged units) | at `7d90f35`: n 35, quartile histogram [16, 5, 5, 9]; q1 / median / q3 (thousandths) 67 / 308 / 666. At `716e984`: n 39, [20, 5, 5, 9]; 40 / 201 / 642 |
 | Parts that differ between the saved plan and A | i9 |
 
 ## 10. rc16 per-arm summary (E2 selection, E3 evidence replay, E4 budget, E5 attribution)
@@ -418,14 +418,34 @@ Result against `716e984`:
 - So, at `468cb05`, §10–§12 stand as printed (rc16 only), as an exact-key-verified partial simulation. The
   recommendation does not rest on these numbers.
 
-**Classification fix after the recompute (`7d90f35`, not re-run).** A further Lead review found that the frame
+**Classification fix after the recompute (`7d90f35`).** A further Lead review found that the frame
 classification (E1: which looks count as targeted, and so what A0 removes) and the broad reconstruction still took the
 presence of a key as proof. At `7d90f35` the classification basis is exact only from a single answer-proven basis; a
 frame is targeted only when its own record under that key is the answer it logged and no broad or earlier frame holds
 the same JPEG bytes; it is shared only when a proven look in its group gave its answer; otherwise it is `unproven` and
 A0 keeps its answer. A0 also clears the product box, hook, product visibility and group of the answers it removes, and
-replayed answers set them from the validated record, as `vision.apply` does. No PC re-run at `7d90f35` has been made
-yet: the PC session was not available. Until one is made, the E1 classification and A0 rows (§7, §9) and every E3–E5
-number in this record are **UNVERIFIED at the final code head**. The E2 decision of record (`716e984`) is unchanged.
+replayed answers set them from the validated record, as `vision.apply` does. The same five runs were re-run on the
+owner's PC at `7d90f35` (exploratory, PREREGISTRATION MISMATCH):
+
+| Item | `7d90f35` |
+|---|---|
+| Tests | `Ran 98 tests` / `OK (skipped=1)`; scope check (`DUBFLOW_SCOPE_CHECK=815`) `Ran 83 tests` / `OK` |
+| Preflight | 5/5 PASS; classification basis `exact` for rc16, `group (cache keys unmatched)` for rc12–rc15 |
+| `result_before_gates` | not supported; per-run decision table (§8) identical |
+| Run A = run B | yes (JSON `7bf1a369…`, markdown `c485e55f…`, batch `ccfc6deb…` unchanged) |
+| Perf (run A) | 368.3 s (run B 365.3 s), peak RAM 340 MB |
+| Leak scans (key, e-mail, local paths) | 0 / 0 / 0 |
+
+- Every arm in every run (rc16 151, rc12–rc15 59 each) has the same E2, E3, score, delta and E5 values as at
+  `468cb05`. A and A0 scores and attribution are unchanged in all five runs.
+- rc16 classification: 10 frames that hold the same JPEG bytes as an earlier targeted frame move from targeted to
+  targeted_shared (targeted 43, targeted_shared 14; targeted frames in item parts 31, was 40). No frame is unproven.
+  The broad pass is RECONSTRUCTED with 0 picks not proven in the cache.
+- The matched and B0 budgets stay 40 (from the log vision reports), now noted "budget basis differs from
+  classification"; the early-bias sample has 35 units (was 39); own-cache frames 12 (was 13). The rc16 markdown
+  section differs from `468cb05` only in that budget note.
+- rc12–rc15 keep no provable key (matching `unproven`, classification by group).
+
+So the E3–E5 numbers in §10–§12 hold at the final code head. The E2 decision of record (`716e984`) is unchanged.
 
 W3 REAL-DEV (development, not a holdout). GENERALIZATION NOT VERIFIED; Gate B not claimed.

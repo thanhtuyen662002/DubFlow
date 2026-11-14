@@ -36,9 +36,12 @@ looks count as targeted, and so what A0 removes) still took the presence of a ke
 same answer proof as donor matching: a frame is targeted only when its own record under the proven key is the answer it
 logged and no broad or earlier frame holds the same JPEG bytes; otherwise it is shared (a proven look in its group gave
 the answer) or unproven (kept in A0). A0 also clears the product box, hook and product fields of the answers it
-removes, and replayed answers set them from the record, as production does. No PC re-run at `7d90f35` has been made
-yet. Until one is, the E1 classification and A0 numbers and every E3–E5 number here are **UNVERIFIED at the final
-code head**; the `468cb05` recompute above used the earlier classification.
+removes, and replayed answers set them from the record, as production does. The PC re-run at `7d90f35` (exploratory,
+PREREGISTRATION MISMATCH, runs A and B byte-identical) changes no arm in any run: every E2, E3, score, delta and E5
+value equals the `468cb05` recompute, and A and A0 scores are unchanged. Only rc16's classification moves: 10 frames
+that hold the same JPEG bytes as an earlier targeted frame are now shared (targeted 43, shared 14, was 53 and 4;
+targeted frames in item parts 31, was 40), no frame is unproven, and the early-bias sample has 35 units (was 39). The
+rc16 E3–E5 numbers here therefore hold at the final code head.
 
 The rc16 E3–E5 numbers here were only ever a partial simulation, and the recommendation does not rest on them. The pre-registered E2 decision ("not
 supported") does not use donor answers and stays the decision of record at `716e984`.
@@ -405,8 +408,8 @@ the real-call batch, needs a new pre-registration committed before it runs. Revi
 again (`a558396`, `b17bb53`, `468cb05`: exact production cache key, restored matching counts, legacy keys only from
 the spec's asked pair) and left `targeting.py` unchanged. The exact-key recompute ran at `468cb05` and is exploratory
 (PREREGISTRATION MISMATCH). A later review fix (`7d90f35`: classification and A0 need the same answer proof, and
-replayed answers carry the record's product and hook fields) is the final code head; it has not been re-run on the PC.
-Later commits change documents only.
+replayed answers carry the record's product and hook fields) is the final code head; its exploratory PC re-run changes
+no arm. Later commits change documents only.
 
 **Experiments.** E1 baseline replay; E2 GT-blind selection; E3 evidence replay from saved answers (a selected frame
 gets an answer only if some run answered the byte-identical JPEG); E4 budgets matched (+40 frames on rc16, the
