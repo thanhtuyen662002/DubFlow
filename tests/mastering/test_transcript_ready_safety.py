@@ -207,6 +207,55 @@ class FragmentsAndCaptions(unittest.TestCase):
         self.assertEqual(with_captions[first][0], without[first][0])  # the seen train is untouched
 
 
+class SpeechNeverReweightsWhatIsSeen(unittest.TestCase):
+    """Lead P1 on 10ea540: the word weights (idf) and the common words were built from all evidence, speech included,
+    so speech over this shot or another one changed how much a word SEEN on this shot weighed: 595 -> 661 here, across
+    REVIEW_BELOW. The confidence and the coverage now use the weights of the job without speech."""
+    TEXT = "alpha and beta and gamma and delta and epsilon"
+    SAID = ev.Item("transcript", 850, "beta gamma delta epsilon", (), "phụ đề nguồn")
+
+    def _case(self, where: str | None):
+        pool = [_candidate("A", 0, 6000), _candidate("B", 6000, 12_000)]
+        found = ev.gather(["A", "B"])
+        found["A"].add(ev.Item("vision", 950, "alpha", (), "AI"))
+        if where:
+            found[where].add(self.SAID)
+        unit = align.Unit("u1", self.TEXT, 0, 4000, "narration")
+        return pool, found, unit
+
+    def test_speech_over_the_same_shot_changes_no_confidence(self):
+        pool, found, _ = self._case(None)
+        before, _, alone = _plan(pool, found, self.TEXT)
+        pool, found, _ = self._case("A")
+        after, mine, decision = _plan(pool, found, self.TEXT)
+        self.assertEqual([c.confidence for c in mine], [595])  # 10ea540: 661, READY
+        self.assertNotEqual(after, rv.READY)
+        self.assertEqual(before, after)
+        self.assertEqual(decision.coverage["illustrated_ms"], alone.coverage["illustrated_ms"])
+
+    def test_speech_over_another_shot_changes_neither_confidence_nor_coverage_view(self):
+        for where in ("A", "B"):
+            pool, plain, unit = self._case(None)
+            quiet = align.Scorer(pool, plain)
+            pool, found, unit = self._case(where)
+            scorer = align.Scorer(pool, found)
+            for candidate in pool:
+                was = quiet.relevance(unit, candidate)[0]
+                now = scorer.relevance(unit, candidate)[0]
+                with self.subTest(speech_on=where, candidate=candidate.candidate_id):
+                    self.assertEqual(scorer.content_relevance(unit, candidate, now), quiet.content_relevance(unit, candidate, was))
+                    self.assertEqual(scorer.unspoken_relevance(unit, candidate, now), was)
+
+    def test_the_ranking_still_follows_the_speech(self):
+        pool, found, unit = self._case("B")
+        scorer = align.Scorer(pool, found)
+        self.assertGreater(scorer.relevance(unit, pool[1])[0], scorer.relevance(unit, pool[0])[0])
+        _, mine, decision = _plan(pool, found, self.TEXT)
+        self.assertEqual([c.candidate.candidate_id for c in mine], ["B"])  # localised by speech ...
+        self.assertTrue(all(c.needs_review for c in mine))  # ... never verified by it
+        self.assertEqual(decision.coverage["illustrated_ms"], 0)
+
+
 class LegacyPaths(unittest.TestCase):
     def test_the_log_keeps_the_contract_keys(self):
         # a sentence planned on speech writes no key the editorial contract (additionalProperties false) does not have
