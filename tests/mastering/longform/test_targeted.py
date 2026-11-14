@@ -2364,6 +2364,56 @@ class RunFileSafetyTests(unittest.TestCase):
                 os.close(fd)
             os.rename(run, Path(tmp) / "kept-run")  # free again once the handle is closed
 
+    def test_a_file_is_read_whole_without_a_buffer_of_the_cap_size(self):
+        # reading asks for the reported size (plus one byte), then 1 MiB pieces if the file grew while it was
+        # read; never one read of the cap's size (a 256 MiB buffer per file made Windows loads ~60 ms per file)
+        class Reader:
+            def __init__(self, data: bytes) -> None:
+                self.data, self.asked = data, []
+
+            def read(self, n: int) -> bytes:
+                self.asked.append(n)
+                out, self.data = self.data[:n], self.data[n:]
+                return out
+
+        reader = Reader(b"x" * 10)
+        self.assertEqual(tt._read_capped(reader, 10, "f"), b"x" * 10)
+        self.assertEqual(reader.asked, [11])
+        grown = Reader(b"y" * (3 << 20))  # grew from 5 bytes after the size was taken
+        self.assertEqual(tt._read_capped(grown, 5, "f"), b"y" * (3 << 20))
+        self.assertLessEqual(max(grown.asked), 1 << 20)
+        with mock.patch.object(tt, "MAX_INPUT_BYTES", 8):
+            with self.assertRaises(tt.UnsafeRunFile):
+                tt._read_capped(Reader(b"z" * 20), 5, "f")  # grew past the cap after its check
+        with TemporaryDirectory() as tmp:
+            run, _ = self.run_with(tmp)
+            asked: list[int] = []
+            real_fdopen = os.fdopen
+
+            def fdopen(fd, *args, **kwargs):
+                handle = real_fdopen(fd, *args, **kwargs)
+                read = handle.read
+
+                class Spy:
+                    def __enter__(self):
+                        return self
+
+                    def __exit__(self, *exc):
+                        handle.close()
+
+                    def fileno(self):
+                        return handle.fileno()
+
+                    def read(self, n=-1):
+                        asked.append(n)
+                        return read(n)
+                return Spy()
+
+            with mock.patch.object(tt.os, "fdopen", fdopen):
+                tt.load(run)
+            self.assertTrue(asked)
+            self.assertLess(max(asked), 1 << 20)
+
     def test_only_regular_files_under_the_size_cap_are_read(self):
         with TemporaryDirectory() as tmp:
             run, _ = self.run_with(tmp)

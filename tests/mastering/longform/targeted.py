@@ -617,11 +617,26 @@ def read_run_file(root: Path, relative: str | PurePath) -> bytes | None:
     if fd is None:
         return None
     with os.fdopen(fd, "rb") as handle:
-        data = handle.read(MAX_INPUT_BYTES + 1)
+        data = _read_capped(handle, os.fstat(handle.fileno()).st_size, shown)
     _check_root(pinned)
-    if len(data) > MAX_INPUT_BYTES:
-        raise UnsafeRunFile(f"larger than {MAX_INPUT_BYTES} bytes: {shown}")
     return data
+
+
+def _read_capped(handle: Any, size: int, shown: str) -> bytes:
+    """The whole file, at most ``MAX_INPUT_BYTES``: the size the handle reports (checked under the cap) plus one
+    byte, then in 1 MiB pieces if it grew. Never one buffer of the cap's size (on Windows that costs about 60 ms per
+    file to allocate)."""
+    chunks = [handle.read(min(size, MAX_INPUT_BYTES) + 1)]
+    total = len(chunks[0])
+    while total > size and total <= MAX_INPUT_BYTES:
+        more = handle.read(min(1 << 20, MAX_INPUT_BYTES + 1 - total))
+        if not more:
+            break
+        chunks.append(more)
+        total += len(more)
+    if total > MAX_INPUT_BYTES:
+        raise UnsafeRunFile(f"larger than {MAX_INPUT_BYTES} bytes: {shown}")
+    return b"".join(chunks)
 
 
 def list_run_dir(root: Path, relative: str | PurePath) -> list[str] | None:
