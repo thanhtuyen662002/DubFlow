@@ -913,6 +913,7 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
         illustrated = 0
         user_ms = 0
         spoken_ms = 0
+        weak_spoken_ms = 0  # time of shots the speech over them matches while what is seen is too weak (#836)
         pinned = [by_id[i] for i in live_pins.get(unit.unit_id, [])]
         if len([i for i in edits.pin.get(unit.unit_id, []) if i in by_id]) != len(pinned):
             decision.notes.append("một cảnh đã ghim nằm trong cảnh bạn đã loại nên được bỏ qua")
@@ -1182,6 +1183,9 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
             elif pick["tier"] == "pinned":
                 user_ms += pick["length"]
             needs_review = confidence < REVIEW_BELOW or not candidate.quality.usable
+            if confidence < REVIEW_BELOW and candidate.candidate_id in accept and candidate.candidate_id in scorer.spoken \
+                    and pick["tier"] != "repeat" and not spoken_only(unit, candidate):
+                weak_spoken_ms += pick["length"]
             mine.append(Choice(unit.unit_id, candidate, pick["offset"], pick["length"], pick["score"], confidence, needs_review,
                                tuple(reasons[:8])))
             decision.chosen.append(candidate.candidate_id)
@@ -1207,6 +1211,9 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
         if spoken_ms:  # said in a note, the log's coverage keys stay those of the contract (editorial-v1)
             note = (f"{spoken_ms / 1000:.1f} giây cảnh chỉ khớp lời nói trong nguồn (phụ đề/transcript), chưa có bằng chứng "
                     "hình ảnh: cần kiểm tra" + (f"; {note}" if note else ""))
+        if weak_spoken_ms:  # the speech no longer lifts a weak look over the bar: say why the sentence is not READY
+            note = (f"{weak_spoken_ms / 1000:.1f} giây cảnh có lời nói trong nguồn khớp câu nhưng bằng chứng hình ảnh còn yếu "
+                    f"(độ tin cậy dưới {REVIEW_BELOW}): cần kiểm tra" + (f"; {note}" if note else ""))
         if pinned_by_user and user_ms:
             note = "cảnh do người dùng chọn; AI không thấy cảnh này khớp lời câu" if not milli else \
                 f"chỉ {milli // 10} % thời lượng câu có cảnh AI thấy khớp lời; phần còn lại là cảnh người dùng chọn"
