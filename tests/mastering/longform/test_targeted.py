@@ -817,8 +817,9 @@ class PatchTests(unittest.TestCase):
 
             def refuse(*args, **kwargs):
                 raise AssertionError("no network and no process on this path")
+            # the pre-registration ancestry check is the one sanctioned git call; it is stubbed so that any other process fails
             with mock.patch.object(socket, "socket", refuse), mock.patch.object(subprocess, "Popen", refuse), \
-                    mock.patch.object(subprocess, "run", refuse):
+                    mock.patch.object(subprocess, "run", refuse), mock.patch.object(tt, "git_is_ancestor", lambda commit: None):
                 code = quiet(tt.main, all_args(root, STUDY["run"], STUDY["donor"], STUDY["gt"], STUDY["lock"], "offline"))
             self.assertEqual(code, 0)
         self.assert_original()
