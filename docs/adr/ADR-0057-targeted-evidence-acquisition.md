@@ -42,14 +42,20 @@ value equals the `468cb05` recompute, and A scores and attribution are unchanged
 10 frames that hold the same JPEG bytes as an earlier targeted frame are now shared (targeted 43, shared 14, was 53 and
 4; targeted frames in item parts 31, was 40), no frame is unproven, and the early-bias sample has 35 units (was 39).
 
-**Fail-closed fallback (`4607031`, final code head).** Without a single answer-proven basis (no cache, none proven, or
+**Fail-closed fallback (`4607031`, historical).** Without a single answer-proven basis (no cache, none proven, or
 more than one), the harness no longer infers targeted or shared looks from grouping: every answer outside the
 reconstructed broad pass is unproven and A0 keeps it. The PC re-run at `4607031` (exploratory, A = B) leaves the
 decision table, rc16 (all 151 arms, classification and markdown section) and the primary and comparator arms of every
 run unchanged. In rc12–rc15 (no provable key) every non-broad answer is now unproven (59–63 per run, 0 targeted), so
 their 12 B0/respend arms each fall back to that run's own baseline (fixed/broken 0/0, r@5 equal to A); no other arm
-changes. A scores and attribution are unchanged in all five runs. The rc16 E3–E5 numbers here therefore hold at the
-final code head.
+changes. A scores and attribution are unchanged in all five runs. The rc16 E3–E5 numbers here held at `4607031`.
+
+**Later review fixes (`2b24f93` to `e6d000f`).** Further reviews tightened classification and A0 (shared copies carry
+the whole answer, split pieces, answered broad groups, side metadata in the own-record proof; run record §16). The
+latest completed Owner-PC re-runs, at `4558305` and `669f298` (exploratory, A = B), change no decision value, no rc16
+arm and no rc16 class; rc12 moves one id (multi_frame to unproven) and its 6 open B0 arms. The current code head
+`e6d000f` makes the own-record proof also compare the side metadata; its E1 classification/A0 and E3–E5 numbers are
+**UNVERIFIED** until its Owner-PC re-run is published.
 
 The rc16 E3–E5 numbers here were only ever a partial simulation, and the recommendation does not rest on them. The pre-registered E2 decision ("not
 supported") does not use donor answers and stays the decision of record at `716e984`.
@@ -417,8 +423,9 @@ again (`a558396`, `b17bb53`, `468cb05`: exact production cache key, restored mat
 the spec's asked pair) and left `targeting.py` unchanged. The exact-key recompute ran at `468cb05` and is exploratory
 (PREREGISTRATION MISMATCH). Later review fixes (`7d90f35`: classification and A0 need the same answer proof, and
 replayed answers carry the record's product and hook fields; `4607031`: without an exact basis every non-broad answer
-is unproven) end at the final code head `4607031`; its exploratory PC re-run changes no rc16 arm and no decision value.
-Later commits change documents only.
+is unproven) and the later fixes `2b24f93` to `e6d000f` (run record §16) are all exploratory; the PC re-runs at
+`4607031`, `4558305` and `669f298` change no rc16 arm and no decision value. The current code head `e6d000f` is
+UNVERIFIED until its PC re-run is published.
 
 **Experiments.** E1 baseline replay; E2 GT-blind selection; E3 evidence replay from saved answers (a selected frame
 gets an answer only if some run answered the byte-identical JPEG); E4 budgets matched (+40 frames on rc16, the

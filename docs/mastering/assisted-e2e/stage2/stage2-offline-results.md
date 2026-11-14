@@ -41,9 +41,12 @@
 | Decision-of-record run | `716e984`: the PREREGISTERED run of §2–§14. **The decision of record is this run.** The pre-registration record is unchanged and pinned by a test |
 | Review fixes after the run | `c1e97a5` (PR #830 review: an unverifiable pre-registration fails closed, the batch's `preregistered` flag comes from the gate, the perf record lists run names only); `a558396`, `b17bb53` and `468cb05` (PR #831 review: exact production cache key, restored matching counts, legacy keys only from the spec's asked pair). Each changes `targeted.py` and none changes `targeting.py`, so a re-run at any of them is labelled PREREGISTRATION MISMATCH (exploratory) by design and does not reproduce the §5 digests |
 | Last recompute head | `468cb05`: the exploratory exact-key recompute of §15 ran at this head |
-| Classification fix | `7d90f35`: classification and A0 need the same answer proof as donor matching, A0 clears the product and hook fields of removed answers, replayed answers carry the record's; exploratory PC re-run changes no arm (see §15) |
-| Final code head | `4607031`: without a single answer-proven basis every non-broad answer is unproven and kept in A0; exploratory PC re-run changes no rc16 arm and no decision value (see §15) |
-| Final PR head | later documentation-only commits; the harness code at the PR head is identical to `4607031` |
+| Classification fix (historical) | `7d90f35`: classification and A0 need the same answer proof as donor matching, A0 clears the product and hook fields of removed answers, replayed answers carry the record's; exploratory PC re-run changes no arm (see §15) |
+| Fail-closed fallback (historical) | `4607031`: without a single answer-proven basis every non-broad answer is unproven and kept in A0; exploratory PC re-run changes no rc16 arm and no decision value (see §15) |
+| Later review fixes | `2b24f93`, `a061581`, `4558305`, `c2c8e26`, `669f298`, `e6d000f` (Lead and independent reviews of classification and A0; see §16). Each changes `targeted.py` only |
+| Latest completed PC re-runs | `4558305` and `669f298` (exploratory, A = B; §16): no decision value changes |
+| Current code head | `e6d000f` (own-record proof also covers the side metadata; an unanswered broad pick proves no shared copy). E1 classification/A0 and E3–E5 at `e6d000f` are **UNVERIFIED** until the Owner-PC re-run on that exact code head is published |
+| PR head | the harness code at the PR head is identical to `e6d000f`; later commits change documents only |
 
 **E3–E5 provenance (Lead review, 2026-11-14).** At `716e984` donor answers were matched by JPEG bytes and by the run-level provider and model. That does not prove the full production cache key: prompt version, provider, model, label set and JPEG bytes, with the logged answer equal to the cached record. The harness now requires that proof (`a558396`, PR #831).
 
@@ -448,7 +451,7 @@ owner's PC at `7d90f35` (exploratory, PREREGISTRATION MISMATCH):
   section differs from `468cb05` only in that budget note.
 - rc12–rc15 keep no provable key (matching `unproven`, classification by group).
 
-**Fail-closed fallback (`4607031`, final code head).** A further Lead review found that without an exact basis the
+**Fail-closed fallback (`4607031`, historical; the code changed again after it, §16).** A further Lead review found that without an exact basis the
 classification still inferred targeted and shared looks from grouping alone. At `4607031`, with no cache, no proven
 basis or more than one, every shot outside the reconstructed broad pass (and the logged sub-shots) is `unproven` and A0
 keeps its answer. PC re-run at `4607031` (exploratory, PREREGISTRATION MISMATCH):
@@ -484,7 +487,46 @@ Per-run classification and arms against `7d90f35`:
   under rc16's exact key: 559 admitted, 30 refused (`no_exact_key`), against 520 and 1 before; no rc16 arm, score or
   markdown line changes.
 
-So the E3–E5 numbers in §10–§12 (rc16) hold at the final code head `4607031`. The E2 decision of record (`716e984`) is
-unchanged.
+So the E3–E5 numbers in §10–§12 (rc16) held at `4607031`. That head is now historical: the code changed again after
+it (§16). The E2 decision of record (`716e984`) is unchanged.
+
+
+## 16. Review fixes after `4607031` and their PC re-runs (exploratory)
+
+Further Lead and independent reviews of PR #831 changed only `targeted.py` (classification of looks and what A0 keeps).
+`targeting.py` (`fd884a26…`), the frozen pre-registration and the E2 decision of record (`716e984`) are unchanged.
+Every re-run below is labelled PREREGISTRATION MISMATCH (exploratory) by design.
+
+| Commit | Change |
+|---|---|
+| `2b24f93` | a shared copy must carry its proven mate's whole answer (confidence, detail and the side metadata `vision.apply` writes); a split shot's middle piece is classed like the shot, only extra-frame pieces are multi_frame |
+| `a061581` | a split parent needs its own middle piece; an item part's copy and group represent an id before a hook or intro copy |
+| `4558305` | own-record proof for a copy re-asked from the cache in another part; under an exact basis a logged split is `NOT_RECONSTRUCTED`; the A0 caveat line now reads "A0 keeps the logged sub-shots (the replay does not re-split them): a split shot's middle piece is classed like the shot, the extra frames' pieces keep their non-vision evidence only" |
+| `c2c8e26` | a copy in a broad pick's duplicate group is never targeted (broad_shared with the pick's answer, otherwise unproven) |
+| `669f298` | that rule applies only to a broad pick the broad pass answered |
+| `e6d000f` | own-record proof also requires the record's side metadata (product box, hook, product visible, product group) to equal the logged evidence (`side_mismatch` otherwise, kept in A0); an unanswered broad pick is not the source of a shared copy |
+
+Owner-PC re-runs (same commands as §4, two runs each, offline, 0 AI calls; leak scans 0):
+
+| Item | `4558305` | `669f298` |
+|---|---|---|
+| Tests (`test_targeted` + `test_w3`) | 109 OK (skipped=1) | 111 OK (skipped=1) |
+| Scope check (`DUBFLOW_SCOPE_CHECK=815`) | 94 OK | 96 OK |
+| Run A = run B (except perf) | yes: JSON `0ef48d23…`, markdown `e5696a98…` | yes: JSON `9f06d85a…`, markdown `317f76df…` |
+| Real-call batch | `ccfc6deb…` (unchanged) | `ccfc6deb…` (unchanged) |
+| `analysis_sha256` | `2eb3f425…` | `99af3157…` |
+| Perf (run A / B), peak RAM | 462.2 s / 452.4 s, 341 MB | 510.0 s / 354.0 s, 340 MB |
+| `result_before_gates`, per-run decision table | not supported; identical | not supported; identical |
+| Broad pass | RECONSTRUCTED in all five runs | RECONSTRUCTED in all five runs |
+| Classification | rc12 broad 95, multi_frame 2, unproven 64; rc13 95/63; rc14 95/60; rc15 95/59; rc16 broad 95, broad_shared 5, targeted 43, targeted_shared 14 (item-part targeted frames 31) | identical to `4558305` (0 ids change in any run) |
+| Ids whose class changes vs `4607031` | rc12: 1 (multi_frame to unproven); rc13–rc16: 0 | same |
+| Differing arms vs `4607031` | rc12 6 of 59 (the open B0 arms: r3hit at W=10 s/15 s/30 s/fwd 1 to 2, chance 2.7884 to 2.8006; r@5 32/60 and fixed/broken 0/0 unchanged); rc13–rc15 0 of 59; rc16 0 of 151 | 0 of 59 / 0 of 151 vs `4558305` |
+
+The primary arm and both comparators, A scores, attribution and the matched budget (40) are unchanged in every run at
+both heads.
+
+**Current code head `e6d000f`: UNVERIFIED.** It tightens the own-record proof (side metadata), which can move rc16
+classes and the broad-pass reconstruction. Its E1 classification/A0 and E3–E5 numbers stay UNVERIFIED until the
+Owner-PC re-run on that exact head is published here; until then the `669f298` numbers above are the latest measured.
 
 W3 REAL-DEV (development, not a holdout). GENERALIZATION NOT VERIFIED; Gate B not claimed.
