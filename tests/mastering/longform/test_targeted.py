@@ -1124,6 +1124,48 @@ class ClassificationTests(unittest.TestCase):
             self.assertEqual((classes["i1-s1c3"], classes["i1-s1c8"]), ("broad", "targeted"))
             self.assertEqual(report["targeted_frames_item_parts"], 3)
 
+    def test_only_a_proven_broad_answer_makes_a_byte_identical_frame_elsewhere_a_shared_copy(self):
+        # c4 (a targeted look, its own duplicate group) holds the same JPEG bytes as the broad pick c3, so both frames
+        # share one production key. When c3's own logged answer is that key's record, c4's matching answer is a copy of
+        # the broad look (broad_shared); when c3's logged answer is not the record (another answer, or other side
+        # metadata), the broad pick proves nothing and the record is c4's own targeted look, which A0 removes
+        folder = lambda run: run / ".dubflow-work" / "mastering"
+        cases = [("proven broad copy", None, "broad_shared"),
+                 ("broad answer mismatch", {}, "targeted"),
+                 ("broad side mismatch", {"side": {"hook": 900}}, "targeted")]
+        for label, broken, expected in cases:
+            with self.subTest(label), TemporaryDirectory() as tmp:
+                run = make_run_k(Path(tmp))
+                if broken is None:
+                    (folder(run) / "i1-s1-c4.jpg").write_bytes((folder(run) / "i1-s1-c3.jpg").read_bytes())
+                    self.rewrite_logged(run, "i1-s1c4", text=TEXTS[3])
+                else:
+                    (folder(run) / "i1-s1-c3.jpg").write_bytes((folder(run) / "i1-s1-c4.jpg").read_bytes())
+                    if broken:
+                        self.rewrite_logged(run, "i1-s1c3", text=TEXTS[4], **broken)
+                loaded = tt.load(run)
+                c3, c4 = (next(c for c in loaded.run.logs["i1"]["candidates"] if c["id"] == f"i1-s1c{n}") for n in (3, 4))
+                self.assertEqual(loaded.jpeg[c3["keyframe"]], loaded.jpeg[c4["keyframe"]])
+                self.assertNotEqual(tt.job_groups(loaded.run).get("i1-s1c3"), tt.job_groups(loaded.run).get("i1-s1c4"))
+                self.assertEqual(tt.own_answer(loaded, c4), "exact")
+                if broken is not None:
+                    self.assertNotEqual(tt.own_answer(loaded, c3), "exact")
+                prep = tt.prepare(loaded)
+                self.assertEqual(prep.classification["classification_basis"], "exact")
+                self.assertEqual((prep.classes["i1-s1c3"], prep.classes["i1-s1c4"]), ("broad", expected))
+                # an unproven broad pick leaves the broad pass NOT_RECONSTRUCTED, so prepare builds no A0 (fail closed);
+                # the A0 evidence these classes give is checked directly, as prepare would build it
+                self.assertEqual(prep.A0 is None, broken is not None)
+                answers = {i: tt.answer_identity(c) for i, c in tt.first_answers(loaded.run).items()}
+                evidence = tt.a0_evidence(prep.classes, answers, lambda c: tt.own_answer(loaded, c) == "exact")(
+                    "i1", loaded.run.logs["i1"])
+                kept = {i: any(x.origin == "vision" for x in found.items) for i, found in evidence.items()}
+                self.assertTrue(kept["i1-s1c3"])  # the broad answer stays in A0, proven or not
+                self.assertEqual(kept["i1-s1c4"], expected == "broad_shared")
+                if prep.A0 is not None:
+                    kept = {c["id"]: bool(tt.vision_items(c)) for c in prep.A0.logs["i1"]["candidates"]}
+                    self.assertEqual((kept["i1-s1c3"], kept["i1-s1c4"]), (True, True))
+
     def test_byte_identical_targeted_copies_count_one_look(self):
         with TemporaryDirectory() as tmp:
             run = make_run_k(Path(tmp), twins={1: 4})

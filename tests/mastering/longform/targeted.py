@@ -1297,11 +1297,13 @@ def classify(loaded: Loaded, broad: Mapping[str, Any]) -> tuple[dict[str, str], 
         by_group.setdefault((groups.get(i, i), answer[i]), []).append(i)
     status = {i: own_answer(loaded, c) for i, c in first.items()} if exact else {}
     digest = {i: loaded.jpeg.get(c["keyframe"]) if c.get("keyframe") else None for i, c in first.items()}
-    broad_digests = {digest[i] for i in broad_ids if digest.get(i)}
     sub = {i for i, c in first.items() if _sub_parent(c) != i}
     # a source of a shared copy is a look whose own record proves its answer: a broad pick the broad pass left
     # unanswered (no record of its own) proves nothing, like any other shot
     proven = {i for i, value in status.items() if value == "exact" and (i in broad_ids or i not in sub or i in middles)}
+    # JPEG bytes the broad look is proven to have asked about: only a broad pick whose own logged answer is its record
+    # under the proven key; an unproven broad pick (no record, another answer, other side metadata) shares nothing
+    broad_digests = {digest[i] for i in broad_ids if i in proven and digest.get(i)}
     # the broad look answers every shot in an answered pick's duplicate group (vision.share) and the targeted look
     # skips the shots already answered, so no shot in such a group was targeted, whatever record its own frame has;
     # a pick the broad pass left unanswered (no record of its own) shared nothing, and its group mates stay targetable
