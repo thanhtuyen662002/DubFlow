@@ -43,11 +43,11 @@
 | Last recompute head | `468cb05`: the exploratory exact-key recompute of §15 ran at this head |
 | Classification fix (historical) | `7d90f35`: classification and A0 need the same answer proof as donor matching, A0 clears the product and hook fields of removed answers, replayed answers carry the record's; exploratory PC re-run changes no arm (see §15) |
 | Fail-closed fallback (historical) | `4607031`: without a single answer-proven basis every non-broad answer is unproven and kept in A0; exploratory PC re-run changes no rc16 arm and no decision value (see §15) |
-| Later review fixes | `2b24f93`, `a061581`, `4558305`, `c2c8e26`, `669f298`, `e6d000f`, `a8d82ed`, `42b5195`, `52d9c06` (Lead and independent reviews of classification, A0, donor proof and file reads; see §16). Each changes `targeted.py` only |
+| Later review fixes | `2b24f93`, `a061581`, `4558305`, `c2c8e26`, `669f298`, `e6d000f`, `a8d82ed`, `42b5195`, `52d9c06`, `ee277bd`, `1d4ebfb` (Lead and independent reviews of classification, A0, donor proof and file reads; see §16). Each changes `targeted.py` only |
 | Earlier PC re-runs after `4607031` | `4558305` and `669f298` (exploratory, A = B; §16): no decision value changes |
 | Latest completed PC re-run | `e6d000f` (own-record proof also covers the side metadata; an unanswered broad pick proves no shared copy). Exploratory, A = B (§16): E1 classification/A0 and every arm equal `669f298`; no decision value changes |
-| Current code head | `52d9c06` (the run is read once, from checked bytes inside the run folder, and never reopened by path; the donor proof also covers the side metadata). E1 classification/A0 and E3–E5 at `52d9c06` are **UNVERIFIED** until the Owner-PC re-run on that exact code head is published |
-| PR head | the harness code at the PR head is identical to `52d9c06`; later commits change documents only |
+| Current code head | `1d4ebfb` (the selected run folder is pinned; the run is read once, from checked bytes inside it, and never reopened by path; the donor proof also covers the side metadata). E1 classification/A0 and E3–E5 at `1d4ebfb` are **UNVERIFIED** until the Owner-PC re-run on that exact code head is published |
+| PR head | the harness code at the PR head is identical to `1d4ebfb`; later commits change documents only |
 
 **E3–E5 provenance (Lead review, 2026-11-14).** At `716e984` donor answers were matched by JPEG bytes and by the run-level provider and model. That does not prove the full production cache key: prompt version, provider, model, label set and JPEG bytes, with the logged answer equal to the cached record. The harness now requires that proof (`a558396`, PR #831).
 
@@ -505,6 +505,8 @@ Every re-run below is labelled PREREGISTRATION MISMATCH (exploratory) by design.
 | `4558305` | own-record proof for a copy re-asked from the cache in another part; under an exact basis a logged split is `NOT_RECONSTRUCTED`; the A0 caveat line now reads "A0 keeps the logged sub-shots (the replay does not re-split them): a split shot's middle piece is classed like the shot, the extra frames' pieces keep their non-vision evidence only" |
 | `c2c8e26` | a copy in a broad pick's duplicate group is never targeted (broad_shared with the pick's answer, otherwise unproven) |
 | `669f298` | that rule applies only to a broad pick the broad pass answered |
+| `1d4ebfb` | from an independent review of `ee277bd`: a part Windows would read as another name (ending in a space or a dot, or a device name such as `CON` or `nul.jpg`) is refused on every platform, since Windows trims a trailing space or dot from the last part of a path only; on Windows a listing enumerates the held folder handle itself; the final file is opened non-blocking (a file swapped for a named pipe fails instead of hanging) |
+| `ee277bd` | the selected run folder is pinned when a load starts (resolved path, device and file id). Where the platform opens a name relative to an open folder without following a link (Linux), every read and listing starts from a handle on the pinned folder and opens each part from the handle before it; on Windows the run folder and every folder on the way are held open without delete sharing until the read ends, the opened file must be the checked one and the whole way is checked again; both ways check the run folder against its pin before and after, so a run folder renamed and replaced by a link, a junction or another folder fails (`UnsafeRunFile`) |
 | `52d9c06` | the checks walk each part with `lstat` from the root resolved once (no per-file `resolve`, which opened every file on Windows and slowed the harness about fivefold); a file used as a folder on the way is refused on every platform (Windows reports it as not found) |
 | `42b5195` | `load()` reads every input once through `read_run_file` and builds the run from those bytes (no `w3.load_run`, no later reopen by path; the replay's review files come from that snapshot); a name with `:` (NTFS stream) or NUL, a hard link, a folder swapped for a link around the open, or any other unusable path fails with `UnsafeRunFile` naming the relative path only; the replayed side is the side of the answer that proved the donor's log |
 | `a8d82ed` | `load()` reads every file (logs, plans, analyses, program/spec, review files, keyframes named in the logs, extra frames, cache records) only as a regular file inside the resolved run folder, with no symbolic link or reparse point on the way and at most 256 MiB, or fails (`UnsafeRunFile`); the donor proof (E3) also requires the record's side metadata to equal the donor's log |
@@ -533,8 +535,8 @@ record fails on its side metadata (`side_mismatch` 0, `answer_mismatch` 0). So t
 numbers in §9–§12 (rc16) held at `e6d000f`, as exploratory results; the E2 decision of record (`716e984`) is
 unchanged.
 
-**Current code head `52d9c06`: UNVERIFIED.** It reads the run once from checked bytes inside the run folder and makes the donor proof
-also compare the side metadata, which can move E3–E5 (a donor record whose box, hook or group differs from the donor's
+**Current code head `1d4ebfb`: UNVERIFIED.** It pins the selected run folder, reads the run once from checked bytes inside it
+and makes the donor proof also compare the side metadata, which can move E3–E5 (a donor record whose box, hook or group differs from the donor's
 log is no longer replayed). Its E1 classification/A0 and E3–E5 numbers stay UNVERIFIED until the Owner-PC re-run on
 that exact head is published here; until then the `e6d000f` numbers above are the latest measured.
 
