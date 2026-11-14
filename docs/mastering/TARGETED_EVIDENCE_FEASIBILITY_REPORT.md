@@ -1,8 +1,16 @@
 # Thu bằng chứng có mục tiêu cho phim dài: báo cáo khả thi (Stage 2, #815)
 
-Epic #637 · 2026-11-14 · chỉ thị "Release Safety Closure & Targeted Evidence Acquisition ADR" (Stage 2, §14–§26, §24.B) · PR #830 (task #829, thiết kế #815) · harness `tests/mastering/longform/targeted.py` tại head `716e984` (quyết định được ghi nhận; head PR sau rà soát là `c1e97a5`, xem §4.4) · pre-registration tại commit `c60ab02` (tổ tiên của `716e984`).
+Epic #637 · 2026-11-14 · chỉ thị "Release Safety Closure & Targeted Evidence Acquisition ADR" (Stage 2, §14–§26, §24.B) · PR #831 (thay #830; task #829, thiết kế #815) · harness `tests/mastering/longform/targeted.py` tại head `716e984` (quyết định được ghi nhận; head PR sau rà soát là `c1e97a5`, xem §4.4) · pre-registration tại commit `c60ab02` (tổ tiên của `716e984`).
 
 Báo cáo này chỉ gồm **thí nghiệm offline có giới hạn** và một ADR đề xuất. Không có thay đổi nào ở planner, engine, app, contract hay giá trị mặc định của sản phẩm. Harness không gọi AI, không dùng model mới, embedding, GPU hay retrieval engine mới. Không có nhãn nào bị sửa.
+
+## Trạng thái số liệu E3–E5 (2026-11-14)
+
+Các số E3–E5 trong báo cáo này đều lấy từ lần chạy `716e984`: recall từ câu trả lời đã lưu, độ phủ cache và chênh lệch quy nguyên E5. Lần chạy đó ghép câu trả lời của lần chạy cho bằng byte JPEG cộng nhà cung cấp và model ở mức lần chạy, **chưa** kiểm khoá cache đầy đủ của production. Khoá đầy đủ gồm phiên bản prompt, nhà cung cấp, model, bộ nhãn và byte JPEG, và câu trả lời đã ghi phải khớp bản ghi cache.
+
+Rà soát của Lead đã chỉ ra thiếu sót này. Harness nay chỉ nhận câu trả lời khi khoá chính xác được chứng minh (`a558396`, PR #831). Trước khi E3–E5 được tính lại theo quy tắc mới, mọi số E3–E5 ở đây là **UNVERIFIED**. Chúng vốn chỉ là mô phỏng một phần, và khuyến nghị không dựa vào chúng.
+
+Quyết định E2 đã đăng ký trước ("not supported") không dùng câu trả lời của lần chạy cho, nên vẫn là quyết định được ghi nhận tại `716e984`. Mọi lần chạy lại ở head sau đều là exploratory theo thiết kế.
 
 ## Kết luận
 

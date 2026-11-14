@@ -1,6 +1,6 @@
 # Targeted Evidence Acquisition (#815), Stage 2: offline E1–E5 run record
 
-- Written 2026-11-14. Design issue #815, task issue #829, harness PR #830. ADR:
+- Written 2026-11-14. Design issue #815, task issue #829, harness PR #831 (supersedes #830). ADR:
   [ADR-0057](../../../adr/ADR-0057-targeted-evidence-acquisition.md) (Proposed, not approved). Report:
   [TARGETED_EVIDENCE_FEASIBILITY_REPORT.md](../../TARGETED_EVIDENCE_FEASIBILITY_REPORT.md).
 - Environment: the owner's Windows PC, CPU only, Python 3.12.10, offline. The app was not started. The harness made no
@@ -40,6 +40,10 @@
 | E1 baseline tool | `tests.mastering.longform.w3` on main `cf0c2a9` (a separate worktree); the E1 block inside the `targeted` report was computed at `716e984` |
 | PR head after review | `c1e97a5`: review fixes on PR #830 (an unverifiable pre-registration fails closed, the batch's `preregistered` flag comes from the gate, the perf record lists run names only). `targeting.py` is unchanged; `targeted.py` changed, so its digest no longer equals the record. A re-run at `c1e97a5` or later is labelled PREREGISTRATION MISMATCH (exploratory) by design and does not reproduce the §5 digests. **The decision of record is the run at `716e984`.** The record itself is unchanged and pinned by a test |
 
+**E3–E5 provenance (Lead review, 2026-11-14).** At `716e984` donor answers were matched by JPEG bytes and by the run-level provider and model. That does not prove the full production cache key: prompt version, provider, model, label set and JPEG bytes, with the logged answer equal to the cached record. The harness now requires that proof (`a558396`, PR #831).
+
+Every E3–E5 number in this record (§10 onwards: simulated counts, open-world recall, E5 deltas) is therefore **UNVERIFIED** until it is recomputed from the saved runs with the exact-key rule. That recompute is exploratory by design. The E2 decision of record does not use donor answers and is unchanged.
+
 Timeline (UTC, 2026-11-14, from the output files' write times on the PC):
 
 | Step | Time |
@@ -56,9 +60,9 @@ Experiment status:
 |---|---|---|
 | E1 baseline replay | **RAN** (exit 0, rc12 to rc16) | full: recall@1/3/5, attribution, READY precision, oracle bounds |
 | E2 targeted sampling simulation | **RAN** (exit 0, 5 runs, blindness PASS on all 5) | full for selection; pre-registered decision "not supported" |
-| E3 evidence replay | **RAN** as a partial simulation; real vision calls **NOT_RUN** | only frames with a saved answer could be replayed (open arms: at most 7.5 % matched, 5.6 % at 4x) |
-| E4 budget comparison | **RAN** as a partial simulation; real-call cost **NOT_RUN** | frames and estimated calls per arm; recall replay partial; no price given, cost null |
-| E5 failure attribution | **RAN** as a partial simulation | per-arm R3 fixed, moves to R4/R5/R6, lost hits, silent misses, false READY, warnings |
+| E3 evidence replay | **RAN** at `716e984` as a partial simulation under the old matching rule, now **UNVERIFIED** (no exact production cache-key proof; see below); real vision calls **NOT_RUN** | only frames with a saved answer could be replayed (open arms: at most 7.5 % matched, 5.6 % at 4x) |
+| E4 budget comparison | **RAN**; frames and call estimates stand, the recall replay is **UNVERIFIED** (as E3); real-call cost **NOT_RUN** | frames and estimated calls per arm; recall replay partial; no price given, cost null |
+| E5 failure attribution | **RAN** at `716e984`, now **UNVERIFIED** (as E3) | per-arm R3 fixed, moves to R4/R5/R6, lost hits, silent misses, false READY, warnings |
 | Owner-approved real-call batch | **NOT_RUN** | batch file written with `execution: none`; needs the owner's approval and a new pre-registration at the head that runs it |
 
 Runs:

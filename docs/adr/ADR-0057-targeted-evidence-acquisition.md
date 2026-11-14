@@ -1,6 +1,6 @@
 # ADR-0057: Targeted Evidence Acquisition for Long-Form Assisted Editorial Retrieval
 
-Status: Proposed (not approved). Epic #637. Issue #815, task #829, PR #830.
+Status: Proposed (not approved). Epic #637. Issue #815, task #829, PR #831 (supersedes #830).
 
 Builds on ADR-0053 (raw footage compilation) and ADR-0054 (editorial layer). ADR-0056 stays reserved for documentary
 narrative presets, as ADR-0054 states. Evidence:
@@ -8,6 +8,19 @@ narrative presets, as ADR-0054 states. Evidence:
 feasibility report), [stage2-offline-results.md](../mastering/assisted-e2e/stage2/stage2-offline-results.md) (run
 summary) and [LONG_FORM_RETRIEVAL_FEASIBILITY_REPORT.md](../mastering/LONG_FORM_RETRIEVAL_FEASIBILITY_REPORT.md) (the
 earlier study that proposed this work in its §17).
+
+## Status of the E3–E5 numbers (2026-11-14)
+
+The E3–E5 replay numbers in this ADR (recall from saved answers, cache coverage, E5 attribution deltas) come from the
+`716e984` run. That run matched donor answers by JPEG bytes and by the run-level provider and model. It did **not**
+verify the full production cache key: prompt version, provider, model, label set and JPEG bytes, with the logged answer
+equal to the cached record. Lead review found this gap. The harness now admits an answer only under that exact key
+(`a558396`, PR #831).
+
+Until E3–E5 are recomputed with the exact-key rule, every E3–E5 number here is **UNVERIFIED**. They were already only
+a partial simulation, and the recommendation does not rest on them. The pre-registered E2 decision ("not supported")
+does not use donor answers and stays the decision of record at `716e984`. Any re-run at a later head is exploratory by
+design.
 
 ## Decision (proposed)
 
@@ -46,7 +59,7 @@ already seen reaches 34/60; an oracle that also supplies the right evidence on e
 are offline upper bounds that use ground truth, not achievable results.
 
 The offline experiments live in `tests/mastering/longform/` (`targeting.py`, `targeted.py`, `targeted_prereg.json`,
-`test_targeted.py`; PR #830, task #829). They read saved runs only, make no AI call, use no network and no key, and
+`test_targeted.py`; PR #831, which supersedes #830; task #829). They read saved runs only, make no AI call, use no network and no key, and
 import nothing into production. No file under `engine/`, `apps/`, `contracts/` or the component registry changes. They
 ran on the owner's Windows PC, CPU only, Python 3.12, on worktree head `716e984` (the pre-registration commit
 `c60ab02` is an ancestor); at that head the longform suite reported 71 tests OK (1 skipped). This is an offline PoC, not a desktop
@@ -259,9 +272,20 @@ written to reports only as a 12-character digest.
 - The cache stays per output folder. Targeting changes which frames are asked, not what an answer means, so a change
   of targeting recipe does not invalidate answers; it does change the plan and must be part of the part's plan
   identity, so the plan is rebuilt.
-- Answers are not merged across runs or providers. The harness matches donor answers by JPEG bytes and equal provider
-  and model only; on W3 no keyframe was missing, so no time fallback was needed, and the classification of asked
-  frames used the exact cache-key basis.
+- Answers are not merged across runs or providers. At `716e984` the harness matched donor answers by JPEG bytes and
+  by the run-level provider and model only, which does not prove the production cache key (see the status note at the
+  top). From `a558396` an answer is replayed only under its exact production cache key:
+  - The target run's own cache must prove a single basis (prompt version, provider, model, label set). The basis
+    counts only when its record reproduces an answer the run logged.
+  - The answering run's cache must hold, under that basis's full key for the same JPEG bytes, a record whose answer
+    is the logged item.
+  - When `made_by` is present it must agree. A legacy record without `made_by` counts only through the computed full
+    key.
+  - Items whose `detail` names another provider or model are left out.
+  - A record in the target's own cache for the same bytes wins over a donor.
+  - Nothing is matched by time.
+
+  Without that proof the frame is NOT_SIMULABLE, with a specific reason.
 
 ## 11. Budget control
 
