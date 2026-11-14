@@ -44,8 +44,8 @@
 | Classification fix (historical) | `7d90f35`: classification and A0 need the same answer proof as donor matching, A0 clears the product and hook fields of removed answers, replayed answers carry the record's; exploratory PC re-run changes no arm (see §15) |
 | Fail-closed fallback (historical) | `4607031`: without a single answer-proven basis every non-broad answer is unproven and kept in A0; exploratory PC re-run changes no rc16 arm and no decision value (see §15) |
 | Later review fixes | `2b24f93`, `a061581`, `4558305`, `c2c8e26`, `669f298`, `e6d000f` (Lead and independent reviews of classification and A0; see §16). Each changes `targeted.py` only |
-| Latest completed PC re-runs | `4558305` and `669f298` (exploratory, A = B; §16): no decision value changes |
-| Current code head | `e6d000f` (own-record proof also covers the side metadata; an unanswered broad pick proves no shared copy). E1 classification/A0 and E3–E5 at `e6d000f` are **UNVERIFIED** until the Owner-PC re-run on that exact code head is published |
+| Earlier PC re-runs after `4607031` | `4558305` and `669f298` (exploratory, A = B; §16): no decision value changes |
+| Final code head | `e6d000f` (own-record proof also covers the side metadata; an unanswered broad pick proves no shared copy). Owner-PC re-run on this exact head done (exploratory, A = B; §16): E1 classification/A0 and every arm equal `669f298`; no decision value changes |
 | PR head | the harness code at the PR head is identical to `e6d000f`; later commits change documents only |
 
 **E3–E5 provenance (Lead review, 2026-11-14).** At `716e984` donor answers were matched by JPEG bytes and by the run-level provider and model. That does not prove the full production cache key: prompt version, provider, model, label set and JPEG bytes, with the logged answer equal to the cached record. The harness now requires that proof (`a558396`, PR #831).
@@ -508,25 +508,25 @@ Every re-run below is labelled PREREGISTRATION MISMATCH (exploratory) by design.
 
 Owner-PC re-runs (same commands as §4, two runs each, offline, 0 AI calls; leak scans 0):
 
-| Item | `4558305` | `669f298` |
-|---|---|---|
-| Tests (`test_targeted` + `test_w3`) | 109 OK (skipped=1) | 111 OK (skipped=1) |
-| Scope check (`DUBFLOW_SCOPE_CHECK=815`) | 94 OK | 96 OK |
-| Run A = run B (except perf) | yes: JSON `0ef48d23…`, markdown `e5696a98…` | yes: JSON `9f06d85a…`, markdown `317f76df…` |
-| Real-call batch | `ccfc6deb…` (unchanged) | `ccfc6deb…` (unchanged) |
-| `analysis_sha256` | `2eb3f425…` | `99af3157…` |
-| Perf (run A / B), peak RAM | 462.2 s / 452.4 s, 341 MB | 510.0 s / 354.0 s, 340 MB |
-| `result_before_gates`, per-run decision table | not supported; identical | not supported; identical |
-| Broad pass | RECONSTRUCTED in all five runs | RECONSTRUCTED in all five runs |
-| Classification | rc12 broad 95, multi_frame 2, unproven 64; rc13 95/63; rc14 95/60; rc15 95/59; rc16 broad 95, broad_shared 5, targeted 43, targeted_shared 14 (item-part targeted frames 31) | identical to `4558305` (0 ids change in any run) |
-| Ids whose class changes vs `4607031` | rc12: 1 (multi_frame to unproven); rc13–rc16: 0 | same |
-| Differing arms vs `4607031` | rc12 6 of 59 (the open B0 arms: r3hit at W=10 s/15 s/30 s/fwd 1 to 2, chance 2.7884 to 2.8006; r@5 32/60 and fixed/broken 0/0 unchanged); rc13–rc15 0 of 59; rc16 0 of 151 | 0 of 59 / 0 of 151 vs `4558305` |
+| Item | `4558305` | `669f298` | `e6d000f` (final code head) |
+|---|---|---|---|
+| Tests (`test_targeted` + `test_w3`) | 109 OK (skipped=1) | 111 OK (skipped=1) | 113 OK (skipped=1) |
+| Scope check (`DUBFLOW_SCOPE_CHECK=815`) | 94 OK | 96 OK | 98 OK |
+| Run A = run B (except perf) | yes: JSON `0ef48d23…`, markdown `e5696a98…` | yes: JSON `9f06d85a…`, markdown `317f76df…` | yes: JSON `10d95a2c…`, markdown `e7b59b90…` |
+| Real-call batch | `ccfc6deb…` (unchanged) | `ccfc6deb…` (unchanged) | `ccfc6deb…` (unchanged) |
+| `analysis_sha256` | `2eb3f425…` | `99af3157…` | `5b103661…` |
+| Perf (run A / B), peak RAM | 462.2 s / 452.4 s, 341 MB | 510.0 s / 354.0 s, 340 MB | 359.7 s / 350.5 s, 341 MB |
+| `result_before_gates`, per-run decision table | not supported; identical | not supported; identical | not supported; identical |
+| Broad pass and A0 | RECONSTRUCTED in all five runs | RECONSTRUCTED in all five runs | RECONSTRUCTED in all five runs (rc16: 0 picks not in cache) |
+| Classification | rc12 broad 95, multi_frame 2, unproven 64; rc13 95/63; rc14 95/60; rc15 95/59; rc16 broad 95, broad_shared 5, targeted 43, targeted_shared 14 (item-part targeted frames 31) | identical to `4558305` (0 ids change in any run) | identical to `669f298` (0 ids change in any run) |
+| Ids whose class changes vs `4607031` | rc12: 1 (multi_frame to unproven); rc13–rc16: 0 | same | same |
+| Differing arms vs `4607031` | rc12 6 of 59 (the open B0 arms: r3hit at W=10 s/15 s/30 s/fwd 1 to 2, chance 2.7884 to 2.8006; r@5 32/60 and fixed/broken 0/0 unchanged); rc13–rc15 0 of 59; rc16 0 of 151 | 0 of 59 / 0 of 151 vs `4558305` | 0 of 59 / 0 of 151 vs `669f298` |
 
 The primary arm and both comparators, A scores, attribution and the matched budget (40) are unchanged in every run at
-both heads.
-
-**Current code head `e6d000f`: UNVERIFIED.** It tightens the own-record proof (side metadata), which can move rc16
-classes and the broad-pass reconstruction. Its E1 classification/A0 and E3–E5 numbers stay UNVERIFIED until the
-Owner-PC re-run on that exact head is published here; until then the `669f298` numbers above are the latest measured.
+all three heads. At `e6d000f` the own-record proof also compares the side metadata; on rc16 the first copy of each of
+the 157 answered ids gives `exact` 148 and `no_exact_key` 9 (shared copies without a record of their own), and no
+record fails on its side metadata (`side_mismatch` 0, `answer_mismatch` 0). So the E1 classification/A0 and the E3–E5
+numbers in §9–§12 (rc16) hold at the final code head `e6d000f`, as exploratory results; the E2 decision of record
+(`716e984`) is unchanged.
 
 W3 REAL-DEV (development, not a holdout). GENERALIZATION NOT VERIFIED; Gate B not claimed.
