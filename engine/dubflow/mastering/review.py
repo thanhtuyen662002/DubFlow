@@ -892,7 +892,12 @@ def priority(unit: Mapping[str, Any], state: str, decision: UnitDecision | None,
     # shows none of it stays a doubt a person may accept (a montage, a cut)
     if stated_claims.astray_over_half(unit):  # decided on the exact ms (2 × astray_ms > need_ms), not the rounded %
         astray = max((p for p in (stated_claims.astray_percent(n) for n in notes) if p is not None), default=None)
-        share = "hơn 50" if astray is None or astray <= stated_claims.ASTRAY_CRITICAL_PERCENT else str(astray)
+        if astray is not None and astray > stated_claims.ASTRAY_CRITICAL_PERCENT:
+            share = str(astray)
+        elif stated_claims.astray_exact(unit):
+            share = "hơn 50"
+        else:  # an older log: its "50 %" was rounded down and may be over half, so it is held for a person (#843)
+            share = "50 trở lên (bản ghi cũ đã làm tròn)"
         reasons.append(f"{share} % thời lượng câu là cảnh không hiển thị điều lời câu nói là hiển thị")
     if contradicted:
         reasons.append("cảnh cho thấy con số khác với lời câu: " + ", ".join(contradicted[:3]))

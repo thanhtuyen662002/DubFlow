@@ -148,9 +148,6 @@ class BulkAcceptanceNeverHidesAWrongTimeline(unittest.TestCase):
         self.assertIsNone(rank)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class TheCriticalBoundaryIsExact(unittest.TestCase):
     """Lead finding on 4c95e6f, Owner directive 2026-11-15: critical when ``2 * astray_ms > total_ms``, on the exact
@@ -204,3 +201,75 @@ class TheCriticalBoundaryIsExact(unittest.TestCase):
         del log["units"][0]["coverage"]["astray_ms"]
         rank, _ = rv.priority(log["units"][0], state, None, log["mode"])
         self.assertEqual(rank, rv.CRITICAL)  # the note says 73 %
+
+
+def _legacy(title_ms: int, quote_ms: int):
+    """The same video as a log written before ``coverage.astray_ms``: only the note's rounded-down % is left."""
+    log, plan, length, state = _video(title_ms, quote_ms)
+    del log["units"][0]["coverage"]["astray_ms"]
+    return log, plan, length, state
+
+
+class AnOlderLogFailsClosedAtFiftyPercent(unittest.TestCase):
+    """Lead finding on a1037a6: an older log's note floors the share, so 5 001 of 10 000 ms (50.01 %) and 5 000 of
+    10 000 ms (50.00 %) both read "50 %". Nothing in that log tells them apart, so "50 %" is held for a person: bulk
+    acceptance never exports it. "49 %" stays a doubt. Logs with exact milliseconds keep the exact boundary."""
+
+    LEGACY = (  # (title ms, quote ms, the note's %, held?)
+        (5000, 5000, 50, True),    # 50.00 %, note "50 %": cannot be told from 50.01 %
+        (4999, 5001, 50, True),    # 50.01 %, note "50 %"
+        (2700, 7300, 73, True),
+        (5100, 4900, 49, False),
+    )
+
+    def test_the_note_is_what_the_older_log_has(self):
+        for title, quote, percent, _ in self.LEGACY:
+            log, _, _, _ = _legacy(title, quote)
+            unit = log["units"][0]
+            with self.subTest(title=title, quote=quote):
+                self.assertNotIn("astray_ms", unit["coverage"])
+                self.assertIn(percent, [rv.stated_claims.astray_percent(n) for n in unit.get("notes") or ()])
+
+    def test_the_review_queue(self):
+        for title, quote, _, held in self.LEGACY:
+            log, _, _, state = _legacy(title, quote)
+            rank, why = rv.priority(log["units"][0], state, None, log["mode"])
+            with self.subTest(title=title, quote=quote):
+                self.assertEqual(rank == rv.CRITICAL, held, why)
+                if held and quote * 100 // (title + quote) == 50:
+                    self.assertTrue(any("50 trở lên (bản ghi cũ đã làm tròn)" in w for w in why), why)
+
+    def test_bulk_acceptance_cannot_finalize_it(self):
+        for title, quote, _, held in self.LEGACY:
+            log, plan, length, _ = _legacy(title, quote)
+            review = rv.Review()
+            review.set_accept_unreviewed(True)
+            out = _final_qc(log, plan, length, review)
+            with self.subTest(title=title, quote=quote):
+                self.assertEqual(out["state"], "FINAL_QC_FAILED" if held else "READY_TO_FINALIZE", out["checks"])
+
+    def test_a_person_settles_it_one_by_one_and_is_named(self):
+        for title, quote, _, held in self.LEGACY:
+            log, plan, length, _ = _legacy(title, quote)
+            review = rv.Review()
+            review.decide(log, "u1", "approve")
+            out = _final_qc(log, plan, length, review)
+            claims_check = next(c for c in out["checks"] if c["id"] == "claims")
+            with self.subTest(title=title, quote=quote):
+                self.assertEqual(out["state"], "READY_TO_FINALIZE", out["checks"])
+                self.assertEqual([u["unit_id"] for u in claims_check["user_accepted"]], ["u1"] if held else [])
+
+    def test_exact_milliseconds_keep_the_exact_boundary(self):
+        for title, quote, critical in ((5000, 5000, False), (4999, 5001, True)):
+            log, plan, length, state = _video(title, quote)
+            rank, why = rv.priority(log["units"][0], state, None, log["mode"])
+            review = rv.Review()
+            review.set_accept_unreviewed(True)
+            out = _final_qc(log, plan, length, review)
+            with self.subTest(title=title, quote=quote):
+                self.assertEqual(rank == rv.CRITICAL, critical, why)
+                self.assertEqual(out["state"], "FINAL_QC_FAILED" if critical else "READY_TO_FINALIZE", out["checks"])
+
+
+if __name__ == "__main__":
+    unittest.main()
