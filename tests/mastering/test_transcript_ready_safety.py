@@ -77,6 +77,7 @@ class TranscriptNeverVerifiesThePicture(unittest.TestCase):
         state, _, decision = _one_shot(WEAK_VISION, unrelated)
         self.assertNotEqual(state, rv.READY)
         self.assertFalse(any("lời nói trong nguồn khớp câu" in note for note in decision.notes), decision.notes)  # e0cbc02: said
+        self.assertTrue(any("giây cảnh có bằng chứng hình ảnh còn yếu" in note for note in decision.notes), decision.notes)
 
     def test_t2_transcript_only_is_never_visual_ready(self):
         state, confidence, decision = _one_shot(SAID)
@@ -251,6 +252,27 @@ class SpeechNeverReweightsWhatIsSeen(unittest.TestCase):
                 with self.subTest(speech_on=where, candidate=candidate.candidate_id):
                     self.assertEqual(scorer.content_relevance(unit, candidate, now), quiet.content_relevance(unit, candidate, was))
                     self.assertEqual(scorer.unspoken_relevance(unit, candidate, now), was)
+
+    def test_speech_over_another_shot_is_not_this_shots_speech(self):
+        # Lead P2-3 on 39ee320: B's speech reweighs the words, A's own caption is unrelated: A's note must not say
+        # its speech matches the sentence
+        pool = [_candidate("A", 0, 6000), shots.Candidate("B", "v1", 6000, 12_000, 0, 50,
+                                                          shots.Quality(120, 50, 300, ("blurred",)), 7)]
+        found = ev.gather(["A", "B"])
+        found["A"].add(ev.Item("vision", 800, "alpha", (), "AI"))
+        found["A"].add(ev.Item("transcript", 850, "hôm nay trời mưa to ở thủ đô", (), "phụ đề nguồn"))
+        found["B"].add(self.SAID)
+        unit = align.Unit("u1", self.TEXT, 0, 4000, "narration")
+        scorer = align.Scorer(pool, found)
+        relevance = scorer.relevance(unit, pool[0])[0]
+        self.assertGreater(relevance, scorer.unspoken_relevance(unit, pool[0], relevance))  # the reweighing is there
+        self.assertFalse(scorer.own_speech_lifts(unit, pool[0], relevance))
+        state, mine, decision = _plan(pool, found, self.TEXT)
+        self.assertEqual([c.candidate.candidate_id for c in mine], ["A"])
+        self.assertNotEqual(state, rv.READY)
+        self.assertFalse(any("lời nói trong nguồn khớp câu" in note for note in decision.notes), decision.notes)
+        # ... and still says why it is not READY, without a claim about the speech
+        self.assertTrue(any("giây cảnh có bằng chứng hình ảnh còn yếu" in note for note in decision.notes), decision.notes)
 
     def test_the_ranking_still_follows_the_speech(self):
         pool, found, unit = self._case("B")

@@ -360,6 +360,16 @@ class Scorer:
             return relevance
         return self._quiet(unit, candidate.candidate_id)
 
+    def own_speech_lifts(self, unit: Unit, candidate: Candidate, relevance: int) -> bool:
+        """Whether the speech over ``candidate`` raises its ranking ``relevance`` to ``unit``: the same weights on
+        both sides (the job's, speech included), only this shot's own speech taken away, so speech over another shot
+        cannot make it look as if this shot's speech matched."""
+        key = candidate.candidate_id
+        if key not in self.spoken or relevance <= 0:
+            return False
+        return relevance > self._relevance(unit, self.unspoken_terms[key], self.unspoken_loose[key],
+                                           self.unspoken_entities[key], self.stats)[0]
+
     def _quiet(self, unit: Unit, key: str) -> int:
         """The relevance of ``key`` with no speech over any shot: its speech-free evidence, the speech-free weights."""
         return self._relevance(unit, self.unspoken_terms.get(key, self.terms[key]),
@@ -872,12 +882,10 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
         return scorer.unspoken_relevance(unit, candidate, relevance) < MIN_RELEVANCE
 
     def speech_matches(unit: Unit, candidate: Candidate) -> bool:
-        """Whether the speech over ``candidate`` is what matches it to ``unit`` more than what is known of it without
-        the speech (#836 Lead P2: an unrelated caption over a weakly seen shot says nothing about this sentence)."""
-        if candidate.candidate_id not in scorer.spoken:
-            return False
-        relevance = relevance_of[(unit.unit_id, candidate.candidate_id)][0]
-        return relevance > scorer.unspoken_relevance(unit, candidate, relevance)
+        """Whether the speech over ``candidate`` itself raises its match to ``unit`` (#836 Lead P2-2/P2-3: an
+        unrelated caption over a weakly seen shot says nothing about this sentence, and speech over another shot that
+        only reweighs the words is not this shot's speech)."""
+        return scorer.own_speech_lifts(unit, candidate, relevance_of[(unit.unit_id, candidate.candidate_id)][0])
 
     ahead_now = 0
     narration_left = 0
@@ -974,6 +982,7 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
         user_ms = 0
         spoken_ms = 0
         weak_spoken_ms = 0  # time of shots the speech over them matches while what is seen is too weak (#836)
+        weak_seen_ms = 0  # time of shots with speech over them, not matching, where what is seen is too weak (#836)
         pinned = [by_id[i] for i in live_pins.get(unit.unit_id, [])]
         if len([i for i in edits.pin.get(unit.unit_id, []) if i in by_id]) != len(pinned):
             decision.notes.append("một cảnh đã ghim nằm trong cảnh bạn đã loại nên được bỏ qua")
@@ -1244,8 +1253,11 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
                 user_ms += pick["length"]
             needs_review = confidence < REVIEW_BELOW or not candidate.quality.usable
             if confidence < REVIEW_BELOW and candidate.candidate_id in accept and pick["tier"] != "repeat" \
-                    and speech_matches(unit, candidate) and not spoken_only(unit, candidate):
-                weak_spoken_ms += pick["length"]
+                    and candidate.candidate_id in scorer.spoken and not spoken_only(unit, candidate):
+                if speech_matches(unit, candidate):
+                    weak_spoken_ms += pick["length"]
+                else:
+                    weak_seen_ms += pick["length"]
             mine.append(Choice(unit.unit_id, candidate, pick["offset"], pick["length"], pick["score"], confidence, needs_review,
                                tuple(reasons[:8])))
             decision.chosen.append(candidate.candidate_id)
@@ -1274,6 +1286,9 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
         if weak_spoken_ms:  # the speech no longer lifts a weak look over the bar: say why the sentence is not READY
             note = (f"{weak_spoken_ms / 1000:.1f} giây cảnh có lời nói trong nguồn khớp câu nhưng bằng chứng hình ảnh còn yếu "
                     f"(độ tin cậy dưới {REVIEW_BELOW}): cần kiểm tra" + (f"; {note}" if note else ""))
+        if weak_seen_ms:  # the same, where the shot's own speech is not what matches: no claim about the speech
+            note = (f"{weak_seen_ms / 1000:.1f} giây cảnh có bằng chứng hình ảnh còn yếu (độ tin cậy dưới {REVIEW_BELOW}): "
+                    "cần kiểm tra" + (f"; {note}" if note else ""))
         if pinned_by_user and user_ms:
             note = "cảnh do người dùng chọn; AI không thấy cảnh này khớp lời câu" if not milli else \
                 f"chỉ {milli // 10} % thời lượng câu có cảnh AI thấy khớp lời; phần còn lại là cảnh người dùng chọn"
