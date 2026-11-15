@@ -6,8 +6,9 @@ usage: python -I validate_manifest.py <manifest.json> [--stage draft|eval --spli
                 (rights, sha256, third-party processing, local-ASR cues). Narration and labels are NOT required.
                 Checks only the named split: DEV draft readiness does not need HOLDOUT sources (only no overlap).
                 A source with no speech passes when ASR completed (asr_status ok) with cue_count 0 and speech_ratio 0.
-  --verify-files DIR  recompute cues_sha256, cue_count and speech_ratio from the cue files (cues_path, relative
-                to DIR) instead of trusting the manifest; speech_ratio is computed, never typed (README §3.3).
+  --verify-files DIR  recompute the media sha256 (path) and cues_sha256, cue_count, cue bounds and speech_ratio
+                from the cue file (cues_path), both relative to DIR, instead of trusting the manifest; speech_ratio
+                is computed and not rounded, never typed (README §3.3).
                 Passing it does not approve any spending: the Owner approves cost separately.
   --stage eval  READY FOR EVALUATION: everything of draft, plus narration/cues locked, human labels valid and
                 locked, scoring rules (HOLDOUT: also parameters) locked to a commit.
@@ -122,8 +123,26 @@ def evaluation(split, data):
     return out
 
 
+def cue_problems(cues, duration_ms):
+    """Cue times must be whole milliseconds with 0 <= start < end <= duration_ms. Problems are reported, never repaired."""
+    out = []
+    for i, c in enumerate(cues):
+        start, end = c.get("start_ms"), c.get("end_ms")
+        if not all(isinstance(v, int) and not isinstance(v, bool) for v in (start, end)):
+            out.append(f"cue {i}: start_ms/end_ms must be whole milliseconds")
+        elif start < 0 or end <= start:
+            out.append(f"cue {i}: invalid span {start}..{end} ms (needs 0 <= start < end)")
+        elif duration_ms and end > duration_ms:
+            out.append(f"cue {i}: ends at {end} ms, after the source ends ({duration_ms} ms)")
+    return out
+
+
 def speech_ratio(cues, duration_ms):
-    """Share of the source covered by the union of cue intervals, rounded to 3 places (README §3.3)."""
+    """Share of the source covered by the union of cue intervals (README §3.3).
+
+    Not rounded: rounding to a few places turned a short real cue in a long source into 0.000, which reads as
+    "no speech" (Owner protocol 2026-11-15 §IV.C4). Display may round; the stored value never does.
+    """
     spans = sorted((int(c["start_ms"]), int(c["end_ms"])) for c in cues)
     total, cur_start, cur_end = 0, None, None
     for start, end in spans:
@@ -137,14 +156,30 @@ def speech_ratio(cues, duration_ms):
             cur_end = max(cur_end, end)
     if cur_end is not None:
         total += cur_end - cur_start
-    return round(min(total, duration_ms) / duration_ms, 3)
+    return min(total, duration_ms) / duration_ms
+
+
+def sha256_file(path, chunk=1 << 20):
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for block in iter(lambda: fh.read(chunk), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def verify_files(split, data, base):
-    """Recompute cues_sha256, cue_count and speech_ratio from the real cue files under ``base``."""
+    """Recompute from the real files under ``base``: the media sha256, and cues_sha256, cue_count, cue bounds and
+    speech_ratio from the cue file. A validator PASS on typed values alone is never enough (protocol §IV.D4)."""
     out = []
     for s in data["sources"]:
         sid, rel = s["source_id"], s.get("cues_path")
+        media = s.get("path")
+        if not media:
+            out.append(f"{split} {sid}: path not recorded, cannot verify the source file")
+        elif not os.path.isfile(os.path.join(base, media)):
+            out.append(f"{split} {sid}: source file {media} not found")
+        elif sha256_file(os.path.join(base, media)) != s.get("sha256"):
+            out.append(f"{split} {sid}: sha256 does not match {media}")
         if not rel:
             out.append(f"{split} {sid}: cues_path not recorded, cannot verify the cue file")
             continue
@@ -159,14 +194,19 @@ def verify_files(split, data, base):
             out.append(f"{split} {sid}: cues_sha256 does not match {rel}")
         try:
             cues = json.loads(raw)["cues"]
-            ratio = speech_ratio(cues, s["duration_ms"]) if s.get("duration_ms") else None
-        except (ValueError, KeyError, TypeError) as error:
+            bad = cue_problems(cues, s.get("duration_ms"))
+            ratio = speech_ratio(cues, s["duration_ms"]) if s.get("duration_ms") and not bad else None
+        except (ValueError, KeyError, TypeError, AttributeError) as error:
             out.append(f"{split} {sid}: cue file {rel} unreadable ({error})")
             continue
+        out += [f"{split} {sid}: {p}" for p in bad]
         if s.get("cue_count") != len(cues):
             out.append(f"{split} {sid}: cue_count {s.get('cue_count')} but the file has {len(cues)} cues")
-        if ratio is None or not isinstance(s.get("speech_ratio"), (int, float)) or abs(s["speech_ratio"] - ratio) > 0.001:
-            out.append(f"{split} {sid}: speech_ratio {s.get('speech_ratio')} but the cue file gives {ratio}")
+        if bad:
+            continue
+        stored = s.get("speech_ratio")
+        if ratio is None or not isinstance(stored, (int, float)) or isinstance(stored, bool) or abs(stored - ratio) > 1e-9:
+            out.append(f"{split} {sid}: speech_ratio {stored} but the cue file gives {ratio}")
     return out
 
 

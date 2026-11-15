@@ -98,7 +98,16 @@ class CueFilesAreRecomputed(unittest.TestCase):
         Path(directory, name).write_bytes(raw)
         return hashlib.sha256(raw).hexdigest()
 
+    def media(self, directory, source_id):
+        """A stand-in media file (test bytes, not a video) so the media sha256 check has something real to hash."""
+        raw = f"test media {source_id}".encode()
+        Path(directory, f"{source_id}.mp4").write_bytes(raw)
+        return {"path": f"{source_id}.mp4", "sha256": hashlib.sha256(raw).hexdigest()}
+
     def check(self, sources, directory):
+        for s in sources:
+            if s.get("path", "").startswith("/test/"):
+                s.update(self.media(directory, s["source_id"]))
         return vm.problems(manifest(sources), "draft", "REAL-DEV", directory)
 
     def test_ratio_is_the_union_of_cue_intervals(self):
@@ -122,7 +131,7 @@ class CueFilesAreRecomputed(unittest.TestCase):
                        cleared("d-s2", cues_path="s2.json", cues_sha256=quiet, cue_count=0, speech_ratio=0.0)]
             found = self.check(sources, d)
             self.assertTrue(any("file has 1 cues" in p for p in found), found)
-            self.assertTrue(any("cue file gives 0.017" in p for p in found), found)
+            self.assertTrue(any("cue file gives 0.0166" in p for p in found), found)
 
     def test_an_edited_cue_file_is_caught_by_its_hash(self):
         with tempfile.TemporaryDirectory() as d:
@@ -139,6 +148,68 @@ class CueFilesAreRecomputed(unittest.TestCase):
 
     def test_ratio_must_be_between_zero_and_one(self):
         self.assertTrue(any("outside" in p for p in dev_problems(manifest([cleared("d-s1", speech_ratio=1.4), cleared("d-s2")]))))
+
+
+class CuePrecisionAndBounds(unittest.TestCase):
+    """Owner protocol 2026-11-15 §IV.C1/C4/D4: rounding never turns speech into silence; impossible cue times and a
+    missing or different media file are reported, never repaired."""
+
+    helper = CueFilesAreRecomputed()
+
+    def test_a_short_real_cue_in_a_long_source_is_not_silence(self):
+        four_hours = 4 * 3600 * 1000
+        ratio = vm.speech_ratio([{"start_ms": 0, "end_ms": 100}], four_hours)
+        self.assertGreater(ratio, 0)  # was round(…, 3) == 0.0 before the fix
+        long_quiet = cleared("d-s2", duration_ms=four_hours, cue_count=1, speech_ratio=ratio)
+        self.assertEqual(dev_problems(manifest([cleared("d-s1"), long_quiet])), [])
+
+    def test_the_short_cue_source_also_passes_file_verification(self):
+        four_hours = 4 * 3600 * 1000
+        with tempfile.TemporaryDirectory() as d:
+            spoken = self.helper.write(d, "s1.json", [{"start_ms": 0, "end_ms": 36000, "text": "x"}])
+            short = self.helper.write(d, "s2.json", [{"start_ms": 5000, "end_ms": 5100, "text": "ok"}])
+            sources = [cleared("d-s1", cues_path="s1.json", cues_sha256=spoken, cue_count=1, speech_ratio=0.6),
+                       cleared("d-s2", cues_path="s2.json", cues_sha256=short, cue_count=1, duration_ms=four_hours,
+                               speech_ratio=100 / four_hours)]
+            self.assertEqual(self.helper.check(sources, d), [])
+
+    def bounds(self, cue):
+        with tempfile.TemporaryDirectory() as d:
+            spoken = self.helper.write(d, "s1.json", [{"start_ms": 0, "end_ms": 36000, "text": "x"}])
+            odd = self.helper.write(d, "s2.json", [cue])
+            sources = [cleared("d-s1", cues_path="s1.json", cues_sha256=spoken, cue_count=1, speech_ratio=0.6),
+                       cleared("d-s2", cues_path="s2.json", cues_sha256=odd, cue_count=1, speech_ratio=0.5)]
+            return self.helper.check(sources, d)
+
+    def test_a_cue_after_the_end_of_the_source_is_reported(self):
+        self.assertTrue(any("after the source ends" in p for p in self.bounds({"start_ms": 59000, "end_ms": 61000})))
+
+    def test_a_zero_length_cue_is_reported(self):
+        self.assertTrue(any("invalid span" in p for p in self.bounds({"start_ms": 2000, "end_ms": 2000})))
+
+    def test_a_negative_start_is_reported(self):
+        self.assertTrue(any("invalid span" in p for p in self.bounds({"start_ms": -5, "end_ms": 2000})))
+
+    def test_fractional_milliseconds_are_reported(self):
+        self.assertTrue(any("whole milliseconds" in p for p in self.bounds({"start_ms": 0.5, "end_ms": 2000})))
+
+    def test_a_missing_media_file_fails_even_when_everything_typed_matches(self):
+        with tempfile.TemporaryDirectory() as d:
+            quiet = self.helper.write(d, "s.json", [])
+            sources = [cleared(sid, path=f"{sid}.mp4", cues_path="s.json", cues_sha256=quiet, cue_count=0, speech_ratio=0.0)
+                       for sid in ("d-s1", "d-s2")]
+            found = vm.problems(manifest(sources), "draft", "REAL-DEV", d)
+            self.assertTrue(any("source file d-s1.mp4 not found" in p for p in found), found)
+
+    def test_a_media_file_with_another_hash_fails(self):
+        with tempfile.TemporaryDirectory() as d:
+            quiet = self.helper.write(d, "s.json", [])
+            sources = [cleared(sid, cues_path="s.json", cues_sha256=quiet, cue_count=0, speech_ratio=0.0) for sid in ("d-s1", "d-s2")]
+            for s in sources:
+                s.update(self.helper.media(d, s["source_id"]))
+            Path(d, "d-s2.mp4").write_bytes(b"swapped")
+            found = vm.problems(manifest(sources), "draft", "REAL-DEV", d)
+            self.assertEqual([p for p in found if "sha256 does not match d-s2.mp4" in p], ["REAL-DEV d-s2: sha256 does not match d-s2.mp4"])
 
 
 if __name__ == "__main__":
