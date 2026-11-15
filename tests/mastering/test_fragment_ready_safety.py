@@ -133,5 +133,68 @@ class DisplayedClaimPerPiece(unittest.TestCase):
         self.assertTrue(decision.signals["claims"]["conflicts"])
 
 
+class AdversarialMontages(unittest.TestCase):
+    """Pre-merge review (2026-11-15): one right piece and one wrong piece in the same sentence. A wrong piece earns its
+    own confidence and its own flag; the right piece never lends it either, and the review queue and the Final QC read
+    the same flags. What a lexical match cannot tell (a wrong piece described with the sentence's own words) is a
+    limit of the matcher, not of the per-piece rule, and is tracked outside #837."""
+    SCENE = "Xe tăng Liên Xô vượt qua dòng sông băng giá trong mùa đông."
+    RIGHT = "Xe tăng Liên Xô vượt qua dòng sông băng giá, tuyết phủ mùa đông"
+    NEAR = "Xe tăng Đức bị bỏ lại bên bờ sông, mùa hè nắng gắt"  # shares "xe tăng", "sông"
+
+    def _qc(self, decision, pieces, state, *, accept: bool):
+        from engine.dubflow.mastering import final_qc as qc
+        from tests.mastering.test_final_qc import plan_dict
+        unit = decision.to_dict()
+        log = {"mode": "content", "plan_id": "p", "candidates": [], "units": [unit]}
+        unit["review"] = {"state": state, "evidence": rv.evidence_state(unit, log)}
+        segments, at = [], 0
+        for piece in pieces:
+            segments.append(("u1", piece.candidate.start_ms, piece.candidate.start_ms + piece.length_ms, at, at + piece.length_ms,
+                             "primary"))
+            at += piece.length_ms
+        review = rv.Review()
+        review.set_accept_unreviewed(accept)
+        checks = qc.check_parts([("video 1", log, plan_dict(segments, duration=at, source_ms=200_000), review)])
+        return qc.result([qc._check("render", "", True), *checks], "COMPLETED")
+
+    def test_a_wrong_piece_with_shared_words_in_a_scene_montage_is_flagged_on_its_own(self):
+        self.assertFalse(said.of(self.SCENE).display)  # no displayed claim: the per-piece confidence rule alone
+        state, pieces, decision = _plan({"c1": (0, 3000, (_seen(self.RIGHT, 900, ("people", "action")),)),
+                                         "c2": (3000, 6000, (_seen(self.NEAR, 900, ("people", "action")),)),
+                                         "c3": (6000, 20_000, (_seen("Bầu trời có mây", 900, ("establishing",)),))},
+                                        text=self.SCENE, length=5800)
+        self.assertEqual(set(pieces), {"c1", "c2"}, decision.to_dict())
+        self.assertGreaterEqual(pieces["c1"].confidence, align.REVIEW_BELOW)
+        self.assertLess(pieces["c2"].confidence, align.REVIEW_BELOW)  # its own words, not c1's
+        self.assertTrue(pieces["c2"].needs_review)
+        self.assertNotEqual(state, rv.READY)
+        self.assertEqual(decision.coverage["illustrated_ms"], pieces["c1"].length_ms)  # the wrong piece is not coverage
+        self.assertTrue(decision.notes)  # and the sentence says why
+        out = self._qc(decision, list(pieces.values()), state, accept=False)
+        self.assertEqual(out["state"], "REVIEW_PENDING")
+
+    def test_a_displayed_claim_shown_by_one_piece_only_waits_for_a_person(self):
+        state, pieces, decision = _plan({"c1": (58520, 59480, (_seen(TITLE),)), "c2": (59480, 62210, (_seen(QUOTE, 920),)),
+                                         "c3": (62210, 80_000, (_seen("Bầu trời có mây", 900, ("establishing",)),))},
+                                        length=3690)
+        self.assertEqual(set(pieces), {"c1", "c2"}, decision.to_dict())
+        self.assertNotEqual(state, rv.READY)
+        self.assertTrue(pieces["c2"].needs_review)
+        self.assertFalse(pieces["c1"].needs_review)
+        self.assertTrue(any("không hiển thị điều lời câu nói" in n for n in decision.notes), decision.notes)
+        self.assertEqual(self._qc(decision, list(pieces.values()), state, accept=False)["state"], "REVIEW_PENDING")
+
+    def test_a_displayed_claim_no_piece_shows_is_never_exported_by_accepting_the_unreviewed(self):
+        state, pieces, decision = _plan({"c1": (0, 1800, (_seen(QUOTE, 920),)),
+                                         "c2": (1800, 3690, (_seen("Huy hiệu đại bàng trên nền đen", 900),)),
+                                         "c3": (3690, 20_000, (_seen("Bầu trời có mây", 900, ("establishing",)),))},
+                                        length=3690)
+        self.assertNotEqual(state, rv.READY)
+        out = self._qc(decision, list(pieces.values()), state, accept=True)
+        self.assertEqual(out["state"], "FINAL_QC_FAILED")
+        self.assertEqual([u["unit_id"] for u in out["critical_units"]], ["u1"])
+
+
 if __name__ == "__main__":
     unittest.main()
