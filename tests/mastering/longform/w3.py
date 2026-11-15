@@ -196,7 +196,10 @@ def judge(unit: Mapping[str, Any], g: Mapping[str, Any], cands: Mapping[str, Map
         checks = [said.check(stated, said.content_text(evidence_from((cands.get(p["id"]) or {}).get("evidence") or {})))
                   for p in pieces]
         together = said.merged(checks)
-        claim_failure = not checks or bool(together.unverified or together.conflicts or together.disputed)
+        # per piece (#837 Lead review): a piece that shows none of the displayed claims fails the sentence, even when
+        # another piece shows them; a montage showing each claim in its own piece passes
+        claim_failure = not checks or any(not c.verified for c in checks) \
+            or bool(together.unverified or together.conflicts or together.disputed)
     ready = (unit.get("review") or {}).get("state") == "READY"
     reasons = []
     if ready:

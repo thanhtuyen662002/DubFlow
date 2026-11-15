@@ -16,6 +16,7 @@ from tests.mastering.longform.test_w3 import make_run, make_truth
 TITLE = "Màn hình tiêu đề, chữ THE BATTLE OF RUSSIA trên huy hiệu đại bàng"
 QUOTE = "Màn chữ trên nền huy hiệu đại bàng, trích dẫn lời Henry L. Stimson"
 SCENE = "Đoàn binh sĩ hành quân trên đường đất"
+MAP = "Bản đồ châu Âu có mũi tên dài, dòng chữ 1500 MILES"
 
 
 def _cand(cid: str, start: int, end: int, seen: str = SCENE) -> dict:
@@ -31,7 +32,8 @@ def _unit(pieces: list[tuple[str, int, int]], state: str = "READY", text: str = 
 GT = {"text": "x", "ranges": [[10.0, 20.0]], "kind": "footage"}  # 10 000 – 20 000 ms
 CANDS = {"in": _cand("in", 10_000, 20_000), "in2": _cand("in2", 12_000, 19_000), "out": _cand("out", 40_000, 50_000),
          "wide": _cand("wide", 5_000, 30_000), "unseen": _cand("unseen", 40_000, 50_000, seen=""),
-         "title": _cand("title", 10_000, 11_000, TITLE), "quote": _cand("quote", 33_000, 40_000, QUOTE)}
+         "title": _cand("title", 10_000, 11_000, TITLE), "quote": _cand("quote", 33_000, 40_000, QUOTE),
+         "map": _cand("map", 14_000, 17_000, MAP)}
 
 
 def judge(pieces, state="READY", gt=GT, text="Đoàn binh sĩ hành quân."):
@@ -52,8 +54,8 @@ class Contract(unittest.TestCase):
         v = judge([("title", 10_000, 960), ("quote", 33_000, 2730)], text="Dòng chữ lớn The Battle of Russia hiện lên.")
         self.assertEqual((v["lenient"], v["strict"], v["duration_milli"]), (True, False, 260))
         self.assertTrue(v["severe"])
-        self.assertEqual(v["severe_reasons"], ["majority_wrong_duration"])
-        self.assertFalse(v["claim_failure"])  # the title was shown, by the first piece: the duration rule catches it
+        self.assertEqual(v["severe_reasons"], ["majority_wrong_duration", "claim_unshown_or_contradicted"])
+        self.assertTrue(v["claim_failure"])  # the quotation piece shows none of it; the title piece does not cover it
 
     def test_nothing_right_is_severe(self):
         v = judge([("out", 41_000, 3000)])
@@ -93,7 +95,16 @@ class Contract(unittest.TestCase):
         broll = judge([("in", 11_000, 2000), ("out", 41_000, 1000)])
         self.assertEqual((broll["duration_milli"], broll["severe"]), (666, False))
         direct = judge([("title", 10_000, 960), ("in2", 12_000, 2000)], text="Dòng chữ lớn The Battle of Russia hiện lên.")
-        self.assertEqual((direct["strict"], direct["claim_failure"], direct["severe"]), (True, False, False))
+        # both pieces in the range, but the scene piece shows no part of the title (#837 Lead review: per piece)
+        self.assertEqual((direct["strict"], direct["claim_failure"], direct["severe"]), (True, True, True))
+        self.assertEqual(direct["severe_reasons"], ["claim_unshown_or_contradicted"])
+
+    def test_a_montage_showing_each_claim_in_its_own_piece_passes(self):
+        text = "Bản đồ ghi khoảng cách một nghìn năm trăm dặm, rồi dòng chữ The Battle of Russia hiện lên."
+        v = judge([("map", 14_000, 2000), ("title", 10_000, 960)], text=text)
+        self.assertEqual((v["strict"], v["claim_failure"], v["severe"]), (True, False, False))
+        both = judge([("title", 10_000, 960)], text=text)  # one piece, one of two claims: the other is unshown
+        self.assertTrue(both["claim_failure"])
 
     def test_the_trimmed_piece_is_judged_not_the_whole_shot(self):
         # the shot overlaps the range, the part of it placed on the timeline does not
