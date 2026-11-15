@@ -84,12 +84,17 @@ def provenance_counts(evidence: "Mapping[str, Evidence]") -> dict[str, int]:
 
 # Only words that stay function words without their diacritics: "can" (cận/cần/cân), "chi" (chi tiết), "tu" (tủ),
 # "da" (da thật), "toi" (tối), "tai" (tai nghe), "ban" (bàn/bán) and "con" carry meaning once folded, so they stay.
+# English function words likewise leave out "them" (thêm), "than" (thân), "but" (bút), "not" (nốt), "so" (số),
+# "do" (đỏ), "me" (mẹ), "my" (mỹ), "may" (máy), "up" (úp) and "he" (hè) (#860).
 _STOP = frozenset("""
 va voi cua la khong mot nhung cac nay thi ma se dang duoc bi rat cung
 khi neu vi nhu nhat nhieu minh chung no ay kia
 nao gi sao thoi nhe nha oi roi luon hay hoac ra vao tren
 mp4 mov mkv webm avi m4v jpg jpeg png webp clip video img vid dsc
 the an of and to in on with for is are this that it be at by from
+was were been being has have had did does will would could should into onto during after before about
+through between within without upon then there these those their they its his her him she we us our
+you your which who whom what when where while also very just as or if since until because though although whether
 """.split())
 _WORD = re.compile(r"[a-z0-9]+")
 
@@ -145,6 +150,9 @@ khi nếu vì để như hơn nhất mỗi nhiều mình chúng họ nó ấy ki
 nào gì sao thôi nhé nha ơi rồi luôn hay hoặc cả ra vào bên trong trên dưới có từ ở
 mp4 mov mkv webm avi m4v jpg jpeg png webp clip video img vid dsc
 the an of and to in on with for is are this that it be at by from
+was were been being has have had did does will would could should into onto during after before about
+through between within without upon then there these those their they them its his her him she we us our
+you your which who whom what when where while also very just as or if since until because though although whether
 """.split())  # the same function words, written with their marks (so "hồ" is not "họ")
 _LETTERS = re.compile(r"[^\W_]+")
 LOOSE = "~"  # prefix of a term from text written without diacritics
