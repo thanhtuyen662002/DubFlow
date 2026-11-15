@@ -1,0 +1,201 @@
+{
+  "schema": "dubflow-x2-dataset-v1",
+  "created": "2026-11-15",
+  "status": "PREPARATION_ONLY",
+  "note": "Template. No source is rights-confirmed, no narration is written, no label exists. Keep the filled copy on the test machine only, never in the repo.",
+  "splits": {
+    "REAL-DEV": {
+      "status": "SOURCES_PENDING",
+      "target_sentences": [
+        20,
+        30
+      ],
+      "sources_required": 2,
+      "sources": [
+        {
+          "source_id": "d-s1",
+          "role": "voiced documentary/news (en) — speech close to picture, names and numbers",
+          "path": null,
+          "sha256": null,
+          "duration_ms": null,
+          "language": "en",
+          "genre": "documentary",
+          "speech_ratio": null,
+          "license": null,
+          "license_evidence": null,
+          "rights_confirmed_by": null,
+          "rights_confirmed_at": null,
+          "third_party_processing_allowed": null,
+          "third_party_processing_scope": null,
+          "cues_path": null,
+          "cues_sha256": null,
+          "cues_method": null,
+          "asr_status": null,
+          "asr_model": null,
+          "cue_count": null,
+          "cue_rejected_count": null,
+          "synthetic": false
+        },
+        {
+          "source_id": "d-s2",
+          "role": "low-speech footage or product/vlog (zh/vi) — speech does NOT describe the picture",
+          "path": null,
+          "sha256": null,
+          "duration_ms": null,
+          "language": null,
+          "genre": null,
+          "speech_ratio": null,
+          "license": null,
+          "license_evidence": null,
+          "rights_confirmed_by": null,
+          "rights_confirmed_at": null,
+          "third_party_processing_allowed": null,
+          "third_party_processing_scope": null,
+          "cues_path": null,
+          "cues_sha256": null,
+          "cues_method": null,
+          "asr_status": null,
+          "asr_model": null,
+          "cue_count": null,
+          "cue_rejected_count": null,
+          "synthetic": false
+        }
+      ],
+      "narration": {
+        "method": null,
+        "writer": null,
+        "writer_saw_footage": false,
+        "sha256": null,
+        "locked_at": null,
+        "cue_rejections": null
+      },
+      "sentences": [],
+      "labels": {
+        "labelers": [],
+        "adjudicator": null,
+        "sha256": null,
+        "kappa": null,
+        "excluded": 0,
+        "locked_at": null,
+        "ai_judged": false
+      },
+      "scoring_rules_commit": null
+    },
+    "REAL-HOLDOUT": {
+      "status": "OUTLINE_ONLY",
+      "target_sentences_min": 100,
+      "target_sentences_goal": 120,
+      "sources_required": [
+        4,
+        6
+      ],
+      "sources_overlap_with_dev": "FORBIDDEN (split by video, not by sentence)",
+      "genres_min": 3,
+      "sentence_mix_min": {
+        "direct": 0.35,
+        "general_commentary": 0.2,
+        "illustrative_broll": 0.2,
+        "no_footage": 0.2,
+        "hard_negative_share_of_no_footage": 0.5
+      },
+      "error_types_required": [
+        "entity_mismatch",
+        "event_mismatch",
+        "time_mismatch",
+        "action_mismatch",
+        "factual_claim_number",
+        "factual_claim_title_or_card",
+        "same_words_different_scene"
+      ],
+      "sources": [],
+      "narration": {
+        "method": null,
+        "writer": null,
+        "writer_saw_footage": false,
+        "none_writer": null,
+        "sha256": null,
+        "locked_at": null,
+        "cue_rejections": null
+      },
+      "sentences": [],
+      "labels": {
+        "labelers": [],
+        "adjudicator": null,
+        "sha256": null,
+        "kappa": null,
+        "excluded": 0,
+        "locked_at": null,
+        "ai_judged": false
+      },
+      "scoring_rules_commit": null,
+      "parameters_locked_commit": null
+    }
+  },
+  "sentence_template": {
+    "sentence_id": "d-001",
+    "source_ids": [
+      "d-s1"
+    ],
+    "text_sha256": null,
+    "planned_type": "direct|general|illustrative|none",
+    "hard_negative": false,
+    "factual": false,
+    "claim_kinds": [],
+    "mismatch_trap": null,
+    "synthetic": false
+  },
+  "label_template": {
+    "sentence_id": "d-001",
+    "labeler": "L1",
+    "fit": "DIRECT|ILLUSTRATIVE|MISMATCH|NONE|UNKNOWN",
+    "ranges": [
+      {
+        "source_id": "d-s1",
+        "start_s": 0.0,
+        "end_s": 0.0,
+        "kind": "DIRECT|ILLUSTRATIVE"
+      }
+    ],
+    "claim_present": null,
+    "claim_shown": null,
+    "unknown_reason": null,
+    "synthetic": false
+  },
+  "ai_cost_usd": 0,
+  "readiness_states": {
+    "READY_FOR_PAID_SCRIPT_DRAFT": "Inputs for the paid narration-draft step exist and are cleared: rights, sha256, third-party processing, local-ASR cues. Narration and human labels are NOT needed yet. Still needs a separate Owner cost approval.",
+    "READY_FOR_EVALUATION": "Narration/cues locked, human labels valid and locked, scoring rules (and for HOLDOUT, parameters) locked to a commit. Only then may a split be measured.",
+    "rule": "Check with tools/validate_manifest.py --stage draft|eval --split REAL-DEV|REAL-HOLDOUT. Never fill fields with made-up or synthetic data to pass a check."
+  },
+  "source_template": {
+    "source_id": "x-s1",
+    "path": null,
+    "sha256": null,
+    "duration_ms": null,
+    "language": null,
+    "genre": null,
+    "speech_ratio": null,
+    "license": null,
+    "license_evidence": null,
+    "rights_confirmed_by": null,
+    "rights_confirmed_at": null,
+    "third_party_processing_allowed": null,
+    "third_party_processing_scope": null,
+    "cues_path": null,
+    "cues_sha256": null,
+    "cues_method": "local-asr",
+    "asr_status": null,
+    "asr_model": null,
+    "cue_count": null,
+    "cue_rejected_count": null,
+    "synthetic": false
+  },
+  "field_notes": {
+    "asr_status": "'ok' when local ASR completed (even with no speech found); 'failed' when it did not. Only 'ok' counts.",
+    "cue_count": "Number of cues local ASR produced. 0 is valid for a no-speech source; then speech_ratio must be 0 and the empty cue file is still hashed in cues_sha256.",
+    "speech_ratio": "Computed from the cue file: union of accepted cue intervals / duration_ms, NOT rounded (README §3.3). Never typed; --verify-files recomputes it. 0 means no speech detected by that ASR run, not proof of silence.",
+    "cues_path": "Cue file written by tests/mastering/x2/asr_cues.py (JSON {asr_model, params, versions, asr_status, cues:[{start_ms,end_ms,text}], rejected:[...]}) relative to the --verify-files directory; kept on the test machine, not in the repo.",
+    "cue_rejected_count": "Cues the ASR emitted that are impossible for the file (end <= start, start < 0, end after duration_ms). Kept in the cue file's 'rejected' list with a reason, never deleted, not counted in cue_count or speech_ratio.",
+    "path": "Media file relative to the --verify-files directory. --verify-files recomputes its sha256."
+  }
+}

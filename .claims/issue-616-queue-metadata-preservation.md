@@ -2,7 +2,7 @@ DUBFLOW_PR_V1
 Issue: #616
 Lease-Owner: Claude/issue-616-queue-metadata-preservation
 Lease-Heartbeat: 2026-11-15T08:38:00Z
-Tested-Base-SHA: 39128a77e7c93f02b4526f59d4c2088556b3a0f4
+Tested-Base-SHA: 08b25db079ed5baadd68000ffedd292c27d55a6d
 Conflict-Domains: desktop-shell,media-persistence,local-storage-recovery
 Expected-Paths: .claims/issue-616-queue-metadata-preservation.md,apps/desktop/src/main.ts,apps/desktop/src/features/media/model.ts,apps/desktop/src/features/media/view.ts,apps/desktop/test/media.test.mjs
 Required-CI: PR Fast + PR Integration (desktop-editor-subtitles selected) + PR Desktop Editor Windows
@@ -49,3 +49,11 @@ CODED: NO
 TESTED: NOT_RUN
 INTEGRATED: NO
 ACCEPTED: NO
+
+
+## Lead base synchronization — 2026-11-15T16:42:14.187Z
+
+- Lead incorporated exact Main `08b25db079ed5baadd68000ffedd292c27d55a6d` into this existing branch with a non-force two-parent merge commit. The existing claim commit remains the first parent; current Main is the second parent.
+- Only this claim file was changed by Lead. No product source, tests, workflows, contracts, schemas, lockfiles or other paths were edited.
+- The coder heartbeat remains `2026-11-15T08:38:00Z`; this Lead synchronization is not a coder heartbeat and does not renew coder liveness.
+- Phase remains: ASSIGNED=YES; STARTED=YES (Draft lease only); CODED=NO; TESTED=NOT_RUN; INTEGRATED=NO; ACCEPTED=NO.
