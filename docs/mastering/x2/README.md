@@ -97,20 +97,29 @@ DEV **được** dùng để phân tích lỗi và chỉnh harness, prompt, cử
 
 ### 3.3 Nguồn không lời và cách đo `speech_ratio`
 
-**File cue.** Mỗi nguồn có một file JSON do ASR local ghi ra và lưu nguyên:
+**File cue.** Mỗi nguồn có một file JSON do `tests/mastering/x2/asr_cues.py` ghi ra (ASR local, `local_files_only`) và lưu nguyên:
 
 ```json
-{"asr_model": "faster-whisper-small", "params": {"vad_filter": true, "language": null},
- "cues": [{"start_ms": 1200, "end_ms": 3400, "text": "..."}]}
+{"asr_model": "faster-whisper-small", "params": {"vad_filter": true, "beam_size": 5, "...": "..."},
+ "versions": {"faster-whisper": "...", "ctranslate2": "..."}, "media_sha256": "...", "duration_ms": 248000,
+ "asr_status": "ok",
+ "cues": [{"start_ms": 1200, "end_ms": 3400, "text": "..."}],
+ "rejected": []}
 ```
+
+Thời điểm cue được chép từ model (giây → mili giây nguyên), không sửa. Cue **không thể có** với file này (kết thúc ≤ bắt đầu, bắt đầu < 0, hoặc kết thúc sau `duration_ms` đo bằng ffprobe) được chuyển vào `rejected` kèm lý do. Cue đó được giữ lại để kiểm tra, không tính vào `cue_count` và `speech_ratio`, và được đếm ở `cue_rejected_count`. `rejected` khác với `narration.cue_rejections` (cue hợp lệ về thời gian nhưng ảo về nội dung, xem bên dưới).
+
+Khi ASR lỗi, file ghi `asr_status: "failed"` và lỗi, **không** có khóa `cues`, nên không bao giờ qua được như nguồn không lời.
+
+`tests/mastering/x2/probe_source.py` đo `sha256` (đọc theo khối), `duration_ms` và codec bằng ffprobe.
 
 **`cue_count`** là số phần tử của `cues`.
 
 **`speech_ratio`** được **tính** từ file cue, không nhập tay:
 
 - công thức: tổng độ dài hợp các khoảng `[start_ms, end_ms]` (gộp chỗ chồng nhau) chia cho `duration_ms` của nguồn;
-- làm tròn 3 chữ số;
-- đây là số đo xấp xỉ của "phần có lời theo ASR", không phải nhãn người.
+- **không làm tròn** khi lưu. Làm tròn 3 chữ số từng biến một cue ngắn thật (ví dụ 100 ms trong nguồn 4 giờ) thành `0.000`, tức "không lời". Chỉ được làm tròn khi hiển thị;
+- đây là số đo xấp xỉ của "phần có lời theo ASR", không phải nhãn người. `0` nghĩa là lần chạy này **không phát hiện** lời nói, không chứng minh nguồn im lặng.
 
 **Nguồn không lời.** Một nguồn được coi là không lời khi và chỉ khi:
 
@@ -125,7 +134,12 @@ Không được:
 - Ghi ASR lỗi, bị dừng giữa chừng, thiếu model hoặc thiếu file thành `asr_status: ok`. Những trường hợp đó ghi `failed`, và nguồn không đạt READY cho tới khi chạy lại xong.
 - Tạo cue hoặc transcript giả, hay ghi `cues_method` khác `local-asr` cho cue không do ASR local sinh ra.
 
-`validate_manifest.py --verify-files <thư mục>` tính lại `cues_sha256`, `cue_count` và `speech_ratio` từ file cue thật (sai lệch tối đa 0,001), rồi so với manifest.
+`validate_manifest.py --verify-files <thư mục>` tính lại từ file thật rồi so với manifest:
+
+- `sha256` của file nguồn (`path`); thiếu file thì báo lỗi;
+- `cues_sha256`, `cue_count`;
+- mỗi cue phải có `0 ≤ start_ms < end_ms ≤ duration_ms`, là số mili giây nguyên;
+- `speech_ratio` (sai lệch tối đa 1e-9).
 
 ### 3.4 Tiêu chí chọn REAL-HOLDOUT (ghi trước, 2026-11-15)
 

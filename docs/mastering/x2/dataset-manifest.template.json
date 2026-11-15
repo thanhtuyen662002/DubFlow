@@ -32,6 +32,7 @@
           "asr_status": null,
           "asr_model": null,
           "cue_count": null,
+          "cue_rejected_count": null,
           "synthetic": false
         },
         {
@@ -54,6 +55,7 @@
           "asr_status": null,
           "asr_model": null,
           "cue_count": null,
+          "cue_rejected_count": null,
           "synthetic": false
         }
       ],
@@ -182,12 +184,15 @@
     "asr_status": null,
     "asr_model": null,
     "cue_count": null,
+    "cue_rejected_count": null,
     "synthetic": false
   },
   "field_notes": {
     "asr_status": "'ok' when local ASR completed (even with no speech found); 'failed' when it did not. Only 'ok' counts.",
     "cue_count": "Number of cues local ASR produced. 0 is valid for a no-speech source; then speech_ratio must be 0 and the empty cue file is still hashed in cues_sha256.",
-    "speech_ratio": "Computed from the cue file (union of cue intervals / duration_ms, 3 decimals; README §3.3). Never typed; --verify-files recomputes it.",
-    "cues_path": "Cue file (JSON {asr_model, params, cues:[{start_ms,end_ms,text}]}) relative to the --verify-files directory; kept on the test machine, not in the repo."
+    "speech_ratio": "Computed from the cue file: union of accepted cue intervals / duration_ms, NOT rounded (README §3.3). Never typed; --verify-files recomputes it. 0 means no speech detected by that ASR run, not proof of silence.",
+    "cues_path": "Cue file written by tests/mastering/x2/asr_cues.py (JSON {asr_model, params, versions, asr_status, cues:[{start_ms,end_ms,text}], rejected:[...]}) relative to the --verify-files directory; kept on the test machine, not in the repo.",
+    "cue_rejected_count": "Cues the ASR emitted that are impossible for the file (end <= start, start < 0, end after duration_ms). Kept in the cue file's 'rejected' list with a reason, never deleted, not counted in cue_count or speech_ratio.",
+    "path": "Media file relative to the --verify-files directory. --verify-files recomputes its sha256."
   }
 }
