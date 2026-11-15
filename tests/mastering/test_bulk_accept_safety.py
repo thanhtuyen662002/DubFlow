@@ -150,3 +150,57 @@ class BulkAcceptanceNeverHidesAWrongTimeline(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheCriticalBoundaryIsExact(unittest.TestCase):
+    """Lead finding on 4c95e6f, Owner directive 2026-11-15: critical when ``2 * astray_ms > total_ms``, on the exact
+    milliseconds, never on the note's rounded %. 5 001 of 10 000 ms (50.01 %) was read as "50 %" and was not critical."""
+
+    CASES = (  # (title ms that shows the claim, quote ms that does not, critical?)
+        (5000, 5000, False),   # exactly 50 %: not more than half
+        (4999, 5001, True),    # 50.01 %: the note says 50 %, it is over half
+        (4900, 5100, True),    # 51 %
+        (2700, 7300, True),    # 73 %
+        (5100, 4900, False),   # 49 %
+    )
+
+    def test_the_planner_records_the_exact_time(self):
+        for title, quote, _ in self.CASES:
+            log, _, _, _ = _video(title, quote)
+            coverage = log["units"][0]["coverage"]
+            with self.subTest(title=title, quote=quote):
+                self.assertEqual((coverage["astray_ms"], coverage["need_ms"]), (quote, title + quote))
+
+    def test_the_review_queue(self):
+        for title, quote, critical in self.CASES:
+            log, _, _, state = _video(title, quote)
+            rank, why = rv.priority(log["units"][0], state, None, log["mode"])
+            with self.subTest(title=title, quote=quote):
+                self.assertEqual(rank == rv.CRITICAL, critical, why)
+                self.assertEqual(any("thời lượng câu là cảnh không hiển thị" in w for w in why), critical, why)
+
+    def test_final_qc_with_the_unreviewed_accepted(self):
+        for title, quote, critical in self.CASES:
+            log, plan, length, _ = _video(title, quote)
+            review = rv.Review()
+            review.set_accept_unreviewed(True)
+            out = _final_qc(log, plan, length, review)
+            with self.subTest(title=title, quote=quote):
+                self.assertEqual(out["state"], "FINAL_QC_FAILED" if critical else "READY_TO_FINALIZE", out["checks"])
+
+    def test_a_person_still_settles_each_one_by_hand(self):
+        for title, quote, critical in self.CASES:
+            log, plan, length, _ = _video(title, quote)
+            review = rv.Review()
+            review.decide(log, "u1", "approve")
+            out = _final_qc(log, plan, length, review)
+            claims_check = next(c for c in out["checks"] if c["id"] == "claims")
+            with self.subTest(title=title, quote=quote):
+                self.assertEqual(out["state"], "READY_TO_FINALIZE", out["checks"])
+                self.assertEqual([u["unit_id"] for u in claims_check["user_accepted"]], ["u1"] if critical else [])
+
+    def test_a_log_written_before_astray_ms_reads_its_note(self):
+        log, _, _, state = _video(2700, 7300)
+        del log["units"][0]["coverage"]["astray_ms"]
+        rank, _ = rv.priority(log["units"][0], state, None, log["mode"])
+        self.assertEqual(rank, rv.CRITICAL)  # the note says 73 %

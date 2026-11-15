@@ -161,7 +161,7 @@ def check_parts(parts: Sequence[tuple[str, Mapping[str, Any] | None, Mapping[str
 def _astray(unit: Mapping[str, Any]) -> bool:
     """Whether most of a sentence's timeline shows none of what it says is displayed (#843): settled by the user's own
     decision, it is named as the user's acceptance."""
-    return any((p := claims.astray_percent(n)) is not None and p > claims.ASTRAY_CRITICAL_PERCENT for n in unit.get("notes") or ())
+    return claims.astray_over_half(unit)
 
 
 def listed(names: Sequence[str], limit: int = LISTED) -> str:

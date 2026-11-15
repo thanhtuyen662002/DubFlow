@@ -100,7 +100,9 @@
                          "best_relevance": {"description": "The sentence's best relevance (0-1000) over the usable footage; a near miss (> 0) is never SOURCE_INSUFFICIENT. Absent in older logs.",
                                             "type": "integer", "minimum": 0, "maximum": 1000},
                          "user_ms": {"description": "Time the user's pinned shots fill that the AI saw no match in: the user's illustration, never counted in illustrated_ms or as evidence. Absent in older logs (whose pins counted as matches).",
-                                     "type": "integer", "minimum": 0}}},
+                                     "type": "integer", "minimum": 0},
+                         "astray_ms": {"description": "#843: for a sentence about something displayed, the time of its pieces that show none of what it says is displayed. More than half of need_ms (2 x astray_ms > need_ms) is critical: never settled by accepting the unreviewed. Absent when no piece is astray and in older logs.",
+                                       "type": "integer", "minimum": 0}}},
         "signals": {
           "description": "The separate signals behind the verdict (Gate S final closure): evidence reliability, semantic relevance, temporal coverage, allocation and review risk, each on its own scale. Explains the verdict, never changes it. Absent in older logs.",
           "type": "object", "additionalProperties": false,

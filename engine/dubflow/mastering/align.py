@@ -1356,8 +1356,10 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
                 astray_ids = {id(c) for c in astray}
                 if astray:  # said in a note: the log's claim keys stay those of the contract (editorial-v1)
                     coverage["needs_review"] = True
+                    # the exact time, for the critical boundary (#843: 2 × astray_ms > need_ms, never the rounded %)
+                    coverage["astray_ms"] = sum(c.length_ms for c in astray)
                     decision.notes.append(said.piece_note([*claim_result.verified, *claim_result.unverified,
-                                                           *claim_result.conflicts], sum(c.length_ms for c in astray),
+                                                           *claim_result.conflicts], coverage["astray_ms"],
                                                           unit.length_ms))
 
         def flag(c: Choice) -> bool:
