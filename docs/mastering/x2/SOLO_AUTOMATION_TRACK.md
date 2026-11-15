@@ -89,11 +89,11 @@ The ground truth here is the local ASR cue. It says where the words are spoken, 
 
 A Vietnamese narration over an English source is close to blind for lexical retrieval. This is the case X2's cue provenance (arms B/C) is meant to fix.
 
-## 5. SOLO-QA (lower evidence level, proposed)
+## 5. SOLO-QA (lower evidence level, approved as optional 2026-11-15)
 
 When the Owner has a few minutes, this is the procedure. It is optional and never a gate for engineering work.
 
-1. The harness writes a short list (≤ 10) of the units where a decision matters most: a contradicted claim, a cue-aligned shot that differs from the baseline, a hard negative that got footage.
+1. `tests/mastering/x2/solo_qa.py` writes a short list (5–10) of the units where a decision matters most: a year or entity that differs from the speech over the shot, a piece the #867 experiment moved, footage found only through speech, a partly illustrated sentence. Units the planner already says have no footage are left out.
 2. The Owner looks at each list item once. The answer is recorded as `owner_spot_check` with a timestamp, and **is not** a label in the X2 sense: there is one person, who knows the system, and nothing is adjudicated.
 3. Spot checks may support or refute an engineering finding. They never make a formal result.
 
@@ -102,3 +102,16 @@ When the Owner has a few minutes, this is the procedure. It is optional and neve
 - It does not change the READY threshold, Gate B/D, #844, or the production planner, retrieval or verification policy. A production change found here goes to a proposal with its evidence and stops at the Owner's gate.
 - It does not send frames, audio or video to any API. It does not call a paid API without approval.
 - It does not put media in the repository. It does not use W3 as independent data.
+
+## 7. Tools added on 2026-11-15 (Solo V3)
+
+All are level 1 and offline, at $0. None changes a production default.
+
+| Tool | What it answers |
+|---|---|
+| `d1_bench.py` | Does the #867 cue in-point move a piece onto its cue without harming the picture? It has 12 hand-made scenarios, run in reorder and forward-only mode. The picture truth is separate from the cue truth |
+| `cue_lineage.py` | Can a Vietnamese sentence that cites English cue ids find its shot? The chain is source, cue id, time from the hashed cue file, shot, then played span. It compares the X2-style arms none / lexical / region / ranked / block on a bilingual fixture. These are fixture proxies, never X2 results |
+| `hard_negatives.py` | For hard negatives, counts offered, assigned, reviewed and blocked separately. Also has a word-contrast prototype that is never wired in |
+| `solo_qa.py` | Builds the optional spot-check list and records an `owner_spot_check` answer |
+
+The #867 experiment is `cue_inpoint_lead_ms` on `align.assign` and `compilation.plan_part`. It is off (`None`) on every production path. Turning it on by default is the Owner's decision.
