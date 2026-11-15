@@ -217,3 +217,47 @@ console.log("desktop queue tests passed");
   assert.equal(siblingRunDir("D:/out/a - vi/run-1/", "job-ABC123def456"), "D:/out/a - vi/run-abc123def456");
 }
 console.log("queue rerun tests passed");
+
+// #850: the summary keeps a user cancel (FAILED/cancelled, job_status v1) apart from a real failure.
+{
+  const store = new QueueController(new MemorySnapshotStorage(), clock);
+  const [doneId, cancelId, brokenId] = store.addPaths(["C:/media/done.mp4", "C:/media/cancel.mp4", "C:/media/broken.mp4"]);
+  const base = store.getSnapshot().jobs[0].status;
+  store.updateStatus(doneId, { ...base, state: "COMPLETED", reason: "completed_with_warnings" }, "C:/out/done_vi.mp4");
+  store.updateStatus(cancelId, { ...base, state: "FAILED", reason: "cancelled", message: "Đã hủy theo yêu cầu", checkpoint_id: "subtitles" });
+  store.updateStatus(brokenId, { ...base, state: "FAILED", reason: "worker_error", message: "Worker lỗi", checkpoint_id: "subtitles" });
+  assert.deepEqual(store.getSummary(), { total: 3, queued: 0, active: 0, waiting: 0, completed: 1, failed: 1, cancelled: 1 });
+  assert.deepEqual(toQueueViewModel(store.getSnapshot()).summary, store.getSummary());
+
+  // The persisted record is not rewritten: a cancel stays FAILED/cancelled with its checkpoint.
+  const saved = store.getSnapshot().jobs.find((job) => job.id === cancelId).status;
+  assert.equal(saved.state, "FAILED");
+  assert.equal(saved.reason, "cancelled");
+  assert.equal(saved.checkpoint_id, "subtitles");
+  assert.equal(store.getSnapshot().jobs.find((job) => job.id === brokenId).status.checkpoint_id, "subtitles");
+
+  // "Thử lại" works the same after a cancel and after a worker error: the original stays terminal
+  // and keeps its group, the rerun is a new QUEUED job.
+  const rerunCancel = store.retryJob(cancelId);
+  const rerunBroken = store.retryJob(brokenId);
+  assert.notEqual(rerunCancel, cancelId);
+  assert.notEqual(rerunBroken, brokenId);
+  for (const id of [rerunCancel, rerunBroken]) {
+    const rerun = store.getSnapshot().jobs.find((job) => job.id === id);
+    assert.equal(rerun.status.state, "QUEUED");
+    assert.equal(rerun.status.reason, "manual_retry");
+  }
+  assert.deepEqual(store.getSummary(), { total: 5, queued: 2, active: 0, waiting: 0, completed: 1, failed: 1, cancelled: 1 });
+
+  // The summary survives a restart from storage.
+  const storage = new MemorySnapshotStorage();
+  const persisted = new QueueController(storage, clock);
+  const [a, b] = persisted.addPaths(["C:/media/a.mp4", "C:/media/b.mp4"]);
+  const start = persisted.getSnapshot().jobs[0].status;
+  persisted.updateStatus(a, { ...start, state: "FAILED", reason: "cancelled" });
+  persisted.updateStatus(b, { ...start, state: "FAILED", reason: "worker_lost" });
+  const reopened = new QueueController(storage, clock).getSummary();
+  assert.equal(reopened.cancelled, 1);
+  assert.equal(reopened.failed, 1);
+}
+console.log("queue summary cancel tests passed");

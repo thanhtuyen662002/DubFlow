@@ -1,5 +1,5 @@
 import { isBlurRegionList, type BlurRegion } from "../blur/region.ts";
-import type { JobStatus, JobStatusState } from "../job_status/status.ts";
+import { isCancelled, type JobStatus, type JobStatusState } from "../job_status/status.ts";
 import { isDubbingOptions, type DubbingOptions } from "../voices/model.ts";
 
 export const QUEUE_SCHEMA_VERSION = 1 as const;
@@ -62,7 +62,10 @@ export type QueueSummary = {
   active: number;
   waiting: number;
   completed: number;
+  /** FAILED jobs that the user did not cancel. */
   failed: number;
+  /** FAILED/cancelled jobs: job_status v1 has no CANCELLED state, so a user cancel persists as FAILED with reason "cancelled". */
+  cancelled: number;
 };
 
 export type SnapshotStorage = {
@@ -260,12 +263,14 @@ export function summarizeQueue(snapshot: QueueSnapshot): QueueSummary {
     waiting: 0,
     completed: 0,
     failed: 0,
+    cancelled: 0,
   };
   for (const job of snapshot.jobs) {
     if (job.status.state === "QUEUED") summary.queued += 1;
     else if (ACTIVE_STATES.has(job.status.state)) summary.active += 1;
     else if (WAITING_STATES.has(job.status.state)) summary.waiting += 1;
     else if (job.status.state === "COMPLETED") summary.completed += 1;
+    else if (isCancelled(job.status)) summary.cancelled += 1;
     else if (job.status.state === "FAILED") summary.failed += 1;
   }
   return summary;
