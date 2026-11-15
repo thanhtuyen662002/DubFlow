@@ -1,7 +1,7 @@
 DUBFLOW_PR_V1
 Issue: #837
 Lease-Owner: Claude/issue-837
-Lease-Heartbeat: 2026-11-15T02:33:22Z
+Lease-Heartbeat: 2026-11-15T02:55:38Z
 Tested-Base-SHA: 3ecaf7d65cf673412424bc2f7bbeb302fe27e5f7
 Depends-On: #840 (#836), stacked on agent/issue-836-transcript-ready
 Conflict-Domains: mastering-editorial,mastering-evaluation

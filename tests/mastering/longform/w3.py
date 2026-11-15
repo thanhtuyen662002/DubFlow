@@ -99,6 +99,18 @@ def hits(c: Mapping[str, Any], ranges: Sequence[Sequence[float]]) -> bool:
     return False
 
 
+def right_ms(start: float, end: float, ranges: Sequence[Sequence[float]]) -> int:
+    """How much of ``start``–``end`` (ms) lies inside the union of ``ranges`` (seconds): overlapping ranges counted
+    once."""
+    union: list[list[float]] = []
+    for r0, r1 in sorted((r0 * 1000, r1 * 1000) for r0, r1 in ranges if r1 > r0):
+        if union and r0 <= union[-1][1]:
+            union[-1][1] = max(union[-1][1], r1)
+        else:
+            union.append([r0, r1])
+    return int(sum(overlap(start, end, r0, r1) for r0, r1 in union))
+
+
 # --- a run ---
 
 @dataclass
@@ -188,8 +200,11 @@ def judge(unit: Mapping[str, Any], g: Mapping[str, Any], cands: Mapping[str, Map
     pieces = timeline_pieces(unit, cands)
     for p in pieces:
         p["hit"] = bool(ranges) and hits({"start_ms": p["offset_ms"], "end_ms": p["offset_ms"] + p["length_ms"]}, ranges)
+        p["right_ms"] = right_ms(p["offset_ms"], p["offset_ms"] + p["length_ms"], ranges)
     total = sum(p["length_ms"] for p in pieces)
-    duration = sum(p["length_ms"] for p in pieces if p["hit"]) * 1000 // total if total else 0
+    # the time on screen that is inside the labelled ranges (#837 Lead review on d7d102d): a piece that passes the
+    # binary hit with 1 s of 5 s inside counts 1 s, not 5 s; ``hit`` stays for lenient and strict
+    duration = sum(p["right_ms"] for p in pieces) * 1000 // total if total else 0
     stated = said.of(str(unit.get("text") or ""))
     claim_failure = False
     if stated.display and stated.any:

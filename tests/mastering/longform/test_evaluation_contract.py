@@ -69,6 +69,23 @@ class Contract(unittest.TestCase):
         v = judge([("in", 11_000, 500), ("in2", 13_000, 500), ("in", 15_000, 500), ("out", 41_000, 3000)])
         self.assertEqual((v["lenient"], v["strict"], v["duration_milli"], v["severe"]), (True, False, 333, True))
 
+    def test_a_piece_mostly_outside_the_range_counts_only_its_inside(self):
+        # Lead review on d7d102d: 5 s on screen, 1 s inside the range: a hit (>= 1 s) for lenient, 20 % for duration
+        v = judge([("wide", 19_000, 5000)])
+        self.assertEqual((v["lenient"], v["strict"], v["duration_milli"]), (True, True, 200))
+        self.assertEqual(v["severe_reasons"], ["majority_wrong_duration"])
+
+    def test_half_inside_is_the_boundary(self):
+        v = judge([("wide", 17_500, 5000)])  # 2.5 s of 5 s inside: not more than half wrong
+        self.assertEqual((v["duration_milli"], v["severe"]), (500, False))
+        v = judge([("wide", 17_505, 5000)])  # 2 495 ms inside
+        self.assertEqual((v["duration_milli"], v["severe_reasons"]), (499, ["majority_wrong_duration"]))
+
+    def test_overlapping_ranges_are_counted_once(self):
+        gt = {"text": "x", "ranges": [[10.0, 20.0], [15.0, 25.0]], "kind": "footage"}
+        v = judge([("wide", 18_000, 4000), ("out", 41_000, 4000)], gt=gt)
+        self.assertEqual(v["duration_milli"], 500)
+
     def test_right_pieces_with_a_claim_left_unshown_are_severe(self):
         # every piece is inside the range, but the sentence says a title is displayed and no piece shows it
         v = judge([("in", 11_000, 3000)], text="Dòng chữ lớn The Battle of Russia hiện lên.")
