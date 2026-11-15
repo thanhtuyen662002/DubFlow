@@ -48,6 +48,7 @@ class EndToEnd(unittest.TestCase):
         cls.tmp = tempfile.TemporaryDirectory()
         cls.with_cues = sb.run(Path(cls.tmp.name))["summary"]
         cls.no_cues = sb.run(Path(cls.tmp.name), with_cues=False)["summary"]
+        cls.experiment = sb.run(Path(cls.tmp.name), cue_inpoint_lead_ms=300)["summary"]  # #867, off in production
 
     @classmethod
     def tearDownClass(cls):
@@ -69,6 +70,13 @@ class EndToEnd(unittest.TestCase):
 
     def test_final_qc_blocks_the_unreviewed_part(self):
         self.assertFalse(self.with_cues["final_qc"]["decisions"])
+
+    def test_cue_inpoint_experiment_plays_over_the_cue_and_changes_nothing_else(self):
+        self.assertEqual(self.with_cues["match_played_over_cue"], 4)  # production default: D1
+        self.assertEqual(self.experiment["match_played_over_cue"], self.experiment["match_units"])
+        for key in ("ready", "match_top1_segment", "false_assignments", "false_assignments_by_kind", "whole_part_review",
+                    "final_qc"):
+            self.assertEqual(self.experiment[key], self.with_cues[key], key)
 
 
 if __name__ == "__main__":

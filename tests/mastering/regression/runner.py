@@ -102,15 +102,18 @@ def look_again(scenario: Mapping[str, Any], candidates, found, groups, decisions
     return out, 2 * len(ids)
 
 
-def run(scenario: Mapping[str, Any]) -> dict[str, Any]:
+def run(scenario: Mapping[str, Any], *, cue_inpoint_lead_ms: int | None = None) -> dict[str, Any]:
+    """``cue_inpoint_lead_ms``: the #867 experiment (off by default). The scenarios hold the speech in a shot as text
+    with no cue times, so it can only show that the experiment leaves them as they are."""
     candidates, found, stills, groups, found_units, total = build(scenario)
     pacing = rules.STYLE_PACING[scenario.get("pacing", "natural")]
     forward = bool(scenario.get("forward_only"))
-    choices, decisions, mode = align.assign(found_units, candidates, found, pacing, forward_only=forward, groups=groups, stills=stills)
+    choices, decisions, mode = align.assign(found_units, candidates, found, pacing, forward_only=forward, groups=groups, stills=stills,
+                                            cue_inpoint_lead_ms=cue_inpoint_lead_ms)
     candidates, looked = look_again(scenario, candidates, found, groups, decisions)
     if looked:
         choices, decisions, mode = align.assign(found_units, candidates, found, pacing, forward_only=forward, groups=groups,
-                                                stills=stills)
+                                                stills=stills, cue_inpoint_lead_ms=cue_inpoint_lead_ms)
     pieces = quality.pieces_from_choices(choices, stills=stills)
     flagged: dict[str, bool] = {}
     for choice in choices:

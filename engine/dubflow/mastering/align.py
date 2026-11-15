@@ -25,7 +25,7 @@ confidence 450 and marked for review, and the decision log says so.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import hashlib
 import json
 import math
@@ -35,6 +35,7 @@ from typing import Any, Iterable, Mapping, Sequence
 from . import claims as said
 from . import entities as names
 from . import evidence as ev
+from . import lineage as lin
 from .candidates import Candidate
 from .frames import parent
 from .policy import Pacing
@@ -197,6 +198,7 @@ class Decision:
     coverage: dict[str, Any] = field(default_factory=dict)
     signals: dict[str, Any] = field(default_factory=dict)
     pieces: list[dict[str, Any]] = field(default_factory=list)  # what plays: shot, source offset, length (P2-N5)
+    lineage: dict[str, Any] | None = None  # EXPERIMENT (cue lineage): only when the plan was made with one
 
     def to_dict(self) -> dict[str, Any]:
         out = {"unit_id": self.unit.unit_id, "text": self.unit.text, "function": self.unit.function,
@@ -206,6 +208,8 @@ class Decision:
             out["signals"] = self.signals
         if self.pieces:
             out["pieces"] = self.pieces
+        if self.lineage is not None:
+            out["lineage"] = self.lineage
         return out
 
 
@@ -638,7 +642,8 @@ def left_out(edits: Edits, candidates: Sequence[Candidate]) -> set[str]:
 
 def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidence: Mapping[str, ev.Evidence], pacing: Pacing,
            *, forward_only: bool, edits: Edits | None = None, groups: Mapping[str, str] | None = None,
-           stills: Iterable[str] = (), shown: Iterable[str] = (), product: bool = False) -> tuple[list[Choice], list[Decision], str]:
+           stills: Iterable[str] = (), shown: Iterable[str] = (), product: bool = False,
+           cue_inpoint_lead_ms: int | None = None, lineage: lin.Lineage | None = None) -> tuple[list[Choice], list[Decision], str]:
     """See :func:`_assign`. Approvals (``edits.keep``) are constraints only where they are needed: when the plan made
     without them already shows every approved sentence as approved, that plan is the plan, so approving alone never
     changes another sentence's footage (P2-N5). Only an approval whose footage the plan would change makes the
@@ -647,7 +652,12 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
     texts = {u.unit_id: u.text for u in found_units}
     keep = {unit_id: pieces for unit_id, pieces in edits.keep.items() if unit_id in texts and unit_id not in edits.pin
             and (unit_id not in edits.keep_words or edits.keep_words[unit_id] == words_digest(unit_id, texts[unit_id]))}
-    kwargs = dict(forward_only=forward_only, groups=groups, stills=tuple(stills), shown=tuple(shown), product=product)
+    if cue_inpoint_lead_ms is not None and (type(cue_inpoint_lead_ms) is not int or not 0 <= cue_inpoint_lead_ms <= 5000):
+        raise ValueError("cue_inpoint_lead_ms must be None or 0–5000")
+    if lineage is not None and (not isinstance(lineage, lin.Lineage) or len(lineage.cues) != len(found_units)):
+        raise ValueError("lineage must be a lineage.Lineage with one entry per sentence")
+    kwargs = dict(forward_only=forward_only, groups=groups, stills=tuple(stills), shown=tuple(shown), product=product,
+                  cue_inpoint_lead_ms=cue_inpoint_lead_ms, lineage=lineage)
     free = Edits(dict(edits.pin), set(edits.exclude), set(edits.exclude_sources), exclude_ranges=dict(edits.exclude_ranges))
     if not keep:
         return _assign(found_units, candidates, evidence, pacing, edits=free, **kwargs)
@@ -670,7 +680,8 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
 
 def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidence: Mapping[str, ev.Evidence], pacing: Pacing,
             *, forward_only: bool, edits: Edits | None = None, groups: Mapping[str, str] | None = None,
-            stills: Iterable[str] = (), shown: Iterable[str] = (), product: bool = False) -> tuple[list[Choice], list[Decision], str]:
+            stills: Iterable[str] = (), shown: Iterable[str] = (), product: bool = False,
+            cue_inpoint_lead_ms: int | None = None, lineage: lin.Lineage | None = None) -> tuple[list[Choice], list[Decision], str]:
     """Footage for every unit, the decision log and the mode (``content`` or ``signals_only``).
 
     *Sentence coverage*: each sentence gets pieces until its whole time is covered, first from the footage that
@@ -689,6 +700,20 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
 
     ``product``: the footage is of one product (Bán hàng): an opening with no match of its own is READY only on a
     shot the vision saw the product in (P1-N1).
+   
+    ``cue_inpoint_lead_ms`` (EXPERIMENT #867, ``None`` = off, the default on every production path): a shot taken as a
+    match because the speech over it says what the sentence says starts ``cue_inpoint_lead_ms`` before the transcript
+    cue inside it that shares the most words with the sentence, instead of where the shot (or its unplayed rest)
+    starts. Only the in-point moves, inside the shot and never earlier than its unplayed rest: the piece keeps its
+    length, the candidate, its score, confidence, review flags and READY are what they would be without it, and a
+    cue says where words are spoken, never what the picture shows.
+
+    ``lineage`` (EXPERIMENT, ``None`` = off, the default on every production path; see :mod:`.lineage`): each
+    sentence's verified cited cues. Their words are added to the sentence's words when shots are ranked (``ranked``);
+    ``region`` also keeps only shots inside the cited cues' region (± ``window_ms``), and a sentence with no valid cue
+    matches nothing (no whole-source fallback). Confidence, review flags, coverage and READY are worked out exactly
+    as without it, from what verifies the picture; each decision logs its links with ``picture_verified: false``.
+    With ``cue_inpoint_lead_ms`` the in-point uses the cited cue inside the shot.
     """
     edits = edits or Edits()
     groups = groups or {}
@@ -715,7 +740,22 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
         group_uses[group] = group_uses.get(group, 0) + 1
     resume: dict[str, int] = {}
     source_end: dict[str, int] = {}
-    relevance_of = {(u.unit_id, c.candidate_id): scorer.relevance(u, c) for u in found_units for c in usable}
+    # lineage (EXPERIMENT): rank with the cited cues' own words; region: nothing outside the cited cues' region
+    cited: dict[str, tuple[lin.Cue, ...]] = {}
+    query = {u.unit_id: u for u in found_units}
+    if lineage is not None:
+        for u, cues in zip(found_units, lineage.cues):
+            cited[u.unit_id] = cues
+            if cues:
+                query[u.unit_id] = replace(u, text=" ".join([u.text, *(q.text for q in cues)]))
+    relevance_of = {(u.unit_id, c.candidate_id): scorer.relevance(query[u.unit_id], c) for u in found_units for c in usable}
+    if lineage is not None and lineage.mode == "region":
+        reach = lineage.window_ms
+        for u in found_units:
+            for c in usable:
+                if not any(c.source_id == q.source_id and c.start_ms < q.end_ms + reach and c.end_ms > q.start_ms - reach
+                           for q in cited[u.unit_id]):
+                    relevance_of[(u.unit_id, c.candidate_id)] = (0, [])
     # a text card illustrates only a sentence about what is written; while the source has any other usable footage
     # the words printed on a card (a title that repeats the opening: dev2-title-card-opening) are no match for a
     # sentence that is not about them, so it is filled from real footage and flagged when nothing else matches.
@@ -915,6 +955,26 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
         only reweighs the words is not this shot's speech)."""
         return scorer.own_speech_lifts(unit, candidate, relevance_of[(unit.unit_id, candidate.candidate_id)][0])
 
+    def cue_start(unit: Unit, candidate: Candidate) -> int | None:
+        """EXPERIMENT #867: the source time of the cue inside ``candidate`` that shares the most words with ``unit``
+        (the earliest of equals), when the speech over the shot is what raises its match; ``None`` otherwise."""
+        if cue_inpoint_lead_ms is None:
+            return None
+        own = [q.start_ms for q in cited.get(unit.unit_id, ()) if q.source_id == candidate.source_id
+               and candidate.start_ms <= q.start_ms < candidate.end_ms]
+        if own:  # lineage: the cue the sentence cites, not the one sharing most words
+            return min(own)
+        found = evidence.get(candidate.candidate_id)
+        if found is None or not found.cues or not speech_matches(unit, candidate):
+            return None
+        wanted = ev.terms(unit.text)
+        best: tuple[int, int] | None = None
+        for start, _end, text in found.cues:
+            shared = len(wanted & ev.terms(text))
+            if shared and (best is None or shared > best[0]):
+                best = (shared, start)
+        return None if best is None else best[1]
+
     ahead_now = 0
     narration_left = 0
 
@@ -1060,13 +1120,26 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
             length = cap if candidate.candidate_id in still_ids else min(left, cap)
             if length <= 0:
                 return 0
+            moved = False
+            if cue_inpoint_lead_ms is not None and tier == "match" and not repeat and candidate.candidate_id not in still_ids:
+                at = cue_start(unit, candidate)
+                if at is not None:
+                    # later only, inside the shot, the piece's length kept: never before what already played
+                    target = min(at - cue_inpoint_lead_ms, candidate.end_ms - length)
+                    # forward only, the frames skipped are gone for good: never when what is left ahead would no
+                    # longer cover the narration still to come (a later sentence holding a frame or going back)
+                    later_need = after + max(0, need - covered - length)
+                    if target > offset and (not forward_only
+                                            or ahead(candidate) + max(0, candidate.end_ms - target - length) >= later_need):
+                        offset, moved = target, True
             if picks and picks[-1]["candidate"].candidate_id == candidate.candidate_id \
                     and picks[-1]["offset"] + picks[-1]["length"] == offset and not repeat:
                 picks[-1]["length"] += length  # playing on: one piece
             else:
                 total, confidence, reasons, _ = next(r for r in ranked if r[3] is candidate) if ranked else (1000, 1000, [], None)
                 picks.append({"candidate": candidate, "offset": offset, "length": length, "tier": tier, "repeat": repeat,
-                              "score": total, "confidence": confidence, "reasons": list(reasons)})
+                              "score": total, "confidence": confidence,
+                              "reasons": [*reasons, *(["thử nghiệm #867: điểm vào theo lời nguồn"] if moved else [])]})
             consume(candidate, offset, length)
             covered += length
             return length
@@ -1312,6 +1385,20 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
                     "needs_review": review, "matched_footage": len(accept), "best_relevance": best, "user_ms": user_ms,
                     "astray_ms": 0}
         decision.coverage = coverage
+        if lineage is not None:
+            index = positions[unit.unit_id]
+            links = []
+            for q in cited[unit.unit_id]:
+                holder = next((c for c in candidates if c.source_id == q.source_id and c.start_ms <= q.start_ms < c.end_ms), None)
+                played = [(p["offset_ms"], p["offset_ms"] + p["length_ms"]) for p in decision.pieces
+                          if holder is not None and p["id"] == holder.candidate_id]
+                links.append(lin.link(q, holder, played))
+            decision.lineage = {"mode": lineage.mode, "no_cue": lineage.reason(index),
+                                "rejected": [list(r) for r in lineage.rejected[index]], "links": links,
+                                "picture_verified": False}
+            if lineage.mode == "region" and not accept:
+                decision.notes.append("thử nghiệm lineage (region): không có cue hợp lệ hoặc không có cảnh trong vùng cue, "
+                                      "không tìm sang phần khác của nguồn (no_cue_region)")
         note = "" if generic else _coverage_note(milli, bool(accept))
         if named_ms:  # said in a note, the log's coverage keys stay those of the contract (editorial-v1)
             note = (f"{named_ms / 1000:.1f} giây cảnh chỉ khớp tên file, chưa có bằng chứng hình ảnh: cần kiểm tra"
