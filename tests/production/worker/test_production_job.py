@@ -236,7 +236,7 @@ class ProductionWorkerTests(unittest.TestCase):
             environment["DUBFLOW_WORKER_PROCESS"] = "1"
             environment["PYTHONPATH"] = os.pathsep.join((str(repo_root), str(site_packages)))
             result = subprocess.run(
-                [sys.executable, "-c", script],
+                [sys.executable, "-B", "-c", script],
                 cwd=repo_root,
                 env=environment,
                 capture_output=True,

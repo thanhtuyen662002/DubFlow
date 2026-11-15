@@ -35,7 +35,7 @@ class NativeFailureTests(unittest.TestCase):
             script = Path(directory) / "child.py"
             script.write_text(code, encoding="utf-8")
             pack = SimpleNamespace(path=Path(directory), noise_scale=0.0, noise_scale_w=0.0)
-            return NativeProcess(pack, timeout=timeout, command=[sys.executable, "-I", "-u", str(script)])
+            return NativeProcess(pack, timeout=timeout, command=[sys.executable, "-I", "-B", "-u", str(script)])
 
     def test_native_initialization_crash_is_typed_and_parent_survives(self) -> None:
         with self.assertRaises(TtsError) as raised:
@@ -260,7 +260,7 @@ from pathlib import Path
 namespace = runpy.run_path(sys.argv[3])
 class BusyModel:
     def __init__(self, request):
-        descendant = subprocess.Popen([sys.executable, '-I', '-c', 'import time; time.sleep(60)'])
+        descendant = subprocess.Popen([sys.executable, '-I', '-B', '-c', 'import time; time.sleep(60)'])
         Path(sys.argv[1], 'pids.json').write_text(json.dumps([os.getpid(), descendant.pid]))
         if sys.argv[2] == 'initialization':
             self.block()
@@ -287,7 +287,7 @@ bridge.generate('Xin chao', sid=0, speed=1.0)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "child.py").write_text(child_script, encoding="utf-8")
-            process = subprocess.Popen([sys.executable, "-c", parent_script, str(root), phase, self.entrypoint_name], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            process = subprocess.Popen([sys.executable, "-B", "-c", parent_script, str(root), phase, self.entrypoint_name], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             handles = []
             try:
                 self.wait_for_file(root / "busy", process)
