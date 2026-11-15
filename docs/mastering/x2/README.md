@@ -239,6 +239,14 @@ Chi phí DEV ($6, chưa duyệt) chia làm hai lần xin, mỗi lần gắn vớ
 1. `validate_manifest.py --stage draft --split REAL-DEV` không báo lỗi (**READY FOR PAID SCRIPT DRAFT**).
 2. Prompt và schema cue đã commit. Harness từ chối cue không tồn tại.
 
+Harness 1a: `tests/mastering/x2/script_draft.py` (prompt `SYSTEM`, schema `SCHEMA`, hạn mức câu `QUOTA`).
+- Chỉ gửi văn bản transcript. `api_scope.preflight` chặn mọi khối không phải text (ảnh, khung hình, âm thanh, video, file), tool/MCP, và media giấu trong text (`data:` URI, URL media, chuỗi base64 dài, tên file media). Nguồn phải có `third_party_processing_scope` đã biết; `true` trần không đủ, validator `--stage draft` cũng đòi trường này.
+- Hạn mức DEV: 19 câu có footage (9 trực tiếp, trong đó ≥ 4 `factual`; 5 khái quát; 5 minh họa). AI **không** viết câu không footage hay hard negative: phần đó là của người viết B (§3.2 bước 3).
+- Cue id do AI trích phải có thật trong đúng nguồn. Câu trích id không tồn tại bị loại và ghi vào `cue_rejections`, không tự sửa.
+- Chi phí lớp 2: `Ledger` đọc `usage` mỗi response, chặn request tiếp theo khi đã chi + trường hợp xấu nhất vượt trần, giới hạn số lần gọi, thiếu `usage` thì tính theo `max_tokens` và dừng. Không chạy song song, SDK không tự thử lại.
+- `estimate` và `dry-run` (transport giả) chạy ở $0. `live` chỉ chạy khi có `--approval`, `--cap-usd`, `--max-calls`. Quyền dữ liệu (preflight) và quyền chi tiền (Ledger + phê duyệt 1a) là hai cổng riêng; 1a không bao gồm 1b.
+- Kết quả (`narration-draft.json`, `ledger.jsonl`) chỉ giữ trên máy kiểm thử, `status: DRAFT_NOT_LOCKED`, `method: ai-draft-with-cues`. Bản `dry-run` gắn `synthetic: true` nên không bao giờ qua được `--stage eval`.
+
 **1b. Xin phê duyệt chi phí cho phép đo DEV (Vision, 4 nhánh).** Tất cả phải đúng:
 
 1. `validate_manifest.py --stage eval --split REAL-DEV` không báo lỗi (**READY FOR EVALUATION**).
@@ -280,5 +288,6 @@ Một kết quả tích cực chỉ cho phép **đề xuất** bước tiếp th
 | Nguồn không lời / DEV vs HOLDOUT | Validator đòi `asr_status`, `cue_count`, `asr_model`; DEV không cần nguồn HOLDOUT. Test `tests/mastering/x2/test_validate_manifest.py` |
 | Gói xác nhận quyền | Giữ ngoài repo (thư mục dự án), chờ người có thẩm quyền |
 | Baseline từ số đo cũ | Giữ ngoài repo (thư mục dự án, 2026-11-15) |
+| Harness 1a (preflight phạm vi, prompt/schema, Ledger, dry-run) | Xong ở $0 (2026-11-15). Chưa gọi API |
 | Ngân sách X2 | Chưa duyệt |
 | **REAL-DEV PREPARATION** | **PARTIAL** (giao thức và công cụ sẵn; dữ liệu và con người chờ) |

@@ -16,6 +16,9 @@ Anything marked synthetic, and AI-judged labels, never count toward READY.
 """
 import hashlib, json, os, sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import api_scope  # noqa: E402
+
 MIX = (("direct", "direct"), ("general", "general_commentary"), ("illustrative", "illustrative_broll"), ("none", "no_footage"))
 
 
@@ -57,6 +60,12 @@ def draft(split, data):
             out.append(f"{split} {sid}: file not recorded (path, sha256, duration)")
         if s.get("third_party_processing_allowed") is not True:
             out.append(f"{split} {sid}: sending frames/transcript to an API not cleared")
+        else:
+            # a bare true is not enough: what may be sent must be named (api_scope.SCOPES), e.g. transcript text only
+            try:
+                api_scope.scope_of(s)
+            except api_scope.ScopeError as error:
+                out.append(f"{split} {error}")
         if not s.get("cues_sha256") or s.get("cues_method") != "local-asr":
             out.append(f"{split} {sid}: no local-ASR cue file recorded")
         # A source without speech is valid: local ASR ran and found nothing (cue_count 0, an empty cue file
