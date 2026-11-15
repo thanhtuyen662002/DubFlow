@@ -107,9 +107,9 @@ DEV **được** dùng để phân tích lỗi và chỉnh harness, prompt, cử
  "rejected": []}
 ```
 
-Thời điểm cue được chép từ model (giây → mili giây nguyên), không sửa. Cue **không thể có** với file này (kết thúc ≤ bắt đầu, bắt đầu < 0, hoặc kết thúc sau `duration_ms` đo bằng ffprobe) được chuyển vào `rejected` kèm lý do. Cue đó được giữ lại để kiểm tra, không tính vào `cue_count` và `speech_ratio`, và được đếm ở `cue_rejected_count`. `rejected` khác với `narration.cue_rejections` (cue hợp lệ về thời gian nhưng ảo về nội dung, xem bên dưới).
+Thời điểm cue được chép từ model (giây → mili giây nguyên), không sửa. Mỗi cue bắt đầu ở **từ đầu tiên** và kết thúc ở **từ cuối cùng** (`word_timestamps`), không theo khung của segment Whisper, vì khung segment hay trùm cả khoảng im lặng. Track A ngày 2026-11-15 cho thấy: 3 cue phủ 25,9 s trong khi chỉ có 12,4 s lời nói, `speech_ratio` 0,432 thay vì 0,206. Khung segment được giữ trong `segment_start_ms`/`segment_end_ms` để kiểm tra. Khi model không trả về thời điểm từng từ, cue dùng khung segment và ghi `timing: "segment"`. Cue **không thể có** với file này (kết thúc ≤ bắt đầu, bắt đầu < 0, hoặc kết thúc sau `duration_ms` đo bằng ffprobe) được chuyển vào `rejected` kèm lý do. Cue đó được giữ lại để kiểm tra, không tính vào `cue_count` và `speech_ratio`, và được đếm ở `cue_rejected_count`. `rejected` khác với `narration.cue_rejections` (cue hợp lệ về thời gian nhưng ảo về nội dung, xem bên dưới).
 
-Khi ASR lỗi, file ghi `asr_status: "failed"` và lỗi, **không** có khóa `cues`, nên không bao giờ qua được như nguồn không lời.
+Khi ASR lỗi, file không đọc được (ffprobe lỗi) hoặc video không có luồng âm thanh, file cue vẫn được ghi với `asr_status: "failed"` và lý do, **không** có khóa `cues`, nên không bao giờ qua được như nguồn không lời.
 
 `tests/mastering/x2/probe_source.py` đo `sha256` (đọc theo khối), `duration_ms` và codec bằng ffprobe.
 

@@ -19,7 +19,7 @@ def sha256_file(path, chunk=1 << 20):
 def probe(path, ffprobe="ffprobe", run=subprocess.run):
     """Return the measured technical facts of ``path``. Raises RuntimeError when ffprobe cannot read the file."""
     done = run([ffprobe, "-v", "error", "-print_format", "json", "-show_format", "-show_streams", str(path)],
-               capture_output=True, text=True)
+               capture_output=True, encoding="utf-8", errors="replace")  # not the Windows locale (cp1252)
     if done.returncode != 0:
         raise RuntimeError(f"ffprobe failed ({done.returncode}): {done.stderr.strip()[:300]}")
     info = json.loads(done.stdout)

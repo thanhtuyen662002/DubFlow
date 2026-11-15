@@ -15,8 +15,12 @@ import validate_manifest as vm  # noqa: E402
 TEMPLATE = os.path.join(HERE, "..", "..", "..", "docs", "mastering", "x2", "dataset-manifest.template.json")
 
 
-def seg(start, end, text="x"):
-    return SimpleNamespace(start=start, end=end, text=text)
+def seg(start, end, text="x", words=None):
+    return SimpleNamespace(start=start, end=end, text=text, words=words)
+
+
+def word(start, end):
+    return SimpleNamespace(start=start, end=end, word="w")
 
 
 def fake_probe(duration_ms):
@@ -115,6 +119,52 @@ class Harness(unittest.TestCase):
         self.assertTrue(all("rights" in p or "API not cleared" in p for p in found), found)
 
 
+class TrackAFindings(unittest.TestCase):
+    """Regressions from the Track A LOCAL_ENGINEERING_SMOKE run on the Owner PC, 2026-11-15 (issue #858)."""
+
+    def setUp(self):
+        self.h = Harness()
+        self.h.setUp()
+
+    def tearDown(self):
+        self.h.tearDown()
+
+    def test_cue_spans_follow_the_words_not_the_segment(self):
+        # measured: segment 19480..30700 ms over speech 27928..31361; the segment swallowed 8 s of silence
+        segments = [seg(4.78, 15.40, "S1", [word(5.0, 5.4), word(9.2, 9.604)]),
+                    seg(19.48, 30.70, "S3", [word(27.93, 28.3), word(30.4, 30.70)])]
+        patch = self.h.go(lambda m: segments)
+        cues = self.h.cue_file()["cues"]
+        self.assertEqual([(c["start_ms"], c["end_ms"], c["timing"]) for c in cues], [(5000, 9604, "words"), (27930, 30700, "words")])
+        self.assertEqual((cues[1]["segment_start_ms"], cues[1]["segment_end_ms"]), (19480, 30700))  # kept for audit
+        self.assertAlmostEqual(patch["speech_ratio"], (4604 + 2770) / 60000)
+        self.assertTrue(self.h.cue_file()["params"]["word_timestamps"])
+
+    def test_without_word_times_the_segment_span_is_used_and_marked(self):
+        self.h.go(lambda m: [seg(1.0, 2.0)])
+        self.assertEqual(self.h.cue_file()["cues"][0]["timing"], "segment")
+
+    def test_an_unreadable_file_is_a_failed_record_not_a_traceback(self):
+        def broken(path):
+            raise RuntimeError("ffprobe failed (1): moov atom not found")
+        patch = asr_cues.run(str(self.h.media), source_id="d-s1", language="en", model_dir="m", base=self.h.base,
+                             cues_rel="cues/d-s1.json", transcriber=lambda m: self.fail("ASR must not run"),
+                             probe=broken, versions=VERSIONS)
+        self.assertEqual((patch["asr_status"], patch["cue_count"], patch["duration_ms"]), ("failed", None, None))
+        self.assertEqual(patch["sha256"], probe_source.sha256_file(self.h.media))
+        doc = self.h.cue_file()
+        self.assertNotIn("cues", doc)
+        self.assertIn("moov atom not found", doc["error"])
+
+    def test_no_audio_stream_is_failed_with_a_clear_reason(self):
+        no_sound = lambda path: {"sha256": probe_source.sha256_file(path), "duration_ms": 20000, "has_audio": False}
+        patch = asr_cues.run(str(self.h.media), source_id="d-s1", language="en", model_dir="m", base=self.h.base,
+                             cues_rel="cues/d-s1.json", transcriber=lambda m: self.fail("ASR must not run"),
+                             probe=no_sound, versions=VERSIONS)
+        self.assertEqual(patch["asr_status"], "failed")
+        self.assertIn("no audio stream", self.h.cue_file()["error"])
+
+
 class ApplyPatchRefusesRights(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -157,6 +207,20 @@ class ProbeSource(unittest.TestCase):
             self.assertEqual(out["duration_ms"], 248047)
             self.assertEqual(out["sha256"], "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
             self.assertEqual((out["video_codec"], out["width"], out["audio_sample_rate"], out["has_audio"]), ("h264", 1920, 48000, True))
+
+    def test_ffprobe_output_is_decoded_as_utf8_not_the_windows_locale(self):
+        seen = {}
+
+        def run(argv, **kwargs):
+            seen.update(kwargs)
+            return SimpleNamespace(returncode=0, stderr="", stdout=json.dumps(
+                {"format": {"duration": "1.0", "tags": {"title": "GIÁ MỚI NHẤT"}}, "streams": []}, ensure_ascii=False))
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d, "v.mp4")
+            f.write_bytes(b"abc")
+            probe_source.probe(f, run=run)
+        self.assertEqual(seen.get("encoding"), "utf-8")  # cp1252 broke on the d-s2 file's metadata (#858)
+        self.assertNotIn("text", seen)
 
     def test_an_ffprobe_failure_is_raised_not_guessed(self):
         with tempfile.TemporaryDirectory() as d:

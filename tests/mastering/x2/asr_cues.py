@@ -25,7 +25,7 @@ RIGHTS_FIELDS = frozenset({"rights_confirmed_by", "rights_confirmed_at", "third_
 TECH_FIELDS = frozenset({"path", "sha256", "duration_ms", "speech_ratio", "cues_path", "cues_sha256", "cues_method",
                          "asr_status", "asr_model", "cue_count", "cue_rejected_count"})
 PARAMS = {"device": "cpu", "compute_type": "int8", "beam_size": 5, "vad_filter": True,
-          "condition_on_previous_text": False, "local_files_only": True}
+          "condition_on_previous_text": False, "word_timestamps": True, "local_files_only": True}
 NOTE = "speech_ratio = union of accepted cue spans / duration_ms, not rounded; 0 means no speech detected by this run"
 
 
@@ -48,16 +48,29 @@ def faster_whisper_transcriber(model_dir, language):
                              local_files_only=True)
         segments, _info = model.transcribe(str(media), language=language, beam_size=PARAMS["beam_size"],
                                            vad_filter=PARAMS["vad_filter"],
-                                           condition_on_previous_text=PARAMS["condition_on_previous_text"])
+                                           condition_on_previous_text=PARAMS["condition_on_previous_text"],
+                                           word_timestamps=PARAMS["word_timestamps"])
         return list(segments)  # the generator does the work; materialise it inside the try of the caller
     return transcribe
 
 
+def _ms(seconds):
+    return round(float(seconds) * 1000)
+
+
 def build_cues(segments, duration_ms):
+    """Cue spans follow the spoken words: a Whisper segment's own start/end often runs over the silence before or
+    after it (Track A 2026-11-15: 25.9 s of cues over 12.4 s of speech), so the first and last word bound the cue.
+    The segment span is kept for audit. Without word times the segment span is used and marked ``timing: segment``."""
     accepted, rejected = [], []
     for seg in segments:
-        cue = {"start_ms": round(float(seg.start) * 1000), "end_ms": round(float(seg.end) * 1000),
-               "text": (seg.text or "").strip()}
+        words = [w for w in (getattr(seg, "words", None) or ()) if w.end is not None and w.start is not None]
+        if words:
+            start, end, timing = _ms(words[0].start), _ms(words[-1].end), "words"
+        else:
+            start, end, timing = _ms(seg.start), _ms(seg.end), "segment"
+        cue = {"start_ms": start, "end_ms": end, "text": (seg.text or "").strip(), "timing": timing,
+               "segment_start_ms": _ms(seg.start), "segment_end_ms": _ms(seg.end)}
         reason = None
         if cue["start_ms"] < 0 or cue["end_ms"] <= cue["start_ms"]:
             reason = "invalid_span"
@@ -74,19 +87,27 @@ def run(media, *, source_id, language, model_dir, base, cues_rel, transcriber=No
     media_abs = os.path.abspath(media)
     if os.path.commonpath([base, media_abs]) != base:
         raise ValueError("the media file must be inside --base so the manifest path can be verified")
-    facts = probe(media_abs)
     model_name = os.path.basename(os.path.normpath(str(model_dir)))
     doc = {"source_id": source_id, "asr_model": model_name, "language": language, "params": PARAMS,
-           "versions": versions(), "media_sha256": facts["sha256"], "duration_ms": facts["duration_ms"],
-           "speech_ratio_note": NOTE}
-    transcribe = transcriber or faster_whisper_transcriber(model_dir, language)
+           "versions": versions(), "speech_ratio_note": NOTE}
+    accepted, rejected = None, []
     try:
-        segments = list(transcribe(media_abs))
-        accepted, rejected = build_cues(segments, facts["duration_ms"])
-        doc.update(asr_status="ok", cues=accepted, rejected=rejected)
-    except Exception as error:  # any failure is recorded as failed, never as "no speech"
-        accepted, rejected = None, []
-        doc.update(asr_status="failed", error=f"{type(error).__name__}: {error}"[:500])
+        facts = probe(media_abs)
+    except Exception as error:  # an unreadable file is a failed run with a record, never a traceback only
+        facts = {"sha256": probe_source.sha256_file(media_abs), "duration_ms": None}
+        doc.update(asr_status="failed", error=f"probe: {type(error).__name__}: {error}"[:500])
+    doc.update(media_sha256=facts["sha256"], duration_ms=facts["duration_ms"])
+    if "asr_status" not in doc and facts.get("has_audio") is False:
+        doc.update(asr_status="failed", error="no audio stream: ASR cannot run (this is not a no-speech result)")
+    if "asr_status" not in doc:
+        transcribe = transcriber or faster_whisper_transcriber(model_dir, language)
+        try:
+            segments = list(transcribe(media_abs))
+            accepted, rejected = build_cues(segments, facts["duration_ms"])
+            doc.update(asr_status="ok", cues=accepted, rejected=rejected)
+        except Exception as error:  # any failure is recorded as failed, never as "no speech"
+            accepted, rejected = None, []
+            doc.update(asr_status="failed", error=f"{type(error).__name__}: {error}"[:500])
     cues_abs = os.path.join(base, cues_rel)
     os.makedirs(os.path.dirname(cues_abs) or ".", exist_ok=True)
     raw = json.dumps(doc, ensure_ascii=False, indent=1).encode("utf-8")
