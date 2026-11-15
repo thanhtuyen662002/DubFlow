@@ -638,7 +638,8 @@ def left_out(edits: Edits, candidates: Sequence[Candidate]) -> set[str]:
 
 def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidence: Mapping[str, ev.Evidence], pacing: Pacing,
            *, forward_only: bool, edits: Edits | None = None, groups: Mapping[str, str] | None = None,
-           stills: Iterable[str] = (), shown: Iterable[str] = (), product: bool = False) -> tuple[list[Choice], list[Decision], str]:
+           stills: Iterable[str] = (), shown: Iterable[str] = (), product: bool = False,
+           cue_inpoint_lead_ms: int | None = None) -> tuple[list[Choice], list[Decision], str]:
     """See :func:`_assign`. Approvals (``edits.keep``) are constraints only where they are needed: when the plan made
     without them already shows every approved sentence as approved, that plan is the plan, so approving alone never
     changes another sentence's footage (P2-N5). Only an approval whose footage the plan would change makes the
@@ -647,7 +648,10 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
     texts = {u.unit_id: u.text for u in found_units}
     keep = {unit_id: pieces for unit_id, pieces in edits.keep.items() if unit_id in texts and unit_id not in edits.pin
             and (unit_id not in edits.keep_words or edits.keep_words[unit_id] == words_digest(unit_id, texts[unit_id]))}
-    kwargs = dict(forward_only=forward_only, groups=groups, stills=tuple(stills), shown=tuple(shown), product=product)
+    if cue_inpoint_lead_ms is not None and (type(cue_inpoint_lead_ms) is not int or not 0 <= cue_inpoint_lead_ms <= 5000):
+        raise ValueError("cue_inpoint_lead_ms must be None or 0–5000")
+    kwargs = dict(forward_only=forward_only, groups=groups, stills=tuple(stills), shown=tuple(shown), product=product,
+                  cue_inpoint_lead_ms=cue_inpoint_lead_ms)
     free = Edits(dict(edits.pin), set(edits.exclude), set(edits.exclude_sources), exclude_ranges=dict(edits.exclude_ranges))
     if not keep:
         return _assign(found_units, candidates, evidence, pacing, edits=free, **kwargs)
@@ -670,7 +674,8 @@ def assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidenc
 
 def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], evidence: Mapping[str, ev.Evidence], pacing: Pacing,
             *, forward_only: bool, edits: Edits | None = None, groups: Mapping[str, str] | None = None,
-            stills: Iterable[str] = (), shown: Iterable[str] = (), product: bool = False) -> tuple[list[Choice], list[Decision], str]:
+            stills: Iterable[str] = (), shown: Iterable[str] = (), product: bool = False,
+            cue_inpoint_lead_ms: int | None = None) -> tuple[list[Choice], list[Decision], str]:
     """Footage for every unit, the decision log and the mode (``content`` or ``signals_only``).
 
     *Sentence coverage*: each sentence gets pieces until its whole time is covered, first from the footage that
@@ -689,6 +694,13 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
 
     ``product``: the footage is of one product (Bán hàng): an opening with no match of its own is READY only on a
     shot the vision saw the product in (P1-N1).
+   
+    ``cue_inpoint_lead_ms`` (EXPERIMENT #867, ``None`` = off, the default on every production path): a shot taken as a
+    match because the speech over it says what the sentence says starts ``cue_inpoint_lead_ms`` before the transcript
+    cue inside it that shares the most words with the sentence, instead of where the shot (or its unplayed rest)
+    starts. Only the in-point moves, inside the shot and never earlier than its unplayed rest: the piece keeps its
+    length, the candidate, its score, confidence, review flags and READY are what they would be without it, and a
+    cue says where words are spoken, never what the picture shows.
     """
     edits = edits or Edits()
     groups = groups or {}
@@ -915,6 +927,20 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
         only reweighs the words is not this shot's speech)."""
         return scorer.own_speech_lifts(unit, candidate, relevance_of[(unit.unit_id, candidate.candidate_id)][0])
 
+    def cue_start(unit: Unit, candidate: Candidate) -> int | None:
+        """EXPERIMENT #867: the source time of the cue inside ``candidate`` that shares the most words with ``unit``
+        (the earliest of equals), when the speech over the shot is what raises its match; ``None`` otherwise."""
+        found = evidence.get(candidate.candidate_id)
+        if cue_inpoint_lead_ms is None or found is None or not found.cues or not speech_matches(unit, candidate):
+            return None
+        wanted = ev.terms(unit.text)
+        best: tuple[int, int] | None = None
+        for start, _end, text in found.cues:
+            shared = len(wanted & ev.terms(text))
+            if shared and (best is None or shared > best[0]):
+                best = (shared, start)
+        return None if best is None else best[1]
+
     ahead_now = 0
     narration_left = 0
 
@@ -1060,13 +1086,26 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
             length = cap if candidate.candidate_id in still_ids else min(left, cap)
             if length <= 0:
                 return 0
+            moved = False
+            if cue_inpoint_lead_ms is not None and tier == "match" and not repeat and candidate.candidate_id not in still_ids:
+                at = cue_start(unit, candidate)
+                if at is not None:
+                    # later only, inside the shot, the piece's length kept: never before what already played
+                    target = min(at - cue_inpoint_lead_ms, candidate.end_ms - length)
+                    # forward only, the frames skipped are gone for good: never when what is left ahead would no
+                    # longer cover the narration still to come (a later sentence holding a frame or going back)
+                    later_need = after + max(0, need - covered - length)
+                    if target > offset and (not forward_only
+                                            or ahead(candidate) + max(0, candidate.end_ms - target - length) >= later_need):
+                        offset, moved = target, True
             if picks and picks[-1]["candidate"].candidate_id == candidate.candidate_id \
                     and picks[-1]["offset"] + picks[-1]["length"] == offset and not repeat:
                 picks[-1]["length"] += length  # playing on: one piece
             else:
                 total, confidence, reasons, _ = next(r for r in ranked if r[3] is candidate) if ranked else (1000, 1000, [], None)
                 picks.append({"candidate": candidate, "offset": offset, "length": length, "tier": tier, "repeat": repeat,
-                              "score": total, "confidence": confidence, "reasons": list(reasons)})
+                              "score": total, "confidence": confidence,
+                              "reasons": [*reasons, *(["thử nghiệm #867: điểm vào theo lời nguồn"] if moved else [])]})
             consume(candidate, offset, length)
             covered += length
             return length

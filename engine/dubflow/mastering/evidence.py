@@ -245,6 +245,10 @@ class Evidence:
     hook: int = 0          # 0–1000, from vision when it said so
     product_visible: bool | None = None
     same_product: str | None = None  # vision's group tag for "which product is this"
+    # the source's transcript cues spoken inside the candidate, with their source times (start ms, end ms, text).
+    # Where the words are said, never what the picture shows; read only by the experimental cue in-point (#867) and
+    # never written to the log, so a plan made without that experiment is unchanged.
+    cues: tuple[tuple[int, int, str], ...] = ()
 
     def add(self, item: Item) -> None:
         if item.origin not in ORIGINS:
