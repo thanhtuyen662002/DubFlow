@@ -857,6 +857,30 @@ def note(result: Check) -> str:
     return ""
 
 
+# a sentence about something displayed whose pieces showing none of it fill more than this share of its timeline is a
+# content error, not a doubt (#843): the same boundary as the evaluation contract's majority_wrong_duration
+ASTRAY_CRITICAL_PERCENT = 50
+_PIECE_NOTE = re.compile(r"\b\d+(?:\.\d+)? giây \((\d+) %\) của câu là cảnh không hiển thị điều lời câu nói")
+
+
+def astray_percent(note: str) -> int | None:
+    """The share (%) of a sentence's timeline that :func:`piece_note` says shows none of its displayed claims."""
+    found = _PIECE_NOTE.search(str(note))  # notes may be joined with "; "
+    return int(found.group(1)) if found else None
+
+
+def astray_over_half(unit: Mapping[str, Any]) -> bool:
+    """Whether the pieces that show none of a sentence's displayed claims fill MORE than half of it (#843): from the
+    exact milliseconds the planner records (``coverage.astray_ms`` over ``coverage.need_ms``: ``2 * astray > need``),
+    never from the rounded % of the note (Lead: 5 001 of 10 000 ms is 50.01 %, over half, yet the note says 50 %). A
+    log written before ``astray_ms`` has only the note: its % is read as written."""
+    coverage = unit.get("coverage") or {}
+    astray, need = coverage.get("astray_ms"), coverage.get("need_ms")
+    if isinstance(astray, int) and isinstance(need, int) and need > 0:
+        return 2 * astray > need
+    return any((p := astray_percent(n)) is not None and p > ASTRAY_CRITICAL_PERCENT for n in unit.get("notes") or ())
+
+
 def piece_note(labels: Iterable[str], astray_ms: int, unit_ms: int) -> str:
     """The reviewer's note for a sentence about something displayed whose pieces do not all show it (#837): how long
     the pieces that show none of what it says are on screen."""

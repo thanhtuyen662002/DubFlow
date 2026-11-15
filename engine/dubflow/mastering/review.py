@@ -887,6 +887,13 @@ def priority(unit: Mapping[str, Any], state: str, decision: UnitDecision | None,
     marks = stated_claims.statuses((unit.get("signals") or {}).get("claims"))
     contradicted = [label for label, status in marks if status == stated_claims.CONTRADICTED]
     unshown = [label for label, status in marks if status == stated_claims.UNVERIFIED]
+    # most of its timeline on pieces that show none of what it says is displayed (#837, #843: rc16 i1.u2, 73 %): one
+    # piece showing it does not settle the sentence, and "accept the unreviewed" never exports it; a short piece that
+    # shows none of it stays a doubt a person may accept (a montage, a cut)
+    if stated_claims.astray_over_half(unit):  # decided on the exact ms (2 × astray_ms > need_ms), not the rounded %
+        astray = max((p for p in (stated_claims.astray_percent(n) for n in notes) if p is not None), default=None)
+        share = "hơn 50" if astray is None or astray <= stated_claims.ASTRAY_CRITICAL_PERCENT else str(astray)
+        reasons.append(f"{share} % thời lượng câu là cảnh không hiển thị điều lời câu nói là hiển thị")
     if contradicted:
         reasons.append("cảnh cho thấy con số khác với lời câu: " + ", ".join(contradicted[:3]))
     if unshown:

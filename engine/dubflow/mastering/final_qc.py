@@ -135,7 +135,8 @@ def check_parts(parts: Sequence[tuple[str, Mapping[str, Any] | None, Mapping[str
         # word, said so; the claim is not counted as confirmed. A pinned sentence has no claim left once replanned: the
         # planner checks none on the user's own shot
         settled = [u for u in shown["units"] if u.get("priority") is None and u.get("decision")
-                   and any(c["status"] in (claims.CONTRADICTED, claims.UNVERIFIED) for c in u.get("claims") or ())]
+                   and (any(c["status"] in (claims.CONTRADICTED, claims.UNVERIFIED) for c in u.get("claims") or ())
+                        or _astray(u))]
         user_accepted += [f"{label}câu {reviewing_number(u['unit_id'])}" for u in settled]
         accepted_units += [entry(u) for u in settled]
     checks = [
@@ -155,6 +156,12 @@ def check_parts(parts: Sequence[tuple[str, Mapping[str, Any] | None, Mapping[str
     checks.append({**_check("claims", "Mục nghiêm trọng", not critical, detail),
                    "units": critical_units, "user_accepted": accepted_units})
     return checks
+
+
+def _astray(unit: Mapping[str, Any]) -> bool:
+    """Whether most of a sentence's timeline shows none of what it says is displayed (#843): settled by the user's own
+    decision, it is named as the user's acceptance."""
+    return claims.astray_over_half(unit)
 
 
 def listed(names: Sequence[str], limit: int = LISTED) -> str:
