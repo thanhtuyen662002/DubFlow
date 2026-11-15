@@ -857,6 +857,18 @@ def note(result: Check) -> str:
     return ""
 
 
+# a sentence about something displayed whose pieces showing none of it fill more than this share of its timeline is a
+# content error, not a doubt (#843): the same boundary as the evaluation contract's majority_wrong_duration
+ASTRAY_CRITICAL_PERCENT = 50
+_PIECE_NOTE = re.compile(r"\b\d+(?:\.\d+)? giây \((\d+) %\) của câu là cảnh không hiển thị điều lời câu nói")
+
+
+def astray_percent(note: str) -> int | None:
+    """The share (%) of a sentence's timeline that :func:`piece_note` says shows none of its displayed claims."""
+    found = _PIECE_NOTE.search(str(note))  # notes may be joined with "; "
+    return int(found.group(1)) if found else None
+
+
 def piece_note(labels: Iterable[str], astray_ms: int, unit_ms: int) -> str:
     """The reviewer's note for a sentence about something displayed whose pieces do not all show it (#837): how long
     the pieces that show none of what it says are on screen."""
