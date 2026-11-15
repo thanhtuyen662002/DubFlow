@@ -24,7 +24,10 @@ def kappa(pairs):
     return 1.0 if pe == 1 else (po - pe) / (1 - pe)
 
 if __name__ == "__main__":
-    one = {l["sentence_id"]: l for l in json.load(open(sys.argv[1]))}; two = {l["sentence_id"]: l for l in json.load(open(sys.argv[2]))}
+    def load(path):
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    one = {l["sentence_id"]: l for l in load(sys.argv[1])}; two = {l["sentence_id"]: l for l in load(sys.argv[2])}
     ids = sorted(set(one) & set(two)); pairs = [(one[i]["fit"], two[i]["fit"]) for i in ids]
     agree = [i for i in ids if one[i]["fit"] == two[i]["fit"] and (one[i]["fit"] in ("NONE", "UNKNOWN") or overlap(one[i]["ranges"], two[i]["ranges"]) >= 0.5)
              and one[i].get("claim_shown") == two[i].get("claim_shown")]

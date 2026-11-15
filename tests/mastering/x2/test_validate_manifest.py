@@ -3,6 +3,7 @@
 Fixtures here are test inputs for the validator only. They are not dataset entries and never go into a manifest.
 """
 import copy, hashlib, json, os, sys, tempfile, unittest
+from pathlib import Path
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -24,7 +25,7 @@ def cleared(source_id, **extra):
 
 
 def manifest(dev_sources, holdout_sources=()):
-    m = json.load(open(TEMPLATE, encoding="utf-8"))
+    m = json.loads(Path(TEMPLATE).read_text(encoding="utf-8"))
     m = copy.deepcopy(m)
     m["splits"]["REAL-DEV"]["sources"] = list(dev_sources)
     m["splits"]["REAL-HOLDOUT"]["sources"] = list(holdout_sources)
@@ -84,7 +85,7 @@ class ExistingRulesStillHold(unittest.TestCase):
         self.assertTrue(any("rights" in p for p in dev_problems(manifest([cleared("d-s1"), cleared("d-s2", rights_confirmed_by=None)]))))
 
     def test_the_shipped_template_is_not_ready(self):
-        m = json.load(open(TEMPLATE, encoding="utf-8"))
+        m = json.loads(Path(TEMPLATE).read_text(encoding="utf-8"))
         self.assertTrue(dev_problems(m))
         self.assertEqual(vm.structure(m), [])
 
@@ -94,7 +95,7 @@ class CueFilesAreRecomputed(unittest.TestCase):
 
     def write(self, directory, name, cues):
         raw = json.dumps({"asr_model": "faster-whisper-small", "params": {"vad_filter": True}, "cues": cues}).encode()
-        open(os.path.join(directory, name), "wb").write(raw)
+        Path(directory, name).write_bytes(raw)
         return hashlib.sha256(raw).hexdigest()
 
     def check(self, sources, directory):

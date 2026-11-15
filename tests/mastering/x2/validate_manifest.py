@@ -150,7 +150,8 @@ def verify_files(split, data, base):
             continue
         path = os.path.join(base, rel)
         try:
-            raw = open(path, "rb").read()
+            with open(path, "rb") as fh:
+                raw = fh.read()
         except OSError:
             out.append(f"{split} {sid}: cue file {rel} not found")
             continue
@@ -187,7 +188,8 @@ if __name__ == "__main__":
         sys.exit("--verify-files needs --split")
     if stage and (stage not in ("draft", "eval") or split not in ("REAL-DEV", "REAL-HOLDOUT")):
         sys.exit("usage: --stage draft|eval --split REAL-DEV|REAL-HOLDOUT")
-    m = json.load(open(args[0], encoding="utf-8"))
+    with open(args[0], encoding="utf-8") as fh:
+        m = json.load(fh)
     found = problems(m, stage, split, files)
     label = {"draft": "READY FOR PAID SCRIPT DRAFT", "eval": "READY FOR EVALUATION"}.get(stage)
     if found:
