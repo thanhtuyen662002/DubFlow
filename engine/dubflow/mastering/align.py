@@ -887,6 +887,28 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
         relevance = relevance_of[(unit.unit_id, candidate.candidate_id)][0]
         return scorer.unspoken_relevance(unit, candidate, relevance) < MIN_RELEVANCE
 
+    # #842 (Final Stack Integrity review): a shot that a file name brought into a sentence's matches is not footage
+    # that illustrates it. Where any shot has a file name, a match counts towards the coverage only when the evidence
+    # that can verify the picture alone (vision, OCR, a user's note) would accept it too, by the same share of the
+    # sentence's best (or it shows what the sentence says is displayed). Ranking keeps the file names.
+    seen_best: dict[str, int] = {}
+
+    def seen_relevance(unit: Unit, candidate: Candidate) -> int:
+        relevance = relevance_of[(unit.unit_id, candidate.candidate_id)][0]
+        return scorer.content_relevance(unit, candidate, relevance) if relevance > 0 else 0
+
+    def seen_match(unit: Unit, candidate: Candidate) -> bool:
+        if not scorer.named:
+            return True
+        claim = checked.get((unit.unit_id, candidate.candidate_id))
+        if claim is not None and claim.verified:
+            return True
+        if unit.unit_id not in seen_best:
+            seen_best[unit.unit_id] = max((seen_relevance(unit, c) for c in usable), default=0)
+        best_seen = seen_best[unit.unit_id]
+        return best_seen >= MIN_RELEVANCE and \
+            seen_relevance(unit, candidate) >= max(MIN_RELEVANCE, ACCEPT_SHARE * best_seen // 1000)
+
     def speech_matches(unit: Unit, candidate: Candidate) -> bool:
         """Whether the speech over ``candidate`` itself raises its match to ``unit`` (#836 Lead P2-2/P2-3: an
         unrelated caption over a weakly seen shot says nothing about this sentence, and speech over another shot that
@@ -989,6 +1011,7 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
         spoken_ms = 0
         weak_spoken_ms = 0  # time of shots the speech over them matches while what is seen is too weak (#836)
         weak_seen_ms = 0  # time of shots with speech over them, not matching, where what is seen is too weak (#836)
+        named_ms = 0  # time of shots only a file name matched to the sentence (#842)
         pinned = [by_id[i] for i in live_pins.get(unit.unit_id, [])]
         if len([i for i in edits.pin.get(unit.unit_id, []) if i in by_id]) != len(pinned):
             decision.notes.append("một cảnh đã ghim nằm trong cảnh bạn đã loại nên được bỏ qua")
@@ -1253,6 +1276,9 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
                 # a shot that matches the sentence only through the speech over it is not footage that illustrates
                 # it (#836): the time counts apart and the sentence asks for a look (and a targeted vision look)
                 spoken_ms += pick["length"]
+            elif candidate.candidate_id in accept and pick["tier"] != "repeat" and not seen_match(unit, candidate):
+                # matched through a file name, not through what is seen (#842): counts apart, the piece is looked at
+                named_ms += pick["length"]
             elif candidate.candidate_id in accept and pick["tier"] != "repeat":
                 illustrated += pick["length"]
             elif pick["tier"] == "pinned":
@@ -1286,6 +1312,9 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
                     "needs_review": review, "matched_footage": len(accept), "best_relevance": best, "user_ms": user_ms}
         decision.coverage = coverage
         note = "" if generic else _coverage_note(milli, bool(accept))
+        if named_ms:  # said in a note, the log's coverage keys stay those of the contract (editorial-v1)
+            note = (f"{named_ms / 1000:.1f} giây cảnh chỉ khớp tên file, chưa có bằng chứng hình ảnh: cần kiểm tra"
+                    + (f"; {note}" if note else ""))
         if spoken_ms:  # said in a note, the log's coverage keys stay those of the contract (editorial-v1)
             note = (f"{spoken_ms / 1000:.1f} giây cảnh chỉ khớp lời nói trong nguồn (phụ đề/transcript), chưa có bằng chứng "
                     "hình ảnh: cần kiểm tra" + (f"; {note}" if note else ""))
@@ -1367,7 +1396,8 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
                                                           unit.length_ms))
 
         def flag(c: Choice) -> bool:
-            if not c.candidate.quality.usable or mode != "content" or spoiler or unproven or id(c) in astray_ids:
+            if not c.candidate.quality.usable or mode != "content" or spoiler or unproven or id(c) in astray_ids \
+                    or (c.candidate.candidate_id in accept and not seen_match(unit, c.candidate)):
                 return True
             if generic:
                 # its pieces carry the flag too: the plan and the checks read the pieces (rc5: still silent on rc4 data)
