@@ -2,7 +2,7 @@ DUBFLOW_PR_V1
 Issue: #616
 Lease-Owner: Claude/issue-616-queue-metadata-preservation
 Lease-Heartbeat: 2026-11-15T08:38:00Z
-Tested-Base-SHA: 08b25db079ed5baadd68000ffedd292c27d55a6d
+Tested-Base-SHA: 98738be8c962ab83b9721c13c2958984a09efc2a
 Conflict-Domains: desktop-shell,media-persistence,local-storage-recovery
 Expected-Paths: .claims/issue-616-queue-metadata-preservation.md,apps/desktop/src/main.ts,apps/desktop/src/features/media/model.ts,apps/desktop/src/features/media/view.ts,apps/desktop/test/media.test.mjs
 Required-CI: PR Fast + PR Integration (desktop-editor-subtitles selected) + PR Desktop Editor Windows
@@ -65,3 +65,11 @@ ACCEPTED: NO
 - This is integrator base maintenance only. No product source, tests, workflows, contracts, schemas or lockfiles were edited.
 - `Tested-Base-SHA` remains the last evidenced base `08b25db079ed5baadd68000ffedd292c27d55a6d` until required checks are rerun on the new source HEAD; do not treat this sync as test evidence.
 - `Lease-Heartbeat` remains `2026-11-15T08:38:00Z`; Lead synchronization is not coder progress and does not renew the lease.
+
+
+## Lead CI base confirmation — 2026-11-16T18:44Z
+
+- On preceding HEAD `6d0b036ffb1ddf41e7e7327825bf3808673b4892`, PR Fast #43748411177 passed (governance + 14 deterministic tests).
+- PR Integration #43748411229 passed on `98738be8c962ab83b9721c13c2958984a09efc2a` but explicitly selected no registered component because this branch remains claim-only.
+- This does not satisfy #616 product acceptance; exact final HEAD checks must rerun after this metadata update, and the desktop Windows lane remains pending until product/test paths are changed.
+- The claim now records the current base `98738be8c962ab83b9721c13c2958984a09efc2a`; the stale coder heartbeat remains unchanged.
