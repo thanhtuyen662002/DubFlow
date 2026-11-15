@@ -72,6 +72,13 @@ class TranscriptNeverVerifiesThePicture(unittest.TestCase):
         self.assertTrue(any(why in note for note in decision.notes), decision.notes)  # Windows replay: notes were empty
         self.assertFalse(any(why in note for note in alone.notes))  # no speech, no such note
 
+    def test_an_unrelated_caption_does_not_say_the_speech_matches(self):
+        unrelated = ev.Item("transcript", 850, "hôm nay trời mưa to ở thủ đô", (), "phụ đề nguồn")
+        state, _, decision = _one_shot(WEAK_VISION, unrelated)
+        self.assertNotEqual(state, rv.READY)
+        self.assertFalse(any("lời nói trong nguồn khớp câu" in note for note in decision.notes), decision.notes)  # e0cbc02: said
+        self.assertTrue(any("giây cảnh có bằng chứng hình ảnh còn yếu" in note for note in decision.notes), decision.notes)
+
     def test_t2_transcript_only_is_never_visual_ready(self):
         state, confidence, decision = _one_shot(SAID)
         self.assertNotEqual(state, rv.READY)  # 3ecaf7d: READY at 680 on a shot nobody looked at
@@ -205,6 +212,103 @@ class FragmentsAndCaptions(unittest.TestCase):
         self.assertNotEqual(with_captions[second][0], rv.READY, with_captions)
         first = [u for u in with_captions if u.endswith("u1")][0]
         self.assertEqual(with_captions[first][0], without[first][0])  # the seen train is untouched
+
+
+class SpeechNeverReweightsWhatIsSeen(unittest.TestCase):
+    """Lead P1 on 10ea540: the word weights (idf) and the common words were built from all evidence, speech included,
+    so speech over this shot or another one changed how much a word SEEN on this shot weighed: 595 -> 661 here, across
+    REVIEW_BELOW. The confidence and the coverage now use the weights of the job without speech."""
+    TEXT = "alpha and beta and gamma and delta and epsilon"
+    SAID = ev.Item("transcript", 850, "beta gamma delta epsilon", (), "phụ đề nguồn")
+
+    def _case(self, where: str | None):
+        pool = [_candidate("A", 0, 6000), _candidate("B", 6000, 12_000)]
+        found = ev.gather(["A", "B"])
+        found["A"].add(ev.Item("vision", 950, "alpha", (), "AI"))
+        if where:
+            found[where].add(self.SAID)
+        unit = align.Unit("u1", self.TEXT, 0, 4000, "narration")
+        return pool, found, unit
+
+    def test_speech_over_the_same_shot_changes_no_confidence(self):
+        pool, found, _ = self._case(None)
+        before, _, alone = _plan(pool, found, self.TEXT)
+        pool, found, _ = self._case("A")
+        after, mine, decision = _plan(pool, found, self.TEXT)
+        self.assertEqual([c.confidence for c in mine], [595])  # 10ea540: 661, READY
+        self.assertNotEqual(after, rv.READY)
+        self.assertEqual(before, after)
+        self.assertEqual(decision.coverage["illustrated_ms"], alone.coverage["illustrated_ms"])
+
+    def test_speech_over_another_shot_changes_neither_confidence_nor_coverage_view(self):
+        for where in ("A", "B"):
+            pool, plain, unit = self._case(None)
+            quiet = align.Scorer(pool, plain)
+            pool, found, unit = self._case(where)
+            scorer = align.Scorer(pool, found)
+            for candidate in pool:
+                was = quiet.relevance(unit, candidate)[0]
+                now = scorer.relevance(unit, candidate)[0]
+                with self.subTest(speech_on=where, candidate=candidate.candidate_id):
+                    self.assertEqual(scorer.content_relevance(unit, candidate, now), quiet.content_relevance(unit, candidate, was))
+                    self.assertEqual(scorer.unspoken_relevance(unit, candidate, now), was)
+
+    def test_speech_over_another_shot_is_not_this_shots_speech(self):
+        # Lead P2-3 on 39ee320: B's speech reweighs the words, A's own caption is unrelated: A's note must not say
+        # its speech matches the sentence
+        pool = [_candidate("A", 0, 6000), shots.Candidate("B", "v1", 6000, 12_000, 0, 50,
+                                                          shots.Quality(120, 50, 300, ("blurred",)), 7)]
+        found = ev.gather(["A", "B"])
+        found["A"].add(ev.Item("vision", 800, "alpha", (), "AI"))
+        found["A"].add(ev.Item("transcript", 850, "hôm nay trời mưa to ở thủ đô", (), "phụ đề nguồn"))
+        found["B"].add(self.SAID)
+        unit = align.Unit("u1", self.TEXT, 0, 4000, "narration")
+        scorer = align.Scorer(pool, found)
+        relevance = scorer.relevance(unit, pool[0])[0]
+        self.assertGreater(relevance, scorer.unspoken_relevance(unit, pool[0], relevance))  # the reweighing is there
+        self.assertFalse(scorer.own_speech_lifts(unit, pool[0], relevance))
+        state, mine, decision = _plan(pool, found, self.TEXT)
+        self.assertEqual([c.candidate.candidate_id for c in mine], ["A"])
+        self.assertNotEqual(state, rv.READY)
+        self.assertFalse(any("lời nói trong nguồn khớp câu" in note for note in decision.notes), decision.notes)
+        # ... and still says why it is not READY, without a claim about the speech
+        self.assertTrue(any("giây cảnh có bằng chứng hình ảnh còn yếu" in note for note in decision.notes), decision.notes)
+
+    def test_the_ranking_still_follows_the_speech(self):
+        pool, found, unit = self._case("B")
+        scorer = align.Scorer(pool, found)
+        self.assertGreater(scorer.relevance(unit, pool[1])[0], scorer.relevance(unit, pool[0])[0])
+        _, mine, decision = _plan(pool, found, self.TEXT)
+        self.assertEqual([c.candidate.candidate_id for c in mine], ["B"])  # localised by speech ...
+        self.assertTrue(all(c.needs_review for c in mine))  # ... never verified by it
+        self.assertEqual(decision.coverage["illustrated_ms"], 0)
+
+
+class CaptionsAreNotALook(unittest.TestCase):
+    """Lead P2-1 on e0cbc02: ``evidence_state`` said SOURCE_INSUFFICIENT ("the footage lacks this sentence") when every
+    usable shot carried only source captions, none matching: no frame of them was seen, so it is MATCH_NOT_FOUND."""
+
+    def _state(self, *items: ev.Item) -> str:
+        pool = [_candidate("v1c1", 0, 6000), _candidate("v1c2", 6000, 12_000)]
+        found = ev.gather(["v1c1", "v1c2"])
+        for key in found:
+            for item in items:
+                found[key].add(item)
+        unit = align.Unit("u1", TEXT, 0, 4000, "narration")
+        _, (decision,), mode = align.assign([unit], pool, found, PACING, forward_only=False)
+        self.assertEqual(decision.coverage["best_relevance"], 0)
+        return rv.evidence_state({"unit_id": "u1", "coverage": decision.coverage}, _log(mode, found))
+
+    def test_captions_only_is_not_found_not_absent(self):
+        said = ev.Item("transcript", 850, "hôm nay trời mưa to ở thủ đô", (), "phụ đề nguồn")
+        self.assertEqual(self._state(said), rv.MATCH_NOT_FOUND)  # e0cbc02: SOURCE_INSUFFICIENT
+
+    def test_seen_shots_without_it_still_say_the_footage_lacks_it(self):
+        self.assertEqual(self._state(OTHER_VISION), rv.SOURCE_INSUFFICIENT)
+
+    def test_text_read_off_the_frame_is_a_look(self):
+        read = ev.Item("transcript", 850, "hôm nay trời mưa to ở thủ đô", (), "ocr")
+        self.assertEqual(self._state(read), rv.SOURCE_INSUFFICIENT)
 
 
 class LegacyPaths(unittest.TestCase):

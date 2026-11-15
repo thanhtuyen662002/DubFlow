@@ -230,6 +230,40 @@ def _terms_without_speech(found: ev.Evidence) -> dict[str, int]:
     return ev.Evidence(found.candidate_id, [i for i in found.items if ev.verifies(i) or i.origin != "transcript"]).terms()
 
 
+@dataclass(frozen=True)
+class _Stats:
+    """The weights of words and names across the candidates of a job (idf) and those too common to tell one shot
+    from another."""
+    idf: Mapping[str, float]
+    common: frozenset[str]
+    entity_idf: Mapping[str, float]
+    common_entities: frozenset[str]
+    default_idf: float
+
+    @classmethod
+    def of(cls, shots: Sequence[tuple[Mapping[str, int], Mapping[str, int], Mapping[str, object]]], count: int) -> "_Stats":
+        """The same statistics as ``Scorer`` builds, from ``(terms, loose terms, names)`` per candidate."""
+        frequency: dict[str, int] = {}
+        seen_with: dict[str, int] = {}
+        for found, loose, shot_names in shots:
+            for term in {*found, *loose}:
+                frequency[term] = frequency.get(term, 0) + 1
+            for entity_id in shot_names:
+                seen_with[entity_id] = seen_with.get(entity_id, 0) + 1
+        described = sum(1 for found, _, _ in shots if found)
+        return cls({t: math.log(1 + count / (1 + n)) for t, n in frequency.items()},
+                   frozenset(t for t, n in frequency.items() if described >= COMMON_MIN_SHOTS and n * 1000 > COMMON_SHARE * described),
+                   {e: math.log(1 + count / (1 + n)) for e, n in seen_with.items()},
+                   frozenset(e for e, n in seen_with.items() if described >= COMMON_MIN_SHOTS and n * 1000 > COMMON_SHARE * described),
+                   math.log(1 + count))
+
+    def is_common(self, term: str) -> bool:
+        if term in self.common:
+            return True
+        folded = term if term.startswith(ev.LOOSE) else ev.LOOSE + ev.fold(term)
+        return folded in self.common
+
+
 class Scorer:
     """Scores candidates for units from their evidence (idf over the candidates of this job)."""
 
@@ -256,6 +290,7 @@ class Scorer:
             for term in {*found, *self.loose[key]}:
                 frequency[term] = frequency.get(term, 0) + 1
         count = max(1, len(self.candidates))
+        self.count = count
         self.idf = {term: math.log(1 + count / (1 + seen)) for term, seen in frequency.items()}
         # Words most of the footage is described with (the product's name, the film's style) tell no shot from
         # another: a sentence made of them alone matches nothing in particular, they still count in its length.
@@ -292,32 +327,62 @@ class Scorer:
         self.entity_idf = {e: math.log(1 + count / (1 + n)) for e, n in seen_with.items()}
         self.common_entities = frozenset(e for e, n in seen_with.items()
                                          if described >= COMMON_MIN_SHOTS and n * 1000 > COMMON_SHARE * described)
+        # the weights the ranking uses come from everything known, speech included; the weights the confidence and
+        # the coverage use come from what is known without the speech, so that speech over ANY shot (this one or
+        # another) cannot change how much a word seen on this shot weighs or whether it is too common to count
+        # (#836 Lead P1: idf leak). Without speech anywhere both are the same statistics, the plan unchanged.
+        self.stats = _Stats(self.idf, self.common, self.entity_idf, self.common_entities, self.default_idf)
+        self.quiet = self.stats if not self.spoken else _Stats.of(
+            [(self.unspoken_terms.get(key, found), self.unspoken_loose.get(key, self.loose[key]),
+              self.unspoken_entities.get(key, self.entities.get(key, {}))) for key, found in self.terms.items()], count)
 
     def content_relevance(self, unit: Unit, candidate: Candidate, relevance: int) -> int:
         """The relevance the evidence that can verify the picture alone gives (no file name, no speech over the shot,
-        #836), at most ``relevance``: what the confidence of a choice is built on."""
+        #836), at most ``relevance``: what the confidence of a choice is built on. Where any shot has speech over it,
+        it is what the job would give with no speech at all (the speech-free weights), whatever ``relevance`` is."""
         key = candidate.candidate_id
+        if self.quiet is not self.stats:
+            quiet = self._quiet(unit, key)
+            if key not in self.named or quiet <= 0:
+                return quiet
+            return min(quiet, self._relevance(unit, self.content_terms[key], self.content_loose[key],
+                                              self.content_entities[key], self.quiet)[0])
         if key not in self.named or relevance <= 0:
             return relevance
         return min(relevance, self._relevance(unit, self.content_terms[key], self.content_loose[key],
-                                              self.content_entities[key])[0])
+                                              self.content_entities[key], self.stats)[0])
 
     def unspoken_relevance(self, unit: Unit, candidate: Candidate, relevance: int) -> int:
-        """The relevance without the speech over the shot (its file name kept), at most ``relevance`` (#836): a
-        shot that matches a sentence only through what is said over it does not illustrate the sentence."""
+        """The relevance without the speech over any shot (its file name kept) (#836): a shot that matches a
+        sentence only through what is said over it does not illustrate the sentence. ``relevance`` without speech
+        anywhere."""
+        if self.quiet is self.stats:
+            return relevance
+        return self._quiet(unit, candidate.candidate_id)
+
+    def own_speech_lifts(self, unit: Unit, candidate: Candidate, relevance: int) -> bool:
+        """Whether the speech over ``candidate`` raises its ranking ``relevance`` to ``unit``: the same weights on
+        both sides (the job's, speech included), only this shot's own speech taken away, so speech over another shot
+        cannot make it look as if this shot's speech matched."""
         key = candidate.candidate_id
         if key not in self.spoken or relevance <= 0:
-            return relevance
-        return min(relevance, self._relevance(unit, self.unspoken_terms[key], self.unspoken_loose[key],
-                                              self.unspoken_entities[key])[0])
+            return False
+        return relevance > self._relevance(unit, self.unspoken_terms[key], self.unspoken_loose[key],
+                                           self.unspoken_entities[key], self.stats)[0]
+
+    def _quiet(self, unit: Unit, key: str) -> int:
+        """The relevance of ``key`` with no speech over any shot: its speech-free evidence, the speech-free weights."""
+        return self._relevance(unit, self.unspoken_terms.get(key, self.terms[key]),
+                               self.unspoken_loose.get(key, self.loose[key]),
+                               self.unspoken_entities.get(key, self.entities.get(key, {})), self.quiet)[0]
 
     def relevance(self, unit: Unit, candidate: Candidate) -> tuple[int, list[str]]:
         """0–1000 and the matched words (for the reason)."""
         key = candidate.candidate_id
-        return self._relevance(unit, self.terms[key], self.loose[key], self.entities.get(key, {}))
+        return self._relevance(unit, self.terms[key], self.loose[key], self.entities.get(key, {}), self.stats)
 
     def _relevance(self, unit: Unit, found: Mapping[str, int], loose: Mapping[str, int],
-                   shot_names: Mapping[str, list[tuple[names.Mention, int]]]) -> tuple[int, list[str]]:
+                   shot_names: Mapping[str, list[tuple[names.Mention, int]]], stats: "_Stats") -> tuple[int, list[str]]:
         wanted = ev.terms(unit.text)
         mentions = self._mentions(unit.text)
         if mentions:
@@ -330,9 +395,9 @@ class Scorer:
             return 0, []
         matched, total, words = 0.0, 0.0, []
         for mention in {m.entity_id: m for m in mentions}.values():
-            weight = 2 * self.entity_idf.get(mention.entity_id, self.default_idf)
+            weight = 2 * stats.entity_idf.get(mention.entity_id, stats.default_idf)
             total += weight
-            if mention.entity_id in self.common_entities:
+            if mention.entity_id in stats.common_entities:
                 continue
             value, form = 0, ""
             for shot_mention, confidence in shot_names.get(mention.entity_id, ()):
@@ -343,16 +408,16 @@ class Scorer:
                 matched += weight * value / 1000
                 words.append(mention.written if names.fold(form) == names.fold(mention.written) else f"{mention.written} = {form}")
         for term in wanted:
-            weight = self.idf.get(term, self.default_idf) * (2 if " " in term else 1)
+            weight = stats.idf.get(term, stats.default_idf) * (2 if " " in term else 1)
             total += weight
-            value = 0 if self._common(term) else ev.match(term, found, loose)
+            value = 0 if stats.is_common(term) else ev.match(term, found, loose)
             if value:
                 matched += weight * value / 1000
                 words.append(term.removeprefix(ev.LOOSE))
         if not matched:
             return 0, []
         value = min(1.0, matched / max(1.5, 0.45 * total))
-        words.sort(key=lambda w: (-("=" in w), -(" " in w), -self.idf.get(w, 0), w))
+        words.sort(key=lambda w: (-("=" in w), -(" " in w), -stats.idf.get(w, 0), w))
         return round(value * 1000), words[:4]
 
     def _mentions(self, text: str) -> list[names.Mention]:
@@ -362,10 +427,7 @@ class Scorer:
         return cached
 
     def _common(self, term: str) -> bool:
-        if term in self.common:
-            return True
-        folded = term if term.startswith(ev.LOOSE) else ev.LOOSE + ev.fold(term)
-        return folded in self.common
+        return self.stats.is_common(term)
 
     def fit(self, unit: Unit, candidate: Candidate) -> tuple[int, str | None]:
         table = FIT.get(unit.function, {})
@@ -819,6 +881,12 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
         relevance = relevance_of[(unit.unit_id, candidate.candidate_id)][0]
         return scorer.unspoken_relevance(unit, candidate, relevance) < MIN_RELEVANCE
 
+    def speech_matches(unit: Unit, candidate: Candidate) -> bool:
+        """Whether the speech over ``candidate`` itself raises its match to ``unit`` (#836 Lead P2-2/P2-3: an
+        unrelated caption over a weakly seen shot says nothing about this sentence, and speech over another shot that
+        only reweighs the words is not this shot's speech)."""
+        return scorer.own_speech_lifts(unit, candidate, relevance_of[(unit.unit_id, candidate.candidate_id)][0])
+
     ahead_now = 0
     narration_left = 0
 
@@ -914,6 +982,7 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
         user_ms = 0
         spoken_ms = 0
         weak_spoken_ms = 0  # time of shots the speech over them matches while what is seen is too weak (#836)
+        weak_seen_ms = 0  # time of shots with speech over them, not matching, where what is seen is too weak (#836)
         pinned = [by_id[i] for i in live_pins.get(unit.unit_id, [])]
         if len([i for i in edits.pin.get(unit.unit_id, []) if i in by_id]) != len(pinned):
             decision.notes.append("một cảnh đã ghim nằm trong cảnh bạn đã loại nên được bỏ qua")
@@ -1183,9 +1252,12 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
             elif pick["tier"] == "pinned":
                 user_ms += pick["length"]
             needs_review = confidence < REVIEW_BELOW or not candidate.quality.usable
-            if confidence < REVIEW_BELOW and candidate.candidate_id in accept and candidate.candidate_id in scorer.spoken \
-                    and pick["tier"] != "repeat" and not spoken_only(unit, candidate):
-                weak_spoken_ms += pick["length"]
+            if confidence < REVIEW_BELOW and candidate.candidate_id in accept and pick["tier"] != "repeat" \
+                    and candidate.candidate_id in scorer.spoken and not spoken_only(unit, candidate):
+                if speech_matches(unit, candidate):
+                    weak_spoken_ms += pick["length"]
+                else:
+                    weak_seen_ms += pick["length"]
             mine.append(Choice(unit.unit_id, candidate, pick["offset"], pick["length"], pick["score"], confidence, needs_review,
                                tuple(reasons[:8])))
             decision.chosen.append(candidate.candidate_id)
@@ -1214,6 +1286,9 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
         if weak_spoken_ms:  # the speech no longer lifts a weak look over the bar: say why the sentence is not READY
             note = (f"{weak_spoken_ms / 1000:.1f} giây cảnh có lời nói trong nguồn khớp câu nhưng bằng chứng hình ảnh còn yếu "
                     f"(độ tin cậy dưới {REVIEW_BELOW}): cần kiểm tra" + (f"; {note}" if note else ""))
+        if weak_seen_ms:  # the same, where the shot's own speech is not what matches: no claim about the speech
+            note = (f"{weak_seen_ms / 1000:.1f} giây cảnh có bằng chứng hình ảnh còn yếu (độ tin cậy dưới {REVIEW_BELOW}): "
+                    "cần kiểm tra" + (f"; {note}" if note else ""))
         if pinned_by_user and user_ms:
             note = "cảnh do người dùng chọn; AI không thấy cảnh này khớp lời câu" if not milli else \
                 f"chỉ {milli // 10} % thời lượng câu có cảnh AI thấy khớp lời; phần còn lại là cảnh người dùng chọn"
