@@ -326,6 +326,55 @@ def run_arm(arm: str, fx: Fixture | None = None, *, forward_only: bool = False, 
             "units": units}
 
 
+def run_engine(mode: str, fx: Fixture | None = None, *, forward_only: bool = False, window_ms: int = 0,
+               lead_ms: int | None = LEAD_MS) -> dict[str, Any]:
+    """The same fixture through the planner's own lineage experiment (``align.assign(..., lineage=...)``), the whole
+    narration in one plan (so a shared cue, forward-only order and the timeline are real)."""
+    from engine.dubflow.mastering import lineage as lin
+    fx = fx or fixture()
+    indexes = {sid: lin.CueIndex.from_document(sid, doc, idx.sha256) for sid, doc in fx.cue_docs.items()
+               for idx in [indexes_of(fx)[sid]]}
+    plan = lin.resolve(mode, [s.refs for s in fx.sentences], indexes, window_ms=window_ms)
+    candidates = _candidates(fx)
+    found = _evidence(fx, candidates, indexes_of(fx), speech=True)
+    picture = {cid: (a, b, tag) for cid, _, a, b, tag in fx.shots}
+    spoken = [(s.text, fx.sentence_ms) for s in fx.sentences]
+    units = align.units(spoken, fx.sentence_ms * len(spoken), lead_ms=0, gap_ms=0, function=None)
+    choices, decisions, run_mode = align.assign(units, candidates, found, rules.STYLE_PACING["natural"],
+                                                forward_only=forward_only, cue_inpoint_lead_ms=lead_ms, lineage=plan)
+    log = {"mode": run_mode, "candidates": [{"id": c.candidate_id, "quality": {}, "evidence": found[c.candidate_id].to_dict()}
+                                            for c in candidates]}
+    rows = []
+    for s, unit, decision in zip(fx.sentences, units, sorted(decisions, key=lambda d: d.unit.start_ms)):
+        mine = [c for c in choices if c.unit_id == unit.unit_id]
+        d = decision.to_dict()
+        played = [(c.candidate.candidate_id, c.offset_ms, c.offset_ms + c.length_ms) for c in mine]
+        first = played[0] if played else None
+        rows.append({"uid": s.uid, "kind": s.kind, "has_footage": bool(s.shows), "played": played,
+                     "state": rv.unit_state(d, log, [{"needs_review": c.needs_review} for c in mine]),
+                     "matched": bool((d.get("coverage") or {}).get("matched_footage")),
+                     "confidence": [c.confidence for c in mine], "lineage": d.get("lineage"), "notes": d.get("notes"),
+                     "picture_right_ms": sum(max(0, min(e, picture[cid][1]) - max(o, picture[cid][0]))
+                                             for cid, o, e in played if picture[cid][2] in s.shows),
+                     "top1_right": bool(first) and picture[first[0]][2] in s.shows,
+                     "cue_covered": bool(d.get("lineage", {}).get("links"))
+                                    and all(k["played_over_cue_ms"] > 0 for k in d["lineage"]["links"])})
+    problems = quality.timeline_problems(quality.pieces_from_choices(choices), duration_ms=fx.sentence_ms * len(spoken),
+                                         forward_only=forward_only)
+    pos = [r for r in rows if r["has_footage"]]
+    neg = [r for r in rows if not r["has_footage"]]
+    return {"ENGINEERING_FIXTURE_ONLY": True, "engine": True, "mode": mode, "forward_only": forward_only,
+            "summary": {"with_footage": len(pos), "top1_right": sum(r["top1_right"] for r in pos),
+                        "footage_matched": sum(r["matched"] for r in pos),
+                        "picture_right_ms": sum(r["picture_right_ms"] for r in pos),
+                        "cited_cue_covered": sum(r["cue_covered"] for r in pos if r["lineage"] and r["lineage"]["links"]),
+                        "with_valid_cue": sum(bool(r["lineage"] and r["lineage"]["links"]) for r in pos),
+                        "no_footage": len(neg), "no_footage_assigned_ids": [r["uid"] for r in neg if r["matched"]],
+                        "ready": sum(r["state"] == rv.READY for r in rows),
+                        "timeline_problems": sorted(p["code"] for p in problems)},
+            "units": rows}
+
+
 def run(forward_only: bool = False) -> dict[str, Any]:
     return {"ENGINEERING_FIXTURE_ONLY": True, "arms": {arm: run_arm(arm, forward_only=forward_only) for arm in ARMS}}
 
@@ -337,3 +386,7 @@ if __name__ == "__main__":
     for mode, r in result.items():
         for arm, a in r["arms"].items():
             print(mode, arm, json.dumps(a["summary"], ensure_ascii=False))
+    for forward in (False, True):
+        for mode in ("region", "ranked"):
+            print("engine", "forward_only" if forward else "reorder", mode,
+                  json.dumps(run_engine(mode, forward_only=forward)["summary"], ensure_ascii=False))

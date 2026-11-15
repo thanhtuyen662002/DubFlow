@@ -18,6 +18,7 @@ from typing import Any, Mapping, Sequence
 from .. import align
 from .. import analysis as scene
 from .. import evidence as ev
+from .. import lineage as lin
 from .. import plan as m
 from .. import policy as rules
 from ..candidates import Candidate
@@ -185,10 +186,11 @@ def plan_part(part_id: str, kind: str, spoken: Sequence[tuple[str, int]], narrat
               lead_ms: int, gap_ms: int, footage: Sequence[Footage], candidates: Mapping[str, Sequence[Candidate]],
               evidence: Mapping[str, ev.Evidence], groups: Mapping[str, str] | None = None, edits: align.Edits | None = None,
               keep_audio: str = "auto", title: str = "", inputs: Mapping[str, str], moment: bool = True,
-              shown: Sequence[str] = (), cue_inpoint_lead_ms: int | None = None) -> PartPlan:
+              shown: Sequence[str] = (), cue_inpoint_lead_ms: int | None = None,
+              lineage: lin.Lineage | None = None) -> PartPlan:
     """The plan of one part: the narration's sentences over matching footage, then (items) a source moment.
 
-    ``cue_inpoint_lead_ms``: EXPERIMENT (#867), off (``None``) on every production path. See :func:`align.assign`."""
+    ``cue_inpoint_lead_ms``, ``lineage``: EXPERIMENTS, off (``None``) on every production path. See :func:`align.assign`."""
     policy = rules.resolve(WORKFLOW, options)
     if not policy.enabled:
         raise ValueError("the raw compilation path is always planned")
@@ -215,7 +217,8 @@ def plan_part(part_id: str, kind: str, spoken: Sequence[tuple[str, int]], narrat
         # nothing is left after the narration is the moment chosen first (a long source kept its narration to the
         # minutes before an early moment, Why We Fight).
         first = align.assign(found_units, pool, evidence, policy.pacing, forward_only=forward_only, edits=edits,
-                             groups=groups, shown=shown, cue_inpoint_lead_ms=cue_inpoint_lead_ms)
+                             groups=groups, shown=shown, cue_inpoint_lead_ms=cue_inpoint_lead_ms,
+                             lineage=lineage)
         ends: dict[str, int] = {}
         for choice in first[0]:
             ends[choice.candidate.source_id] = max(ends.get(choice.candidate.source_id, 0), choice.offset_ms + choice.length_ms)
@@ -238,7 +241,8 @@ def plan_part(part_id: str, kind: str, spoken: Sequence[tuple[str, int]], narrat
             reserved, narration_pool = None, pool
         choices, decisions, mode = align.assign(found_units, narration_pool, evidence, policy.pacing,
                                                 forward_only=forward_only, edits=edits, groups=groups, shown=shown,
-                                                cue_inpoint_lead_ms=cue_inpoint_lead_ms)
+                                                cue_inpoint_lead_ms=cue_inpoint_lead_ms,
+                             lineage=lineage)
         if reserved is not None and first is not None and _held_ms(choices) > _held_ms(first[0]):
             # a source moment is never bought with held frames: the narration over all of the footage holds less,
             # so it is the plan, and the moment comes from what is left after it (or there is none)
