@@ -18,6 +18,7 @@ def cleared(source_id, **extra):
          "duration_ms": 60000, "language": "en", "genre": "documentary", "speech_ratio": 0.6,
          "license": "test-licence", "license_evidence": "test-evidence", "rights_confirmed_by": "test-person",
          "rights_confirmed_at": "2026-01-01", "third_party_processing_allowed": True,
+         "third_party_processing_scope": "transcript_text_only: test value",
          "cues_sha256": "b" * 64, "cues_method": "local-asr", "asr_status": "ok", "cue_count": 12,
          "asr_model": "faster-whisper-small", "synthetic": False}
     s.update(extra)
@@ -66,6 +67,18 @@ class NoSpeechSources(unittest.TestCase):
     def test_an_empty_cue_file_still_needs_its_hash_and_method(self):
         quiet = cleared("d-s2", speech_ratio=0.0, cue_count=0, cues_sha256=None)
         self.assertTrue(any("cue" in p for p in dev_problems(manifest([cleared("d-s1"), quiet]))))
+
+
+class ProcessingScope(unittest.TestCase):
+    def test_a_bare_true_without_a_named_scope_is_not_draft_ready(self):
+        for scope in (None, "", "frames_ok", "everything"):
+            with self.subTest(scope=scope):
+                found = vm.draft("REAL-DEV", {"sources": [cleared("d-s1", third_party_processing_scope=scope), cleared("d-s2")]})
+                self.assertTrue(any("third_party_processing_scope" in p for p in found), found)
+
+    def test_transcript_text_only_is_a_known_scope(self):
+        found = vm.draft("REAL-DEV", {"sources": [cleared("d-s1"), cleared("d-s2")]})
+        self.assertFalse(any("scope" in p for p in found), found)
 
 
 class DevDoesNotWaitForHoldout(unittest.TestCase):
