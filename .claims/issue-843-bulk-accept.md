@@ -1,7 +1,7 @@
 DUBFLOW_PR_V1
 Issue: #843
 Lease-Owner: Claude/issue-843
-Lease-Heartbeat: 2026-11-15T05:11:34Z
+Lease-Heartbeat: 2026-11-15T05:12:04Z
 Tested-Base-SHA: 3ecaf7d65cf673412424bc2f7bbeb302fe27e5f7 (main) + #840 1207167 + #841 536f28c + #845 a5eb98f
 Depends-On: #841 (#837, the per-piece note) and #845 (#842, align.py), stacked on agent/issue-842-metadata-confidence at a5eb98f
 Conflict-Domains: mastering-review, mastering-editorial
