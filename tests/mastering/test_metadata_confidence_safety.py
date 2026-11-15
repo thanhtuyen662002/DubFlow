@@ -190,3 +190,90 @@ class CoverageNeverComesFromFileNames(unittest.TestCase):
     def test_no_file_name_anywhere_changes_nothing(self):
         state, decision, _ = self._plan({})
         self.assertNotIn("chỉ khớp tên file", " ".join(decision.notes))
+
+
+class FileNamesNeverVerifyWithTheSameShotsAndPictures(unittest.TestCase):
+    """The invariant (Owner directive, Stack Integrity review): with the same chosen shots and the same pictures, file
+    names never make a sentence READY that the pictures alone do not. File names may change WHICH shots are chosen
+    (ranking); a READY sentence must then be READY on what those shots are seen to show. Seeded sweep: 7810fec had 53
+    such leaks over the full sweep, a3c97c9 6, this fix 0 (this test runs a slice of it)."""
+
+    WORDS = [None, "alpha", "alpha beta", "alpha beta gamma", "omega", "beta gamma delta epsilon"]
+    NAMES = [None, "beta_gamma_delta_epsilon.mp4", "alpha_beta_gamma.mp4", "alpha.mp4", "omega_zeta.mp4",
+             "alpha_beta_gamma_delta_epsilon_tower_screen.mkv"]
+
+    @staticmethod
+    def _state(length: int, lengths, seen, said, names, usable=None, text: str = TEXT):
+        pool, at = [], 0
+        for key, part in zip("ABCD", lengths):
+            pool.append(_candidate(key, at, at + part, () if usable is None or key in usable else ("blurred",)))
+            at += part
+        found = ev.gather([c.candidate_id for c in pool])
+        for key, value in seen.items():
+            if value:
+                found[key].add(ev.Item("vision", value[1], value[0], (), "AI"))
+        for key, value in said.items():
+            if value:
+                found[key].add(ev.Item("transcript", 850, value, (), "phụ đề nguồn"))
+        for key, value in names.items():
+            if value:
+                found[key].add(ev.Item("metadata", 700, value, (), "tên file"))
+        unit = align.Unit("u1", text, 0, length, "narration")
+        choices, (decision,), mode = align.assign([unit], pool, found, PACING, forward_only=False)
+        mine = [c for c in choices if c.unit_id == "u1"]
+        log = {"mode": mode, "candidates": [{"id": key, "evidence": value.to_dict()} for key, value in found.items()]}
+        state = rv.unit_state({"unit_id": "u1", "coverage": decision.coverage}, log, [{"needs_review": c.needs_review} for c in mine])
+        return state, {c.candidate.candidate_id for c in mine}
+
+    # the six leaks a3c97c9 still had in the full sweep (Stack Integrity review), each READY there
+    LEAKS = [
+        (TEXT, 6000, (3000, 3000, 6000), {"B": ("beta gamma delta epsilon", 900), "C": ("alpha", 950)}, {"A": "zeta eta"},
+         {"A": "alpha_beta_gamma_delta_epsilon_tower_screen.mkv", "B": "alpha_beta_gamma_delta_epsilon_tower_screen.mkv",
+          "C": "beta_gamma_delta_epsilon.mp4"}),
+        (TEXT, 6000, (3000, 3000, 6000), {"B": ("beta gamma delta epsilon", 900), "C": ("alpha", 950)}, {"A": "zeta eta"},
+         {"A": "beta_gamma_delta_epsilon.mp4", "B": "alpha_beta_gamma.mp4", "C": "beta_gamma_delta_epsilon.mp4"}),
+        (TEXT, 8000, (2000, 2000, 2000, 6000),
+         {"A": ("beta gamma delta epsilon", 950), "C": ("alpha beta gamma", 950), "D": ("alpha beta", 800)}, {"A": "zeta eta"},
+         {"A": "omega_zeta.mp4", "B": "alpha_beta_gamma.mp4", "D": "alpha_beta_gamma_delta_epsilon_tower_screen.mkv"}),
+        (TEXT, 8000, (2000, 2000, 2000, 6000),
+         {"A": ("omega", 950), "B": ("beta gamma delta epsilon", 800), "C": ("beta gamma delta epsilon", 700), "D": ("alpha", 950)},
+         {"A": "zeta eta", "B": "alpha beta gamma delta epsilon"},
+         {"A": "beta_gamma_delta_epsilon.mp4", "B": "alpha_beta_gamma.mp4", "D": "alpha_beta_gamma_delta_epsilon_tower_screen.mkv"}),
+        (TEXT, 8000, (2000, 2000, 2000, 6000),
+         {"A": ("omega", 950), "B": ("beta gamma delta epsilon", 800), "C": ("beta gamma delta epsilon", 700), "D": ("alpha", 950)},
+         {"A": "zeta eta", "B": "alpha beta gamma delta epsilon"},
+         {"A": "beta_gamma_delta_epsilon.mp4", "C": "beta_gamma_delta_epsilon.mp4", "D": "alpha.mp4"}),
+        ("alpha beta gamma", 8000, (2000, 2000, 2000, 6000),
+         {"A": ("beta gamma delta epsilon", 900), "C": ("beta gamma delta epsilon", 700), "D": ("alpha", 950)},
+         {"A": "alpha beta gamma delta epsilon", "C": "alpha beta gamma delta epsilon"},
+         {"A": "alpha_beta_gamma_delta_epsilon_tower_screen.mkv", "C": "beta_gamma_delta_epsilon.mp4",
+          "D": "alpha_beta_gamma_delta_epsilon_tower_screen.mkv"}),
+    ]
+
+    def test_the_leaks_found_on_a3c97c9_are_closed(self):
+        for text, length, lengths, seen, said, names in self.LEAKS:
+            state, chosen = self._state(length, lengths, seen, said, names, text=text)
+            with self.subTest(names=names):
+                if state == rv.READY:  # a3c97c9: READY on every one of them
+                    alone, _ = self._state(length, lengths, seen, {}, {}, usable=chosen, text=text)
+                    self.assertEqual(alone, rv.READY)
+
+    def test_names_never_verify_what_the_same_shots_do_not_show(self):
+        rng = random.Random(845)
+        checked = 0
+        for length, lengths in ((4000, (2500, 6000, 6000)), (6000, (3000, 3000, 6000)), (8000, (2000, 2000, 2000, 6000))):
+            keys = "ABCD"[:len(lengths)]
+            for _ in range(60):
+                seen = {k: ((w, rng.choice((700, 800, 900, 950))) if (w := rng.choice(self.WORDS)) else None) for k in keys}
+                said = {k: ("alpha beta gamma delta epsilon" if rng.random() < .2 else None) for k in keys}
+                for _ in range(6):
+                    names = {k: rng.choice(self.NAMES) for k in keys}
+                    state, chosen = self._state(length, lengths, seen, said, names)
+                    if state != rv.READY:
+                        continue
+                    checked += 1
+                    # the same chosen shots (the others kept, unusable, so every weight stays), pictures only
+                    alone, _ = self._state(length, lengths, seen, {}, {}, usable=chosen)
+                    with self.subTest(seen=seen, said=said, names=names):
+                        self.assertEqual(alone, rv.READY)
+        self.assertGreater(checked, 10)  # the sweep did reach READY sentences
