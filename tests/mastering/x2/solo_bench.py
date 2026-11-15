@@ -119,7 +119,8 @@ def cue_aligned(played, unit_text: str, by_id, said, lead_ms: int = 300):
 
 
 def run(work: Path, *, with_cues: bool = True, ffmpeg: str | None = None, ffprobe: str | None = None,
-        unit_ms: int = 3000, planner_hook: Callable[[Any], Any] | None = None) -> dict:
+        unit_ms: int = 3000, planner_hook: Callable[[Any], Any] | None = None,
+        cue_inpoint_lead_ms: int | None = None) -> dict:
     """Build (or reuse) the fixture under ``work`` and score every unit. Returns the result document."""
     from engine.dubflow.mastering import analysis as scene, candidates as shots, plan as m, review as rv
     from engine.dubflow.mastering import final_qc as qc
@@ -144,7 +145,8 @@ def run(work: Path, *, with_cues: bool = True, ffmpeg: str | None = None, ffprob
     options = m.Options("balanced", "entertainment")
     for unit in units():
         made = planner.plan_part(f"p-{unit.uid}", "item", [(unit.text, unit_ms)], unit_ms, options, lead_ms=200, gap_ms=300,
-                                 footage=[footage], candidates={"fx": cands}, evidence=evidence, inputs={}, moment=False)
+                                 footage=[footage], candidates={"fx": cands}, evidence=evidence, inputs={}, moment=False,
+                                 cue_inpoint_lead_ms=cue_inpoint_lead_ms)
         log = rv.annotate(made.log, made.plan.to_dict())
         u = log["units"][0]
         pieces = u.get("pieces") or []
@@ -174,7 +176,8 @@ def run(work: Path, *, with_cues: bool = True, ffmpeg: str | None = None, ffprob
     # the whole narration as one part, for the review summary and Final QC
     spoken = [(u.text, unit_ms) for u in units()]
     whole = planner.plan_part("whole", "item", spoken, len(spoken) * (unit_ms + 300), options, lead_ms=200, gap_ms=300,
-                              footage=[footage], candidates={"fx": cands}, evidence=evidence, inputs={}, moment=False)
+                              footage=[footage], candidates={"fx": cands}, evidence=evidence, inputs={}, moment=False,
+                                 cue_inpoint_lead_ms=cue_inpoint_lead_ms)
     log = rv.annotate(whole.log, whole.plan.to_dict())
     checks = {c["id"]: c.get("ok", c.get("state")) for c in qc.check_parts([("whole", log, whole.plan.to_dict(), rv.Review())])}
     elapsed = time.perf_counter() - began
