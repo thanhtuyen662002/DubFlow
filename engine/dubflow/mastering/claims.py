@@ -857,6 +857,14 @@ def note(result: Check) -> str:
     return ""
 
 
+def piece_note(labels: Iterable[str], astray_ms: int, unit_ms: int) -> str:
+    """The reviewer's note for a sentence about something displayed whose pieces do not all show it (#837): how long
+    the pieces that show none of what it says are on screen."""
+    share = astray_ms * 100 // max(1, unit_ms)
+    return (f"{astray_ms / 1000:.1f} giây ({share} %) của câu là cảnh không hiển thị điều lời câu nói ("
+            + ", ".join(list(dict.fromkeys(labels))[:3]) + "): cần kiểm tra")
+
+
 def checks_for(claims: Claims, evidence: Mapping[str, ev.Evidence], ids: Iterable[str]) -> dict[str, Check]:
     return {cid: check(claims, content_text(evidence.get(cid))) for cid in ids}
 
