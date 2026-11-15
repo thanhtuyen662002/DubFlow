@@ -49,6 +49,11 @@ TRUST = {"user": 950, "metadata": 550, "transcript": 800, "vision": 800, "signal
 CONTENT_ORIGINS = frozenset({"user", "transcript", "vision"})
 # Where a piece of evidence came from, as the desktop and the reports name it.
 PROVENANCES = ("vision", "transcript", "user_note", "ocr", "filename_metadata", "signal")
+# Provenances that can *verify* what a shot shows (#836): what was seen in the frame (the vision answer, text read off
+# the frame) and the user's own word. A transcript of the source's speech is content (it helps find the footage, rank
+# it and explain a choice) but never proof of the picture: a narrator saying "the globe turns" over a crowd does not put
+# a globe on screen. It counts for localisation and ranking only, never for the confidence, the coverage or a READY.
+VERIFYING = frozenset({"vision", "ocr", "user_note"})
 
 
 def provenance(origin: str, detail: str = "") -> str:
@@ -61,6 +66,11 @@ def provenance(origin: str, detail: str = "") -> str:
     if origin == "transcript" and "ocr" in detail.lower():
         return "ocr"
     return origin
+
+
+def verifies(item: "Item") -> bool:
+    """Whether ``item`` can verify what a shot shows (its provenance is in ``VERIFYING``)."""
+    return provenance(item.origin, item.detail) in VERIFYING
 
 
 def provenance_counts(evidence: "Mapping[str, Evidence]") -> dict[str, int]:
@@ -240,12 +250,21 @@ class Evidence:
         """Whether anything says what the candidate shows (not only signals, not only its file name)."""
         return any(item.origin in CONTENT_ORIGINS and (item.text.strip() or item.labels) for item in self.items)
 
-    def terms(self, *, content_only: bool = False) -> dict[str, int]:
+    @property
+    def seen(self) -> bool:
+        """Whether something that can verify the picture says what the candidate shows (``VERIFYING``, #836): a shot
+        known only from the speech over it, its file name or its signals was never seen."""
+        return any(verifies(item) and (item.text.strip() or item.labels) for item in self.items)
+
+    def terms(self, *, content_only: bool = False, verifying_only: bool = False) -> dict[str, int]:
         """Term → the best trust-weighted confidence any evidence gives it (milli); ``content_only``: only from what
-        says what the shot shows (not its file name)."""
+        says what the shot shows (not its file name); ``verifying_only``: only from what can verify the picture (not
+        its file name, not the speech over it, #836)."""
         out: dict[str, int] = {}
         for item in self.items:
             if content_only and item.origin not in CONTENT_ORIGINS:
+                continue
+            if verifying_only and not verifies(item):
                 continue
             weight = item.confidence * TRUST[item.origin] // 1000
             # each piece on its own: an AI description typed without marks next to label names with marks
@@ -324,5 +343,5 @@ def gather(candidate_ids: Iterable[str]) -> dict[str, Evidence]:
     return {candidate_id: Evidence(candidate_id) for candidate_id in candidate_ids}
 
 
-__all__ = ["Evidence", "Item", "LABELS", "LABEL_NAMES_VI", "MOMENT_LABELS", "PRODUCT_LABELS", "box_from", "cue_labels",
+__all__ = ["Evidence", "Item", "LABELS", "VERIFYING", "verifies", "LABEL_NAMES_VI", "MOMENT_LABELS", "PRODUCT_LABELS", "box_from", "cue_labels",
            "file_words", "fold", "gather", "parse_srt", "terms", "transcript_text", "words"]

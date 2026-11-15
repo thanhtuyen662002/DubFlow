@@ -91,6 +91,14 @@ def _has_content(candidate: Mapping[str, Any]) -> bool:
                for item in found.get("items") or ())
 
 
+def _seen(candidate: Mapping[str, Any]) -> bool:
+    """Whether something saw what the shot shows: vision, text read off its frame, a user's note; never the speech
+    over it (#836: a shot with only source captions was not looked at)."""
+    found = candidate.get("evidence") or {}
+    return any(ev.provenance(str(item.get("origin")), str(item.get("detail") or "")) in ev.VERIFYING
+               and (str(item.get("text") or "").strip() or item.get("labels")) for item in found.get("items") or ())
+
+
 def provenance_of(log: Mapping[str, Any]) -> dict[str, int]:
     """Provenance → candidates with evidence of it, from the log's own candidates (for logs written before it)."""
     out = {name: 0 for name in ev.PROVENANCES}
@@ -127,7 +135,7 @@ def evidence_state(unit: Mapping[str, Any], log: Mapping[str, Any]) -> str:
     # ... and only when none of them shares a word with it: a near miss (some of its words, under a match) is a shot
     # that may show it in other words, so it is not found, not absent (rc5: "hàng domino… đứng xem" at 37, "hai anh em
     # ngồi thử máy" at 57 were called absent while those shots showed them)
-    if content_mode(log) == "content" and usable and all(_has_content(c) for c in usable) \
+    if content_mode(log) == "content" and usable and all(_seen(c) for c in usable) \
             and not coverage.get("best_relevance"):
         return SOURCE_INSUFFICIENT
     return MATCH_NOT_FOUND

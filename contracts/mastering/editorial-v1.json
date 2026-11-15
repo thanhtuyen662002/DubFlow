@@ -36,7 +36,7 @@
     },
     "part": {"type": "string", "maxLength": 128},
     "coverage_map": {
-      "description": "Optional (P2-N11, a programme part): how much of the part's footage has content evidence, and the largest stretches without any (source, start ms, end ms).",
+      "description": "Optional (P2-N11, a programme part): how much of the part's footage something has seen (vision, text read off the frame, a user's note; never the speech over it or a file name, #836), and the largest stretches without any (source, start ms, end ms).",
       "type": "object", "additionalProperties": false,
       "properties": {"shots": {"type": "integer", "minimum": 0}, "shots_with_evidence": {"type": "integer", "minimum": 0},
                      "ms": {"type": "integer", "minimum": 0}, "ms_with_evidence": {"type": "integer", "minimum": 0},
