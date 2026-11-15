@@ -59,11 +59,13 @@ ACCEPTED: NO
 - Phase remains: ASSIGNED=YES; STARTED=YES (Draft lease only); CODED=NO; TESTED=NOT_RUN; INTEGRATED=NO; ACCEPTED=NO.
 
 
-## Lead base synchronization — 2026-11-16T18:39Z
+## Lead base synchronization / CI evidence — 2026-11-16T18:39Z
 
-- Existing branch was advanced non-force to include exact current Main `98738be8c962ab83b9721c13c2958984a09efc2a` using a two-parent merge commit; the existing lease commit remains in ancestry.
-- This is integrator base maintenance only. No product source, tests, workflows, contracts, schemas or lockfiles were edited.
-- `Tested-Base-SHA` remains the last evidenced base `08b25db079ed5baadd68000ffedd292c27d55a6d` until required checks are rerun on the new source HEAD; do not treat this sync as test evidence.
+- Existing branch was advanced non-force to include exact current Main `98738be8c962ab83b9721c13c2958984a09efc2a` using a two-parent merge commit; the original lease commit remains in ancestry.
+- PR Fast #43748411177 passed on the synchronized claim-only HEAD: governance plus 14 deterministic tests.
+- PR Integration #43748411229 passed with `BASE_SHA=98738be8c962ab83b9721c13c2958984a09efc2a`, but explicitly selected no registered integration component because only the claim file changed. This is not #616 product acceptance.
+- `Tested-Base-SHA` is updated to `98738be8c962ab83b9721c13c2958984a09efc2a`; exact-head PR Fast/Integration rerun after the following metadata commit remains pending. Desktop Editor Windows is not applicable to the current claim-only diff and must run after product/test paths change.
+- No product source, tests, workflows, contracts, schemas or lockfiles were edited by Lead.
 - `Lease-Heartbeat` remains `2026-11-15T08:38:00Z`; Lead synchronization is not coder progress and does not renew the lease.
 
 
