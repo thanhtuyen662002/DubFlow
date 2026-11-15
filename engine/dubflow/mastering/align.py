@@ -1277,7 +1277,8 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
         review = mode != "content" or (not generic and milli < GOOD_COVERAGE)
         coverage = {"need_ms": unit.length_ms, "illustrated_ms": illustrated, "milli": milli,
                     "status": "generic" if generic else ("full" if milli >= GOOD_COVERAGE else ("partial" if milli else "none")),
-                    "needs_review": review, "matched_footage": len(accept), "best_relevance": best, "user_ms": user_ms}
+                    "needs_review": review, "matched_footage": len(accept), "best_relevance": best, "user_ms": user_ms,
+                    "astray_ms": 0}
         decision.coverage = coverage
         note = "" if generic else _coverage_note(milli, bool(accept))
         if spoken_ms:  # said in a note, the log's coverage keys stay those of the contract (editorial-v1)
