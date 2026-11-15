@@ -332,14 +332,19 @@ class Scorer:
         # another) cannot change how much a word seen on this shot weighs or whether it is too common to count
         # (#836 Lead P1: idf leak). Without speech anywhere both are the same statistics, the plan unchanged.
         self.stats = _Stats(self.idf, self.common, self.entity_idf, self.common_entities, self.default_idf)
-        self.quiet = self.stats if not self.spoken else _Stats.of(
-            [(self.unspoken_terms.get(key, found), self.unspoken_loose.get(key, self.loose[key]),
-              self.unspoken_entities.get(key, self.entities.get(key, {}))) for key, found in self.terms.items()], count)
+        # #842: neither are file names (metadata). The weights the confidence and the coverage use are built from
+        # what can verify the picture alone (vision, OCR, a user's note), so that a file name on ANY shot cannot change
+        # how much a word seen on this shot weighs. Ranking keeps everything. A job whose evidence all verifies has
+        # one set of statistics, its plan unchanged.
+        self.quiet = self.stats if not self.named else _Stats.of(
+            [(self.content_terms.get(key, found), self.content_loose.get(key, self.loose[key]),
+              self.content_entities.get(key, self.entities.get(key, {}))) for key, found in self.terms.items()], count)
 
     def content_relevance(self, unit: Unit, candidate: Candidate, relevance: int) -> int:
         """The relevance the evidence that can verify the picture alone gives (no file name, no speech over the shot,
         #836), at most ``relevance``: what the confidence of a choice is built on. Where any shot has speech over it,
-        it is what the job would give with no speech at all (the speech-free weights), whatever ``relevance`` is."""
+        it is what the job would give with no speech at all and no file names (the verifying-only weights, #842),
+        whatever ``relevance`` is."""
         key = candidate.candidate_id
         if self.quiet is not self.stats:
             quiet = self._quiet(unit, key)
@@ -371,7 +376,8 @@ class Scorer:
                                            self.unspoken_entities[key], self.stats)[0]
 
     def _quiet(self, unit: Unit, key: str) -> int:
-        """The relevance of ``key`` with no speech over any shot: its speech-free evidence, the speech-free weights."""
+        """The relevance of ``key`` with no speech over any shot: its speech-free evidence (its own file name kept,
+        P2-14), weighted by the verifying-only statistics (#842)."""
         return self._relevance(unit, self.unspoken_terms.get(key, self.terms[key]),
                                self.unspoken_loose.get(key, self.loose[key]),
                                self.unspoken_entities.get(key, self.entities.get(key, {})), self.quiet)[0]
