@@ -13,6 +13,7 @@ import sys
 
 from .job import ProductError, Status, load_spec, probe_duration_ms, probe_size, run
 from .speaker import cached_vieneu
+from engine.dubflow.support import engine_lock
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -30,6 +31,13 @@ def main(argv: list[str] | None = None) -> int:
     # The user's AI key for this job only (as for translation); out of the environment before FFmpeg starts.
     ai_key = os.environ.pop("DUBFLOW_AI_KEY", "") or ""
     output = args.output_dir.absolute()
+    try:
+        # F3: held until this process ends, however it ends; the host reads a free lock as "the engine is gone"
+        engine_lock.hold(output / ".dubflow-work")
+    except engine_lock.EngineBusy:
+        print(json.dumps({"schema_version": 1, "state": "BUSY", "message": "Lần tạo này đang chạy ở tiến trình khác."},
+                         ensure_ascii=True))
+        return 3
     try:
         spec = load_spec(args.spec, args.library_dir)
     except ProductError as error:

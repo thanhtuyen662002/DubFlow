@@ -153,24 +153,28 @@ pub fn compilation_render(request: CompilationRequest) -> Result<String, String>
     if request.cpu_only { command.arg("--cpu-only"); }
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
+    crate::engine_run::track(&work);
     let mut child = command.spawn().map_err(|_| {
         let _ = write_status(&work, "FAILED", "Không chạy được bộ tổng hợp video", total);
+        crate::engine_run::settle_tracked(&work, false, "Không chạy được bộ tổng hợp video");
         fail("Không chạy được bộ tổng hợp video")
     })?;
     std::thread::spawn(move || {
         let _ = child.wait();
         let status = fs::read(work.join("status.json")).ok().and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
-        if status.as_ref().is_none_or(|value| value["state"] == "RUNNING") {
+        if status.as_ref().is_none_or(|value| value["state"] == "RUNNING") && crate::engine_run::engine_alive(&work) != Some(true) {
             let cancelled = work.join("cancel").exists();
             let _ = write_status(&work, if cancelled { "CANCELLED" } else { "FAILED" },
                 if cancelled { "Đã hủy tổng hợp." } else { "Bộ tổng hợp đã dừng. Hãy thử lại." }, total);
         }
+        crate::engine_run::settle_tracked(&work, false, "Bộ tổng hợp đã dừng. Hãy thử lại.");
     });
     Ok(display_path(&output))
 }
 
 #[tauri::command]
 pub fn compilation_status(output_dir: String) -> Result<Value, String> {
+    crate::engine_run::settle_if_abandoned(&compilation_dir(&output_dir)?.join(".dubflow-work"), crate::compilation_raw::INTERRUPTED);
     let bytes = fs::read(compilation_dir(&output_dir)?.join(".dubflow-work/status.json")).map_err(|_| fail("Chưa đọc được trạng thái tổng hợp"))?;
     serde_json::from_slice::<Value>(&bytes).ok().filter(Value::is_object).ok_or_else(|| fail("Trạng thái tổng hợp không hợp lệ"))
 }
@@ -198,6 +202,7 @@ pub fn compilation_runs(roots: Vec<String>) -> Vec<Value> {
         let dir = compilation_dir(&display_path(&dir)).ok()?;
         let work = dir.join(".dubflow-work");
         let spec = crate::product::read_small_json(&work.join("spec.json"), 256 * 1024)?;
+        crate::engine_run::settle_if_abandoned(&work, crate::compilation_raw::INTERRUPTED);
         let version = spec["schema_version"].as_u64().unwrap_or(0);
         let spec = if version == 1 || version == 2 { spec } else { json!({"title": spec["title"].as_str().unwrap_or_default()}) };
         let video = dir.join("compilation.mp4");

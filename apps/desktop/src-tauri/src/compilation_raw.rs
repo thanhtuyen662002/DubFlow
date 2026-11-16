@@ -31,6 +31,9 @@ const MAX_SOURCES: usize = 8;
 const MAX_NARRATION: usize = 1500;
 /// The engine refuses a larger spec (`job.load_spec`).
 const SPEC_LIMIT: u64 = 256 * 1024;
+/// F3: how a run left RUNNING by a stopped app or machine is reported once its engine is known to be gone.
+pub(crate) const INTERRUPTED: &str = "Lần dựng trước bị gián đoạn (app hoặc máy đã tắt). Hãy dựng lại; các phần đã xong được dùng lại.";
+
 const STATUS_LIMIT: u64 = 256 * 1024;
 const PROGRAM_LIMIT: u64 = 4 * 1024 * 1024;
 const FINAL: &str = "final.mp4";
@@ -310,10 +313,17 @@ fn spawn(dir: &Path, cpu_only: bool, key: Option<String>) -> Result<(), String> 
     }
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
-    let mut child = command.spawn().map_err(|_| fail("Không chạy được bộ tổng hợp video"))?;
+    crate::engine_run::track(&work);
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(_) => {
+            crate::engine_run::settle_tracked(&work, false, "Không chạy được bộ tổng hợp video");
+            return Err(fail("Không chạy được bộ tổng hợp video"));
+        }
+    };
     std::thread::spawn(move || {
         let exited_ok = child.wait().is_ok_and(|status| status.success());
-        crate::engine_run::settle_after_exit(&work, exited_ok, "Bộ tổng hợp đã dừng. Hãy thử lại.");
+        crate::engine_run::settle_tracked(&work, exited_ok, "Bộ tổng hợp đã dừng. Hãy thử lại.");
     });
     Ok(())
 }
@@ -362,6 +372,7 @@ pub fn compilation_raw_rerender(output_dir: String, request: Option<RawRequest>,
     let dir = raw_dir(&output_dir)?;
     let work = dir.join(".dubflow-work");
     let before = read_spec(&dir)?;
+    crate::engine_run::settle_if_abandoned(&work, INTERRUPTED);
     let status = crate::mastering::read_plain_json(&work.join("status.json"), STATUS_LIMIT)?.unwrap_or(Value::Null);
     if status["state"] == "RUNNING" {
         return Err(fail("Chương trình đang được dựng; hãy chờ xong rồi dựng lại"));
@@ -412,6 +423,7 @@ pub fn compilation_raw_open(output_dir: String) -> Result<Value, String> {
     let dir = raw_dir(&output_dir)?;
     let work = dir.join(".dubflow-work");
     let spec = read_spec(&dir)?;
+    crate::engine_run::settle_if_abandoned(&work, INTERRUPTED);
     let status = crate::mastering::read_plain_json(&work.join("status.json"), STATUS_LIMIT).ok().flatten();
     let program = crate::mastering::read_plain_json(&work.join("program.json"), PROGRAM_LIMIT).ok().flatten()
         .filter(|value| value["kind"] == "compilation_program");
@@ -606,6 +618,7 @@ fn finalize_in(dir: &Path, accept: bool, review: impl Fn(&Path, &str, &[String])
 #[tauri::command]
 pub async fn compilation_raw_finalize(output_dir: String, accept: bool) -> Result<Value, String> {
     let dir = raw_dir(&output_dir)?;
+    crate::engine_run::settle_if_abandoned(&dir.join(".dubflow-work"), INTERRUPTED);
     tauri::async_runtime::spawn_blocking(move || {
         finalize_in(&dir, accept, |dir, part, args| crate::mastering::run_review(dir, ["--part", part], args),
                     |dir| crate::mastering::run_final_qc(dir, &["--program"]))
@@ -616,6 +629,7 @@ pub async fn compilation_raw_finalize(output_dir: String, accept: bool) -> Resul
 #[tauri::command]
 pub async fn compilation_raw_final_qc(output_dir: String) -> Result<Value, String> {
     let dir = raw_dir(&output_dir)?;
+    crate::engine_run::settle_if_abandoned(&dir.join(".dubflow-work"), INTERRUPTED);
     tauri::async_runtime::spawn_blocking(move || crate::mastering::run_final_qc(&dir, &["--program"]))
         .await.map_err(|error| fail(error.to_string()))?
 }

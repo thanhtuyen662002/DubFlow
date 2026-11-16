@@ -21,7 +21,9 @@ when FFmpeg is given, measures the output itself:
 
 The result's ``state`` maps the workflow states: ``RENDERING``, ``RENDER_PENDING`` (decisions not rendered yet),
 ``REVIEW_PENDING``, ``FINAL_QC_FAILED`` or ``READY_TO_FINALIZE``. ``Finalized``/``Stale Final`` are the host's (it
-holds the final export's record).
+holds the final export's record). A hard failure (the output or its timeline, or a run that did not complete) is
+``FINAL_QC_FAILED`` even when choices or reviews are also open: ``blocking`` lists the hard failures and
+``awaiting_review`` what a review or re-render still has to settle, so neither hides the other.
 
 ``python -m engine.dubflow.mastering.final_qc --work DIR (--video N | --program) [--ffmpeg F --ffprobe P]`` prints it.
 """
@@ -212,20 +214,36 @@ def check_output(video: Path | None, expected_ms: int | None, captions: Path | N
     return checks
 
 
+# A failed check of the output or its timeline cannot be cleared by a review or a decision: it blocks on its own.
+# Pending choices, unreviewed sentences and unsettled critical claims are what a review (and a re-render) settles.
+HARD_CHECKS = ("render", "timeline", "duration", "captions", "audio")
+REVIEW_CHECKS = ("pending", "decisions", "claims")
+
+
 def result(checks: list[dict[str, Any]], status_state: str | None) -> dict[str, Any]:
     by = {c["id"]: c for c in checks}
+    failed = [c["id"] for c in checks if c["ok"] is False]
+    # F4 (Phase 8): a hard failure is never shown as "review pending", which reads as "only a review is left"
+    blocking = [i for i in failed if i not in REVIEW_CHECKS]
+    if status_state not in ("RUNNING", "COMPLETED"):  # the run failed, was cancelled or left no status
+        blocking = ["status", *blocking]
+    awaiting = [i for i in failed if i in REVIEW_CHECKS]
     if status_state == "RUNNING":
         state = "RENDERING"
+    elif blocking:
+        state = "FINAL_QC_FAILED"
     elif by.get("pending", {}).get("ok") is False:
         state = "RENDER_PENDING"
     elif by.get("decisions", {}).get("ok") is False:
         state = "REVIEW_PENDING"
-    elif status_state != "COMPLETED" or any(c["ok"] is False for c in checks):
+    elif failed:
         state = "FINAL_QC_FAILED"
     else:
         state = "READY_TO_FINALIZE"
     return {"schema_version": 1, "kind": "final_qc", "state": state, "passed": state == "READY_TO_FINALIZE",
             "checks": checks, "unmeasured": [c["id"] for c in checks if c["ok"] is None],
+            # additive (F4): what blocks on its own, and what a review or re-render still has to settle; both kept
+            "blocking": blocking if state != "RENDERING" else [], "awaiting_review": awaiting,
             # every critical sentence, none dropped: the "claims" line names the first LISTED and counts the rest
             "critical_units": list(by.get("claims", {}).get("units") or ())}
 

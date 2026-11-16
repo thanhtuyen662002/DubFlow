@@ -14,6 +14,12 @@ use std::process::Stdio;
 use std::time::Duration;
 
 pub(crate) const ENGINE_STDOUT: &str = "engine-stdout.log";
+/// The engine's lock on its run (Phase 8, F3; `engine/dubflow/support/engine_lock.py`): held by the engine process
+/// for its whole life and released by the OS however it ends.
+pub(crate) const ENGINE_LOCK: &str = "engine.lock";
+/// The runs whose engine this app started and still waits for: their watcher settles them, nobody else.
+static WAITING: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<std::path::PathBuf>>> =
+    std::sync::LazyLock::new(Default::default);
 pub(crate) const ENGINE_STDERR: &str = "engine-stderr.log";
 const FINISHED: [&str; 3] = ["COMPLETED", "FAILED", "CANCELLED"];
 const TAIL_BYTES: u64 = 1024 * 1024;
@@ -72,6 +78,53 @@ fn last_result(path: &Path) -> Option<Value> {
         .filter(|value| value.is_object() && value["state"].as_str().is_some_and(|state| FINISHED.contains(&state)))
 }
 
+/// Whether an engine holds `work`'s lock: `Some(true)` working, `Some(false)` gone (the lock is free), `None` no
+/// lock file (an engine that never started, or one from before the lock existed).
+pub(crate) fn engine_alive(work: &Path) -> Option<bool> {
+    let path = work.join(ENGINE_LOCK);
+    if fs::symlink_metadata(&path).is_ok_and(|metadata| crate::edit::is_link(&metadata) || !metadata.is_file()) {
+        return Some(true); // never probed through a link; treated as busy, so nothing is settled because of it
+    }
+    let file = fs::OpenOptions::new().read(true).write(true).open(&path).ok()?;
+    match file.try_lock() {
+        Ok(()) => Some(false), // dropping the file releases the probe's lock
+        Err(std::fs::TryLockError::WouldBlock) => Some(true),
+        Err(std::fs::TryLockError::Error(_)) => Some(true),
+    }
+}
+
+/// This app starts the engine of `work` and will settle it when it exits.
+pub(crate) fn track(work: &Path) {
+    if let Ok(mut waiting) = WAITING.lock() {
+        waiting.insert(work.to_path_buf());
+    }
+}
+
+fn untrack(work: &Path) {
+    if let Ok(mut waiting) = WAITING.lock() {
+        waiting.remove(work);
+    }
+}
+
+/// The engine of `work` has exited (this app waited for it): settle and stop tracking it.
+pub(crate) fn settle_tracked(work: &Path, exited_ok: bool, stopped: &str) {
+    settle_after_exit(work, exited_ok, stopped);
+    untrack(work);
+}
+
+/// F3: a run left RUNNING by an app (or machine) that stopped is settled when it is next read. Nothing is done while
+/// this app waits for its engine, nor while any engine holds the run's lock (it is still working, also when started
+/// by an earlier app); otherwise the engine is gone and the run becomes FAILED (or CANCELLED, or the engine's own
+/// last word), never COMPLETED without a successful exit. Its files stay: a new run reuses every finished part.
+pub(crate) fn settle_if_abandoned(work: &Path, stopped: &str) {
+    if WAITING.lock().is_ok_and(|waiting| waiting.contains(work)) {
+        return;
+    }
+    if crate::product::read_small_json(&work.join("status.json"), TAIL_BYTES).is_some_and(|value| value["state"] == "RUNNING") {
+        settle_after_exit(work, false, stopped);
+    }
+}
+
 /// After the engine has ended: a status still RUNNING (or unreadable) is settled. The engine's own final status
 /// (its last stdout line) wins, except that COMPLETED counts only with a successful exit; otherwise a cancel request
 /// makes it CANCELLED, anything else FAILED with `stopped` and where the engine's error output is.
@@ -80,6 +133,9 @@ pub(crate) fn settle_after_exit(work: &Path, exited_ok: bool, stopped: &str) {
     let current = crate::product::read_small_json(&status_path, TAIL_BYTES);
     if current.as_ref().is_some_and(|value| value["state"] != "RUNNING") {
         return;
+    }
+    if engine_alive(work) == Some(true) {
+        return; // another engine is still making this run (a second start found it busy and left)
     }
     let value = settled(work, current, exited_ok, stopped);
     let temp = status_path.with_extension("json.settle");
@@ -124,6 +180,55 @@ mod tests {
 
     fn status(work: &Path) -> Value {
         serde_json::from_slice(&fs::read(work.join("status.json")).unwrap()).unwrap()
+    }
+
+    // F3 (Phase 8): a run left RUNNING by a stopped app is settled on the next read, never while an engine works on it
+    #[test]
+    fn an_abandoned_run_is_settled_when_read_and_a_working_one_is_not() {
+        let stopped = "Lần dựng trước bị gián đoạn.";
+        let running = br#"{"schema_version":1,"state":"RUNNING","done":1,"total":3}"#;
+        // no engine lock at all (the app and the engine stopped before it existed): FAILED, its counts kept
+        let work = work();
+        fs::write(work.join("status.json"), running).unwrap();
+        settle_if_abandoned(&work, stopped);
+        let value = status(&work);
+        assert_eq!((value["state"].as_str(), value["message"].as_str(), value["done"].as_u64()), (Some("FAILED"), Some(stopped), Some(1)));
+        // an engine holds the lock (it outlived the app that started it): left RUNNING; once it is gone: settled
+        fs::write(work.join("status.json"), running).unwrap();
+        let held = fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(work.join(ENGINE_LOCK)).unwrap();
+        held.lock().unwrap();
+        assert_eq!(engine_alive(&work), Some(true));
+        settle_if_abandoned(&work, stopped);
+        settle_after_exit(&work, false, stopped); // a second start that found the run busy does not settle it either
+        assert_eq!(status(&work)["state"], "RUNNING");
+        drop(held); // the engine died: the OS released its lock
+        assert_eq!(engine_alive(&work), Some(false));
+        settle_if_abandoned(&work, stopped);
+        assert_eq!(status(&work)["state"], "FAILED");
+        // a cancel asked before the stop is kept as CANCELLED; a finished run is never touched
+        fs::write(work.join("status.json"), running).unwrap();
+        fs::write(work.join("cancel"), b"").unwrap();
+        settle_if_abandoned(&work, stopped);
+        assert_eq!(status(&work)["state"], "CANCELLED");
+        fs::write(work.join("status.json"), br#"{"schema_version":1,"state":"COMPLETED","path":"x"}"#).unwrap();
+        settle_if_abandoned(&work, stopped);
+        assert_eq!(status(&work)["state"], "COMPLETED");
+        let _ = fs::remove_dir_all(work);
+    }
+
+    #[test]
+    fn a_run_this_app_still_waits_for_is_left_to_its_watcher() {
+        let work = work();
+        fs::write(work.join("status.json"), br#"{"schema_version":1,"state":"RUNNING"}"#).unwrap();
+        track(&work); // started, the engine has not taken its lock yet
+        settle_if_abandoned(&work, "stopped");
+        assert_eq!(status(&work)["state"], "RUNNING");
+        settle_tracked(&work, false, "Bộ tổng hợp đã dừng.");
+        assert_eq!(status(&work)["state"], "FAILED");
+        fs::write(work.join("status.json"), br#"{"schema_version":1,"state":"RUNNING"}"#).unwrap();
+        settle_if_abandoned(&work, "stopped"); // no longer tracked: settled
+        assert_eq!(status(&work)["state"], "FAILED");
+        let _ = fs::remove_dir_all(work);
     }
 
     #[test]
