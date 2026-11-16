@@ -2428,10 +2428,7 @@ pub async fn edit_project_load(output_path: String, kind: String) -> Result<Valu
             project_path = earlier.work.join("project.json");
         }
     }
-    let project = fs::metadata(&project_path).ok().filter(|metadata| metadata.len() as usize <= PROJECT_LIMIT)
-        .and_then(|_| fs::read(&project_path).ok())
-        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-        .filter(|value| value["schema_version"].as_u64().is_some_and(|schema| (1..=4).contains(&schema)));
+    let (project, draft_problem) = read_draft(&project_path);
     // Sounds the draft uses from the user's files may play in the preview again.
     if let Some(project) = &project {
         crate::sfx::allow_files(&draft_sounds(project));
@@ -2443,7 +2440,9 @@ pub async fn edit_project_load(output_path: String, kind: String) -> Result<Valu
     let reviewable = target.kind == Kind::Job && target.dir.join(".dubflow-work").join("translation.json").is_file();
     Ok(json!({"duration": facts.duration, "width": facts.width, "height": facts.height, "fps": fps_value(&facts.fps), "size_bytes": facts.size,
         "has_audio": facts.has_audio, "project": project, "cues": cues, "kind": target.kind_name(), "reviewable": reviewable,
-        "variant": match target.kind { Kind::Product(number) => json!(number), _ => Value::Null }}))
+        "variant": match target.kind { Kind::Product(number) => json!(number), _ => Value::Null },
+        // a draft that is there but cannot be read: said to the user, and set aside (not overwritten) on the next save
+        "draft_problem": draft_problem}))
 }
 
 /// "30000/1001" as frames per second, to the millisecond.
@@ -2712,7 +2711,75 @@ pub fn edit_project_save(output_path: String, kind: String, project: Value) -> R
 
 fn save_draft(target: &Target, bytes: &[u8]) -> Result<(), String> {
     target.prepare()?;
-    write_atomic(&target.work.join("project.json"), bytes).map_err(|_| fail("Không lưu được bản nháp chỉnh sửa"))
+    replace_draft(&target.work.join("project.json"), bytes)
+}
+
+/// Write the draft at `path`, setting aside first a draft there that cannot be read.
+fn replace_draft(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let path = path.to_path_buf();
+    if read_draft(&path).1.is_some() {
+        // a draft this app cannot read (cut short by a crash, or saved by a newer DubFlow) is never overwritten: it is
+        // set aside first, so nothing the user made is lost (Phase 9A)
+        set_aside(&path).map_err(|_| fail("Không giữ lại được bản nháp cũ không đọc được; chưa lưu bản mới để không ghi đè nó"))?;
+    }
+    write_durable(&path, bytes).map_err(|_| fail("Không lưu được bản nháp chỉnh sửa"))
+}
+
+/// Drafts set aside because they could not be read, kept beside the draft (the oldest go).
+const SET_ASIDE_KEEP: usize = 5;
+
+/// The draft at `path` and, when a file is there that cannot be used, why (the draft is then `None`).
+fn read_draft(path: &Path) -> (Option<Value>, Option<String>) {
+    let Ok(metadata) = fs::symlink_metadata(path) else { return (None, None) };
+    if !metadata.is_file() || is_link(&metadata) {
+        return (None, Some("không phải file thường".into()));
+    }
+    if metadata.len() as usize > PROJECT_LIMIT {
+        return (None, Some("quá lớn".into()));
+    }
+    let Ok(bytes) = fs::read(path) else { return (None, Some("không đọc được file".into())) };
+    let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
+        return (None, Some(if bytes.is_empty() { "file rỗng (có thể máy tắt khi đang lưu)".into() } else { "nội dung hỏng".into() }));
+    };
+    match value["schema_version"].as_u64() {
+        Some(schema) if (1..=4).contains(&schema) => (Some(value), None),
+        Some(schema) if schema > 4 => (None, Some(format!("được lưu bởi bản DubFlow mới hơn (phiên bản bản nháp {schema})"))),
+        _ => (None, Some("không đúng định dạng bản nháp".into())),
+    }
+}
+
+/// Move an unreadable draft out of the way as `project.unreadable-<ms>.json`, keeping the last few.
+fn set_aside(path: &Path) -> std::io::Result<PathBuf> {
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let mut stamp = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |time| time.as_millis() as u64);
+    while dir.join(format!("project.unreadable-{stamp}.json")).exists() {
+        stamp += 1;
+    }
+    let kept = dir.join(format!("project.unreadable-{stamp}.json"));
+    fs::rename(path, &kept)?;
+    let mut old: Vec<PathBuf> = fs::read_dir(dir).into_iter().flatten().flatten().map(|entry| entry.path())
+        .filter(|file| file.file_name().and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("project.unreadable-") && name.ends_with(".json")))
+        .collect();
+    old.sort();
+    let extra = old.len().saturating_sub(SET_ASIDE_KEEP);
+    for file in old.into_iter().take(extra) {
+        let _ = fs::remove_file(file);
+    }
+    Ok(kept)
+}
+
+/// `write_atomic`, with the new file on disk before it takes the old one's place: a crash right after leaves the
+/// old draft or the new one, never an empty file under the draft's name.
+fn write_durable(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let partial = partial_of(path);
+    {
+        let mut file = fs::File::create(&partial)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+    }
+    fs::rename(&partial, path)
 }
 
 // ---------- Phiên bản and Mẫu (Issue #534) ----------
@@ -3941,6 +4008,40 @@ pub async fn edit_proxy(app: tauri::AppHandle, path: String, start: bool) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Phase 9A: a draft the app cannot read (empty after a power cut, a newer DubFlow's) is set aside, never replaced
+    #[test]
+    fn an_unreadable_draft_is_kept_aside_and_never_overwritten() {
+        let dir = std::env::temp_dir().join(format!("dubflow-draft-keep-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("project.json");
+        assert_eq!(read_draft(&path), (None, None), "no draft yet");
+        let good = br#"{"schema_version":4,"segments":[{}]}"#;
+        replace_draft(&path, good).unwrap();
+        assert!(read_draft(&path).0.is_some() && read_draft(&path).1.is_none());
+        replace_draft(&path, br#"{"schema_version":4,"segments":[{},{}]}"#).unwrap();
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1, "a readable draft is simply replaced, nothing left beside it");
+        for (body, why) in [(&b""[..], "file rỗng"), (&b"{\"schema_vers"[..], "nội dung hỏng"),
+                            (&br#"{"schema_version":9,"segments":[{}]}"#[..], "mới hơn"), (&br#"[1,2]"#[..], "không đúng định dạng")] {
+            fs::write(&path, body).unwrap();
+            let (draft, problem) = read_draft(&path);
+            assert!(draft.is_none() && problem.as_deref().is_some_and(|text| text.contains(why)), "{problem:?}");
+            replace_draft(&path, good).unwrap();
+            assert_eq!(fs::read(&path).unwrap(), good);
+            let kept: Vec<_> = fs::read_dir(&dir).unwrap().flatten().filter(|entry| entry.file_name().to_string_lossy().starts_with("project.unreadable-"))
+                .map(|entry| fs::read(entry.path()).unwrap()).collect();
+            assert!(kept.iter().any(|bytes| bytes == body), "the unreadable draft is kept byte for byte");
+        }
+        for _ in 0..8 {
+            fs::write(&path, b"").unwrap();
+            replace_draft(&path, good).unwrap();
+        }
+        let aside = fs::read_dir(&dir).unwrap().flatten().filter(|entry| entry.file_name().to_string_lossy().starts_with("project.unreadable-")).count();
+        assert_eq!(aside, SET_ASIDE_KEEP, "only the last few are kept");
+        assert!(!partial_of(&path).exists(), "no partial file left");
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn music_and_sfx_count_only_as_plain_files_with_a_current_marker() {

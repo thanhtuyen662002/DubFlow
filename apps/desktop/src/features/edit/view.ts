@@ -44,10 +44,11 @@ import { mountLook } from "./look_view.ts";
 import { mountCanvas } from "./canvas_view.ts";
 import { lookBadges } from "./look.ts";
 import { exportFolder } from "./library.ts";
+import { Autosaver, windowTimers } from "./autosave.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 type Facts = { duration: number; width: number; height: number; fps?: number; size_bytes: number; has_audio: boolean; cues: Cue[] };
-type LoadResponse = Facts & { project: unknown; kind?: string; reviewable?: boolean };
+type LoadResponse = Facts & { project: unknown; kind?: string; reviewable?: boolean; draft_problem?: string | null };
 type ExportEntry = {
   path: string; srt_path?: string | null; created: number; duration: number; quality?: string;
   media?: unknown; segments?: unknown; transitions?: unknown; overlays?: unknown;
@@ -358,8 +359,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   const peaksLoading = new Set<string>();
 
   let session: Session | null = null;
-  let saveTimer = 0;
-  let saving: Promise<void> = Promise.resolve();
+  // Lưu nháp: at most MAX_WAIT_MS behind the user, even during a burst of edits (Phase 9A, PC baseline)
+  const saver = new Autosaver(() => save(), windowTimers);
   let loop = 0;
   let pps = 1;
   let opening = false;
@@ -1399,28 +1400,25 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       if (session.plainCover) project.cover = cover.document();
       if (session.plainSubs && session.subsTouched) (project as Record<string, unknown>).subtitles = serializeLayers(session.plainSubs);
       await invoke("edit_project_save", { outputPath, kind, project });
-      $("#edit-save-state").textContent = "";
+      // only once the disk took it: an error stays on screen until a save succeeds
+      if (session?.outputPath === outputPath) $("#edit-save-state").textContent = "Đã lưu nháp";
     } catch (error) {
       $("#edit-save-state").textContent = `Chưa lưu được bản nháp: ${String(error).slice(0, 140)}`;
     }
   }
 
   function scheduleSave(): void {
-    window.clearTimeout(saveTimer);
-    saveTimer = window.setTimeout(() => {
-      saveTimer = 0;
-      saving = save();
-    }, 500);
+    if (session) $("#edit-save-state").textContent = "Có thay đổi chưa lưu…";
+    saver.changed();
   }
 
   async function flush(): Promise<void> {
-    if (saveTimer) {
-      window.clearTimeout(saveTimer);
-      saveTimer = 0;
-      saving = save();
-    }
-    await saving;
+    await saver.flush();
   }
+
+  // the window hidden or the page going away: what is pending goes to disk now, not after the wait
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") void flush(); });
+  window.addEventListener("pagehide", () => { void flush(); });
 
   // ---------- Operations ----------
 
@@ -3474,7 +3472,10 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       // A Bán hàng video opens on its template; modes it does not have fall back to Cắt ghép.
       if (opened.kind === "product") mode = "template";
       if (!offered(mode)) mode = "cut";
-      $("#edit-save-state").textContent = "";
+      // a draft on disk that cannot be read is said, and kept aside on the first save, never silently replaced
+      $("#edit-save-state").textContent = loaded.draft_problem
+        ? `Bản nháp cũ không mở được (${String(loaded.draft_problem).slice(0, 80)}); DubFlow giữ lại bản đó và bắt đầu bản nháp mới.`
+        : loaded.project && !project ? "Bản nháp cũ không mở được; DubFlow bắt đầu bản nháp mới." : "";
       $("#edit-hint").textContent = "";
       screen.classList.add("editing");
       host.refresh();
