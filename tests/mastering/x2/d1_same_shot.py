@@ -14,6 +14,11 @@ of every piece stay as they were. A piece keeps its original in-point (and recor
 - ``no_gain``: the overlap with the cue would not grow;
 - ``timeline``: the move would add a ``quality.timeline_problems`` code (REPEAT, BACKWARDS in forward-only, ...).
 
+Option ``clamp_to_shot_end`` (default off, #881): when the cue-led span would run past the end of the shot, try
+``shot_end_ms - length_ms`` instead (``clamped``). With the option on, a move (clamped or not) is accepted only if the
+total overlap with all cited cues grows (else ``no_gain``) and every cited cue it touched before is still touched (else
+``drops_touched_cue``); the timeline check is the same.
+
 A cue says where words are spoken, never what the picture shows: confidence, review flags and READY are untouched.
 """
 from __future__ import annotations
@@ -47,12 +52,14 @@ def _codes(choices: Sequence[align.Choice], stills: Sequence[str], duration_ms: 
 
 
 def reanchor(choices: Sequence[align.Choice], cited: Mapping[str, Sequence[tuple[int, int]]], *, lead_ms: int = LEAD_MS,
-             forward_only: bool = False, stills: Sequence[str] = (), duration_ms: int | None = None
-             ) -> tuple[list[align.Choice], list[dict[str, Any]]]:
+             forward_only: bool = False, stills: Sequence[str] = (), duration_ms: int | None = None,
+             clamp_to_shot_end: bool = False) -> tuple[list[align.Choice], list[dict[str, Any]]]:
     """``choices`` in timeline order; ``cited``: unit id -> its verified cited cue spans (source ms).
     Returns the new choices (same length, same shots, same lengths) and one log row per piece."""
     if type(lead_ms) is not int or not 0 <= lead_ms <= 5000:
         raise ValueError("lead_ms must be 0–5000")
+    if type(clamp_to_shot_end) is not bool:
+        raise ValueError("clamp_to_shot_end must be a bool")
     out = list(choices)
     log: list[dict[str, Any]] = []
     still_ids = set(stills)
@@ -74,15 +81,24 @@ def reanchor(choices: Sequence[align.Choice], cited: Mapping[str, Sequence[tuple
             cue = inside[0]
             new = cue[0] - lead_ms
             row["cue_ms"] = list(cue)
+            if clamp_to_shot_end and new >= c.start_ms and new + choice.length_ms > c.end_ms:
+                row["target_offset_ms"], row["clamped"] = new, True
+                new = c.end_ms - choice.length_ms
             old_gain = _overlap(choice.offset_ms, choice.offset_ms + choice.length_ms, *cue)
             new_gain = _overlap(new, new + choice.length_ms, *cue)
             row["cue_overlap_ms"] = [old_gain, new_gain]
+            if clamp_to_shot_end:
+                before = [_overlap(choice.offset_ms, choice.offset_ms + choice.length_ms, *s) for s in spans]
+                after = [_overlap(new, new + choice.length_ms, *s) for s in spans]
+                row["all_cue_overlap_ms"] = [before, after]
             if new < c.start_ms or new + choice.length_ms > c.end_ms:
                 row["kept"] = "outside_shot"
             elif new == choice.offset_ms:
                 row["kept"] = "unchanged"
-            elif new_gain <= old_gain:
+            elif (sum(after) <= sum(before)) if clamp_to_shot_end else new_gain <= old_gain:
                 row["kept"] = "no_gain"
+            elif clamp_to_shot_end and any(b > 0 and a == 0 for b, a in zip(before, after)):
+                row["kept"] = "drops_touched_cue"
             else:
                 trial = list(out)
                 trial[i] = dataclasses.replace(choice, offset_ms=new, reasons=(*choice.reasons, REASON))
@@ -183,7 +199,7 @@ def _build(sc: Scenario):
     return candidates, found, plan
 
 
-def run_one(sc: Scenario, *, forward_only: bool, lead_ms: int = LEAD_MS) -> dict[str, Any]:
+def run_one(sc: Scenario, *, forward_only: bool, lead_ms: int = LEAD_MS, clamp_to_shot_end: bool = False) -> dict[str, Any]:
     """Region baseline (planner, D1 off) and the same plan re-anchored."""
     candidates, found, plan = _build(sc)
     spoken = [(s.text, sc.sentence_ms) for s in sc.sentences]
@@ -192,7 +208,8 @@ def run_one(sc: Scenario, *, forward_only: bool, lead_ms: int = LEAD_MS) -> dict
     choices, _decisions, _mode = align.assign(units, candidates, found, rules.STYLE_PACING["natural"],
                                               forward_only=forward_only, lineage=plan)
     cited = {u.unit_id: [(q.start_ms, q.end_ms) for q in cues] for u, cues in zip(units, plan.cues)}
-    variant, log = reanchor(choices, cited, lead_ms=lead_ms, forward_only=forward_only, duration_ms=total)
+    variant, log = reanchor(choices, cited, lead_ms=lead_ms, forward_only=forward_only, duration_ms=total,
+                            clamp_to_shot_end=clamp_to_shot_end)
 
     def summary(cs: Sequence[align.Choice]) -> dict[str, Any]:
         pieces = quality.pieces_from_choices(cs)
@@ -210,9 +227,10 @@ def run_one(sc: Scenario, *, forward_only: bool, lead_ms: int = LEAD_MS) -> dict
             "new_timeline_problems": sorted((Counter(var["timeline_problems"]) - Counter(base["timeline_problems"])).elements())}
 
 
-def run(lead_ms: int = LEAD_MS) -> dict[str, Any]:
-    results = [run_one(sc, forward_only=fo, lead_ms=lead_ms) for sc in scenarios() for fo in (False, True)]
-    return {"ENGINEERING_FIXTURE_ONLY": True, "lead_ms": lead_ms,
+def run(lead_ms: int = LEAD_MS, clamp_to_shot_end: bool = False) -> dict[str, Any]:
+    results = [run_one(sc, forward_only=fo, lead_ms=lead_ms, clamp_to_shot_end=clamp_to_shot_end)
+               for sc in scenarios() for fo in (False, True)]
+    return {"ENGINEERING_FIXTURE_ONLY": True, "lead_ms": lead_ms, "clamp_to_shot_end": clamp_to_shot_end,
             "summary": {"runs": len(results), "pieces": sum(len(r["log"]) for r in results),
                         "moved": sum(r["moved"] for r in results),
                         "kept": dict(sum((Counter(r["kept"]) for r in results), Counter())),
