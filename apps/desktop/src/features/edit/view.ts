@@ -44,6 +44,7 @@ import { mountLook } from "./look_view.ts";
 import { mountCanvas } from "./canvas_view.ts";
 import { lookBadges } from "./look.ts";
 import { exportFolder } from "./library.ts";
+import { packHistory, unpackHistory } from "./undo_store.ts";
 import { Autosaver, windowTimers } from "./autosave.ts";
 import { mountThumbnail } from "./thumbnail_view.ts";
 
@@ -1419,6 +1420,9 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       if (session.plainCover) project.cover = cover.document();
       const thumbnail = thumb.document();
       if (thumbnail) (project as Record<string, unknown>).thumbnail = thumbnail;
+      // Hoàn tác after a restart (Issue #896): the steps around this edit, within a size budget.
+      const undo = packHistory(history.states, history.index);
+      if (undo) (project as Record<string, unknown>).undo = undo;
       if (session.plainSubs && session.subsTouched) (project as Record<string, unknown>).subtitles = serializeLayers(session.plainSubs);
       await invoke("edit_project_save", { outputPath, kind, project });
       // only once the disk took it: an error stays on screen until a save succeeds
@@ -3465,6 +3469,15 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
         steps: [], redoSteps: [], subsPast: [], subsFuture: [], subsShadow: "", subsAt: 0, subsBurst: null, markIn: null, markOut: null, shuttle: 1,
       };
       session.plainCover = !session.reviewable;
+      // The undo steps saved with this draft (Issue #896), around the very edit it opened on.
+      if (project && loaded.project && typeof loaded.project === "object") {
+        const kept = unpackHistory((loaded.project as Record<string, unknown>).undo, loaded.duration, info);
+        if (kept.past.length || kept.future.length) {
+          session.history.restore(kept.past, edit, kept.future, changes);
+          session.steps = kept.past.map(() => "edit" as const);
+          session.redoSteps = kept.future.map(() => "edit" as const);
+        }
+      }
       resetThumbs();
       active = video;
       library = [];
