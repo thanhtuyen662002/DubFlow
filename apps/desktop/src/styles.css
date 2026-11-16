@@ -2632,3 +2632,25 @@ body.settings-open .rail-item.active:not(#nav-settings)::before { display: none;
 .mreview-context p { margin: 0; }
 .compilation-raw-export-state { white-space: pre-line; }
 #product-render-state { white-space: pre-line; }
+
+/* Thuật ngữ & ngữ cảnh (Issue #903) */
+.gloss-card { display: flex; flex-direction: column; gap: 10px; }
+.gloss-head { display: flex; flex-direction: column; gap: 2px; }
+.gloss-head small { color: var(--text-3); }
+.gloss-books-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
+.gloss-books-row select { min-width: 220px; flex: 1; }
+.gloss-name { flex: 1; min-width: 200px; }
+.gloss-body { display: flex; flex-direction: column; gap: 8px; }
+.gloss-search { width: 100%; }
+.gloss-table { display: flex; flex-direction: column; gap: 4px; max-height: 360px; overflow: auto; }
+.gloss-row { display: grid; grid-template-columns: minmax(90px, 1fr) minmax(110px, 1.2fr) 64px minmax(90px, 1fr) 44px; gap: 6px; align-items: center; }
+.gloss-row input:not([type="checkbox"]) { width: 100%; min-width: 0; }
+.gloss-row input[type="checkbox"] { justify-self: center; }
+.gloss-header { font-size: 12px; color: var(--text-3); position: sticky; top: 0; background: var(--surface, inherit); }
+.gloss-new-row { grid-template-columns: minmax(90px, 1fr) minmax(110px, 1.2fr); }
+.gloss-row.flagged input:not([type="checkbox"]) { border-color: var(--warn, #f59e0b); }
+.job-gloss { display: flex; flex-direction: column; gap: 8px; }
+.job-gloss-books { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.job-gloss-context > summary { cursor: pointer; padding: 4px 0; }
+.job-gloss-context > summary small { color: var(--text-3); }
+.job-gloss-context[open] { display: flex; flex-direction: column; gap: 8px; }

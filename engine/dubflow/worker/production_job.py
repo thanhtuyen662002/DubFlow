@@ -84,6 +84,7 @@ from engine.dubflow.translation.argos_runtime import ArgosRuntime
 from engine.dubflow.translation.hachimi_runtime import ENGINES as TRANSLATION_ENGINES, create_runtime as create_translation_runtime
 from engine.dubflow.ai.client import AiError, Route, make_route
 from engine.dubflow.translation import context_ai
+from engine.dubflow.translation import glossary as glossary_mod
 from engine.dubflow.worker import beep, beep_sounds
 from engine.dubflow.worker.b2_audio import _joined_text as _joined_phrase_text
 from engine.dubflow.translation.sensitive import SensitivePolicy, SensitiveWordsError, apply_to_cues as apply_sensitive
@@ -1268,6 +1269,8 @@ class TranslationSettings:
     route: Route | None = None
     sensitive: SensitivePolicy | None = None
     title: str = ""
+    # Thuật ngữ và ngữ cảnh (Issue #903): only the translation step reads it.
+    guide: glossary_mod.Guide = field(default_factory=glossary_mod.Guide)
 
 
 def _translation_settings(config: WorkerConfig, warnings: list[str]) -> TranslationSettings:
@@ -1302,7 +1305,13 @@ def _translation_settings(config: WorkerConfig, warnings: list[str]) -> Translat
         except SensitiveWordsError as error:
             warnings.append(f"SENSITIVE_WORDS_INVALID: {error}")
     title = document.get("title") if isinstance(document.get("title"), str) else ""
-    return TranslationSettings(route, sensitive, " ".join(title.split())[:200])
+    guide = glossary_mod.Guide()
+    if document.get("glossary") is not None:
+        try:
+            guide = glossary_mod.resolve(document["glossary"])
+        except glossary_mod.GlossaryError as error:
+            warnings.append(f"GLOSSARY_INVALID: {error}; dịch không dùng thuật ngữ riêng.")
+    return TranslationSettings(route, sensitive, " ".join(title.split())[:200], guide)
 
 
 CLOUD_VOICE_FILE = "cloud_voice.json"
@@ -1813,6 +1822,22 @@ def _asr_word_evidence_matches(cues: Sequence[TextCue], evidence: Any) -> bool:
 def _translation_identity(cues: Sequence[TextCue], language: str, provenance: Mapping[str, Any]) -> str:
     value = {"cues": [cue.to_dict() for cue in cues], "source_language": language, "route": dict(provenance)}
     return "sha256:" + sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+
+
+def _apply_glossary(cues: Sequence[TextCue], guide: glossary_mod.Guide, runtime: Any, provenance: Mapping[str, Any],
+                    warnings: list[str]) -> tuple[tuple[TextCue, ...], dict[str, Any]]:
+    """The user's terms checked in every line (Issue #903); the offline translator renders a term to find its miss."""
+    def render(term: str) -> str:
+        return runtime.translate_text(term)
+
+    result = glossary_mod.enforce(cues, guide, render)
+    if result.unconfirmed:
+        lines = sorted({cue_id for cue_id, _ in result.unconfirmed})
+        terms = sorted({source for _, source in result.unconfirmed})
+        warnings.append(f"GLOSSARY_UNCONFIRMED: {len(lines)} câu có thuật ngữ bắt buộc nhưng chưa chắc đã dùng đúng "
+                        f"({', '.join(terms[:5])}); xem lại trong Chỉnh sửa › Phụ đề.")
+    return result.cues, dict(provenance, glossary_check={"terms": len(guide.terms), "replaced": result.replaced,
+                                                        "unconfirmed": len(result.unconfirmed)})
 
 
 def _translate_with_argos(cues: Sequence[TextCue], model_root: Path, source_language: str, *, runtime: Any, chunks_dir: Path | None = None) -> tuple[TextCue, ...]:
@@ -2373,10 +2398,15 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
         raise ProductionJobError(error.code, error.condition) from error
     offline_provenance = translation_provenance
     settings = _translation_settings(config, warnings)
+    if not settings.guide.empty():
+        # Terms and context are part of the translation's identity: changing them re-checks every line
+        # (offline lines stay cached per cue; the AI windows are keyed by them too).
+        translation_provenance = dict(translation_provenance, glossary=settings.guide.identity())
     if settings.route is not None:
         # The AI pass is part of the translation's identity: turning it on, off or
         # changing model re-translates (offline lines and AI windows stay cached).
-        translation_provenance = dict(translation_provenance, context_ai=context_ai.identity(settings.route, dubbing=config.enable_dubbing))
+        translation_provenance = dict(translation_provenance, context_ai=context_ai.identity(settings.route, dubbing=config.enable_dubbing,
+                                                                                            guide=None if settings.guide.empty() else settings.guide))
     translation_input = _translation_identity(cues, transcript.source_language, translation_provenance)
     translation_changed = True
     if _stage_ready(checkpoint, "translation", (translation_path,)):
@@ -2398,7 +2428,8 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
             ai_progress(0, 1)
             try:
                 result = context_ai.translate_in_context(translated, settings.route, dubbing=config.enable_dubbing,
-                    cache_dir=work_dir / "ai-translation", title=settings.title, on_progress=ai_progress)
+                    cache_dir=work_dir / "ai-translation", title=settings.title, on_progress=ai_progress,
+                    guide=None if settings.guide.empty() else settings.guide)
             except Exception as failure:  # noqa: BLE001 - the AI pass is optional; the offline lines stand
                 # Never fail the video over the optional AI pass: finished windows stay cached for the next run.
                 message = f"{type(failure).__name__}: {str(failure)[:200]}"
@@ -2423,6 +2454,11 @@ def _run_local_file(config: WorkerConfig, emitter: _Emitter, export_dir: Path) -
                                     f"phần còn lại dùng bản dịch offline: {result.error or 'lỗi không rõ'}")
                 else:
                     warnings.append(f"AI_TRANSLATION_SKIPPED: {result.error or 'lỗi không rõ'} Phụ đề dùng bản dịch offline.")
+        if settings.guide.terms:
+            translated, translation_provenance = _apply_glossary(translated, settings.guide, translation_runtime, translation_provenance, warnings)
+        if settings.guide.conflicts:
+            shown = "; ".join(f"{conflict.source}: dùng “{conflict.kept.target}”, bỏ “{conflict.dropped.target}”" for conflict in settings.guide.conflicts[:5])
+            warnings.append(f"GLOSSARY_CONFLICT: {len(settings.guide.conflicts)} thuật ngữ có hai cách viết ({shown}).")
         _atomic_json(translation_path, {"schema_version": 2, "source_language": transcript.source_language, "target_language": "vi", "provenance": translation_provenance, "input_hash": stored_input, "cues": [cue.to_dict() for cue in translated]})
         _write_stage(checkpoint, checkpoint_path, "translation", {"path": str(translation_path), "sha256": _sha256(translation_path)})
     else:

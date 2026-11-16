@@ -30,6 +30,7 @@ import time
 from typing import Any, Protocol
 
 from engine.dubflow.ai.client import AiError, Route, ask
+from engine.dubflow.translation import glossary as glossary_mod
 
 RECIPE = "context-ai-vi-v2"
 WINDOW_CUES = 40
@@ -359,30 +360,39 @@ def _store(path: Path | None, value: Any) -> None:
     os.replace(temporary, path)
 
 
-def identity(route: Route, *, dubbing: bool) -> dict[str, Any]:
+def identity(route: Route, *, dubbing: bool, guide: glossary_mod.Guide | None = None) -> dict[str, Any]:
     """What changes the AI pass's output: never the key."""
-    return {"recipe": RECIPE, "provider": route.provider, "model": route.model, "base_url": route.base_url, "dubbing": dubbing}
+    value = {"recipe": RECIPE, "provider": route.provider, "model": route.model, "base_url": route.base_url, "dubbing": dubbing}
+    if guide is not None and not guide.empty():
+        value["guide"] = guide.identity()
+    return value
 
 
 def translate_in_context(cues: Sequence[Any], route: Route, *, dubbing: bool, cache_dir: Path | None = None, title: str = "",
                          on_progress: Callable[[int, int], None] | None = None, asker: Asker = ask,
-                         pause: Callable[[float], None] = time.sleep) -> ContextResult:
-    """Every cue with an in-context translation where the AI gave one, otherwise its offline draft."""
+                         pause: Callable[[float], None] = time.sleep, guide: glossary_mod.Guide | None = None) -> ContextResult:
+    """Every cue with an in-context translation where the AI gave one, otherwise its offline draft.
+
+    ``guide``: the user's terms and context (Issue #903). They go before the automatic brief and
+    replace its terms for the same source; the window prompts then carry them as the brief does.
+    """
     ordered = list(cues)
     windows = [ordered[index:index + WINDOW_CUES] for index in range(0, len(ordered), WINDOW_CUES)]
     if not windows:
         return ContextResult((), 0, 0, 0, route.model)
-    key = identity(route, dubbing=dubbing)
+    key = identity(route, dubbing=dubbing, guide=guide)
     current = route
     error: str | None = None
 
     # 1. The brief. Optional: a failure here only loses some context.
     sources = "\n".join(cue.source_text for cue in ordered)[:BRIEF_SOURCE_CHARS]
+    told = glossary_mod.brief_lines(guide, (cue.source_text for cue in ordered)) if guide is not None else ""
     brief_path = cache_dir / f"brief-{_digest({'k': key, 's': sources, 't': title})}.json" if cache_dir else None
     brief_value = _cached(brief_path)
     if brief_value is None:
         try:
-            brief_value, current = asker(current, BRIEF_SYSTEM, BRIEF_SCHEMA, [{"text": (f"Tên video: {title}\n" if title else "") + "Lời thoại gốc:\n" + sources}],
+            brief_value, current = asker(current, BRIEF_SYSTEM, BRIEF_SCHEMA, [{"text": (f"Tên video: {title}\n" if title else "")
+                                         + (told + "\n" if told else "") + "Lời thoại gốc:\n" + sources}],
                                          max_tokens=4000)
             _store(brief_path, brief_value)
         except AiError as failure:
@@ -390,7 +400,9 @@ def translate_in_context(cues: Sequence[Any], route: Route, *, dubbing: bool, ca
                 # Nothing else will work either: keep every offline line.
                 return ContextResult(tuple(ordered), len(windows), 0, 0, route.model, failure.message)
             brief_value, error = None, failure.message
-    brief = _brief_text(brief_value)
+    if guide is not None:
+        brief_value = glossary_mod.merge_brief_terms(brief_value, guide, (cue.source_text for cue in ordered))
+    brief = "\n".join(filter(None, [told, _brief_text(brief_value)]))
 
     # 2. The windows, in order, each continuing the previous one's notes. A window that failed on a
     # passing problem (network cut, server busy, time-out) is tried once more after the others, so a

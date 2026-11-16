@@ -49,6 +49,8 @@ import { pickFromMedia } from "./features/media/picker.ts";
 import { COVER_STORAGE_KEY, describeCoverStyle, normalizeCoverStyle, storedCoverStyle, type CoverMode, type CoverStyle } from "./features/edit/cover.ts";
 import { configureHostAi, createAiSession, isKeyError, PROVIDERS } from "./features/ai/provider.ts";
 import { loadPrefs, translationJobArgs } from "./features/ai/translation_prefs.ts";
+import { glossaryArgs } from "./features/ai/glossary.ts";
+import { mountGlossaryBooks, mountJobGlossary } from "./features/ai/glossary_view.ts";
 import { rewriteAsNarration, type NarrationStyle } from "./features/narration/ai.ts";
 import { hostKeyStore, mountAiSettings } from "./features/ai/settings.ts";
 import { ReviewDraftHistory } from "./features/review/history.ts";
@@ -166,6 +168,8 @@ const newVersionButton = $<HTMLButtonElement>("#new-processing-version");
 let voiceCatalog: VoiceCatalog | null = null;
 let voiceCatalogError = "";
 let voiceJobId: string | null = null;
+/** Thiết lập › Thuật ngữ & ngữ cảnh, once mounted (Issue #903). */
+let jobGlossaryView: { render: () => void } | null = null;
 let queueFilter: QueueFilter = "all";
 /** A link still downloading (or failed) shown in the player instead of a job. */
 let selectedFetchId: string | null = null;
@@ -309,6 +313,7 @@ function voiceButton(voice: VoiceChoice, selected: boolean, note = ""): HTMLElem
 }
 
 function renderVoiceControls(job: QueueJob | undefined): void {
+  jobGlossaryView?.render();
   if (voiceJobId !== (job?.id ?? null)) {
     genderFilter.value = accentFilter.value = styleFilter.value = "";
     voiceJobId = job?.id ?? null;
@@ -1361,6 +1366,8 @@ async function startJob(job: QueueJob): Promise<void> {
       cloudVoice: dubbingVoice(loadVibiChoice(), request.enableDubbing === true),
       // "Dịch phụ đề bằng AI theo ngữ cảnh" and "Từ nhạy cảm" (Cài đặt › Tài khoản); the host adds the saved key.
       ...translationJobArgs(loadPrefs(), claudeKey, job.displayName),
+      // Thuật ngữ & ngữ cảnh (Issue #903): read only by the translation step.
+      glossary: glossaryArgs(job.glossary, glossaryBooks.books()),
     });
     // Resumes must reuse the folder the first start chose, even if the
     // results-folder setting changes later.
@@ -1799,6 +1806,24 @@ const discovery = mountDiscovery(invoke, async (url, title) => { await startFetc
   return key ? chineseKeyword(claudeKey.provider(), key, text) : null;
 });
 const aiSettings = mountAiSettings(claudeKey, () => openSettings("account"), invoke, playableUrl);
+const glossaryBooks = mountGlossaryBooks(invoke);
+const jobGlossary = mountJobGlossary({
+  job: () => {
+    const job = selectedJob();
+    return job ? { id: job.id, glossary: job.glossary, editable: job.status.state === "QUEUED" } : null;
+  },
+  set: (jobId, glossary) => {
+    try {
+      queue.setGlossary(jobId, glossary);
+    } catch {
+      // Only a queued video's options change.
+    }
+  },
+  books: () => glossaryBooks.books(),
+});
+glossaryBooks.onChange(() => jobGlossary.render());
+jobGlossaryView = jobGlossary;
+jobGlossary.render();
 // Vibi.pro voices (#632): the studio, Cài đặt › Giọng đọc, and the row in the dubbing options.
 const vibiStudio = createVibiStudio(invoke, playableUrl, () => openSettings("voices"));
 const vibiSettings = mountVibiSettings($("#vibi-settings"), invoke, vibiStudio, () => dubbingVibiRow.refresh());

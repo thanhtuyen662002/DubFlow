@@ -601,6 +601,35 @@ const TRANSLATION_SETTINGS_FILE: &str = "translation_settings.json";
 /// and sensitive words; never the key), or no file when neither is on. Returns the
 /// saved key for the job's environment.
 pub(crate) fn write_translation_settings(output: &Path, ai: Option<&AiTranslation>, sensitive: Option<&Value>, title: Option<&str>) -> Result<Option<String>, String> {
+    write_translation_settings_with(output, ai, sensitive, title, None)
+}
+
+/// Xuất CSV (Issue #903): a shared glossary saved where the user picks, as UTF-8 CSV.
+/// Returns the saved path, or None when the dialog was closed.
+#[tauri::command]
+async fn glossary_export(file_name: String, text: String) -> Result<Option<String>, String> {
+    if text.len() > 4 * 1024 * 1024 {
+        return Err(fail("Bộ thuật ngữ quá lớn để xuất"));
+    }
+    let name = source::safe_file_name(file_name.trim().trim_end_matches(".csv"));
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(path) = rfd::FileDialog::new().set_title("Xuất bộ thuật ngữ").set_file_name(format!("{name}.csv"))
+            .add_filter("CSV", &["csv"]).save_file() else {
+            return Ok(None);
+        };
+        let path = if path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("csv")) { path } else { path.with_extension("csv") };
+        fs::write(&path, text.as_bytes()).map_err(|error| fail(format!("Không ghi được file: {error}")))?;
+        Ok(Some(display_path(&path)))
+    }).await.map_err(|_| fail("Không xuất được bộ thuật ngữ"))?
+}
+
+/// A glossary and context (Issue #903) are at most this big as JSON.
+const MAX_GLOSSARY_BYTES: usize = 192 * 1024;
+
+/// [`write_translation_settings`] with the video's glossary and context (Issue #903):
+/// `{"project": [...], "shared": [...], "context": {...}}`, read only by the translation step.
+pub(crate) fn write_translation_settings_with(output: &Path, ai: Option<&AiTranslation>, sensitive: Option<&Value>, title: Option<&str>,
+    glossary: Option<&Value>) -> Result<Option<String>, String> {
     let path = output.join(TRANSLATION_SETTINGS_FILE);
     let short = |value: &Option<String>, limit: usize| value.as_deref().map(str::trim).filter(|text| !text.is_empty())
         .map(|text| text.chars().filter(|ch| !ch.is_control()).take(limit).collect::<String>());
@@ -619,14 +648,23 @@ pub(crate) fn write_translation_settings(output: &Path, ai: Option<&AiTranslatio
             return Err(fail("Danh sách từ nhạy cảm không hợp lệ"));
         }
     }
-    if ai_value.is_none() && sensitive.is_none() {
+    let glossary = glossary.filter(|value| !value.is_null());
+    if let Some(value) = glossary {
+        if !value.is_object() || serde_json::to_vec(value).map(|bytes| bytes.len()).unwrap_or(usize::MAX) > MAX_GLOSSARY_BYTES {
+            return Err(fail("Bộ thuật ngữ không hợp lệ hoặc quá lớn"));
+        }
+    }
+    if ai_value.is_none() && sensitive.is_none() && glossary.is_none() {
         if path.exists() {
             fs::remove_file(&path).map_err(|error| fail(format!("unable to update {TRANSLATION_SETTINGS_FILE}: {error}")))?;
         }
         return Ok(None);
     }
     let title: String = title.unwrap_or_default().chars().filter(|ch| !ch.is_control()).take(200).collect();
-    let document = json!({"schema_version": 1, "title": title.trim(), "ai": ai_value, "sensitive": sensitive});
+    let mut document = json!({"schema_version": 1, "title": title.trim(), "ai": ai_value, "sensitive": sensitive});
+    if let Some(value) = glossary {
+        document["glossary"] = value.clone();
+    }
     fs::write(&path, serde_json::to_vec_pretty(&document).map_err(|error| fail(error.to_string()))?)
         .map_err(|error| fail(format!("unable to write {TRANSLATION_SETTINGS_FILE}: {error}")))?;
     match ai {
@@ -636,7 +674,7 @@ pub(crate) fn write_translation_settings(output: &Path, ai: Option<&AiTranslatio
 }
 
 #[tauri::command]
-fn start_job(job_id: String, source_path: String, output_dir: Option<String>, enable_dubbing: Option<bool>, tts_voice_id: Option<String>, burn_in: Option<bool>, source_language: Option<String>, output_root: Option<String>, subtitle_box: Option<bool>, translation_engine: Option<String>, blur_regions: Option<Vec<BlurRegion>>, blur_auto: Option<bool>, multi_voice: Option<bool>, speaker_voices: Option<std::collections::BTreeMap<String, String>>, separate_background: Option<bool>, cpu_only: Option<bool>, subtitle_style: Option<edit::SubtitleStyle>, cover_style: Option<edit::CoverStyle>, ai_translation: Option<AiTranslation>, sensitive_words: Option<Value>, title: Option<String>, cloud_voice: Option<Value>, mastering: Option<String>) -> Result<StartJobResponse, String> {
+fn start_job(job_id: String, source_path: String, output_dir: Option<String>, enable_dubbing: Option<bool>, tts_voice_id: Option<String>, burn_in: Option<bool>, source_language: Option<String>, output_root: Option<String>, subtitle_box: Option<bool>, translation_engine: Option<String>, blur_regions: Option<Vec<BlurRegion>>, blur_auto: Option<bool>, multi_voice: Option<bool>, speaker_voices: Option<std::collections::BTreeMap<String, String>>, separate_background: Option<bool>, cpu_only: Option<bool>, subtitle_style: Option<edit::SubtitleStyle>, cover_style: Option<edit::CoverStyle>, ai_translation: Option<AiTranslation>, sensitive_words: Option<Value>, title: Option<String>, cloud_voice: Option<Value>, mastering: Option<String>, glossary: Option<Value>) -> Result<StartJobResponse, String> {
     validate_id(&job_id)?;
     if let Some(style) = &subtitle_style {
         style.validate()?;
@@ -690,7 +728,7 @@ fn start_job(job_id: String, source_path: String, output_dir: Option<String>, en
             edit::write_cover(&output, &edit::CoverChoice::with_style(style))?;
         }
     }
-    let job_key = write_translation_settings(&output, ai_translation.as_ref(), sensitive_words.as_ref(), title.as_deref())?;
+    let job_key = write_translation_settings_with(&output, ai_translation.as_ref(), sensitive_words.as_ref(), title.as_deref(), glossary.as_ref())?;
     // A Vibi.pro voice for the dubbing (#632); its key goes through the environment like the AI key.
     let voice_key = vibi::write_cloud_voice(&output, cloud_voice.as_ref().filter(|_| selected_voice.is_some()))?;
     // Tối ưu hậu kỳ tự động (ADR-0055): a level writes mastering.json, off removes it (off renders as before).
@@ -2374,7 +2412,7 @@ fn main() {
             tauri::async_runtime::spawn(sync_douyin_login(app.handle().clone()));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![reframe::reframe_render, reframe::reframe_status, reframe::reframe_cancel, reframe::reframe_info, shorts::shorts_render, shorts::shorts_status, shorts::shorts_cancel, package::package_video, package::package_info, package::package_status, package::package_cancel, source_credit::source_credit_get, source_credit::source_credit_set, ai_keys::ai_key_status, ai_keys::ai_key_get, ai_keys::ai_ask, ai_keys::ai_key_set, ai_keys::ai_key_delete, ai_keys::ai_key_page, vibi::vibi_call, vibi::vibi_preview, vibi::vibi_sample, create_report, product::pick_product_files, product::product_image, product::product_render, product::product_status, product::product_cancel, product::product_spec, product::product_runs, product::product_backgrounds, product::product_background_add, product::product_background_delete, product::product_rerender, mastering::mastering_review, mastering::mastering_final_qc, mastering::mastering_keyframe, mastering::dubbing_qc, mastering::dubbing_qc_climax, release_info, voice_catalog, pick_files, pick_edit_files, pick_lut, edit::edit_proxy, start_job, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, link_titled_output, withdraw_fetch, cancel_fetch, keep_download, default_download_dir, open_folder, reveal_download, save_douyin_session, ensure_douyin_session, douyin_account, douyin_logout, douyin_view_open, douyin_view_bounds, douyin_view_close, review_clip, video_frame, allow_media, post_suggestions, discover, open_discovery, discovery_view_show, discovery_view_bounds, discovery_view_hide, discovery_view_close, discovery_view_back, discovery_view_reload, discovery_view_url, scroll_discovery, collect_discovery, translate_terms, translate_query, review_speakers, check_update, download_update, install_update, list_versions, activate_version, restart_app, compilation::compilation_render, compilation::compilation_status, compilation::compilation_cancel, compilation::compilation_description, compilation::compilation_runs, compilation_raw::compilation_raw_render, compilation_raw::compilation_raw_rerender, compilation_raw::compilation_raw_cancel, compilation_raw::compilation_raw_open, compilation_raw::compilation_raw_finalize, compilation_raw::compilation_raw_final_qc, compilation_raw::compilation_review, compilation_raw::compilation_keyframe, compilation_raw::pick_source_folder, projects::project_delete, docu::docu_create, docu::docu_runs, docu::docu_open, docu::docu_check_script, docu::docu_pick_file, docu::docu_voices, docu::docu_narrate, docu::docu_narration_status, docu::docu_narration_cancel, docu::docu_plan, docu::docu_plan_status, docu::docu_plan_cancel, docu::docu_cover, docu::docu_slices, docu::docu_layers,
+        .invoke_handler(tauri::generate_handler![reframe::reframe_render, reframe::reframe_status, reframe::reframe_cancel, reframe::reframe_info, shorts::shorts_render, shorts::shorts_status, shorts::shorts_cancel, package::package_video, package::package_info, package::package_status, package::package_cancel, source_credit::source_credit_get, source_credit::source_credit_set, ai_keys::ai_key_status, ai_keys::ai_key_get, ai_keys::ai_ask, ai_keys::ai_key_set, ai_keys::ai_key_delete, ai_keys::ai_key_page, vibi::vibi_call, vibi::vibi_preview, vibi::vibi_sample, create_report, product::pick_product_files, product::product_image, product::product_render, product::product_status, product::product_cancel, product::product_spec, product::product_runs, product::product_backgrounds, product::product_background_add, product::product_background_delete, product::product_rerender, mastering::mastering_review, mastering::mastering_final_qc, mastering::mastering_keyframe, mastering::dubbing_qc, mastering::dubbing_qc_climax, release_info, voice_catalog, pick_files, pick_edit_files, pick_lut, edit::edit_proxy, start_job, glossary_export, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, link_titled_output, withdraw_fetch, cancel_fetch, keep_download, default_download_dir, open_folder, reveal_download, save_douyin_session, ensure_douyin_session, douyin_account, douyin_logout, douyin_view_open, douyin_view_bounds, douyin_view_close, review_clip, video_frame, allow_media, post_suggestions, discover, open_discovery, discovery_view_show, discovery_view_bounds, discovery_view_hide, discovery_view_close, discovery_view_back, discovery_view_reload, discovery_view_url, scroll_discovery, collect_discovery, translate_terms, translate_query, review_speakers, check_update, download_update, install_update, list_versions, activate_version, restart_app, compilation::compilation_render, compilation::compilation_status, compilation::compilation_cancel, compilation::compilation_description, compilation::compilation_runs, compilation_raw::compilation_raw_render, compilation_raw::compilation_raw_rerender, compilation_raw::compilation_raw_cancel, compilation_raw::compilation_raw_open, compilation_raw::compilation_raw_finalize, compilation_raw::compilation_raw_final_qc, compilation_raw::compilation_review, compilation_raw::compilation_keyframe, compilation_raw::pick_source_folder, projects::project_delete, docu::docu_create, docu::docu_runs, docu::docu_open, docu::docu_check_script, docu::docu_pick_file, docu::docu_voices, docu::docu_narrate, docu::docu_narration_status, docu::docu_narration_cancel, docu::docu_plan, docu::docu_plan_status, docu::docu_plan_cancel, docu::docu_cover, docu::docu_slices, docu::docu_layers,
             docu::docu_reframe, docu::docu_render_options, docu::docu_render, docu::docu_render_status, docu::docu_render_cancel, docu::docu_capcut, docu::docu_launch_capcut, docu::docu_mcp_connection, docu::docu_mcp_activity, storage::storage_report, storage::storage_clean, storage::storage_free, edit::edit_project_load, edit::edit_library, edit::edit_file_sizes, edit::edit_project_save, edit::edit_export, edit::edit_status, edit::edit_cancel, edit::edit_stems, voice_sample, edit::edit_separate, edit::edit_split, edit::edit_separate_cancel, edit::edit_subs_extract, edit::edit_subs_extract_status, edit::edit_subs_extract_cancel, edit::edit_media_info, edit::edit_audio_peaks, edit::edit_lut_frame, edit::edit_save_recording, thumbnail::thumbnail_frame, thumbnail::thumbnail_save, thumbnail::thumbnail_reveal, edit::edit_versions, edit::edit_version_save, edit::edit_version_load, edit::edit_version_delete, edit::edit_templates, edit::edit_template_save, edit::edit_template_load, edit::edit_template_delete, edit::edit_subtitles_load, edit::edit_subtitles_apply, sfx::sfx_status, sfx::sfx_install, sfx::sfx_path, sfx::user_audio_list, sfx::audio_info, sfx::pick_audio_folder, sfx::pick_audio_files, sfx::expand_audio_paths, gpu::machine_profile, gpu::set_performance])
         .build(tauri::generate_context!())
         .expect("error while building DubFlow desktop host")
@@ -2404,6 +2442,17 @@ mod tests {
         assert!(write_translation_settings(&dir, Some(&bad), None, None).is_err());
         assert!(write_translation_settings(&dir, None, Some(&json!("x")), None).is_err());
         assert_eq!(write_translation_settings(&dir, None, Some(&Value::Null), None).unwrap(), None);
+        assert!(!dir.join(TRANSLATION_SETTINGS_FILE).exists());
+        // Issue #903: a glossary alone writes the file; a bad or huge one is refused.
+        let glossary = json!({"project": [{"source": "李明", "target": "Lý Minh", "mandatory": true}], "context": {"topic": "Phim cổ trang"}});
+        write_translation_settings_with(&dir, None, None, Some("Phim"), Some(&glossary)).unwrap();
+        let written: Value = serde_json::from_slice(&fs::read(dir.join(TRANSLATION_SETTINGS_FILE)).unwrap()).unwrap();
+        assert_eq!(written["glossary"], glossary);
+        assert_eq!(written["ai"], Value::Null);
+        assert!(write_translation_settings_with(&dir, None, None, None, Some(&json!(["x"]))).is_err());
+        let huge = json!({"project": [{"source": "x".repeat(MAX_GLOSSARY_BYTES), "target": "y"}]});
+        assert!(write_translation_settings_with(&dir, None, None, None, Some(&huge)).is_err());
+        assert_eq!(write_translation_settings_with(&dir, None, None, None, None).unwrap(), None);
         assert!(!dir.join(TRANSLATION_SETTINGS_FILE).exists());
         fs::remove_dir_all(&dir).unwrap();
     }
