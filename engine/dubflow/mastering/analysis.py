@@ -105,31 +105,117 @@ class StreamInfo:
 
 
 def probe(ffprobe: Path, video: Path) -> StreamInfo:
-    """Duration, display size, frame rate and whether there is an audio stream."""
+    """Duration, display size, frame rate and whether there is an audio stream.
+
+    A source that cannot be used says why, in words the user can act on (#894, F5): the file is missing, unreadable
+    (permission, disk or network) or empty; it is cut short (an MP4 without its index, a file that ends before the
+    length its header gives); it is damaged or no video at all; it has sound but no picture; or its picture is in a
+    codec this FFmpeg does not decode. Before, all of them read "<name> không có hình để phân tích"."""
+    head = _first_bytes(video)
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
         result = subprocess.run([str(ffprobe), "-v", "error", "-show_entries",
-                                 "format=duration:stream=codec_type,width,height,avg_frame_rate,duration:stream_tags=DURATION:stream_side_data=rotation",
+                                 "format=duration:stream=codec_type,codec_name,width,height,avg_frame_rate,duration"
+                                 ":stream_tags=DURATION:stream_side_data=rotation:stream_disposition=attached_pic",
                                  "-of", "json", str(video)], capture_output=True, timeout=60, creationflags=flags)
-        value = json.loads(result.stdout.decode("utf-8", "replace"))
-    except (OSError, subprocess.TimeoutExpired, ValueError) as error:
-        raise AnalysisError(f"Không đọc được thông tin {video.name}") from error
-    streams = value.get("streams") or []
-    picture = next((s for s in streams if s.get("codec_type") == "video"), None)
+    except subprocess.TimeoutExpired as error:
+        raise AnalysisError(f"Đọc {video.name} quá lâu (hơn 60 giây): file có thể hỏng hoặc nằm trên ổ chậm") from error
+    except OSError as error:
+        raise AnalysisError(f"Không chạy được FFprobe để đọc {video.name}") from error
+    errors = result.stderr.decode("utf-8", "replace")
+    try:
+        value = json.loads(result.stdout.decode("utf-8", "replace") or "{}")
+    except ValueError:
+        value = {}
+    if not isinstance(value, dict) or not isinstance(value.get("format"), dict):
+        raise AnalysisError(_unreadable(video, head, errors))
+    streams = [s for s in value.get("streams") or [] if isinstance(s, dict)]
+    pictures = [s for s in streams if s.get("codec_type") == "video" and not (s.get("disposition") or {}).get("attached_pic")]
+    has_audio = any(s.get("codec_type") == "audio" for s in streams)
+    if not pictures:
+        raise AnalysisError(f"{video.name} chỉ có âm thanh, không có hình" if has_audio
+                            else f"{video.name} không có luồng hình hay tiếng nào")
+    picture = pictures[0]
+    codec = str(picture.get("codec_name") or "").strip()
+    if not codec or codec == "none" or not picture.get("width") or not picture.get("height"):
+        raise AnalysisError(f"Hình của {video.name} dùng mã hóa {codec or 'không rõ'} mà FFmpeg của DubFlow không đọc được")
     try:
         duration_ms = round(float(value["format"]["duration"]) * 1000)
         width, height = int(picture["width"]), int(picture["height"])
         # a variable-rate source reports an unreduced average (rc7 real set: 10294000/343133 ≈ 30): keep it a frame rate
         rate = Fraction(picture.get("avg_frame_rate") or "0/1").limit_denominator(1001)
     except (KeyError, TypeError, ValueError, ZeroDivisionError) as error:
-        raise AnalysisError(f"{video.name} không có hình để phân tích") from error
+        raise AnalysisError(f"{video.name} không ghi thời lượng: file có thể bị hỏng hoặc chưa tải xong") from error
     rotation = next((int(side.get("rotation", 0)) for side in picture.get("side_data_list", []) if "rotation" in side), 0)
     if rotation % 180:
         width, height = height, width
     if duration_ms <= 0 or width <= 0 or height <= 0:
-        raise AnalysisError(f"{video.name} không có hình để phân tích")
-    return StreamInfo(duration_ms, width, height, rate, any(s.get("codec_type") == "audio" for s in streams),
-                      _stream_ms(picture))
+        raise AnalysisError(f"{video.name} không ghi thời lượng: file có thể bị hỏng hoặc chưa tải xong")
+    picture_ms = _stream_ms(picture)
+    _check_tail(ffprobe, video, duration_ms, flags)
+    return StreamInfo(duration_ms, width, height, rate, has_audio, picture_ms)
+
+
+TAIL_MS = 1500  # how far before its end a source must still hold a frame
+
+
+def _first_bytes(video: Path) -> bytes:
+    """The file's first bytes, or the reason it cannot be read at all."""
+    try:
+        with open(video, "rb") as handle:
+            head = handle.read(16)
+    except FileNotFoundError as error:
+        raise AnalysisError(f"Không tìm thấy {video.name}: file đã bị xóa, đổi tên hoặc ổ chứa nó đã ngắt") from error
+    except IsADirectoryError as error:
+        raise AnalysisError(f"{video.name} là một thư mục, không phải file video") from error
+    except PermissionError as error:
+        raise AnalysisError(f"Không có quyền đọc {video.name}: hãy kiểm tra quyền của file hoặc thư mục") from error
+    except OSError as error:
+        raise AnalysisError(f"Không đọc được {video.name} (lỗi ổ đĩa hoặc mạng: {error.strerror or type(error).__name__})") from error
+    if not head:
+        raise AnalysisError(f"{video.name} là file rỗng (0 byte): có thể tải chưa xong")
+    return head
+
+
+def _unreadable(video: Path, head: bytes, errors: str) -> str:
+    """Why FFprobe found no container in ``video``, from its own message and the file's first bytes."""
+    lowered = errors.casefold()
+    if "permission denied" in lowered:
+        return f"Không có quyền đọc {video.name}: hãy kiểm tra quyền của file hoặc thư mục"
+    if "no such file" in lowered:
+        return f"Không tìm thấy {video.name}: file đã bị xóa, đổi tên hoặc ổ chứa nó đã ngắt"
+    if "moov atom not found" in lowered and head[4:8] == b"ftyp":
+        # an MP4 whose index is written last and never was: the download or the copy stopped part way
+        return f"{video.name} bị cắt cụt hoặc chưa tải xong (thiếu phần chỉ mục ở cuối file MP4): hãy tải hoặc chép lại"
+    return f"{video.name} bị hỏng hoặc không phải file video mà FFmpeg nhận ra"
+
+
+def _check_tail(ffprobe: Path, video: Path, length_ms: int, flags: int) -> None:
+    """A source whose header gives a length its data does not reach is cut short (a stopped download of a file whose
+    index comes first, a Matroska or WebM cut part way): its last frames are missing and a cut there renders nothing."""
+    if length_ms <= 2 * TAIL_MS:
+        return
+    at = (length_ms - TAIL_MS) / 1000
+    try:
+        # any stream, read from the keyframe before ``at`` to the end of the file: a cut ends every stream, and a
+        # picture that ends before the sound is no cut (rc4 D1: kept, handled where it is used)
+        result = subprocess.run([str(ffprobe), "-v", "error", "-read_intervals", f"{at:.3f}%",
+                                 "-show_entries", "packet=pts_time", "-of", "csv=p=0", str(video)],
+                                capture_output=True, timeout=60, creationflags=flags)
+    except (OSError, subprocess.TimeoutExpired):
+        return  # the length was read; a tail that cannot be checked is not called cut short
+    ended = "ended prematurely" in result.stderr.decode("utf-8", "replace").casefold()
+    times = []
+    for line in result.stdout.decode("utf-8", "replace").splitlines():
+        try:
+            times.append(float(line.strip().strip(",")))
+        except ValueError:
+            pass  # a packet without a time ("N/A")
+    if result.returncode != 0 and not times:
+        return  # FFprobe could not seek here at all: not proof of a cut
+    if ended or not times or max(times) * 1000 < length_ms - 3 * TAIL_MS:
+        raise AnalysisError(f"{video.name} bị cắt cụt: file ghi dài {length_ms // 1000} giây nhưng dữ liệu dừng sớm hơn. "
+                            "Hãy tải hoặc chép lại file")
 
 
 def _stream_ms(stream: dict[str, Any]) -> int | None:
