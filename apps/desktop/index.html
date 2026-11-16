@@ -837,6 +837,28 @@
                       </div>
                       <div class="look-focus-row"><span class="edit-label">Tâm zoom</span><div id="look-focus" class="look-focus" role="radiogroup" aria-label="Tâm zoom"></div></div>
                     </div>
+                    <label class="edit-field"><span class="edit-label">Nghiêng nhẹ <output id="look-tilt-value">0°</output></span>
+                      <input id="look-tilt" type="range" min="-3" max="3" step="0.1" value="0" /></label>
+                    <div class="edit-field look-motion">
+                      <span class="edit-label">Nhịp dựng <output id="look-motion-seed">mã 0</output></span>
+                      <div class="look-toggles">
+                        <label class="look-split-every"><span>Cắt đoạn này mỗi</span>
+                          <input id="look-split-seconds" type="number" min="0.5" max="60" step="0.5" value="3" /> giây</label>
+                        <button id="look-split-every" class="btn chip" type="button" title="Cắt đoạn đang chọn thành các đoạn ngắn bằng nhau; tiếng, chữ, giọng và hiệu ứng âm thanh giữ nguyên chỗ">Cắt</button>
+                      </div>
+                      <div id="look-motion-presets" class="seg" role="radiogroup" aria-label="Mức zoom và nghiêng ngẫu nhiên"></div>
+                      <div class="look-grid">
+                        <label><span>Zoom tối đa <output id="look-motion-zoom-value">104%</output></span><input id="look-motion-zoom" type="range" min="100" max="115" step="1" value="104" /></label>
+                        <label><span>Nghiêng tối đa <output id="look-motion-tilt-value">0,8°</output></span><input id="look-motion-tilt" type="range" min="0" max="3" step="0.1" value="0.8" /></label>
+                      </div>
+                      <div class="look-toggles">
+                        <button id="look-motion-one" class="btn chip" type="button">Áp cho đoạn này</button>
+                        <button id="look-motion-all" class="btn chip" type="button">Áp cho mọi đoạn</button>
+                        <button id="look-motion-reseed" class="btn chip" type="button" title="Đổi mã ngẫu nhiên; cùng mã luôn cho cùng kết quả">Ngẫu nhiên lại</button>
+                        <button id="look-motion-clear" class="btn ghost" type="button">Bỏ zoom và nghiêng mọi đoạn</button>
+                      </div>
+                      <small class="edit-note">Zoom và nghiêng nhẹ, ngẫu nhiên theo mã: xem trước và video xuất giống nhau, xuất lại không đổi. Video luôn được phóng đủ để không lộ viền.</small>
+                    </div>
                     <button id="look-frame-reset" class="btn ghost" type="button">Đặt lại khung hình</button>
                   </div>
                   <div id="seg-color" class="seg-pane" role="tabpanel" hidden>

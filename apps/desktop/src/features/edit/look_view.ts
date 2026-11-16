@@ -5,10 +5,14 @@
  * on the player.
  */
 import {
-  COLOR_PRESETS, colorPresetOf, lutName, CROP_RATIOS, cropForRatio, cropRatioOf, cssFilter, dragCrop, DEFAULT_FREEZE, MAX_REVERSE, NEUTRAL_COLOR, temperatureTint, zoomAt,
+  COLOR_PRESETS, colorPresetOf, lutName, CROP_RATIOS, cropForRatio, cropRatioOf, cssFilter, dragCrop, DEFAULT_FREEZE, MAX_REVERSE, NEUTRAL_COLOR, temperatureTint, tiltCover, zoomAt,
   type ColorLook, type Crop, type CropHandle, type SegmentLook,
 } from "./look.ts";
 import { freezeFrame, lookOf, mediaOf, segmentLength, setLook, type Edit, type Segment } from "./model.ts";
+import { applyMotion, clearMotion, DEFAULT_MOTION, freshSeed, MOTION_PRESETS, splitEvery, type MotionLimits } from "./motion.ts";
+
+/** The last seed and limits of Nhịp dựng, kept on this computer (a convenience: the values live in the draft). */
+const MOTION_STORAGE_KEY = "dubflow.edit.motion.v1";
 
 export type LookContext = {
   edit: () => Edit;
@@ -323,7 +327,111 @@ export function mountLook(context: LookContext): LookPanel {
     const zoom = lookOf(segment).zoom ?? { from: 1, to: 1.3, x: 0.5, y: 0.5 };
     change({ zoom: { ...zoom, x: Number(button.dataset.x), y: Number(button.dataset.y) } });
   });
-  $("#look-frame-reset").addEventListener("click", () => { change({ crop: null, rotate: 0, flipH: false, flipV: false, zoom: null }); });
+  $("#look-frame-reset").addEventListener("click", () => { change({ crop: null, rotate: 0, flipH: false, flipV: false, zoom: null, tilt: 0 }); });
+
+  // ---------- Nghiêng nhẹ and Nhịp dựng (Phase 9C) ----------
+  const tilt = $<HTMLInputElement>("#look-tilt");
+  tilt.addEventListener("input", () => { change({ tilt: Number(tilt.value) }, true); });
+  tilt.addEventListener("change", () => { change({ tilt: Number(tilt.value) }); });
+  let motion: { seed: number; limits: MotionLimits } = (() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(MOTION_STORAGE_KEY) ?? "null") as { seed?: unknown; maxZoom?: unknown; maxTilt?: unknown } | null;
+      if (saved && Number.isInteger(saved.seed) && typeof saved.maxZoom === "number" && typeof saved.maxTilt === "number") {
+        return { seed: (saved.seed as number) >>> 0, limits: { maxZoom: saved.maxZoom, maxTilt: saved.maxTilt } };
+      }
+    } catch {
+      // the remembered seed is a convenience
+    }
+    return { seed: freshSeed(), limits: DEFAULT_MOTION };
+  })();
+  const motionZoom = $<HTMLInputElement>("#look-motion-zoom");
+  const motionTilt = $<HTMLInputElement>("#look-motion-tilt");
+  const motionPresets = $("#look-motion-presets");
+  for (const preset of MOTION_PRESETS) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.setAttribute("role", "radio");
+    button.dataset.motion = preset.id;
+    button.textContent = preset.name;
+    motionPresets.append(button);
+  }
+  function showMotion(): void {
+    try {
+      localStorage.setItem(MOTION_STORAGE_KEY, JSON.stringify({ seed: motion.seed, ...motion.limits }));
+    } catch {
+      // not kept: the next session starts from a new seed, the draft keeps its values
+    }
+    setValue(motionZoom, Math.round(motion.limits.maxZoom * 100));
+    setValue(motionTilt, motion.limits.maxTilt);
+    $("#look-motion-zoom-value").textContent = `${Math.round(motion.limits.maxZoom * 100)}%`;
+    $("#look-motion-tilt-value").textContent = `${String(motion.limits.maxTilt).replace(".", ",")}°`;
+    $("#look-motion-seed").textContent = `mã ${motion.seed}`;
+    for (const button of motionPresets.querySelectorAll<HTMLButtonElement>("[data-motion]")) {
+      const preset = MOTION_PRESETS.find((item) => item.id === button.dataset.motion);
+      button.setAttribute("aria-checked", String(!!preset && preset.limits.maxZoom === motion.limits.maxZoom && preset.limits.maxTilt === motion.limits.maxTilt));
+    }
+  }
+  motionPresets.addEventListener("click", (event) => {
+    const preset = MOTION_PRESETS.find((item) => item.id === (event.target as HTMLElement).closest<HTMLElement>("[data-motion]")?.dataset.motion);
+    if (!preset) return;
+    motion = { ...motion, limits: preset.limits };
+    showMotion();
+  });
+  for (const input of [motionZoom, motionTilt]) {
+    input.addEventListener("input", () => {
+      motion = { ...motion, limits: { maxZoom: Number(motionZoom.value) / 100, maxTilt: Number(motionTilt.value) } };
+      showMotion();
+    });
+  }
+  /** One Hoàn tác step for each button: the draft changes, nothing renders until the user exports. */
+  function moveAll(ids: string[], label: string): void {
+    if (context.busy()) return;
+    const next = applyMotion(context.base(), ids, motion.seed, motion.limits);
+    if (next === context.base()) {
+      context.note("Không có đoạn nào để áp zoom và nghiêng (đoạn dừng hình giữ nguyên).");
+      return;
+    }
+    context.commit(next, segmentNow(context.base())?.id);
+    context.note(`Đã áp zoom và nghiêng nhẹ cho ${label} (mã ${motion.seed}).`);
+  }
+  $("#look-motion-one").addEventListener("click", () => {
+    const segment = segmentNow(context.base());
+    if (segment) moveAll([segment.id], "đoạn này");
+  });
+  $("#look-motion-all").addEventListener("click", () => {
+    const ids = context.base().segments.map((segment) => segment.id);
+    moveAll(ids, `${ids.length} đoạn`);
+  });
+  $("#look-motion-reseed").addEventListener("click", () => {
+    motion = { ...motion, seed: freshSeed() };
+    showMotion();
+    context.note("Mã mới: bấm Áp cho đoạn này hoặc Áp cho mọi đoạn để dùng.");
+  });
+  $("#look-motion-clear").addEventListener("click", () => {
+    if (context.busy()) return;
+    const next = clearMotion(context.base(), context.base().segments.map((segment) => segment.id));
+    if (next === context.base()) return;
+    context.commit(next, segmentNow(context.base())?.id);
+    context.note("Đã bỏ zoom và nghiêng của mọi đoạn.");
+  });
+  $("#look-split-every").addEventListener("click", () => {
+    if (context.busy()) return;
+    const segment = segmentNow(context.base());
+    const step = Number($<HTMLInputElement>("#look-split-seconds").value);
+    if (!segment) return;
+    if (!(step >= 0.5)) {
+      context.note("Mỗi đoạn dài ít nhất 0,5 giây.");
+      return;
+    }
+    const { edit: next, ids } = splitEvery(context.base(), segment.id, step);
+    if (next === context.base()) {
+      context.note("Đoạn này ngắn hơn bước cắt, không cắt thêm.");
+      return;
+    }
+    context.commit(next, ids[0]);
+    context.note(`Đã cắt thành ${ids.length} đoạn; tiếng, chữ và hiệu ứng âm thanh giữ nguyên chỗ.`);
+  });
+  showMotion();
 
   // ---------- Màu ----------
   presets.addEventListener("click", (event) => {
@@ -415,13 +523,15 @@ export function mountLook(context: LookContext): LookPanel {
     setValue(cropInputs.bottom, Math.round((1 - crop.y - crop.h) * 100));
     const parts = [look.rotate ? `xoay ${look.rotate}°` : "", look.flipH ? "lật ngang" : "", look.flipV ? "lật dọc" : ""].filter(Boolean);
     $("#look-crop-value").textContent = look.crop ? `Giữ ${percent(crop.w)} × ${percent(crop.h)}` : "Không cắt";
-    $("#seg-tabs [data-tab='frame']").classList.toggle("dot", !!(look.crop || look.zoom || parts.length));
+    $("#seg-tabs [data-tab='frame']").classList.toggle("dot", !!(look.crop || look.zoom || look.tilt || parts.length));
     const zoom = look.zoom;
     setValue(zoomFrom, Math.round((zoom?.from ?? 1) * 100));
     setValue(zoomTo, Math.round((zoom?.to ?? 1) * 100));
     const zoomKind = !zoom ? "none" : zoom.to > zoom.from ? "in" : zoom.to < zoom.from ? "out" : "";
     for (const button of zoomPresets) button.setAttribute("aria-checked", String(button.dataset.zoom === zoomKind));
     $("#look-zoom-value").textContent = zoom ? `${percent(zoom.from)} → ${percent(zoom.to)}` : "Không";
+    setValue(tilt, look.tilt ?? 0);
+    $("#look-tilt-value").textContent = `${String(look.tilt ?? 0).replace(".", ",")}°`;
     for (const button of focus.querySelectorAll<HTMLButtonElement>("[data-x]")) {
       button.setAttribute("aria-checked", String(Number(button.dataset.x) === (zoom?.x ?? 0.5) && Number(button.dataset.y) === (zoom?.y ?? 0.5)));
       button.disabled = !zoom;
@@ -484,7 +594,7 @@ export function mountLook(context: LookContext): LookPanel {
       player.style.filter = look ? cssFilter(look.color) : "";
       return;
     }
-    if (!look || (!look.crop && !look.rotate && !look.flipH && !look.flipV && !look.zoom && !look.color)) {
+    if (!look || (!look.crop && !look.rotate && !look.flipH && !look.flipV && !look.zoom && !look.color && !look.tilt)) {
       clear(player);
       if (tint) tint.style.opacity = "0";
       return;
@@ -508,6 +618,8 @@ export function mountLook(context: LookContext): LookPanel {
     if (zoom !== 1) parts.push(`translate(${focal.x - origin.x}px, ${focal.y - origin.y}px) scale(${zoom}) translate(${origin.x - focal.x}px, ${origin.y - focal.y}px)`);
     parts.push(`translate(${centre.x - origin.x}px, ${centre.y - origin.y}px)`);
     if (look.rotate) parts.push(`rotate(${look.rotate}deg)`);
+    // Nghiêng nhẹ: the same turn and enlargement as the export (no empty corner)
+    if (look.tilt) parts.push(`rotate(${look.tilt}deg) scale(${tiltCover(look.tilt, turned.width, turned.height)})`);
     parts.push(`scale(${fit * (look.flipH ? -1 : 1)}, ${fit * (look.flipV ? -1 : 1)})`);
     player.style.transformOrigin = `${origin.x}px ${origin.y}px`;
     player.style.transform = parts.join(" ");
