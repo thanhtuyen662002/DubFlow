@@ -337,6 +337,32 @@ class StateTests(unittest.TestCase):
         self.assertEqual(unmeasured["state"], "READY_TO_FINALIZE")
         self.assertEqual(unmeasured["unmeasured"], ["audio"])
 
+    def test_a_hard_failure_is_never_shown_as_review_pending(self):  # F4, Phase 8
+        ok = [qc._check("render", "", True), qc._check("pending", "", True), qc._check("decisions", "", True)]
+        timeline = qc._check("timeline", "", False, "RETIMED_SEGMENT u3")
+        unreviewed = qc._check("decisions", "", False, "2 câu chưa duyệt")
+        not_rendered = qc._check("pending", "", False)
+        # only a hard failure
+        hard = qc.result([*ok, timeline], "COMPLETED")
+        self.assertEqual((hard["state"], hard["blocking"], hard["awaiting_review"]), ("FINAL_QC_FAILED", ["timeline"], []))
+        # only a review left: REVIEW_PENDING keeps its meaning
+        review = qc.result([*ok[:2], unreviewed], "COMPLETED")
+        self.assertEqual((review["state"], review["blocking"], review["awaiting_review"]), ("REVIEW_PENDING", [], ["decisions"]))
+        # both: the hard failure decides the state, the open review is still reported
+        both = qc.result([ok[0], ok[1], unreviewed, timeline], "COMPLETED")
+        self.assertEqual((both["state"], both["blocking"], both["awaiting_review"]), ("FINAL_QC_FAILED", ["timeline"], ["decisions"]))
+        self.assertFalse(both["passed"])
+        # a choice not rendered yet next to a hard failure, and a failed run next to an open review
+        mixed = qc.result([ok[0], not_rendered, ok[2], qc._check("duration", "", False)], "COMPLETED")
+        self.assertEqual((mixed["state"], mixed["blocking"], mixed["awaiting_review"]), ("FINAL_QC_FAILED", ["duration"], ["pending"]))
+        failed_run = qc.result([*ok[:2], unreviewed], "FAILED")
+        self.assertEqual((failed_run["state"], failed_run["blocking"], failed_run["awaiting_review"]),
+                         ("FINAL_QC_FAILED", ["status"], ["decisions"]))
+        # a critical claim alone is still a failed QC (settled by review), not a hard block
+        claim = qc.result([*ok, qc._check("claims", "", False)], "COMPLETED")
+        self.assertEqual((claim["state"], claim["blocking"], claim["awaiting_review"]), ("FINAL_QC_FAILED", [], ["claims"]))
+        self.assertEqual(qc.result(ok, "RUNNING")["blocking"], [])
+
     def test_product_run_end_to_end_from_files(self):
         with TemporaryDirectory() as tmp:
             run = Path(tmp) / "run-1"

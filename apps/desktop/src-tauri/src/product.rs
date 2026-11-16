@@ -462,11 +462,18 @@ fn spawn_product(root: &Path, spec_path: &Path, output: &Path, cpu_only: bool, k
     }
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
-    let mut child = command.spawn().map_err(|error| fail(format!("Không chạy được bộ tạo video: {error}")))?;
+    crate::engine_run::track(&work);
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            crate::engine_run::settle_tracked(&work, false, "Không chạy được bộ tạo video");
+            return Err(fail(format!("Không chạy được bộ tạo video: {error}")));
+        }
+    };
     // a job that ends without writing its last state (a status file held open, a crash) is settled, never left RUNNING
     std::thread::spawn(move || {
         let exited_ok = child.wait().is_ok_and(|status| status.success());
-        crate::engine_run::settle_after_exit(&work, exited_ok, "Bộ tạo video đã dừng. Hãy thử lại.");
+        crate::engine_run::settle_tracked(&work, exited_ok, "Bộ tạo video đã dừng. Hãy thử lại.");
     });
     Ok(())
 }
@@ -482,11 +489,14 @@ pub fn product_rerender(output_dir: String, video: u32, cpu_only: bool) -> Resul
 
 /// The terminal states a run can be rendered again from; anything else (running, unreadable) is refused.
 const FINISHED: [&str; 3] = ["COMPLETED", "FAILED", "CANCELLED"];
+/// F3: a run left RUNNING by a stopped app or machine, once its engine is known to be gone.
+const INTERRUPTED: &str = "Lần tạo trước bị gián đoạn (app hoặc máy đã tắt). Hãy tạo lại; các video đã xong được giữ.";
 const RERENDER_SPEC: &str = "spec-rerender.json";
 
 /// `product_rerender` without the process: the run's own request (`spec.json`) is never changed, the attempt's
 /// request goes to `spec-rerender.json`, and the status is put back as it was when the job cannot start.
 fn rerender_in(dir: &Path, work: &Path, video: u32, start: impl FnOnce(&Path, Option<String>) -> Result<(), String>) -> Result<(), String> {
+    crate::engine_run::settle_if_abandoned(work, INTERRUPTED);
     let status_path = work.join("status.json");
     let before = fs::read(&status_path).ok().filter(|bytes| bytes.len() as u64 <= SPEC_LIMIT)
         .ok_or_else(|| fail("Không đọc được trạng thái của lần tạo này; không render lại được"))?;
@@ -545,6 +555,7 @@ pub(crate) fn run_dir(value: &str) -> Result<PathBuf, String> {
 #[tauri::command]
 pub fn product_status(output_dir: String) -> Result<Value, String> {
     let dir = product_dir(&output_dir)?;
+    crate::engine_run::settle_if_abandoned(&dir.join(".dubflow-work"), INTERRUPTED);
     let bytes = fs::read(dir.join(".dubflow-work").join("status.json")).map_err(|_| fail("Chưa có trạng thái"))?;
     serde_json::from_slice::<Value>(&bytes).ok().filter(Value::is_object).ok_or_else(|| fail("Trạng thái không hợp lệ"))
 }
@@ -645,6 +656,7 @@ pub fn product_runs(roots: Vec<String>) -> Vec<Value> {
     find_runs(&roots, "Ban hang - ", 40).into_iter().filter_map(|dir| {
         let work = dir.join(".dubflow-work");
         let spec = read_small_json(&work.join("spec.json"), SPEC_LIMIT)?;
+        crate::engine_run::settle_if_abandoned(&work, INTERRUPTED);
         Some(json!({"dir": display_path(&dir), "name": spec["name"], "template": spec["template"], "created": created_seconds(&dir),
             "status": read_small_json(&work.join("status.json"), SPEC_LIMIT)}))
     }).collect()
@@ -864,6 +876,7 @@ pub(crate) mod tests {
     #[test]
     fn rerender_refuses_an_unknown_running_or_unreadable_status() {
         let (base, run, work) = mastered_run("status");
+        let _engine = crate::engine_run::engine_working(&work); // a RUNNING status is an engine at work here
         for bad in [None, Some("not json"), Some(r#"{"state":"RUNNING","videos":[]}"#), Some(r#"{"state":"COMPLETED"}"#),
                     Some(r#"{"state":"PAUSED","videos":[]}"#)] {
             match bad {
@@ -1350,7 +1363,10 @@ pub(crate) mod tests {
         let run = base.join("DubFlow Output").join("Ban hang - x").join("run-1");
         fs::create_dir_all(run.join(".dubflow-work")).unwrap();
         fs::write(run.join(".dubflow-work").join("status.json"), br#"{"state":"RUNNING"}"#).unwrap();
+        let engine = crate::engine_run::engine_working(&run.join(".dubflow-work"));
         assert_eq!(product_status(run.to_string_lossy().into_owned()).unwrap()["state"], "RUNNING");
+        drop(engine); // F3: no engine any more, so the read settles it
+        assert_eq!(product_status(run.to_string_lossy().into_owned()).unwrap()["state"], "FAILED");
         assert!(product_status(base.to_string_lossy().into_owned()).is_err());
         assert!(product_status("relative".to_owned()).is_err());
         product_cancel(run.to_string_lossy().into_owned()).unwrap();

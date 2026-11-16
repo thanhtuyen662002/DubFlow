@@ -10,16 +10,32 @@ import sys
 
 from engine.dubflow.product.job import Status, probe_duration_ms
 from engine.dubflow.product.speaker import cached_vieneu
+from engine.dubflow.support import engine_lock
 from .job import CompilationError, load_spec, probe_video, run
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        return _main(argv)
+    finally:
+        engine_lock.release_all()  # the run is settled by now; the process ends right after
+
+
+def _main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m engine.dubflow.compilation")
     for name in ("spec", "output-dir", "app-root", "model-root", "ffmpeg", "ffprobe"):
         parser.add_argument(f"--{name}", type=Path, required=True)
     parser.add_argument("--cpu-only", action="store_true")
     args = parser.parse_args(argv)
     ai_key = os.environ.pop("DUBFLOW_AI_KEY", "") or ""  # the user's AI key for this job only, before FFmpeg starts
+    try:
+        # F3: held until this process ends, however it ends; the host reads a free lock as "the engine is gone"
+        engine_lock.hold(args.output_dir / ".dubflow-work")
+    except engine_lock.EngineBusy:
+        # another engine is making this run: never a second one, and its status is left as it is
+        print(json.dumps({"schema_version": 1, "state": "BUSY", "message": "Chương trình đang được dựng ở tiến trình khác."},
+                         ensure_ascii=True))
+        return 3
     try:
         spec = load_spec(args.spec)
         producer = hashlib.sha256()
