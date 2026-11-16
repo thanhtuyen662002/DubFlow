@@ -78,3 +78,38 @@ class Contrast(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AsrMechanisms(unittest.TestCase):
+    """#875: three ASR mechanisms that made the check assert a wrong value. Synthetic strings only."""
+
+    def test_source_language_decides_separators(self) -> None:
+        # a Vietnamese sentence typed without diacritics: "2.000" is two thousand, not 2.0
+        self.assertEqual(hn.compare_numbers("Den 2.000 nits.", "độ sáng 2000 nits", langs=("vi", "vi"))["state"], "agree")
+        self.assertEqual(hn.compare_numbers("A 2.000 mm rod.", "a 2 mm rod", langs=("en", "en"))["state"], "agree")
+        # without a language the old inference is kept
+        self.assertEqual(hn.compare_numbers("Den 2.000 nits.", "độ sáng 2000 nits")["state"], "conflict")
+
+    def test_spoken_decimal_is_read_whole(self) -> None:
+        q = hn.quantities("màn hình bảy phẩy hai in", "vi")
+        self.assertEqual([(d, w) for d, _, w in q["measures"]], [("inch", 7.2)])
+        self.assertEqual(hn.compare_numbers("Màn hình 7,2 inch.", "màn hình bảy phẩy hai in", langs=("vi", "vi"))["state"], "agree")
+        self.assertEqual(hn.compare_numbers("Màn hình 7,3 inch.", "màn hình bảy phẩy hai in", langs=("vi", "vi"))["state"], "conflict")
+
+    def test_spoken_decimal_without_its_part_is_unknown(self) -> None:
+        q = hn.quantities("màn hình bảy phẩy in", "vi")
+        self.assertEqual(q["measures"], [])
+        self.assertTrue(q["unknown"])
+        self.assertEqual(hn.compare_numbers("Màn hình 7,2 inch.", "màn hình bảy phẩy in", langs=("vi", "vi"))["state"], "unknown")
+
+    def test_garbled_unit_is_unknown_not_bare(self) -> None:
+        for cue in ("pin 3000 măh", "camera 48 trấm", "nặng 200 grám"):
+            with self.subTest(cue=cue):
+                q = hn.quantities(cue, "vi")
+                self.assertEqual(q["bare"], [])
+                self.assertTrue(q["unknown"])
+        self.assertEqual(hn.compare_numbers("Camera 48 MP.", "camera 48 trấm", langs=("vi", "vi"))["state"], "unknown")
+
+    def test_ordinary_words_after_numbers_stay_bare(self) -> None:
+        self.assertEqual(hn.quantities("độ mỏng là 8,4 và nặng", "vi")["bare"], [8.4])
+        self.assertEqual(hn.quantities("chip Snapdragon 8 Gen 3", "en")["bare"], [8.0, 3.0])
