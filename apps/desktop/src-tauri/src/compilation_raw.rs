@@ -879,10 +879,15 @@ mod tests {
         assert!(checked_part(&dir, "i3").is_err(), "not in this programme");
         assert!(checked_part(&dir, "outro").is_err(), "no outro written");
         write_status(&dir.join(".dubflow-work"), "RUNNING", "x").unwrap();
+        let engine = crate::engine_run::engine_working(&dir.join(".dubflow-work")); // a run an engine is still making
         assert!(compilation_raw_rerender(display_path(&dir), None, true).unwrap_err().contains("đang được dựng"));
         let opened = compilation_raw_open(display_path(&dir)).unwrap();
         assert_eq!(opened["status"]["state"], "RUNNING");
         assert!(opened["video"].is_null() && opened["final"].is_null());
+        drop(engine); // F3: the engine is gone and nothing settled it, so the next read does
+        let opened = compilation_raw_open(display_path(&dir)).unwrap();
+        assert_eq!(opened["status"]["state"], "FAILED");
+        assert_eq!(opened["status"]["message"], INTERRUPTED);
         fs::remove_dir_all(base).unwrap();
     }
 
@@ -900,6 +905,7 @@ mod tests {
         };
         let passed = |_: &Path| -> Result<Value, String> { Ok(json!({"kind": "final_qc", "passed": true})) };
         write_status(&work, "RUNNING", "x").unwrap();
+        let engine = crate::engine_run::engine_working(&work);
         assert!(finalize_in(&dir, true, review, passed).is_err(), "nothing to export before the render completes");
         write_status(&work, "COMPLETED", "x").unwrap();
         fs::write(dir.join("compilation.mp4"), b"draft").unwrap();
@@ -940,6 +946,7 @@ mod tests {
         assert_eq!(stale["final"], opened["final"], "the old file is still there, only marked");
         write_status(&work, "RUNNING", "x").unwrap();
         assert_eq!(compilation_raw_open(display_path(&dir)).unwrap()["final_state"]["reason"], "rendering");
+        drop(engine);
         write_status(&work, "COMPLETED", "x").unwrap();
         let again = finalize_in(&dir, true, review, passed).unwrap();
         assert_eq!(again["revision"], 2);

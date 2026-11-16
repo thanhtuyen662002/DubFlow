@@ -876,6 +876,7 @@ pub(crate) mod tests {
     #[test]
     fn rerender_refuses_an_unknown_running_or_unreadable_status() {
         let (base, run, work) = mastered_run("status");
+        let _engine = crate::engine_run::engine_working(&work); // a RUNNING status is an engine at work here
         for bad in [None, Some("not json"), Some(r#"{"state":"RUNNING","videos":[]}"#), Some(r#"{"state":"COMPLETED"}"#),
                     Some(r#"{"state":"PAUSED","videos":[]}"#)] {
             match bad {
@@ -1362,7 +1363,10 @@ pub(crate) mod tests {
         let run = base.join("DubFlow Output").join("Ban hang - x").join("run-1");
         fs::create_dir_all(run.join(".dubflow-work")).unwrap();
         fs::write(run.join(".dubflow-work").join("status.json"), br#"{"state":"RUNNING"}"#).unwrap();
+        let engine = crate::engine_run::engine_working(&run.join(".dubflow-work"));
         assert_eq!(product_status(run.to_string_lossy().into_owned()).unwrap()["state"], "RUNNING");
+        drop(engine); // F3: no engine any more, so the read settles it
+        assert_eq!(product_status(run.to_string_lossy().into_owned()).unwrap()["state"], "FAILED");
         assert!(product_status(base.to_string_lossy().into_owned()).is_err());
         assert!(product_status("relative".to_owned()).is_err());
         product_cancel(run.to_string_lossy().into_owned()).unwrap();

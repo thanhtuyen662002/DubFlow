@@ -167,6 +167,15 @@ fn settled(work: &Path, current: Option<Value>, exited_ok: bool, stopped: &str) 
     value
 }
 
+/// A test's stand-in for a working engine: `work`'s lock is held until the returned file is dropped.
+#[cfg(test)]
+pub(crate) fn engine_working(work: &Path) -> fs::File {
+    fs::create_dir_all(work).unwrap();
+    let held = fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(work.join(ENGINE_LOCK)).unwrap();
+    held.lock().unwrap();
+    held
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -228,6 +228,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(30));
         }
         write_status(&newer.join(".dubflow-work"), "RUNNING", "Đang chạy", 3).unwrap();
+        let _engine = crate::engine_run::engine_working(&newer.join(".dubflow-work"));
         fs::write(older.join("compilation.mp4"), b"video").unwrap();
         // Not a compilation: another kind of run, a run without its request.
         fs::create_dir_all(base.join("DubFlow Output/Ban hang - x/run-000000000003/.dubflow-work")).unwrap();
