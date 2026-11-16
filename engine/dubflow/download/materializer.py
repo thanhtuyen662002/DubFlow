@@ -120,29 +120,34 @@ def _system_resolver(host: str, port: int) -> list[str]:
     return [str(info[4][0]) for info in infos]
 
 
+_NAT64_WELL_KNOWN = ipaddress.IPv6Network("64:ff9b::/96")
+_FAKE_IP = ipaddress.IPv4Network("198.18.0.0/15")
+
+
 def is_public_address(value: str) -> bool:
     """True only for a globally routable unicast address.
 
-    IPv4-mapped, 6to4 and Teredo IPv6 forms are judged by the IPv4 address
-    they carry, so ``::ffff:127.0.0.1`` cannot pass as an IPv6 address.
+    IPv4-mapped, 6to4, Teredo and NAT64 (64:ff9b::/96) IPv6 forms are judged
+    by the IPv4 address they carry, so ``::ffff:127.0.0.1`` cannot pass as an
+    IPv6 address.
     """
     try:
         address = ipaddress.ip_address(str(value).split("%", 1)[0])
     except ValueError:
         return False
     if isinstance(address, ipaddress.IPv6Address):
-        embedded = address.ipv4_mapped or address.sixtofour or (address.teredo[1] if address.teredo else None)
-        if embedded is not None:
-            address = embedded
-    if isinstance(address, ipaddress.IPv4Address) and address in _FAKE_IP_RANGE:
-        return True
+        if address in _NAT64_WELL_KNOWN:  # RFC 6052: 64:ff9b::a00:1 is 10.0.0.1 behind a NAT64 gateway
+            address = ipaddress.IPv4Address(int(address) & 0xFFFFFFFF)
+        else:
+            embedded = address.ipv4_mapped or address.sixtofour or (address.teredo[1] if address.teredo else None)
+            if embedded is not None:
+                address = embedded
     return bool(address.is_global and not address.is_multicast and not address.is_reserved
                 and not address.is_unspecified and not address.is_loopback and not address.is_link_local)
 
 
-# 198.18.0.0/15 (RFC 2544 benchmarking) hosts no LAN or loopback service. Clash/Surge-style "fake-ip" DNS in TUN mode
-# answers every public name from it, so refusing it would break every download for those users.
-_FAKE_IP_RANGE = ipaddress.ip_network("198.18.0.0/15")
+# No exception for proxy "fake-IP" ranges (198.18.0.0/15, #884): a fake-IP DNS hides the real target, which the proxy
+# may then reach directly, private or not. Users of fake-IP TUN mode must exclude DubFlow or use a real-IP DNS mode.
 
 
 class EgressPolicy:
@@ -180,17 +185,18 @@ class EgressPolicy:
         if not answers:
             raise DownloadError(DownloadErrorCode.NETWORK, "source host could not be resolved", retryable=True, action="retry")
         if not all(self._allowed(answer) for answer in answers):
+            if any(_in_fake_ip(answer) for answer in answers):
+                # Clash/Surge TUN "fake-IP" DNS: the real target is hidden, so it cannot be checked (#884)
+                raise _egress_denied("source host resolved to a proxy fake-IP address (198.18.0.0/15); the real target "
+                                     "cannot be checked. Switch the proxy to real-IP DNS (redir-host) or system-proxy "
+                                     "mode, or exclude DubFlow from TUN mode")
             raise _egress_denied("source URL points to a private or non-public network address")
         return answers
 
     def check_proxied(self, host: str, port: int) -> None:
-        """A user-configured proxy resolves the name itself, so a local lookup failure is not evidence of a private
-        target; a literal or locally resolved non-public address still is."""
-        try:
-            self.resolve(host, port)
-        except DownloadError as error:
-            if not error.retryable:
-                raise
+        """Behind a user-configured proxy the proxy reaches the target, so only the name can be checked: it must
+        resolve here, to public addresses only. A name that does not resolve locally fails closed (#884)."""
+        self.resolve(host, port)
 
     def check_url(self, url: str) -> str:
         url = validate_http_url(url)
@@ -221,6 +227,13 @@ class EgressPolicy:
 
 
 PUBLIC_EGRESS = EgressPolicy()
+
+
+def _in_fake_ip(value: str) -> bool:
+    try:
+        return ipaddress.ip_address(str(value).split("%", 1)[0]) in _FAKE_IP
+    except (ValueError, TypeError):
+        return False
 
 
 def _egress_denied(condition: str) -> DownloadError:

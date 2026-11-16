@@ -26,13 +26,16 @@ from engine.dubflow.download.source_adapter import MediaCandidate, SourceError, 
 
 NON_PUBLIC = (
     "127.0.0.1", "127.255.255.254", "10.0.0.1", "172.16.0.1", "172.31.255.255", "192.168.1.1",
-    "169.254.169.254", "0.0.0.0", "100.64.0.1", "192.0.0.1", "224.0.0.1",
+    "169.254.169.254", "0.0.0.0", "100.64.0.1", "192.0.0.1", "198.18.0.7", "198.19.255.1", "224.0.0.1",
     "240.0.0.1", "255.255.255.255",
     "::1", "::", "fe80::1", "fe80::1%eth0", "fc00::1", "fd12:3456::1", "ff02::1",
     "::ffff:127.0.0.1", "::ffff:10.0.0.1", "::ffff:169.254.169.254", "2002:7f00:1::1", "2002:a00:1::1",
+    # RFC 6052 NAT64 (64:ff9b::/96) carries an IPv4 address; Python calls the IPv6 form global
+    "64:ff9b::a00:1", "64:ff9b::7f00:1", "64:ff9b::a9fe:a9fe", "64:ff9b::c612:7", "64:ff9b:1::a00:1",
     "not-an-address", "",
 )
-PUBLIC = ("198.18.0.7", "198.19.255.1", "93.184.216.34", "8.8.8.8", "1.1.1.1", "2606:4700:4700::1111", "2001:4860:4860::8888", "::ffff:8.8.8.8")
+PUBLIC = ("93.184.216.34", "8.8.8.8", "1.1.1.1", "2606:4700:4700::1111", "2001:4860:4860::8888", "::ffff:8.8.8.8",
+          "64:ff9b::808:808")
 
 
 class OnlyLoopback127(EgressPolicy):
@@ -135,21 +138,32 @@ class EgressPolicyTests(unittest.TestCase):
 
 
 class HttpTransportEgressTests(unittest.TestCase):
-    def test_proxied_request_tolerates_local_dns_failure_but_not_private_literals(self):
+    def test_proxied_request_fails_closed_when_the_name_does_not_resolve_locally(self):
         def broken(host, port):
             raise OSError("no local DNS")
 
-        handler = materializer_module._EgressHTTPHandler(EgressPolicy(resolver=broken))
-        with patch.object(handler, "do_open", return_value="opened") as do_open:
-            request = Request("http://cdn.example.test/x")
-            request.set_proxy("127.0.0.1:9", "http")
-            self.assertEqual(handler.http_open(request), "opened")
-            do_open.assert_called_once()
-            literal = Request("http://10.0.0.8/x")
-            literal.set_proxy("127.0.0.1:9", "http")
-            with self.assertRaises(DownloadError):
-                materializer_module._EgressHTTPHandler(EgressPolicy()).http_open(literal)
+        for policy, url in ((EgressPolicy(resolver=broken), "http://cdn.example.test/x"),
+                            (EgressPolicy(resolver=lambda host, port: ["198.18.0.9"]), "http://fake-ip.example.test/x"),
+                            (EgressPolicy(), "http://10.0.0.8/x")):
+            handler = materializer_module._EgressHTTPHandler(policy)
+            with patch.object(handler, "do_open", return_value="opened") as do_open:
+                request = Request(url)
+                request.set_proxy("127.0.0.1:9", "http")
+                with self.subTest(url=url), self.assertRaises(DownloadError):
+                    handler.http_open(request)
+                do_open.assert_not_called()
 
+    def test_fake_ip_answer_is_refused_with_an_actionable_reason(self):
+        # #884, Owner directive 2026-11-16: a proxy fake-IP address is never trusted by default; the refusal says why
+        # and what the user can change (real-IP DNS, system-proxy mode, or excluding DubFlow from TUN)
+        with self.assertRaises(DownloadError) as context:
+            EgressPolicy(resolver=lambda host, port: ["198.18.0.9"]).resolve("www.youtube.com", 443)
+        self.assertEqual(context.exception.code, DownloadErrorCode.INVALID_SOURCE)
+        self.assertIn("fake-IP", str(context.exception))
+        self.assertIn("real-IP DNS", str(context.exception))
+        with self.assertRaises(DownloadError) as private:
+            EgressPolicy(resolver=lambda host, port: ["10.0.0.1"]).resolve("intranet.example.test", 443)
+        self.assertNotIn("fake-IP", str(private.exception))
 
     def test_default_transport_never_reaches_a_loopback_server(self):
         with server(ok) as (port, hits):
