@@ -1,7 +1,7 @@
 DUBFLOW_PR_V1
 Issue: #861
 Lease-Owner: Claude/issue-861-tracked-pyc-cleanup
-Lease-Heartbeat: 2026-11-16T13:20:37Z
+Lease-Heartbeat: 2026-11-16T13:28:56Z
 Tested-Base-SHA: 95c992782523e8e2e6c902c93aa67d1f262b81c3
 Conflict-Domains: repo-hygiene,tracked-python-bytecode
 Expected-Paths:
