@@ -40,6 +40,17 @@ Tool: `tests/mastering/x2/cue_lineage.py` (fixture, re-run on main `95c99278`) p
 
 The engine wiring (`align.assign(..., lineage=...)`) gives 6/10 top-1 in both modes. In reorder mode it adds one REPEAT (region) or two (ranked) timeline problems that the prototype does not have.
 
+**Correction (#888, Phase 7):** those engine figures were confounded. `cue_lineage.run_engine` defaulted `lead_ms` to 300, i.e. D1 on. With D1 off the engine wiring gives **8/10** top-1 in both modes (READY 0). The REPEAT was not a ranking, source-span, placement or ordering defect: cited cues make 8 of the 10 shots some sentence's own footage, the sentences without a valid cue need filler, and the rule "the rest of a shot another sentence about it already showed is not filler" left only 2 neutral shots (12 s) for 15 s of filler, so the planner showed the same neutral frames twice. #888 fixes it inside the lineage experiment only (a neutral shot is shown again only while it has footage left; then the unused rest of a shot goes first):
+
+| Engine, reorder | REPEAT before | REPEAT after | Top-1 (of 10) | READY |
+|---|---|---|---|---|
+| region, D1 off | 1 | 0 | 8 | 0 |
+| region, D1 300 ms | 1 | 0 | 6 | 0 |
+| ranked, D1 off | 0 | 0 | 8 | 0 |
+| ranked, D1 300 ms | 2 | 0 | 6 | 0 |
+
+Forward-only had no REPEAT before or after. Cited-cue coverage, picture-right ms and the no-footage units given footage are unchanged in every arm. Lineage stays **off** by default; the reason it stays off (no producer of cue-citing narration at $0) is unchanged.
+
 REAL-DEV (Vietnamese sentences over an English source, d-s1): footage touching the cited cue, off 2/12 → region 7/12 (reorder).
 
 Decision: lineage stays an off-by-default planner input. It needs narration sentences that cite cue ids. The only producer designed for that is the 1a script draft, which is a paid call ($2) that is not approved. Without it nothing in the product makes cue references, so turning lineage on changes nothing. The REPEAT in the engine reorder wiring is recorded here as the first thing to fix if lineage is ever turned on.

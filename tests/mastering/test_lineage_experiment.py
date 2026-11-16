@@ -163,12 +163,28 @@ class WhenOn(unittest.TestCase):
         for mode in lin.MODES:
             self.assertEqual(self.runs[(mode, True)]["summary"]["timeline_problems"], [], mode)
 
-    def test_reorder_only_declares_repeats(self) -> None:
-        # 8 of the 10 shots are cited, so the sentences without footage share the 2 left: a declared repeat, never a
-        # gap, an overlap or a backwards jump
+    def test_reorder_adds_no_repeat(self) -> None:
+        # #888: 8 of the 10 shots are cited, so the sentences without footage ran out of neutral shots and the
+        # planner showed the same neutral frames twice (a REPEAT the plan without lineage never has). The rest of a
+        # fresh shot now goes before the same frames twice, with or without the D1 in-point.
         for mode in lin.MODES:
-            self.assertTrue(set(self.runs[(mode, False)]["summary"]["timeline_problems"]) <= {"REPEAT"}, mode)
+            for lead in (None, cl.LEAD_MS):
+                run = self.runs[(mode, False)] if lead == cl.LEAD_MS else cl.run_engine(mode, lead_ms=lead)
+                self.assertEqual(run["summary"]["timeline_problems"], [], (mode, lead))
+                self.assertEqual(run["summary"]["ready"], 0, (mode, lead))
 
+    def test_repeat_fix_changes_only_the_filler(self) -> None:
+        # minimal reproduction (ENGINEERING_FIXTURE_ONLY): region, reorder, D1 off. Before #888 h4 and h5 played b1
+        # again (6000-12000, already shown by h1/h3); now they take unused tails. The cited sentences keep their shots.
+        run = cl.run_engine("region", lead_ms=None)
+        units = {u["uid"]: u for u in run["units"]}
+        shown = [(cid, a, b) for uid in ("h1", "h3") for cid, a, b in units[uid]["played"]]
+        for uid in ("h4", "h5"):
+            for cid, a, b in units[uid]["played"]:
+                self.assertFalse(any(cid == c and a < y and b > x for c, x, y in shown), (uid, cid, a, b))
+            self.assertEqual(units[uid]["state"], "MATCH_NOT_FOUND")
+        self.assertEqual(run["summary"]["top1_right"], 8)
+        self.assertEqual(run["summary"]["no_footage_assigned_ids"], ["h2"])
 
 if __name__ == "__main__":
     unittest.main()
