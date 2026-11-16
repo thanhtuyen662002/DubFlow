@@ -47,24 +47,134 @@ def _stem(word: str) -> str:
 
 
 def content(text: str) -> tuple[set[str], set[str]]:
-    """(content word stems, numbers) of ``text``."""
+    """(content word stems, bare numbers) of ``text``. A word holding a digit is left to :func:`quantities`."""
     words = [w for w in ev.words(text) if w not in _FRAME]
-    return {_stem(w) for w in words if not _NUMBER.match(w)}, {w for w in words if _NUMBER.match(w)}
+    return {_stem(w) for w in words if not any(ch.isdigit() for ch in w)}, {w for w in words if _NUMBER.match(w)}
+
+
+# --- numbers as written in specs (#873) ---------------------------------------------------------------------------
+# unit (lower case) -> (dimension, factor to the dimension's base unit)
+UNITS: dict[str, tuple[str, float]] = {
+    "mg": ("mass", 0.001), "g": ("mass", 1), "gr": ("mass", 1), "gram": ("mass", 1), "kg": ("mass", 1000),
+    "mm": ("length", 0.001), "cm": ("length", 0.01), "m": ("length", 1), "km": ("length", 1000),
+    "in": ("inch", 1), "inch": ("inch", 1), "inches": ("inch", 1),
+    "w": ("power", 1), "kw": ("power", 1000), "mah": ("charge", 1), "wh": ("energy", 1),
+    "x": ("zoom", 1), "k": ("video_k", 1), "hz": ("frequency", 1), "ghz": ("frequency", 1e9),
+    "gb": ("bytes", 1), "tb": ("bytes", 1000), "mp": ("megapixel", 1), "chấm": ("megapixel", 1),
+    "nits": ("nits", 1), "nit": ("nits", 1), "%": ("percent", 1), "°": ("degree", 1), "độ": ("degree", 1),
+    "tháng": ("month", 1), "month": ("month", 1), "months": ("month", 1), "năm": ("year", 1), "year": ("year", 1),
+    "years": ("year", 1), "ngày": ("day", 1), "day": ("day", 1), "days": ("day", 1), "màu": ("colour", 1),
+    "lần": ("times", 1), "times": ("times", 1),
+}
+# Vietnamese number words, read only right before a unit ("một tháng", "hai màu"); "năm" is also "year"
+NUMBER_WORDS = {"một": 1, "hai": 2, "ba": 3, "bốn": 4, "năm": 5, "sáu": 6, "bảy": 7, "tám": 8, "chín": 9, "mười": 10}
+_NUM = re.compile(r"(?<![\w.,])([A-Za-z]*)(\d+(?:[.,]\d+)*)([A-Za-z%°]*)(?![\w])")
+_WORD = re.compile(r"[^\W\d_]+|[%°]", re.UNICODE)
+
+
+def _vietnamese(text: str) -> bool:
+    return any(ch.isalpha() and ord(ch) > 127 for ch in text)
+
+
+def parse_number(raw: str, vietnamese: bool) -> float | None:
+    """``raw`` digits with ``.``/``,`` -> value. Exactly three digits after one separator is a thousands group by the
+    text's convention (vi: ``1.800`` = 1800, ``0,198`` = 0.198; en: ``631,000`` = 631000, ``1.800`` = 1.8)."""
+    parts = re.split(r"([.,])", raw)
+    seps = parts[1::2]
+    if not seps:
+        return float(raw)
+    thousands, decimal = (".", ",") if vietnamese else (",", ".")
+    if len(set(seps)) == 1 and len(seps) > 1:  # 1.800.000
+        return float("".join(parts[0::2])) if seps[0] == thousands else None
+    if len(seps) == 1:
+        head, sep, tail = parts
+        if len(tail) == 3 and sep == thousands and len(head) <= 3:
+            return float(head + tail)
+        return float(head + "." + tail)
+    if all(x == thousands for x in seps[:-1]) and seps[-1] == decimal:  # 1.234,5 (vi)
+        return float("".join(parts[0:-2:2]) + "." + parts[-1])
+    return None
+
+
+def quantities(text: str) -> dict[str, list]:
+    """What ``text`` says in numbers: ``measures`` [(dimension, base value, value as written)], ``bare`` [value] (no known unit),
+    ``models`` [(letter prefix, id)] (``X9``, ``IP68``), ``unknown`` [raw] (a number this parser cannot read)."""
+    vi = _vietnamese(text)
+    out: dict[str, list] = {"measures": [], "bare": [], "models": [], "unknown": []}
+    for m in _NUM.finditer(text):
+        prefix, raw, suffix = m.group(1), m.group(2), m.group(3)
+        if prefix:
+            out["models"].append((prefix.upper(), (prefix + raw + suffix).upper()))
+            continue
+        value = parse_number(raw, vi)
+        if value is None:
+            out["unknown"].append(raw)
+            continue
+        unit = suffix.lower()
+        if not unit:
+            nxt = _WORD.match(text, len(text) - len(text[m.end():].lstrip()))
+            unit = nxt.group(0).lower() if nxt and nxt.group(0).lower() in UNITS else ""
+        if unit in UNITS:
+            dim, factor = UNITS[unit]
+            out["measures"].append((dim, value * factor, value))
+        elif unit:
+            out["unknown"].append(raw + suffix)
+        else:
+            out["bare"].append(value)
+    # number words right before a unit
+    tokens = [(t.group(0), t.start()) for t in _WORD.finditer(text)]
+    for (word, _), (after, _) in zip(tokens, tokens[1:]):
+        w, u = word.lower(), after.lower()
+        if w in NUMBER_WORDS and u in UNITS and u not in NUMBER_WORDS:
+            dim, factor = UNITS[u]
+            out["measures"].append((dim, NUMBER_WORDS[w] * factor, NUMBER_WORDS[w]))
+    return out
+
+
+def _same(a: float, b: float) -> bool:
+    return abs(a - b) <= 1e-9 * max(1.0, abs(a), abs(b))
+
+
+def compare_numbers(sentence: str, cue: str) -> dict[str, Any]:
+    """``conflict`` when the sentence states a value the cue states otherwise (same dimension, same bare-number frame,
+    same model letters); ``unknown`` when a sentence number has nothing in the cue to be checked against, or cannot be
+    read; ``agree`` when every sentence number is found; ``none`` when the sentence has no number."""
+    s, c = quantities(sentence), quantities(cue)
+    conflicts, unknown = [], list(s["unknown"])
+    cue_bare = c["bare"]
+    for dim, value, written in s["measures"]:
+        same_dim = [v for d, v, _ in c["measures"] if d == dim]
+        # a cue number without a unit is checked against the number as the sentence writes it ("8.4 mm" / "8,4")
+        if any(_same(value, v) for v in same_dim) or (not same_dim and any(_same(written, v) for v in cue_bare)):
+            continue
+        (conflicts if same_dim else unknown).append(f"{dim}:{written:g}")
+    for value in s["bare"]:
+        if any(_same(value, v) for v in cue_bare + [w for _, _, w in c["measures"]]):
+            continue
+        (conflicts if cue_bare else unknown).append(f"{value:g}")
+    cue_ids = {i for _, i in c["models"]}
+    for prefix, ident in s["models"]:
+        if ident in cue_ids:
+            continue
+        (conflicts if any(p == prefix for p, _ in c["models"]) else unknown).append(ident)
+    said = s["measures"] or s["bare"] or s["models"] or s["unknown"]
+    state = "conflict" if conflicts else ("unknown" if unknown else ("agree" if said else "none"))
+    return {"state": state, "conflicts": conflicts, "unknown": unknown, "sentence": s, "cue": c}
 
 
 def contrast(sentence: str, cue: str) -> dict[str, Any]:
-    s_words, s_nums = content(sentence)
-    c_words, c_nums = content(cue)
+    """``verdict``: ``number_conflict`` > ``number_unknown`` > ``substitution`` > ``consistent``. ``number`` and
+    ``words`` keep the two checks apart (a number verdict hides a word substitution in ``verdict`` only)."""
+    s_words, _ = content(sentence)
+    c_words, _ = content(cue)
     shared = s_words & c_words
     only_s, only_c = s_words - c_words, c_words - s_words
-    if s_nums and c_nums and not s_nums & c_nums:
-        verdict = "number_conflict"
-    elif shared and only_s and only_c:
-        verdict = "substitution"
-    else:
-        verdict = "consistent"
-    return {"verdict": verdict, "shared": sorted(shared), "sentence_only": sorted(only_s), "cue_only": sorted(only_c),
-            "numbers": [sorted(s_nums), sorted(c_nums)]}
+    words = "substitution" if shared and only_s and only_c else "consistent"
+    number = compare_numbers(sentence, cue)
+    verdict = {"conflict": "number_conflict", "unknown": "number_unknown"}.get(number["state"], words)
+    return {"verdict": verdict, "number": number["state"], "words": words, "shared": sorted(shared),
+            "sentence_only": sorted(only_s), "cue_only": sorted(only_c),
+            "numbers": {"conflicts": number["conflicts"], "unknown": number["unknown"]}}
 
 
 def best_cue(sentence: str, cues: Sequence[tuple[int, int, str]], start_ms: int, end_ms: int) -> str | None:
