@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 import unittest
+from collections import Counter
+from pathlib import Path
 
 from engine.dubflow.mastering import align
 from engine.dubflow.mastering.candidates import Candidate, Quality
@@ -127,6 +130,69 @@ class Reanchor(unittest.TestCase):
         before = list(cs)
         d.reanchor(cs, {"u1": [(6000, 7000)]})
         self.assertEqual(cs, before)
+
+
+class ClampDs2Timeline(unittest.TestCase):
+    """#881: the d-s2 region timeline (22 pieces, numbers only) with the clamp-to-shot-end option."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        doc = json.loads((Path(__file__).with_name("d1_ds2_timeline.json")).read_text(encoding="utf-8"))
+        cls.doc = doc
+        cls.choices = [_choice(u, sid, *doc["shots_ms"][sid], off, ln) for u, sid, off, ln in doc["pieces"]]
+        cls.cited = {u: list(map(tuple, spans.values())) for u, spans in doc["cited_cues_ms"].items()}
+
+    def run_(self, clamp: bool):
+        return d.reanchor(self.choices, self.cited, lead_ms=300, duration_ms=self.doc["duration_ms"], clamp_to_shot_end=clamp)
+
+    def piece(self, out, unit):
+        return [c.offset_ms for c in out if c.unit_id == unit]
+
+    def test_baseline_is_22_clean_pieces(self) -> None:
+        self.assertEqual(len(self.choices), 22)
+        self.assertEqual(d._codes(self.choices, (), self.doc["duration_ms"], False), Counter())
+
+    def test_clamp_moves_p3_and_p4_to_the_shot_end(self) -> None:
+        out, log = self.run_(True)
+        self.assertEqual(self.piece(out, "p3"), [67020])
+        self.assertEqual(self.piece(out, "p4"), [103020])
+        rows = {r["unit"]: r for r in log}
+        self.assertTrue(rows["p3"]["clamped"] and rows["p3"]["moved"])
+        self.assertEqual(rows["p3"]["all_cue_overlap_ms"], [[0], [340]])
+        self.assertEqual(rows["p4"]["all_cue_overlap_ms"], [[0], [960]])
+
+    def test_p5_keeps_its_inpoint_because_it_would_replay_r1(self) -> None:
+        out, log = self.run_(True)
+        row = next(r for r in log if r["unit"] == "p5")
+        self.assertEqual(self.piece(out, "p5"), [124820])
+        self.assertEqual(row["kept"], "timeline")
+        self.assertIn("REPEAT", row["would_add"])
+
+    def test_m1_still_touches_c1_and_c2(self) -> None:
+        out, log = self.run_(True)
+        row = next(r for r in log if r["unit"] == "m1")
+        self.assertEqual(row["kept"], "drops_touched_cue")
+        (start,) = self.piece(out, "m1")
+        for a, b in self.cited["m1"]:
+            self.assertGreater(d._overlap(start, start + 3800, a, b), 0)
+
+    def test_clamped_timeline_keeps_shots_order_lengths_and_is_clean(self) -> None:
+        out, _ = self.run_(True)
+        key = lambda cs: [(c.unit_id, c.candidate.candidate_id, c.length_ms) for c in cs]
+        self.assertEqual(key(out), key(self.choices))
+        self.assertEqual(d._codes(out, (), self.doc["duration_ms"], False), Counter())
+        for c in out:
+            self.assertTrue(c.candidate.start_ms <= c.offset_ms and c.offset_ms + c.length_ms <= c.candidate.end_ms)
+
+    def test_option_off_is_the_8a55f42a_behaviour(self) -> None:
+        out, log = d.reanchor(self.choices, self.cited, lead_ms=300, duration_ms=self.doc["duration_ms"])
+        self.assertEqual(self.piece(out, "m1"), [7920])
+        self.assertEqual({r["unit"]: r["kept"] for r in log if r["unit"] in ("p3", "p4", "p5", "r1")},
+                         {"p3": "outside_shot", "p4": "outside_shot", "p5": "outside_shot", "r1": "outside_shot"})
+
+    def test_option_must_be_bool(self) -> None:
+        with self.assertRaises(ValueError):
+            d.reanchor([], {}, clamp_to_shot_end=1)
 
 
 if __name__ == "__main__":
