@@ -245,7 +245,7 @@ def redirecting_proxy(location):
 def _curl_available() -> bool:
     if not SDK_LIB:
         return False
-    probe = subprocess.run([sys.executable, "-I", "-S", "-c", f"import sys; sys.path.insert(0, {SDK_LIB!r}); import curl_cffi"],
+    probe = subprocess.run([sys.executable, "-I", "-S", "-B", "-c", f"import sys; sys.path.insert(0, {SDK_LIB!r}); import curl_cffi"],
                            capture_output=True)
     return probe.returncode == 0
 
