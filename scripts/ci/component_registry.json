@@ -702,6 +702,7 @@
       "id": "bilibili-source",
       "roots": [
         "engine/dubflow/download/bilibili",
+        "engine/dubflow/download/authenticated_native.py",
         "tests/source_bilibili"
       ],
       "commands": [
@@ -721,6 +722,7 @@
       "id": "douyin-source",
       "roots": [
         "engine/dubflow/download/douyin",
+        "engine/dubflow/download/authenticated_native.py",
         "tests/source_douyin"
       ],
       "commands": [
@@ -761,6 +763,9 @@
       "id": "source-generic",
       "roots": [
         "engine/dubflow/download/generic",
+        "engine/dubflow/download/authenticated.py",
+        "engine/dubflow/download/authenticated_native.py",
+        "engine/dubflow/download/assets",
         "tests/source_generic"
       ],
       "commands": [
@@ -773,6 +778,11 @@
           "tests/source_generic",
           "-p",
           "test_*.py"
+        ],
+        [
+          "python",
+          "-B",
+          "tests/source_generic/run_sdk_egress.py"
         ]
       ]
     },

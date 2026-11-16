@@ -4,8 +4,8 @@ The guard is installed in a child interpreter (it patches ``socket`` process-wid
 importing the SDK. Loopback test servers stand in for private targets. 127.0.0.1 is treated as "public" only through
 the guard's test seam, so a redirect or a rebinding to 127.0.0.2 / ::1 is the private hop.
 
-The libcurl part needs ``curl_cffi`` (the pinned impersonation runtime). It is not installed on CI, so those tests
-skip there; set ``DUBFLOW_TEST_SDK_LIB`` to a folder holding curl_cffi/cffi to run them.
+The SDK parts need the pinned yt-dlp and ``curl_cffi`` runtime. ``DUBFLOW_TEST_SDK_LIB`` names a folder holding them;
+the required CI lane provisions it from hash-pinned wheels (``run_sdk_egress.py``), and without it they skip.
 """
 from __future__ import annotations
 
@@ -59,7 +59,8 @@ def server(host="127.0.0.1", redirect_to=None):
         thread.join(timeout=5)
 
 
-def run_guarded(body: str, *, allowed=(), public_ips=("127.0.0.1",), extra_path: str = "") -> dict:
+def run_guarded(body: str, *, allowed=(), public_ips=("127.0.0.1",), extra_path: str = "", proxied=None,
+                names=None) -> dict:
     """Run ``body`` (which sets ``result``) in a child with the helper's guard installed; returns ``result``."""
     script = textwrap.dedent(f"""
         import json, sys
@@ -67,7 +68,13 @@ def run_guarded(body: str, *, allowed=(), public_ips=("127.0.0.1",), extra_path:
         {"sys.path.insert(0, " + repr(extra_path) + ")" if extra_path else ""}
         import authenticated_native as native
         public_ips = set({list(public_ips)!r})
-        native.install_egress_guard({list(allowed)!r}, public=lambda ip: ip in public_ips)
+        names = {names!r}
+        def resolve(host, port):
+            if names is None or host not in names:
+                raise OSError("no such name")
+            return names[host]
+        native.install_egress_guard({list(allowed)!r}, proxied={proxied!r}, public=lambda ip: ip in public_ips,
+                                    resolve=resolve)
         result = {{}}
         try:
     """) + textwrap.indent(textwrap.dedent(body), "    ") + textwrap.dedent("""
@@ -89,10 +96,11 @@ class AddressTests(unittest.TestCase):
     def test_public_address_refuses_every_non_global_form_including_fake_ip(self):
         for value in ("127.0.0.1", "10.1.2.3", "172.16.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1",
                       "198.18.0.7", "0.0.0.0", "224.0.0.1", "::1", "fe80::1%2", "fd00::1", "::ffff:127.0.0.1",
-                      "::ffff:192.168.0.1", "2002:c0a8:101::1", "not-an-ip"):
+                      "::ffff:192.168.0.1", "2002:c0a8:101::1", "64:ff9b::a00:1", "64:ff9b::7f00:1",
+                      "64:ff9b::a9fe:a9fe", "64:ff9b:1::a00:1", "not-an-ip"):
             with self.subTest(value=value):
                 self.assertFalse(native.public_address(value))
-        for value in ("93.184.216.34", "8.8.8.8", "2606:4700:4700::1111", "::ffff:8.8.8.8"):
+        for value in ("93.184.216.34", "8.8.8.8", "2606:4700:4700::1111", "::ffff:8.8.8.8", "64:ff9b::808:808"):
             with self.subTest(value=value):
                 self.assertTrue(native.public_address(value))
 
@@ -202,6 +210,38 @@ class SocketGuardTests(unittest.TestCase):
         self.assertEqual(result["exit_code"], 8)
 
 
+@contextmanager
+def listener(host="127.0.0.1"):
+    """A bare listening socket: a TCP handshake completes in the kernel even without accept(), so a later accept()
+    that times out proves no connection was ever made."""
+    import socket
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind((host, 0))
+    sock.listen(8)
+    try:
+        yield sock
+    finally:
+        sock.close()
+
+
+def never_connected(sock) -> bool:
+    import socket
+    sock.settimeout(0.5)
+    try:
+        conn, _ = sock.accept()
+    except socket.timeout:
+        return True
+    conn.close()
+    return False
+
+
+@contextmanager
+def redirecting_proxy(location):
+    """A forward HTTP proxy on 127.0.0.2 that answers every request with a redirect to ``location``."""
+    with server("127.0.0.2", redirect_to=location) as (port, hits):
+        yield port, hits
+
+
 def _curl_available() -> bool:
     if not SDK_LIB:
         return False
@@ -227,9 +267,62 @@ class HelperProcessTests(unittest.TestCase):
                     self.assertEqual(done.returncode, 8, done.stderr[-500:])
         self.assertEqual(hits, [])
 
+    def test_behind_a_proxy_a_private_target_exits_8_and_the_proxy_sees_nothing(self):
+        # the proxy's own private endpoint is allowed as a peer, never as a target (direct, no_proxy or redirect)
+        with server("127.0.0.2") as (proxy_port, proxy_hits):
+            for url in ("http://127.0.0.1:9/video.mp4", f"http://127.0.0.2:{proxy_port}/admin"):
+                env = {key: value for key, value in os.environ.items() if "proxy" not in key.lower()}
+                env.update(http_proxy=f"http://127.0.0.2:{proxy_port}", https_proxy=f"http://127.0.0.2:{proxy_port}")
+                done = subprocess.run([sys.executable, "-I", "-S", "-B", str(HELPER), SDK_LIB],
+                                      input=json.dumps({"schema_version": 1, "provider_id": "generic", "url": url}).encode(),
+                                      capture_output=True, timeout=120, env=env)
+                with self.subTest(url=url):
+                    self.assertEqual(done.returncode, 8, done.stderr[-500:])
+        self.assertEqual(proxy_hits, [])
+
     def test_health_check_still_works_with_the_guard_installed(self):
         done = self.helper({"schema_version": 1, "operation": "health_check"})
         self.assertEqual(done.returncode, 0, done.stderr[-500:])
+
+
+@unittest.skipUnless(SDK_LIB and (Path(SDK_LIB) / "yt_dlp").is_dir(), "pinned yt-dlp not available (set DUBFLOW_TEST_SDK_LIB)")
+class ProxyTargetTests(unittest.TestCase):
+    """Behind a proxy the peer is the proxy, so the SDK's request targets and urllib redirects are checked by name."""
+
+    def fetch(self, url: str, proxy_port: int, names: dict) -> dict:
+        return run_guarded(f"""
+            import yt_dlp
+            native.guard_sdk_targets()
+            with yt_dlp.YoutubeDL({{"quiet": True, "no_warnings": True, "proxy": "http://127.0.0.2:{proxy_port}",
+                                    "retries": 0, "socket_timeout": 5}}) as ydl:
+                from yt_dlp.networking import Request
+                ydl.urlopen(Request({url!r})).read()
+                result["fetched"] = True
+        """, extra_path=SDK_LIB, allowed=[("127.0.0.2", proxy_port)], public_ips=("93.184.216.34",), names=names)
+
+    def test_proxy_redirect_to_a_private_target_is_not_followed(self):
+        with redirecting_proxy("http://10.0.0.1/admin") as (port, hits):
+            result = self.fetch("http://media.example.test/x", port, {"media.example.test": ["93.184.216.34"]})
+        self.assertEqual(hits, ["http://media.example.test/x"])  # the first hop only; the redirect never went out
+        self.assertIn("target", result["refused"])
+        self.assertEqual(result["exit_code"], 8)
+
+    def test_public_target_through_the_proxy_works(self):
+        with server("127.0.0.2") as (port, hits):
+            result = self.fetch("http://media.example.test/x", port, {"media.example.test": ["93.184.216.34"]})
+        self.assertTrue(result.get("fetched"), result)
+        self.assertEqual(hits, ["http://media.example.test/x"])
+
+    def test_private_or_unresolvable_targets_never_reach_the_proxy(self):
+        # a private name (no_proxy or not), the proxy endpoint itself, a NAT64 private literal and a name local DNS
+        # cannot resolve (fail closed) are all refused before any byte goes to the proxy
+        with server("127.0.0.2") as (port, hits):
+            for url in ("http://intranet.example.test/x", f"http://127.0.0.2:{port}/admin", "http://[64:ff9b::a00:1]/x",
+                        "http://nowhere.example.test/x"):
+                result = self.fetch(url, port, {"intranet.example.test": ["10.0.0.5"]})
+                with self.subTest(url=url):
+                    self.assertIn("target", result["refused"])
+        self.assertEqual(hits, [])
 
 
 @unittest.skipUnless(_curl_available(), "curl_cffi runtime not available (set DUBFLOW_TEST_SDK_LIB)")
@@ -241,10 +334,12 @@ class CurlGuardTests(unittest.TestCase):
             result["status"] = response.status_code
         """, extra_path=SDK_LIB, **kwargs)
 
-    def test_impersonated_request_to_a_private_peer_is_aborted_before_the_request(self):
-        with server("127.0.0.1") as (port, hits):
+    def test_impersonated_request_to_a_private_peer_never_connects(self):
+        # OPENSOCKETFUNCTION refuses before the socket exists: the private peer never sees a TCP handshake
+        with listener("127.0.0.1") as sock:
+            port = sock.getsockname()[1]
             result = self.curl(f"http://127.0.0.1:{port}/x", public_ips=())
-        self.assertEqual(hits, [])
+            self.assertTrue(never_connected(sock))
         self.assertEqual(result["exit_code"], 8)
         self.assertIn("curl", result["refused"])
 
@@ -254,20 +349,33 @@ class CurlGuardTests(unittest.TestCase):
         self.assertEqual(result.get("status"), 200)
         self.assertEqual(hits, ["/x"])
 
-    def test_libcurl_redirect_to_a_private_address_is_aborted(self):
-        with server("127.0.0.2") as (private_port, private_hits):
+    def test_libcurl_redirect_to_a_private_address_never_connects(self):
+        with listener("127.0.0.2") as private:
+            private_port = private.getsockname()[1]
             with server("127.0.0.1", redirect_to=f"http://127.0.0.2:{private_port}/admin") as (port, hits):
                 result = self.curl(f"http://127.0.0.1:{port}/start")
+            self.assertTrue(never_connected(private))
         self.assertEqual(hits, ["/start"])
-        self.assertEqual(private_hits, [])
         self.assertEqual(result["exit_code"], 8)
+
+    def test_behind_a_proxy_curl_fails_closed(self):
+        # libcurl follows redirects inside C, where the target check cannot see them: no impersonation behind a proxy
+        with server("127.0.0.2") as (proxy_port, proxy_hits):
+            result = run_guarded(f"""
+                from curl_cffi import requests
+                requests.get("http://media.example.test/x", proxy="http://127.0.0.2:{proxy_port}", timeout=5,
+                             impersonate="chrome")
+            """, extra_path=SDK_LIB, allowed=[("127.0.0.2", proxy_port)], public_ips=("93.184.216.34",),
+                names={"media.example.test": ["93.184.216.34"]})
+        self.assertEqual(proxy_hits, [])
+        self.assertIn("curl-proxied", result["refused"])
 
     def test_curl_without_the_hook_fails_closed(self):
         with server("127.0.0.1") as (port, hits):
             result = run_guarded(f"""
                 from curl_cffi import Curl, CurlOpt
                 curl = Curl()
-                curl._dubflow_unguarded = True  # as if PREREQFUNCTION could not be installed
+                curl._dubflow_unguarded = True  # as if OPENSOCKETFUNCTION could not be installed
                 curl.setopt(CurlOpt.URL, b"http://127.0.0.1:{port}/x")
                 curl.perform()
             """, extra_path=SDK_LIB)

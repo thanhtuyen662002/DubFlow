@@ -30,9 +30,12 @@ NON_PUBLIC = (
     "240.0.0.1", "255.255.255.255",
     "::1", "::", "fe80::1", "fe80::1%eth0", "fc00::1", "fd12:3456::1", "ff02::1",
     "::ffff:127.0.0.1", "::ffff:10.0.0.1", "::ffff:169.254.169.254", "2002:7f00:1::1", "2002:a00:1::1",
+    # RFC 6052 NAT64 (64:ff9b::/96) carries an IPv4 address; Python calls the IPv6 form global
+    "64:ff9b::a00:1", "64:ff9b::7f00:1", "64:ff9b::a9fe:a9fe", "64:ff9b::c612:7", "64:ff9b:1::a00:1",
     "not-an-address", "",
 )
-PUBLIC = ("93.184.216.34", "8.8.8.8", "1.1.1.1", "2606:4700:4700::1111", "2001:4860:4860::8888", "::ffff:8.8.8.8")
+PUBLIC = ("93.184.216.34", "8.8.8.8", "1.1.1.1", "2606:4700:4700::1111", "2001:4860:4860::8888", "::ffff:8.8.8.8",
+          "64:ff9b::808:808")
 
 
 class OnlyLoopback127(EgressPolicy):
@@ -149,6 +152,18 @@ class HttpTransportEgressTests(unittest.TestCase):
                 with self.subTest(url=url), self.assertRaises(DownloadError):
                     handler.http_open(request)
                 do_open.assert_not_called()
+
+    def test_fake_ip_answer_is_refused_with_an_actionable_reason(self):
+        # #884, Owner directive 2026-11-16: a proxy fake-IP address is never trusted by default; the refusal says why
+        # and what the user can change (real-IP DNS, system-proxy mode, or excluding DubFlow from TUN)
+        with self.assertRaises(DownloadError) as context:
+            EgressPolicy(resolver=lambda host, port: ["198.18.0.9"]).resolve("www.youtube.com", 443)
+        self.assertEqual(context.exception.code, DownloadErrorCode.INVALID_SOURCE)
+        self.assertIn("fake-IP", str(context.exception))
+        self.assertIn("real-IP DNS", str(context.exception))
+        with self.assertRaises(DownloadError) as private:
+            EgressPolicy(resolver=lambda host, port: ["10.0.0.1"]).resolve("intranet.example.test", 443)
+        self.assertNotIn("fake-IP", str(private.exception))
 
     def test_default_transport_never_reaches_a_loopback_server(self):
         with server(ok) as (port, hits):

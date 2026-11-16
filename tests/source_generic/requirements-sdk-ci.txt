@@ -1,0 +1,12 @@
+# #884: the pinned yt-dlp SDK runtime for the helper egress tests on the Linux CI lane (CPython 3.12, x86_64).
+# Same versions as engine/dubflow/download/assets/yt-dlp-sdk-v1.json; Linux wheels of the same releases.
+yt-dlp==2026.8.19 \
+    --hash=sha256:1d57897e94c6665a0a6f9bc54b34e584284e32c034ffab3a7df25d8f7b24eedf
+curl-cffi==0.16.0 \
+    --hash=sha256:182416f07d71a342240554fa62c22e591999b78c225b21d3fe27d9f807420dd6
+cffi==2.1.1 \
+    --hash=sha256:c1453022f490d2459a11819d83ad1d586e9ff65a12ac3e705ffebd46d3685dcf
+certifi==2026.7.22 \
+    --hash=sha256:62f22742b58a1a33014a2b6b706588a8d7e2a88ae7bd1a6ebe8c992928483775
+pycparser==3.0 \
+    --hash=sha256:b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992

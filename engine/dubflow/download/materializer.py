@@ -120,20 +120,28 @@ def _system_resolver(host: str, port: int) -> list[str]:
     return [str(info[4][0]) for info in infos]
 
 
+_NAT64_WELL_KNOWN = ipaddress.IPv6Network("64:ff9b::/96")
+_FAKE_IP = ipaddress.IPv4Network("198.18.0.0/15")
+
+
 def is_public_address(value: str) -> bool:
     """True only for a globally routable unicast address.
 
-    IPv4-mapped, 6to4 and Teredo IPv6 forms are judged by the IPv4 address
-    they carry, so ``::ffff:127.0.0.1`` cannot pass as an IPv6 address.
+    IPv4-mapped, 6to4, Teredo and NAT64 (64:ff9b::/96) IPv6 forms are judged
+    by the IPv4 address they carry, so ``::ffff:127.0.0.1`` cannot pass as an
+    IPv6 address.
     """
     try:
         address = ipaddress.ip_address(str(value).split("%", 1)[0])
     except ValueError:
         return False
     if isinstance(address, ipaddress.IPv6Address):
-        embedded = address.ipv4_mapped or address.sixtofour or (address.teredo[1] if address.teredo else None)
-        if embedded is not None:
-            address = embedded
+        if address in _NAT64_WELL_KNOWN:  # RFC 6052: 64:ff9b::a00:1 is 10.0.0.1 behind a NAT64 gateway
+            address = ipaddress.IPv4Address(int(address) & 0xFFFFFFFF)
+        else:
+            embedded = address.ipv4_mapped or address.sixtofour or (address.teredo[1] if address.teredo else None)
+            if embedded is not None:
+                address = embedded
     return bool(address.is_global and not address.is_multicast and not address.is_reserved
                 and not address.is_unspecified and not address.is_loopback and not address.is_link_local)
 
@@ -177,6 +185,11 @@ class EgressPolicy:
         if not answers:
             raise DownloadError(DownloadErrorCode.NETWORK, "source host could not be resolved", retryable=True, action="retry")
         if not all(self._allowed(answer) for answer in answers):
+            if any(_in_fake_ip(answer) for answer in answers):
+                # Clash/Surge TUN "fake-IP" DNS: the real target is hidden, so it cannot be checked (#884)
+                raise _egress_denied("source host resolved to a proxy fake-IP address (198.18.0.0/15); the real target "
+                                     "cannot be checked. Switch the proxy to real-IP DNS (redir-host) or system-proxy "
+                                     "mode, or exclude DubFlow from TUN mode")
             raise _egress_denied("source URL points to a private or non-public network address")
         return answers
 
@@ -214,6 +227,13 @@ class EgressPolicy:
 
 
 PUBLIC_EGRESS = EgressPolicy()
+
+
+def _in_fake_ip(value: str) -> bool:
+    try:
+        return ipaddress.ip_address(str(value).split("%", 1)[0]) in _FAKE_IP
+    except (ValueError, TypeError):
+        return False
 
 
 def _egress_denied(condition: str) -> DownloadError:

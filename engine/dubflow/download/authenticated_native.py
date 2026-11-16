@@ -41,16 +41,25 @@ def scoped_cookies(provider, headers):
 # parent's resolve-time check cannot stop DNS rebinding or a redirect to a private address. Every connection this
 # process makes is therefore checked against the address it actually connects to:
 # - Python sockets: ``socket.connect``/``connect_ex`` refuse a non-public peer before the SYN is sent;
-# - libcurl: ``CURLOPT_PREREQFUNCTION`` sees the connected peer of every connection (redirects included) and aborts
-#   before any request byte is sent. If that hook cannot be installed, every curl request fails closed.
+# - libcurl: ``CURLOPT_OPENSOCKETFUNCTION`` sees the address of every connection (redirects included) before the
+#   socket exists, and refuses a non-public one: no SYN is sent. If that hook cannot be installed, every curl request
+#   fails closed.
 # The only non-public peers allowed are the exact (address, port) endpoints of the proxies the SDK will use (the
-# user's own configuration). Behind such a proxy, the proxy reaches the target, so that hop is not peer-checked.
+# user's own configuration). Behind such a proxy the proxy reaches the target, so the peer check cannot see it:
+# - every request URL and every redirect target of the SDK's urllib handler is checked by name (it must resolve here,
+#   to public addresses only; a name that does not resolve fails closed), which also stops a direct or no_proxy
+#   request to the proxy's own private endpoint;
+# - libcurl follows redirects inside C, out of reach of that check, so impersonated requests fail closed behind a
+#   proxy.
 EGRESS_REFUSED = []  # set when the guard refused a connection: the process then exits with code 8
 
 
 def _embedded_ipv4(address):
+    """The IPv4 address an IPv6 form carries (mapped, 6to4, Teredo, RFC 6052 NAT64 64:ff9b::/96), else itself."""
     import ipaddress
     if isinstance(address, ipaddress.IPv6Address):
+        if address in ipaddress.IPv6Network("64:ff9b::/96"):
+            return ipaddress.IPv4Address(int(address) & 0xFFFFFFFF)
         return address.ipv4_mapped or address.sixtofour or (address.teredo[1] if address.teredo else None) or address
     return address
 
@@ -107,14 +116,35 @@ def _refuse(where):
     return EgressRefused(13, "connection to a non-public network address refused")
 
 
-def install_egress_guard(allowed=(), *, public=None):
-    """Patch this process so no connection reaches a non-public peer. ``public`` is a test seam only."""
+_TARGET_CHECK = []  # behind a proxy: the check every SDK request URL and redirect target must pass
+
+
+def install_egress_guard(allowed=(), *, proxied=None, public=None, resolve=None):
+    """Patch this process so no connection reaches a non-public peer. ``allowed`` are the proxy endpoints; when there
+    are any, request targets are checked by name and libcurl fails closed. ``public``/``resolve`` are test seams."""
     import socket
     is_public = public or public_address
+    lookup = resolve or (lambda host, port: [info[4][0] for info in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)])
     allowed = {(_normal(a), int(p)) for a, p in allowed}
+    proxied = bool(allowed) if proxied is None else bool(proxied)
 
     def permitted(host, port):
         return is_public(host) or (_normal(host), int(port)) in allowed
+
+    def check_target(url):
+        """Behind a proxy: the target name must resolve here, to public addresses only (never a proxy endpoint)."""
+        try:
+            parts = urlsplit(str(url))
+            host = (parts.hostname or "").strip("[]")
+            port = parts.port or (443 if parts.scheme == "https" else 80)
+            answers = [host] if _normal(host) is not None else list(lookup(host, port))
+        except (OSError, UnicodeError, ValueError):
+            answers = []
+        if not host or not answers or not all(is_public(answer) for answer in answers):
+            raise _refuse("target")
+
+    if proxied:
+        _TARGET_CHECK[:] = [check_target]
 
     original_connect, original_connect_ex = socket.socket.connect, socket.socket.connect_ex
 
@@ -138,38 +168,87 @@ def install_egress_guard(allowed=(), *, public=None):
         return original_connect_ex(sock, resolved(sock, address))
 
     socket.socket.connect, socket.socket.connect_ex = connect, connect_ex
-    _guard_curl(permitted)
+    _guard_curl(permitted, proxied=proxied)
+
+
+def guard_sdk_targets():
+    """Behind a proxy: check every request the SDK sends and every redirect its urllib handler follows. Without a
+    proxy nothing is patched (the peer check covers it). An SDK without these hooks fails closed behind a proxy."""
+    if not _TARGET_CHECK:
+        return
+    check = _TARGET_CHECK[0]
+    try:
+        import yt_dlp.networking._urllib as networking_urllib
+        import yt_dlp.networking.common as networking_common
+        networking_common.RequestDirector.send, networking_urllib.RedirectHandler.redirect_request  # noqa: B018
+    except (ImportError, AttributeError):
+        raise _refuse("target-unguarded") from None
+    director = networking_common.RequestDirector
+    original_send = director.send
+
+    def send(self, request):
+        check(request.url)
+        return original_send(self, request)
+
+    director.send = send
+    redirect = networking_urllib.RedirectHandler
+    original_redirect = redirect.redirect_request
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        check(newurl)
+        return original_redirect(self, req, fp, code, msg, headers, newurl)
+
+    redirect.redirect_request = redirect_request
 
 
 _CURL_HOOK = []  # keeps the C callback alive for the life of the process
 
 
-def _guard_curl(permitted):
+def _guard_curl(permitted, *, proxied=False):
+    import socket
+    import struct
+    import sys
     try:
         from curl_cffi import Curl, CurlOpt
         from curl_cffi._wrapper import ffi, lib
     except ImportError:
         return  # no impersonation runtime: the SDK only has socket-based handlers
+    # curl_socket_t is SOCKET (pointer-sized, ~0 = bad) on Windows and int (-1 = bad) elsewhere
+    socket_type, bad = ("uintptr_t", (1 << (8 * ffi.sizeof("void *"))) - 1) if sys.platform == "win32" else ("int", -1)
     try:
-        @ffi.callback("int(void *, char *, char *, int, int)")
-        def prerequest(_clientp, primary_ip, _local_ip, primary_port, _local_port):
+        if proxied:
+            raise RuntimeError("behind a proxy libcurl redirects are not target-checked")
+
+        @ffi.callback(socket_type + "(void *, int, void *)", error=bad)
+        def opensocket(_clientp, _purpose, address):
+            # struct curl_sockaddr { int family; int socktype; int protocol; unsigned int addrlen; struct sockaddr addr; }
             try:
-                if permitted(ffi.string(primary_ip).decode("ascii", "replace"), primary_port):
-                    return 0
+                family, socktype, protocol, length = struct.unpack("=iiiI", ffi.buffer(ffi.cast("char *", address), 16))
+                raw = bytes(ffi.buffer(ffi.cast("char *", address) + 16, min(int(length), 128)))
+                port = int.from_bytes(raw[2:4], "big")
+                if family == socket.AF_INET:
+                    host = socket.inet_ntop(socket.AF_INET, raw[4:8])
+                elif family == socket.AF_INET6:
+                    host = socket.inet_ntop(socket.AF_INET6, raw[8:24])
+                else:
+                    host = None
+                if host is not None and permitted(host, port):
+                    return socket.socket(family, socktype, protocol).detach()
             except Exception:
                 pass
             _refuse("curl")
-            return 1  # CURL_PREREQFUNC_ABORT
-        _CURL_HOOK.append(prerequest)
-        option = CurlOpt.PREREQFUNCTION
+            return bad  # CURL_SOCKET_BAD: libcurl never connects
+        _CURL_HOOK.append(opensocket)
+        option = CurlOpt.OPENSOCKETFUNCTION
     except Exception:
         _CURL_HOOK.clear()
+        option = None
 
     original_init, original_reset, original_perform = Curl.__init__, Curl.reset, Curl.perform
 
     def hook(curl):
         handle = getattr(curl, "_curl", None)
-        if not _CURL_HOOK or handle is None or lib._curl_easy_setopt(handle, option, _CURL_HOOK[0]) != 0:
+        if not _CURL_HOOK or option is None or handle is None or lib._curl_easy_setopt(handle, option, _CURL_HOOK[0]) != 0:
             curl._dubflow_unguarded = True
         else:
             curl._dubflow_unguarded = False
@@ -184,7 +263,7 @@ def _guard_curl(permitted):
 
     def perform(curl, *args, **kwargs):
         if getattr(curl, "_dubflow_unguarded", True):
-            raise _refuse("curl-unguarded")
+            raise _refuse("curl-proxied" if proxied else "curl-unguarded")
         return original_perform(curl, *args, **kwargs)
 
     Curl.__init__, Curl.reset, Curl.perform = init, reset, perform
@@ -605,8 +684,11 @@ def main():
         # Before the SDK is imported: every connection it makes is checked against its actual peer (#884). The SDK
         # takes its proxies from the same place (no "proxy" option is ever passed).
         import urllib.request
-        install_egress_guard(proxy_endpoints(urllib.request.getproxies()))
+        proxies = urllib.request.getproxies()
+        install_egress_guard(proxy_endpoints(proxies),
+                             proxied=any(proxies.get(key) for key in ("http", "https", "all", "ftp")))
         import yt_dlp
+        guard_sdk_targets()
         from yt_dlp.globals import plugin_dirs
         plugin_dirs.value = []
         if operation == "health_check":
