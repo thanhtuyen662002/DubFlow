@@ -135,8 +135,10 @@ class AuthenticatedYtDlpTransport:
             timeout_s=self.timeout_s, stdin_bytes=payload,
         )
         if code:
+            # 8: the helper's egress guard refused a non-public peer (#884): not retryable, the link itself is refused.
             codes = {2: SourceErrorCode.AUTH_REQUIRED, 3: SourceErrorCode.RATE_LIMITED,
-                     4: SourceErrorCode.NOT_FOUND, 5: SourceErrorCode.SOURCE_CHANGED, 7: SourceErrorCode.UNSUPPORTED}
+                     4: SourceErrorCode.NOT_FOUND, 5: SourceErrorCode.SOURCE_CHANGED, 7: SourceErrorCode.UNSUPPORTED,
+                     8: SourceErrorCode.INVALID_INPUT}
             error_code = codes.get(code, SourceErrorCode.NETWORK)
             error = SourceError(error_code, "authenticated provider inspection failed", provider_id=provider_id,
                 retryable=code in {3, 6}, action="authenticate" if code == 2 else "retry_with_changed_conditions" if code in {3, 6} else None)

@@ -134,15 +134,12 @@ def is_public_address(value: str) -> bool:
         embedded = address.ipv4_mapped or address.sixtofour or (address.teredo[1] if address.teredo else None)
         if embedded is not None:
             address = embedded
-    if isinstance(address, ipaddress.IPv4Address) and address in _FAKE_IP_RANGE:
-        return True
     return bool(address.is_global and not address.is_multicast and not address.is_reserved
                 and not address.is_unspecified and not address.is_loopback and not address.is_link_local)
 
 
-# 198.18.0.0/15 (RFC 2544 benchmarking) hosts no LAN or loopback service. Clash/Surge-style "fake-ip" DNS in TUN mode
-# answers every public name from it, so refusing it would break every download for those users.
-_FAKE_IP_RANGE = ipaddress.ip_network("198.18.0.0/15")
+# No exception for proxy "fake-IP" ranges (198.18.0.0/15, #884): a fake-IP DNS hides the real target, which the proxy
+# may then reach directly, private or not. Users of fake-IP TUN mode must exclude DubFlow or use a real-IP DNS mode.
 
 
 class EgressPolicy:
@@ -184,13 +181,9 @@ class EgressPolicy:
         return answers
 
     def check_proxied(self, host: str, port: int) -> None:
-        """A user-configured proxy resolves the name itself, so a local lookup failure is not evidence of a private
-        target; a literal or locally resolved non-public address still is."""
-        try:
-            self.resolve(host, port)
-        except DownloadError as error:
-            if not error.retryable:
-                raise
+        """Behind a user-configured proxy the proxy reaches the target, so only the name can be checked: it must
+        resolve here, to public addresses only. A name that does not resolve locally fails closed (#884)."""
+        self.resolve(host, port)
 
     def check_url(self, url: str) -> str:
         url = validate_http_url(url)

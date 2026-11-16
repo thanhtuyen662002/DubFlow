@@ -36,6 +36,160 @@ def scoped_cookies(provider, headers):
     return cookies
 
 
+# ---------------------------------------------------------------- public-only egress (#490, #884)
+# The SDK opens its own connections (urllib sockets, and libcurl through curl_cffi for impersonated requests), so the
+# parent's resolve-time check cannot stop DNS rebinding or a redirect to a private address. Every connection this
+# process makes is therefore checked against the address it actually connects to:
+# - Python sockets: ``socket.connect``/``connect_ex`` refuse a non-public peer before the SYN is sent;
+# - libcurl: ``CURLOPT_PREREQFUNCTION`` sees the connected peer of every connection (redirects included) and aborts
+#   before any request byte is sent. If that hook cannot be installed, every curl request fails closed.
+# The only non-public peers allowed are the exact (address, port) endpoints of the proxies the SDK will use (the
+# user's own configuration). Behind such a proxy, the proxy reaches the target, so that hop is not peer-checked.
+EGRESS_REFUSED = []  # set when the guard refused a connection: the process then exits with code 8
+
+
+def _embedded_ipv4(address):
+    import ipaddress
+    if isinstance(address, ipaddress.IPv6Address):
+        return address.ipv4_mapped or address.sixtofour or (address.teredo[1] if address.teredo else None) or address
+    return address
+
+
+def public_address(value):
+    """True only for a globally routable unicast address. No exception for proxy "fake-IP" ranges (198.18.0.0/15):
+    a fake-IP DNS hides the real target, which the proxy may then reach directly, private or not."""
+    import ipaddress
+    try:
+        address = _embedded_ipv4(ipaddress.ip_address(str(value).split("%", 1)[0]))
+    except ValueError:
+        return False
+    return bool(address.is_global and not address.is_multicast and not address.is_reserved
+                and not address.is_unspecified and not address.is_loopback and not address.is_link_local)
+
+
+def _normal(value):
+    import ipaddress
+    try:
+        return str(_embedded_ipv4(ipaddress.ip_address(str(value).split("%", 1)[0])))
+    except ValueError:
+        return None
+
+
+def proxy_endpoints(proxies):
+    """{(address, port)} of the configured proxies, the only non-public peers this process may reach."""
+    import socket
+    allowed = set()
+    for key, value in (proxies or {}).items():
+        if key not in {"http", "https", "all", "ftp"} or not isinstance(value, str) or not value:
+            continue  # "no" and stray *_proxy variables are not proxies
+        try:
+            parts = urlsplit(value if "://" in value else "http://" + value)
+            if not parts.hostname:
+                continue
+            explicit = parts.port
+        except ValueError:
+            continue
+        port = explicit or {"https": 443, "socks5": 1080, "socks5h": 1080, "socks4": 1080, "socks4a": 1080}.get(parts.scheme, 80)
+        try:
+            for info in socket.getaddrinfo(parts.hostname, port, type=socket.SOCK_STREAM):
+                allowed.add((_normal(info[4][0]), port))
+        except OSError:
+            continue
+    return allowed
+
+
+class EgressRefused(PermissionError):
+    native_exit_code = 8
+
+
+def _refuse(where):
+    EGRESS_REFUSED.append(where)
+    return EgressRefused(13, "connection to a non-public network address refused")
+
+
+def install_egress_guard(allowed=(), *, public=None):
+    """Patch this process so no connection reaches a non-public peer. ``public`` is a test seam only."""
+    import socket
+    is_public = public or public_address
+    allowed = {(_normal(a), int(p)) for a, p in allowed}
+
+    def permitted(host, port):
+        return is_public(host) or (_normal(host), int(port)) in allowed
+
+    original_connect, original_connect_ex = socket.socket.connect, socket.socket.connect_ex
+
+    def resolved(sock, address):
+        if sock.family not in (socket.AF_INET, socket.AF_INET6) or not isinstance(address, tuple) or len(address) < 2:
+            return address
+        host, port = address[0], address[1]
+        if _normal(host) is None:  # a name: resolve once here and connect to the checked address
+            infos = socket.getaddrinfo(host, port, sock.family, socket.SOCK_STREAM)
+            if not infos or not all(permitted(info[4][0], port) for info in infos):
+                raise _refuse("socket")
+            return (infos[0][4][0], port, *address[2:])
+        if not permitted(host, port):
+            raise _refuse("socket")
+        return address
+
+    def connect(sock, address):
+        return original_connect(sock, resolved(sock, address))
+
+    def connect_ex(sock, address):
+        return original_connect_ex(sock, resolved(sock, address))
+
+    socket.socket.connect, socket.socket.connect_ex = connect, connect_ex
+    _guard_curl(permitted)
+
+
+_CURL_HOOK = []  # keeps the C callback alive for the life of the process
+
+
+def _guard_curl(permitted):
+    try:
+        from curl_cffi import Curl, CurlOpt
+        from curl_cffi._wrapper import ffi, lib
+    except ImportError:
+        return  # no impersonation runtime: the SDK only has socket-based handlers
+    try:
+        @ffi.callback("int(void *, char *, char *, int, int)")
+        def prerequest(_clientp, primary_ip, _local_ip, primary_port, _local_port):
+            try:
+                if permitted(ffi.string(primary_ip).decode("ascii", "replace"), primary_port):
+                    return 0
+            except Exception:
+                pass
+            _refuse("curl")
+            return 1  # CURL_PREREQFUNC_ABORT
+        _CURL_HOOK.append(prerequest)
+        option = CurlOpt.PREREQFUNCTION
+    except Exception:
+        _CURL_HOOK.clear()
+
+    original_init, original_reset, original_perform = Curl.__init__, Curl.reset, Curl.perform
+
+    def hook(curl):
+        handle = getattr(curl, "_curl", None)
+        if not _CURL_HOOK or handle is None or lib._curl_easy_setopt(handle, option, _CURL_HOOK[0]) != 0:
+            curl._dubflow_unguarded = True
+        else:
+            curl._dubflow_unguarded = False
+
+    def init(curl, *args, **kwargs):
+        original_init(curl, *args, **kwargs)
+        hook(curl)
+
+    def reset(curl):
+        original_reset(curl)
+        hook(curl)
+
+    def perform(curl, *args, **kwargs):
+        if getattr(curl, "_dubflow_unguarded", True):
+            raise _refuse("curl-unguarded")
+        return original_perform(curl, *args, **kwargs)
+
+    Curl.__init__, Curl.reset, Curl.perform = init, reset, perform
+
+
 # Deno by the absolute path the parent verified (ADR-0040); otherwise no JS runtime.
 JS_RUNTIMES = {}
 
@@ -373,8 +527,10 @@ def public_metadata(raw, *, generic=False):
 
 
 def failure_exit_code(error):
+    if EGRESS_REFUSED:
+        return 8
     native_code = getattr(error, "native_exit_code", None)
-    if type(native_code) is int and native_code in {2, 3, 4, 5, 6, 7}:
+    if type(native_code) is int and native_code in {2, 3, 4, 5, 6, 7, 8}:
         return native_code
     if isinstance(error, NotImplementedError):
         return 7
@@ -446,6 +602,10 @@ def main():
             # Parent verified every extension file against the signed inventory.
             sys.path.insert(1, sys.argv[2])
             JS_RUNTIMES["deno"] = {"path": sys.argv[3]}
+        # Before the SDK is imported: every connection it makes is checked against its actual peer (#884). The SDK
+        # takes its proxies from the same place (no "proxy" option is ever passed).
+        import urllib.request
+        install_egress_guard(proxy_endpoints(urllib.request.getproxies()))
         import yt_dlp
         from yt_dlp.globals import plugin_dirs
         plugin_dirs.value = []
