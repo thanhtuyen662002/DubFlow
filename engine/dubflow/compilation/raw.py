@@ -241,7 +241,14 @@ def run_program(spec: Program, output_dir: Path, *, speaker: Callable[[Status], 
                 cues = ()
                 if source.transcript is not None:
                     try:
-                        cues = tuple(ev.parse_srt(source.transcript.read_text(encoding="utf-8", errors="replace")))
+                        usable, refused = ev.check_srt(source.transcript.read_text(encoding="utf-8", errors="replace"), duration)
+                        cues = tuple(usable)
+                        if refused:
+                            # #892: a cue is never moved or shortened to fit; it is left out and the user is told which
+                            named = "; ".join(f"đoạn {number}: {reason}" for number, reason in refused[:3])
+                            rest = f" và {len(refused) - 3} đoạn khác" if len(refused) > 3 else ""
+                            warnings.append(f"{context}phụ đề nguồn {source.transcript.name} có {len(refused)} đoạn không dùng được, "
+                                            f"đã bỏ qua ({named}{rest}). Hãy kiểm tra phụ đề có đúng video này không.")
                     except OSError:
                         warnings.append(f"{context}không đọc được phụ đề nguồn {source.transcript.name}")
                 fps = info.fps if info.fps else 30

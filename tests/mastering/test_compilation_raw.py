@@ -147,7 +147,9 @@ class RealMediaProgrammeTest(unittest.TestCase):
                 clip = root / (f"{name}.webm" if name == "banh" and WEBM else f"{name}.mp4")
                 self.make(clip, pattern, 9, audio=audio, size="360x640" if number == 2 else "640x360")
                 srt = root / f"{name}.srt"
-                srt.write_text(f"1\n00:00:04,000 --> 00:00:07,000\n{said}\n", encoding="utf-8")
+                srt.write_text(f"1\n00:00:04,000 --> 00:00:07,000\n{said}\n" + (  # #892: bad cues are named, not used
+                    "\n2\n00:00:30,000 --> 00:00:10,000\nngược\n\n3\n00:00:41,000 --> 00:00:44,000\nsau khi hết\n" if name == "ga" else ""),
+                    encoding="utf-8")
                 items.append({"title": said.capitalize(), "narration": f"Đây là {said}. Thật khó tin phải không.",
                               "sources": [{"video": str(clip), "transcript": str(srt), "rights": "owned",
                                            "credit": {"creator": "Tác giả thử", "platform": "máy", "license": "CC0"}}]})
@@ -191,6 +193,11 @@ class RealMediaProgrammeTest(unittest.TestCase):
                                  inspect=lambda path: scene.probe(Path(FFPROBE), path), ffmpeg=Path(FFMPEG),
                                  ffmpeg_runner=runner, encoder="mpeg4", vision=Seeing, ask_text=ask_text)
             self.assertEqual(result["state"], "COMPLETED", result)
+            refused = [w for w in result["warnings"] if "ga.srt" in w]
+            self.assertEqual(len(refused), 1, result["warnings"])
+            self.assertIn("có 2 đoạn không dùng được", refused[0])
+            self.assertIn("đoạn 2: kết thúc trước khi bắt đầu", refused[0])
+            self.assertIn("đoạn 3: bắt đầu sau khi video đã hết", refused[0])
             work = out / ".dubflow-work"
             first_log = json.loads((work / "mastering" / "editorial-i1.json").read_text(encoding="utf-8"))
             self.assertEqual(first_log["vision"]["warnings"], ["AI không xem được 4 khung hình (QUOTA)"])

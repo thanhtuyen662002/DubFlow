@@ -338,6 +338,55 @@ def parse_srt(text: str) -> list[tuple[int, int, str]]:
     return cues
 
 
+_SRT_LINE = re.compile(r"\s*(\d+):(\d{2}):(\d{2})[,.](\d{3})\s*-->\s*(\d+):(\d{2}):(\d{2})[,.](\d{3})(?:\s.*)?")
+
+
+def check_srt(text: str, duration_ms: int | None = None) -> tuple[list[tuple[int, int, str]], list[tuple[int, str]]]:
+    """A source transcript's usable cues and, for every block it cannot use, (block number, reason in Vietnamese).
+
+    A cue is never repaired: one whose timing is malformed (negative, fractional, minutes or seconds past 59),
+    ends before or when it starts, has no words, or lies outside the video's ``duration_ms`` is left out and named,
+    so a wrong transcript cannot place narration over the wrong picture without anyone being told (#892)."""
+    cues: list[tuple[int, int, str]] = []
+    problems: list[tuple[int, str]] = []
+    blocks = [b for b in re.split(r"\r?\n\s*\r?\n", text.strip()) if b.strip()]
+    for number, block in enumerate(blocks, 1):
+        lines = [line.strip() for line in block.splitlines() if line.strip()]
+        timing = next((i for i, line in enumerate(lines) if "-->" in line), None)
+        if timing is None:
+            problems.append((number, "thiếu mốc thời gian"))
+            continue
+        match = _SRT_LINE.fullmatch(lines[timing])
+        if match is None:
+            problems.append((number, "mốc thời gian sai định dạng (âm, số lẻ hoặc thiếu phần)"))
+            continue
+        h1, m1, s1, f1, h2, m2, s2, f2 = (int(g) for g in match.groups())
+        if max(m1, s1, m2, s2) > 59:
+            problems.append((number, "mốc thời gian sai (phút hoặc giây quá 59)"))
+            continue
+        start = ((h1 * 60 + m1) * 60 + s1) * 1000 + f1
+        end = ((h2 * 60 + m2) * 60 + s2) * 1000 + f2
+        body = " ".join(" ".join(re.sub(r"<[^>]+>|\{[^}]*\}", "", part) for part in lines[timing + 1:]).split())
+        if end < start:
+            problems.append((number, "kết thúc trước khi bắt đầu"))
+        elif end == start:
+            problems.append((number, "dài 0 ms"))
+        elif not body:
+            problems.append((number, "không có lời"))
+        elif duration_ms is not None and start >= duration_ms:
+            problems.append((number, f"bắt đầu sau khi video đã hết ({_clock(start)} > {_clock(duration_ms)})"))
+        elif duration_ms is not None and end > duration_ms:
+            problems.append((number, f"kết thúc sau khi video đã hết ({_clock(end)} > {_clock(duration_ms)})"))
+        else:
+            cues.append((start, end, body))
+    return cues, problems
+
+
+def _clock(ms: int) -> str:
+    seconds, milliseconds = divmod(ms, 1000)
+    return f"{seconds // 3600:02d}:{seconds // 60 % 60:02d}:{seconds % 60:02d},{milliseconds:03d}"
+
+
 def box_from(value: Any) -> Box | None:
     """A product box from a vision answer ({x, y, w, h} in 0–1000 of the frame), or None when it is not a sane box."""
     if not isinstance(value, Mapping):
@@ -355,5 +404,5 @@ def gather(candidate_ids: Iterable[str]) -> dict[str, Evidence]:
     return {candidate_id: Evidence(candidate_id) for candidate_id in candidate_ids}
 
 
-__all__ = ["Evidence", "Item", "LABELS", "VERIFYING", "verifies", "LABEL_NAMES_VI", "MOMENT_LABELS", "PRODUCT_LABELS", "box_from", "cue_labels",
+__all__ = ["Evidence", "Item", "LABELS", "VERIFYING", "verifies", "LABEL_NAMES_VI", "MOMENT_LABELS", "PRODUCT_LABELS", "box_from", "check_srt", "cue_labels",
            "file_words", "fold", "gather", "parse_srt", "terms", "transcript_text", "words"]
