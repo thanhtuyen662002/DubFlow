@@ -28,6 +28,19 @@ class Contrast(unittest.TestCase):
                          "consistent")
 
 
+class NoLanguage(unittest.TestCase):
+    """#877: decision logs carry no language; an ambiguous separator goes to review, not to a conflict."""
+
+    def test_selection_without_language_asks_for_review(self) -> None:
+        picked = qa.select({"units": [_unit("u1", "Sac 7.200 mAh.")]}, [(0, 3000, "sac 7200mAh")], limit=5)
+        self.assertEqual(picked[0]["why"], "number_unknown")
+
+    def test_selection_passes_languages_through(self) -> None:
+        picked = qa.select({"units": [_unit("u1", "Sac 7.200 mAh. Pin moi.")]}, [(0, 3000, "sac 7200mAh pin cu")],
+                           limit=5, langs=("vi", "vi"))
+        self.assertEqual(picked[0]["why"], "substitution")
+
+
 class Stages(unittest.TestCase):
     def test_offered_assigned_reviewed_are_counted_apart(self) -> None:
         rows = [{"kind": "entity", "false_assignment": True, "matched_footage": True, "best_relevance": 700, "state": "NEEDS_REVIEW"},

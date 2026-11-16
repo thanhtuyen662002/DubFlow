@@ -53,7 +53,9 @@ def _reasons(plan: Mapping[str, Any] | None, unit: Mapping[str, Any]) -> list[st
 
 
 def select(log: Mapping[str, Any], cues: Sequence[tuple[int, int, str]] = (), *, plan: Mapping[str, Any] | None = None,
-           limit: int = LIMIT_DEFAULT) -> list[dict[str, Any]]:
+           limit: int = LIMIT_DEFAULT, langs: tuple[str | None, str | None] | None = None) -> list[dict[str, Any]]:
+    """``langs`` = (narration language, cue language) when known; decision logs carry none, and without it an
+    ambiguous number separator goes to review (``number_unknown``), never to a conflict."""
     if not LIMIT_MIN <= limit <= LIMIT_MAX:
         raise ValueError(f"limit must be {LIMIT_MIN}–{LIMIT_MAX}")
     cases = []
@@ -69,7 +71,7 @@ def select(log: Mapping[str, Any], cues: Sequence[tuple[int, int, str]] = (), *,
         why, detail = None, {}
         cue = hn.best_cue(unit.get("text", ""), cues, start - 4000, end + 4000) if cues else None
         if cue:
-            check = hn.contrast(unit.get("text", ""), cue)
+            check = hn.contrast(unit.get("text", ""), cue, langs)
             if check["verdict"] != "consistent":
                 why, detail = check["verdict"], {"cue": cue, **{k: check[k] for k in ("sentence_only", "cue_only", "numbers")}}
         if why is None and any(EXPERIMENT_REASON in r for r in reasons):

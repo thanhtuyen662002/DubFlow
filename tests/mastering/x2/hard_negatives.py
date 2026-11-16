@@ -173,6 +173,34 @@ def compare_numbers(sentence: str, cue: str, langs: tuple[str | None, str | None
     same model letters); ``unknown`` when a sentence number has nothing in the cue to be checked against, or cannot be
     read; ``agree`` when every sentence number is found; ``none`` when the sentence has no number."""
     s_lang, c_lang = langs or (None, None)
+    # a side without a language whose numbers read differently in vi and en ("5.000"): try both readings
+    # (when both sides are undecided they are read in the same language: a pair of texts is one transcript or one script)
+    s_read, c_read = _readings(sentence, s_lang), _readings(cue, c_lang)
+    both = len(s_read) > 1 and len(c_read) > 1
+    readings = {(a, a) for a in s_read} if both else {(a, b) for a in s_read for b in c_read}
+    if len(readings) > 1:
+        outcomes = {k: _compare(sentence, cue, k) for k in sorted(readings, key=str)}
+        states = {o["state"] for o in outcomes.values()}
+        if len(states) > 1:
+            first = outcomes[min(outcomes, key=str)]
+            raws = [r for t, lang in ((sentence, s_lang), (cue, c_lang)) for r in _ambiguous(t, lang)]
+            return {**first, "state": "unknown", "conflicts": [], "unknown": first["unknown"] + [f"lang?:{r}" for r in raws]}
+    return _compare(sentence, cue, (s_lang, c_lang))
+
+
+def _ambiguous(text: str, lang: str | None) -> list[str]:
+    """Numbers in ``text`` that read differently in vi and en, when no language is given and diacritics cannot tell."""
+    if lang or _vietnamese(text):
+        return []
+    return [m.group(2) for m in _NUM.finditer(text) if not m.group(1) and parse_number(m.group(2), True) != parse_number(m.group(2), False)]
+
+
+def _readings(text: str, lang: str | None) -> list[str | None]:
+    return ["vi", "en"] if _ambiguous(text, lang) else [lang]
+
+
+def _compare(sentence: str, cue: str, langs: tuple[str | None, str | None]) -> dict[str, Any]:
+    s_lang, c_lang = langs
     s, c = quantities(sentence, s_lang), quantities(cue, c_lang)
     conflicts, unknown = [], list(s["unknown"])
     cue_bare = c["bare"]
