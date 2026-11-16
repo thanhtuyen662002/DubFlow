@@ -131,6 +131,9 @@ pub struct Segment {
     /// LUT màu (Issue #531): index into the request's `luts` (.cube files).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     lut: Option<usize>,
+    /// Nghiêng nhẹ (Phase 9C): degrees, at most `MAX_TILT` either way; the picture is enlarged so no corner is empty.
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    tilt: f64,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq)]
@@ -184,12 +187,24 @@ const MAX_REVERSE: f64 = 120.0;
 const MAX_FREEZE: f64 = 10.0;
 const MIN_FREEZE: f64 = 0.2;
 const MAX_SEGMENT_FADE: f64 = 3.0;
+const MAX_TILT: f64 = 3.0;
+
+/// How much a `width` × `height` picture turned by `degrees` must be enlarged to cover its own frame
+/// (the same as the editor's `tiltCover`).
+fn tilt_cover(degrees: f64, width: f64, height: f64) -> f64 {
+    let angle = degrees.abs().to_radians();
+    if angle <= 0.0 || width <= 0.0 || height <= 0.0 {
+        return 1.0;
+    }
+    angle.cos() + (width / height).max(height / width) * angle.sin()
+}
 
 impl Segment {
     /// Plays its part as filmed: the 4a graph can render it.
     fn is_plain(&self) -> bool {
         self.crop.is_none() && self.rotate == 0 && !self.flip_h && !self.flip_v && self.zoom.is_none() && self.color.is_none()
             && !self.reverse && self.freeze.is_none() && self.fade_in == 0.0 && self.fade_out == 0.0 && self.lut.is_none()
+            && self.tilt == 0.0
     }
 
     /// Why its look cannot be rendered, if so.
@@ -227,6 +242,9 @@ impl Segment {
         }
         if ![self.fade_in, self.fade_out].iter().all(|value| value.is_finite() && (0.0..=MAX_SEGMENT_FADE).contains(value)) {
             return Some("Âm thanh mờ dần tối đa 3 giây");
+        }
+        if !self.tilt.is_finite() || self.tilt.abs() > MAX_TILT + 1e-6 {
+            return Some("Nghiêng nhẹ tối đa 3 độ");
         }
         None
     }
@@ -1105,6 +1123,13 @@ fn unique_target(folder: &Path, name: &str, extension: &str) -> Result<PathBuf, 
 }
 
 /// Seconds as FFmpeg reads them, to the millisecond, without trailing zeros.
+/// `num` with six decimals (angles in radians and their sines).
+fn num6(value: f64) -> String {
+    let text = format!("{value:.6}");
+    let trimmed = text.trim_end_matches('0').trim_end_matches('.');
+    if trimmed == "-0" { "0".into() } else { trimmed.into() }
+}
+
 fn num(value: f64) -> String {
     let text = format!("{value:.3}");
     let trimmed = text.trim_end_matches('0').trim_end_matches('.');
@@ -1230,6 +1255,14 @@ fn look_filters(segment: &Segment) -> Vec<String> {
     }
     if segment.flip_v {
         filters.push("vflip".to_owned());
+    }
+    if segment.tilt != 0.0 {
+        // turn, then keep the middle window that the turned picture fully covers: never an empty corner. The window is
+        // the picture shrunk by `tilt_cover` (exact for its own shape); the fit to the frame scales it back up
+        let angle = segment.tilt.to_radians();
+        let (cos, sin) = (angle.abs().cos(), angle.abs().sin());
+        filters.push(format!("rotate=a={}:ow='2*trunc(iw/({}+max(iw/ih,ih/iw)*{})/2)':oh='2*trunc(ih/({}+max(iw/ih,ih/iw)*{})/2)':c=black",
+                             num6(angle), num6(cos), num6(sin), num6(cos), num6(sin)));
     }
     if let Some(color) = segment.color {
         // The shipped LGPL FFmpeg has no `eq`: luma through a lookup table, saturation with `hue`.
@@ -5479,6 +5512,16 @@ Dialogue: 3,0:00:05.00,0:00:07.00,T1,,256,256,0,,{\\an6\\pos(1024,360)}{\\ko10}G
         let video = segment_video(&zoomed, fit, &frame, &[]);
         assert_eq!(video[3], "zoompan=z='1+0.5*min(on/59,1)':x='(iw-iw/zoom)*0.5':y='(ih-ih/zoom)*0.25':d=1:s=1920x1080:fps=30");
         assert_eq!(fps_number("30000/1001"), 30000.0 / 1001.0);
+        // Phase 9C: a slight tilt turns and keeps the middle window it fully covers (no empty corner), then fits
+        let tilted = Segment { tilt: -1.0, ..segment(0.0, 2.0, 1.0, 1.0) };
+        let video = segment_video(&tilted, fit, &frame, &[]);
+        assert_eq!(video[2], "rotate=a=-0.017453:ow='2*trunc(iw/(0.999848+max(iw/ih,ih/iw)*0.017452)/2)':oh='2*trunc(ih/(0.999848+max(iw/ih,ih/iw)*0.017452)/2)':c=black", "{video:?}");
+        assert_eq!(video[3], "FIT");
+        assert!(!tilted.is_plain());
+        assert!((tilt_cover(1.0, 1920.0, 1080.0) - (1.0f64.to_radians().cos() + 1920.0 / 1080.0 * 1.0f64.to_radians().sin())).abs() < 1e-12);
+        assert_eq!(tilt_cover(0.0, 1920.0, 1080.0), 1.0);
+        let tilted: Segment = serde_json::from_value(json!({"start": 0, "end": 1, "speed": 1, "volume": 1, "tilt": 0.8})).unwrap();
+        assert!(validate(&request(vec![tilted]), &[30.0]).is_ok());
 
         // A styled main-only edit leaves the 4a graph; its sound reverses and fades.
         let edit = Edit { segments: vec![Segment { reverse: true, fade_in: 0.5, fade_out: 1.0, ..segment(0.0, 10.0, 1.0, 1.0) }], transitions: vec![], overlays: vec![], ..Default::default() };
@@ -5498,6 +5541,8 @@ Dialogue: 3,0:00:05.00,0:00:07.00,T1,,256,256,0,,{\\an6\\pos(1024,360)}{\\ko10}G
             Segment { freeze: Some(20.0), ..segment(0.0, 0.1, 1.0, 0.0) },
             Segment { reverse: true, ..segment(0.0, 200.0, 1.0, 1.0) },
             Segment { fade_in: 5.0, ..segment(0.0, 10.0, 1.0, 1.0) },
+            Segment { tilt: 5.0, ..segment(0.0, 10.0, 1.0, 1.0) },
+            Segment { tilt: f64::NAN, ..segment(0.0, 10.0, 1.0, 1.0) },
         ];
         for (index, value) in bad.into_iter().enumerate() {
             assert!(validate(&request(vec![value]), &[300.0]).is_err(), "bad look {index}");

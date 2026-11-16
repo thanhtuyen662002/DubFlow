@@ -29,6 +29,11 @@ export type SegmentLook = {
   readonly fadeOut: number;
   /** LUT màu (Issue #531): a .cube file on this computer, applied after the colour; null = none. */
   readonly lut?: string | null;
+  /**
+   * Nghiêng nhẹ (Phase 9C): a small turn in degrees (− left, + right), at most MAX_TILT. The picture is enlarged just
+   * enough (`tiltCover`) that no corner of the frame is left empty; absent or 0 = none.
+   */
+  readonly tilt?: number;
 };
 
 export const DEFAULT_LOOK: SegmentLook = {
@@ -43,6 +48,14 @@ export const DEFAULT_FREEZE = 2;
 /** Playing backwards buffers the whole part, so it is limited to two minutes of media. */
 export const MAX_REVERSE = 120;
 export const MAX_SEGMENT_FADE = 3;
+export const MAX_TILT = 3;
+
+/** How much a picture of `width` × `height` must be enlarged, turned by `degrees`, to cover its own frame. */
+export function tiltCover(degrees: number, width: number, height: number): number {
+  const angle = Math.abs(degrees) * Math.PI / 180;
+  if (!(angle > 0) || !(width > 0 && height > 0)) return 1;
+  return Math.cos(angle) + Math.max(width / height, height / width) * Math.sin(angle);
+}
 
 export const COLOR_PRESETS: ReadonlyArray<{ id: string; name: string; color: ColorLook }> = [
   { id: "none", name: "Gốc", color: NEUTRAL_COLOR },
@@ -139,13 +152,14 @@ export function normalizeLook(raw: unknown): SegmentLook | null {
     color: cleanColor(value.color), reverse: freeze === null && value.reverse === true, freeze,
     fadeIn: freeze === null ? fade("fadeIn") : 0, fadeOut: freeze === null ? fade("fadeOut") : 0,
     ...(isLutPath(value.lut) ? { lut: value.lut } : {}),
+    ...(finite(value.tilt) && round(clamp(value.tilt, -MAX_TILT, MAX_TILT), 100) !== 0 ? { tilt: round(clamp(value.tilt, -MAX_TILT, MAX_TILT), 100) } : {}),
   };
   return isDefaultLook(look) ? null : look;
 }
 
 export function isDefaultLook(look: SegmentLook | null | undefined): boolean {
   return !look || (!look.crop && look.rotate === 0 && !look.flipH && !look.flipV && !look.zoom && !look.color && !look.reverse
-    && look.freeze === null && look.fadeIn === 0 && look.fadeOut === 0 && !look.lut);
+    && look.freeze === null && look.fadeIn === 0 && look.fadeOut === 0 && !look.lut && !look.tilt);
 }
 
 export function sameLook(a: SegmentLook | null | undefined, b: SegmentLook | null | undefined): boolean {
@@ -168,10 +182,11 @@ export function planLook(look: SegmentLook | null | undefined): Record<string, u
   if (clean.fadeIn) plan.fade_in = clean.fadeIn;
   if (clean.fadeOut) plan.fade_out = clean.fadeOut;
   if (clean.lut) plan.lut = clean.lut;
+  if (clean.tilt) plan.tilt = clean.tilt;
   return plan;
 }
 
-export const LOOK_PLAN_KEYS = ["crop", "rotate", "flip_h", "flip_v", "zoom", "color", "reverse", "freeze", "fade_in", "fade_out"] as const;
+export const LOOK_PLAN_KEYS = ["crop", "rotate", "flip_h", "flip_v", "zoom", "color", "reverse", "freeze", "fade_in", "fade_out", "tilt"] as const;
 
 /** An absolute path to a .cube file (Windows or POSIX). */
 export function isLutPath(value: unknown): value is string {
