@@ -1491,6 +1491,18 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
                                                            *claim_result.conflicts], coverage["astray_ms"],
                                                           unit.length_ms))
 
+        # a figure of the sentence that the source's own speech, played under it, states otherwise: the same sentence
+        # with another year or number in the same place (#893, F1: "In 2015 …" over the cue "In 2021 …" was silent).
+        # Only that narrow case, and only for a person to settle: it never changes which shot is chosen
+        heard = said.heard_conflicts(unit.text, [(c.candidate.candidate_id, c.offset_ms, c.offset_ms + c.length_ms,
+                                                  getattr(evidence.get(c.candidate.candidate_id), "cues", ())) for c in mine])
+        if heard:
+            unproven = True
+            coverage["needs_review"] = True
+            for clash in heard[:3]:
+                decision.notes.append(f"phụ đề nguồn ({_clock(clash['cue_ms'][0])}–{_clock(clash['cue_ms'][1])}: “{clash['said']}”) "
+                                      f"nói “{clash['heard']}”, lời câu nói “{clash['label']}”: cần kiểm tra")
+
         def flag(c: Choice) -> bool:
             if not c.candidate.quality.usable or mode != "content" or spoiler or unproven or id(c) in astray_ids \
                     or (c.candidate.candidate_id in accept and not seen_match(unit, c.candidate)):
@@ -1505,8 +1517,17 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
                                     still_ids)
         if claim_result is not None:
             decision.signals["claims"] = {"display": stated[unit.unit_id].display, **claim_result.to_dict()}
+        if heard:  # absent when empty: a log without one reads as before
+            decision.signals["claims"] = {**(decision.signals.get("claims") or {"display": stated[unit.unit_id].display,
+                                                                                "verified": [], "unverified": [], "conflicts": []}),
+                                          "heard_conflicts": list(dict.fromkeys(clash["label"] for clash in heard))[:50]}
     choices = [c for u in found_units for c in by_unit.get(u.unit_id, [])]
     return choices, [decisions[u.unit_id] for u in found_units], mode
+
+
+def _clock(ms: int) -> str:
+    seconds, milliseconds = divmod(int(ms), 1000)
+    return f"{seconds // 3600:02d}:{seconds // 60 % 60:02d}:{seconds % 60:02d},{milliseconds:03d}"
 
 
 def _trusted(info: ev.Evidence | None) -> int:

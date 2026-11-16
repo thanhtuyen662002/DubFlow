@@ -885,7 +885,9 @@ def priority(unit: Mapping[str, Any], state: str, decision: UnitDecision | None,
     # what the sentence says is displayed and the chosen shots contradict or do not show (#802, #817): a person must
     # settle it, so "accept the unreviewed" never exports it. A plain sentence's numbers are no displayed fact.
     marks = stated_claims.statuses((unit.get("signals") or {}).get("claims"))
-    contradicted = [label for label, status in marks if status == stated_claims.CONTRADICTED]
+    heard = set(str(v) for v in ((unit.get("signals") or {}).get("claims") or {}).get("heard_conflicts") or ())
+    contradicted = [label for label, status in marks if status == stated_claims.CONTRADICTED and label not in heard]
+    spoken_otherwise = [label for label, status in marks if status == stated_claims.CONTRADICTED and label in heard]
     unshown = [label for label, status in marks if status == stated_claims.UNVERIFIED]
     # most of its timeline on pieces that show none of what it says is displayed (#837, #843: rc16 i1.u2, 73 %): one
     # piece showing it does not settle the sentence, and "accept the unreviewed" never exports it; a short piece that
@@ -901,6 +903,8 @@ def priority(unit: Mapping[str, Any], state: str, decision: UnitDecision | None,
         reasons.append(f"{share} % thời lượng câu là cảnh không hiển thị điều lời câu nói là hiển thị")
     if contradicted:
         reasons.append("cảnh cho thấy con số khác với lời câu: " + ", ".join(contradicted[:3]))
+    if spoken_otherwise:  # #893: the source's own speech under the sentence says another figure
+        reasons.append("phụ đề nguồn nói con số khác với lời câu: " + ", ".join(spoken_otherwise[:3]))
     if unshown:
         reasons.append("câu nói điều hiển thị trên hình nhưng cảnh chưa cho thấy: " + ", ".join(unshown[:3]))
     if reasons:

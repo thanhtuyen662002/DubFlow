@@ -72,7 +72,7 @@ from dataclasses import dataclass, field
 import functools
 import re
 import unicodedata
-from typing import Iterable, Mapping
+from typing import Any, Iterable, Mapping
 
 from . import evidence as ev
 
@@ -901,6 +901,65 @@ def checks_for(claims: Claims, evidence: Mapping[str, ev.Evidence], ids: Iterabl
     return {cid: check(claims, content_text(evidence.get(cid))) for cid in ids}
 
 
+# --- a figure the source's own speech states otherwise (#893) -------------------------------------------------------
+
+HEARD_MIN_WORDS = 4  # words besides the figures the sentence and the cue must share, in the same order, around them
+_HEARD_TOKEN = re.compile(r"\d+(?:[.,]\d+)*|[^\W\d_]+", re.UNICODE)
+
+
+def _heard_tokens(text: str) -> list[str]:
+    plain = "".join(c for c in unicodedata.normalize("NFD", _nfc(text).casefold().replace("đ", "d"))
+                    if unicodedata.category(c) != "Mn")
+    return _HEARD_TOKEN.findall(plain)
+
+
+def _figure(token: str) -> int | None:
+    return int(re.sub(r"[.,]", "", token)) if token[:1].isdigit() else None
+
+
+def heard_conflicts(text: str, pieces: Iterable[tuple[str, int, int, Iterable[tuple[int, int, str]]]]) -> list[dict[str, Any]]:
+    """The figures of the sentence ``text`` that a source cue played under it says otherwise, with where it is said.
+
+    ``pieces``: (shot id, start ms, end ms in its source, the shot's transcript cues with their source times). Narrow
+    on purpose (#893, never the word comparison of #844): only a cue that is *the same sentence* (every word of the
+    shorter one, at least ``HEARD_MIN_WORDS`` besides the figures, in the same order with nothing between) and has
+    another figure in the same place. Another sentence that names another year, a translation, a figure written
+    another way ("1.500" / "1,500") or a cue spoken outside the played time is no conflict. A conflict is for a person
+    to settle, like a disputed count: it never moves the planner off a shot."""
+    said = _heard_tokens(text)
+    if not any(_figure(t) is not None for t in said):
+        return []
+    out: list[dict[str, Any]] = []
+    for shot_id, start, end, cues in pieces:
+        for cue_start, cue_end, cue_text in cues:
+            if not (cue_start < end and cue_end > start):
+                continue  # not heard under this sentence
+            heard = _heard_tokens(cue_text)
+            short, long_ = (said, heard) if len(said) <= len(heard) else (heard, said)
+            if sum(1 for t in short if _figure(t) is None) < HEARD_MIN_WORDS or not any(_figure(t) is not None for t in short):
+                continue
+            mask = [None if _figure(t) is not None else t for t in long_]
+            want = [None if _figure(t) is not None else t for t in short]
+            for at in range(len(long_) - len(short) + 1):
+                if mask[at:at + len(short)] != want:
+                    continue
+                pairs = list(zip(short, long_[at:at + len(short)]))
+                mine = [(a, b) if short is said else (b, a) for a, b in pairs if _figure(a) is not None]
+                for ours, theirs in mine:
+                    if _figure(ours) != _figure(theirs):
+                        value = _figure(ours)
+                        # named as the sentence's claim is named ("năm 2015", "289 mét"), so the two read as one
+                        stated = next((q for q in of(text).quantities if q.value == value), None)
+                        label = stated.spoken() if stated is not None else ours
+                        out.append({"label": label[:LABEL_MAX], "heard": theirs, "shot": shot_id, "cue_ms": [cue_start, cue_end],
+                                    "said": " ".join(cue_text.split())[:LABEL_MAX]})
+                break
+    unique: dict[tuple[str, str], dict[str, Any]] = {}
+    for found in out:
+        unique.setdefault((found["label"], found["heard"]), found)
+    return list(unique.values())
+
+
 # --- a claim's status, read from a decision log ---------------------------------------------------------------------
 
 CONFIRMED = "CONFIRMED"            # the chosen shots show it
@@ -922,11 +981,14 @@ def statuses(signals_claims: Mapping[str, object] | None) -> list[tuple[str, str
         return []
     verified, unverified = _labels(signals_claims.get("verified")), _labels(signals_claims.get("unverified"))
     against = set(_labels(signals_claims.get("conflicts"))) | set(_labels(signals_claims.get("disputed")))
+    heard = set(_labels(signals_claims.get("heard_conflicts")))
     display = signals_claims.get("display") is True
     out = []
-    for label in dict.fromkeys([*_labels(signals_claims.get("conflicts")), *_labels(signals_claims.get("disputed")),
-                                *unverified, *verified]):
-        if not display:
+    for label in dict.fromkeys([*_labels(signals_claims.get("heard_conflicts")), *_labels(signals_claims.get("conflicts")),
+                                *_labels(signals_claims.get("disputed")), *unverified, *verified]):
+        if label in heard:  # the source's own speech says another figure (#893): spoken or displayed, a person looks
+            out.append((label, CONTRADICTED))
+        elif not display:
             out.append((label, NOT_APPLICABLE))
         elif label in against:  # a conflict wins over a piece that verifies it: the viewer sees the other figure too
             out.append((label, CONTRADICTED))
