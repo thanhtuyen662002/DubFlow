@@ -1285,6 +1285,12 @@ def _assign(found_units: Sequence[Unit], candidates: Sequence[Candidate], eviden
             if not forward_only and pool:
                 untouched = [c for c in pool if not tail(c)]
                 spare = [c for c in here if allowed(c) and not accepted_by.get(c.candidate_id, set()) - {unit.unit_id}]
+                if lineage is not None:
+                    # lineage (EXPERIMENT, #888): cited cues make more shots some sentence's own, so the neutral
+                    # shots run out and the same one was shown again (a REPEAT the plan without lineage never has).
+                    # A neutral shot is shown again only while it has footage left; once it has played out, the
+                    # rest of a fresh shot (a tail) goes before the same frames twice.
+                    spare = [c for c in spare if remaining(c)[1] >= floor]
                 if not untouched and spare:  # every fresh shot left is such a tail: a neutral shot again, said so
                     again = max(spare, key=lambda c: (c.length_ms, c.candidate_id))
                     if record(again, "repeat", max(wanted, pacing.minimum // 2), []):
