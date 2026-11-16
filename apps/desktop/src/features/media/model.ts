@@ -95,6 +95,70 @@ export function serializeMedia(entries: readonly MediaEntry[]): string {
   return JSON.stringify({ schema_version: 1, items: entries });
 }
 
+/** Where an unreadable list is kept aside before anything replaces it. */
+export const MEDIA_CORRUPT_KEY = `${MEDIA_STORAGE_KEY}.corrupt`;
+
+/** The part of window.localStorage Hàng đợi uses; either call may throw. */
+export type MediaStorage = { getItem(key: string): string | null; setItem(key: string, value: string): void };
+
+/**
+ * The list Hàng đợi opens with. `sessionOnly`: the stored list could not be
+ * read or backed up, so nothing may be written over it this session.
+ * `saved`: what the list holds now is in storage. `notice`: what to tell the user.
+ */
+export type OpenedMedia = {
+  state: "ok" | "missing" | "corrupt" | "unavailable";
+  entries: MediaEntry[];
+  dropped: number;
+  saved: boolean;
+  sessionOnly: boolean;
+  backup: "none" | "saved" | "failed";
+  notice: string | null;
+};
+
+export const MEDIA_NOTICES = {
+  unavailable: "Không đọc được danh sách Hàng đợi đã lưu (bộ nhớ của ứng dụng đang lỗi hoặc bị chặn). DubFlow không ghi đè lên danh sách cũ: danh sách hiện tại được dựng tạm từ các video ở Lồng tiếng và chỉ dùng đến khi đóng DubFlow. Hãy đóng rồi mở lại DubFlow để đọc lại; file video trên máy không bị ảnh hưởng.",
+  corrupt: "Danh sách Hàng đợi đã lưu bị hỏng nên được dựng lại từ các video ở Lồng tiếng. Bản cũ được giữ riêng; file video trên máy không bị ảnh hưởng.",
+  backupFailed: "Danh sách Hàng đợi đã lưu bị hỏng và DubFlow chưa sao lưu được bản cũ, nên không ghi đè lên nó. Danh sách hiện tại được dựng tạm từ các video ở Lồng tiếng và chỉ dùng đến khi đóng DubFlow. Hãy giải phóng dung lượng ổ đĩa rồi mở lại DubFlow; file video trên máy không bị ảnh hưởng.",
+  notSaved: "Chưa lưu được danh sách Hàng đợi (bộ nhớ của ứng dụng bị tắt hoặc đã đầy). Danh sách chỉ nằm trong bộ nhớ đến khi lưu được; file video trên máy không bị ảnh hưởng.",
+} as const;
+
+/**
+ * Read the stored list once at startup. A read error is never taken for a
+ * missing list, and a corrupt list is replaced only after its bytes are
+ * confirmed saved under MEDIA_CORRUPT_KEY; otherwise the rebuilt list stays
+ * in this session and the stored bytes are left untouched.
+ */
+export function openMedia(storage: MediaStorage, seed: () => MediaEntry[]): OpenedMedia {
+  const write = (key: string, value: string): boolean => {
+    try { storage.setItem(key, value); return true; } catch { return false; }
+  };
+  let raw: string | null;
+  try {
+    raw = storage.getItem(MEDIA_STORAGE_KEY);
+  } catch {
+    return { state: "unavailable", entries: seed(), dropped: 0, saved: false, sessionOnly: true, backup: "none", notice: MEDIA_NOTICES.unavailable };
+  }
+  const parsed = readMedia(raw);
+  if (parsed.state === "ok") {
+    const notice = parsed.dropped ? `${parsed.dropped} mục hỏng trong danh sách Hàng đợi đã được bỏ qua.` : null;
+    return { state: "ok", entries: parsed.entries, dropped: parsed.dropped, saved: true, sessionOnly: false, backup: "none", notice };
+  }
+  const entries = seed();
+  if (parsed.state === "corrupt" && raw !== null) {
+    let confirmed = write(MEDIA_CORRUPT_KEY, raw);
+    if (confirmed) {
+      try { confirmed = storage.getItem(MEDIA_CORRUPT_KEY) === raw; } catch { confirmed = false; }
+    }
+    if (!confirmed) return { state: "corrupt", entries, dropped: 0, saved: false, sessionOnly: true, backup: "failed", notice: MEDIA_NOTICES.backupFailed };
+    const saved = write(MEDIA_STORAGE_KEY, serializeMedia(entries));
+    return { state: "corrupt", entries, dropped: 0, saved, sessionOnly: false, backup: "saved",
+      notice: saved ? MEDIA_NOTICES.corrupt : `${MEDIA_NOTICES.corrupt} ${MEDIA_NOTICES.notSaved}` };
+  }
+  const saved = write(MEDIA_STORAGE_KEY, serializeMedia(entries));
+  return { state: "missing", entries, dropped: 0, saved, sessionOnly: false, backup: "none", notice: saved ? null : MEDIA_NOTICES.notSaved };
+}
+
 /**
  * The first time Hàng đợi opens, the videos already in Lồng tiếng become its
  * list, so nobody loses what they had downloaded. Re-runs (revisions) share

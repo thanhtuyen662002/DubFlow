@@ -1,8 +1,8 @@
 DUBFLOW_PR_V1
 Issue: #616
 Lease-Owner: Claude/issue-616-queue-metadata-preservation
-Lease-Heartbeat: 2026-11-15T08:38:00Z
-Tested-Base-SHA: fab4b759fa99fa7d63dae3e73cf6dd0e14689f33
+Lease-Heartbeat: 2026-11-16T11:56:12Z
+Tested-Base-SHA: 32d847bd340c72281eb825b6070d16cafe03a31d
 Conflict-Domains: desktop-shell,media-persistence,local-storage-recovery
 Expected-Paths: .claims/issue-616-queue-metadata-preservation.md,apps/desktop/src/main.ts,apps/desktop/src/features/media/model.ts,apps/desktop/src/features/media/view.ts,apps/desktop/test/media.test.mjs
 Required-CI: PR Fast + PR Integration (desktop-editor-subtitles selected) + PR Desktop Editor Windows
@@ -102,3 +102,10 @@ ACCEPTED: NO
 - Lead incorporated Main non-force as the second parent while preserving the prior branch HEAD as first parent. No product source/test path was changed by Lead.
 - `Tested-Base-SHA` now names the incorporated Main; PR Fast and Integration on the new exact HEAD are pending verification. This metadata sync is not coder progress and does not refresh the stale Lease-Heartbeat.
 - Phase remains ASSIGNED=YES; STARTED=YES (Draft lease only); CODED=NO; product TESTED=NOT_RUN; INTEGRATED=NO; ACCEPTED=NO.
+
+## Claude implementation checkpoint — 2026-11-16T11:56:12Z
+- Branch synchronized non-force with Main 32d847bd340c72281eb825b6070d16cafe03a31d (merge commit 42a165c).
+- Reproduction tests first (b8ecc83): apps/desktop/test/media.test.mjs fails at that commit (openMedia missing).
+- Fix: apps/desktop/src/features/media/model.ts openMedia() distinguishes ok / missing / corrupt / unavailable; corrupt is replaced only after the .corrupt backup is written and reads back byte-identical; otherwise session-only and the primary is never written. Seed write result is checked; failure shows a memory-only notice. main.ts uses it and blocks writes while session-only. view.ts unchanged.
+- Local: npm test (all desktop suites) OK, tsc --noEmit OK, npm run build OK. Required CI pending on the pushed HEAD.
+- Phase: CODED=YES; TESTED=LOCAL_PASS (CI pending); INTEGRATED=NO; ACCEPTED=NO.
