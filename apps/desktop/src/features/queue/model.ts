@@ -1,6 +1,7 @@
 import { isBlurRegionList, type BlurRegion } from "../blur/region.ts";
 import { isCancelled, type JobStatus, type JobStatusState } from "../job_status/status.ts";
 import { isDubbingOptions, type DubbingOptions } from "../voices/model.ts";
+import { isJobGlossary, type JobGlossary } from "../ai/glossary.ts";
 
 export const QUEUE_SCHEMA_VERSION = 1 as const;
 export const DEFAULT_QUEUE_LIMIT = 10_000;
@@ -45,6 +46,8 @@ export type QueueJob = {
   mastering?: MasteringLevel;
   /** Speaker id ("S1"…) -> voice id, chosen in review after a multi-voice run. */
   speakerVoices?: Record<string, string>;
+  /** Thuật ngữ & ngữ cảnh of this video (Issue #903); undefined: only the shared glossaries marked for every video. */
+  glossary?: JobGlossary;
   /** When processing first ran and when it reached a terminal state (ISO). */
   startedAt?: string;
   finishedAt?: string;
@@ -210,6 +213,7 @@ function isQueueJob(value: unknown): value is QueueJob {
     (job.separateBackground === undefined || job.separateBackground === true) &&
     (job.mastering === undefined || isMasteringLevel(job.mastering)) &&
     (job.speakerVoices === undefined || isSpeakerVoices(job.speakerVoices)) &&
+    (job.glossary === undefined || isJobGlossary(job.glossary)) &&
     (job.startedAt === undefined || !Number.isNaN(Date.parse(job.startedAt))) &&
     (job.finishedAt === undefined || !Number.isNaN(Date.parse(job.finishedAt)))
   );
@@ -298,6 +302,7 @@ function copyOptions(from: QueueJob, to: QueueJob): void {
   if (from.separateBackground) to.separateBackground = true;
   if (from.mastering) to.mastering = from.mastering;
   if (from.speakerVoices) to.speakerVoices = { ...from.speakerVoices };
+  if (from.glossary) to.glossary = JSON.parse(JSON.stringify(from.glossary)) as JobGlossary;
 }
 
 export function createQueueJob(
@@ -513,6 +518,16 @@ export class QueueController {
     if (job.status.state !== "QUEUED") throw new Error("Options can only change before processing");
     if (separate) job.separateBackground = true;
     else delete job.separateBackground;
+    this.commit();
+  }
+
+  /** Thuật ngữ & ngữ cảnh of one video (Issue #903); null removes it. */
+  setGlossary(jobId: string, glossary: JobGlossary | null): void {
+    const job = this.requireJob(jobId);
+    if (job.status.state !== "QUEUED") throw new Error("Options can only change before processing");
+    if (glossary === null) delete job.glossary;
+    else if (isJobGlossary(glossary)) job.glossary = glossary;
+    else throw new Error("Invalid glossary");
     this.commit();
   }
 

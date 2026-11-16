@@ -697,6 +697,24 @@
                       <strong>Giấy phép chưa xác minh.</strong> HachimiMT-60 (CC-BY-4.0, tác giả ngocdang83) được huấn luyện có dùng dữ liệu chưng cất từ Gemini và một bộ dữ liệu giấy phép GPL-3.0; chưa rõ có được dùng cho mục đích thương mại. Chỉ nên dùng cá nhân/thử nghiệm.
                       Model khoảng 58 MB, tải về ở lần dùng đầu. Văn phong có thể giống truyện (ta/ngươi), hãy xem lại bản dịch. Video tiếng Anh vẫn dịch bằng Argos.
                     </p>
+
+                    <h3 class="setup-group">Thuật ngữ &amp; ngữ cảnh</h3>
+                    <div id="job-gloss" class="job-gloss">
+                      <p class="hint">Chỉ dùng khi dịch video này. Ưu tiên: sửa tay từng câu › thuật ngữ bắt buộc › thuật ngữ của video › bộ dùng chung › ngữ cảnh. Quản lý bộ dùng chung trong Cài đặt › Dịch phụ đề.</p>
+                      <label class="ai-field">Thuật ngữ của video, mỗi dòng “nguồn = tiếng Việt”; thêm ! ở đầu nếu bắt buộc
+                        <textarea id="job-gloss-terms" rows="4" spellcheck="false" placeholder="!李明 = Lý Minh&#10;王爷 = Vương gia"></textarea>
+                      </label>
+                      <p id="job-gloss-issues" class="hint" role="status"></p>
+                      <div id="job-gloss-books" class="job-gloss-books" role="group" aria-label="Bộ thuật ngữ dùng chung"></div>
+                      <details class="job-gloss-context">
+                        <summary>Ngữ cảnh cho người dịch <small id="job-ctx-summary"></small></summary>
+                        <label class="ai-field">Chủ đề<input id="job-ctx-topic" maxlength="300" placeholder="Phim ngắn cổ trang, cung đấu" /></label>
+                        <label class="ai-field">Người xem<input id="job-ctx-audience" maxlength="120" placeholder="Khán giả trẻ, xem trên TikTok" /></label>
+                        <label class="ai-field">Giọng điệu<input id="job-ctx-tone" maxlength="120" placeholder="Hài hước, gần gũi" /></label>
+                        <label class="ai-field">Nhân vật và cách xưng hô<textarea id="job-ctx-people" rows="2" maxlength="800" placeholder="Lý Minh xưng ta, gọi vua là phụ hoàng"></textarea></label>
+                        <label class="ai-field">Ghi chú cho người dịch<textarea id="job-ctx-notes" rows="2" maxlength="800"></textarea></label>
+                      </details>
+                    </div>
                   </fieldset>
                 </div>
                 <div class="actions tab-foot">
@@ -1709,6 +1727,39 @@
                     </label>
                     <p class="hint">Chỉ thay đúng cả từ (“dao động” vẫn giữ nguyên). Áp dụng cho video xử lý từ giờ trở đi; bản dịch gốc để sửa vẫn giữ nguyên. <button id="sensitive-reset" class="link" type="button">Dùng danh sách mặc định</button></p>
                   </div>
+                </section>
+                <section id="gloss-card" class="ai-key-card ai-subs-card gloss-card">
+                  <div class="gloss-head">
+                    <strong>Bộ thuật ngữ dùng chung</strong>
+                    <small>Tên riêng, thương hiệu, thuật ngữ dịch thống nhất cho nhiều video. Lưu trên máy này; chỉ gửi kèm khi bạn bật dịch bằng AI.</small>
+                  </div>
+                  <div class="gloss-books-row">
+                    <select id="gloss-book" aria-label="Bộ thuật ngữ"></select>
+                    <button id="gloss-new" class="secondary" type="button">+ Bộ mới</button>
+                  </div>
+                  <p id="gloss-empty" class="hint">Chưa có bộ thuật ngữ nào. Tạo một bộ, hoặc nhập từ file CSV/TSV/JSON.</p>
+                  <div id="gloss-body" class="gloss-body" hidden>
+                    <div class="gloss-books-row">
+                      <label class="ai-field gloss-name">Tên bộ<input id="gloss-name" maxlength="60" /></label>
+                      <label class="gloss-toggle"><input id="gloss-auto" type="checkbox" /> Dùng cho mọi video mới</label>
+                    </div>
+                    <input id="gloss-search" class="gloss-search" type="search" placeholder="Tìm thuật ngữ (gõ không dấu cũng được)" aria-label="Tìm thuật ngữ" />
+                    <div class="gloss-table" role="table" aria-label="Thuật ngữ">
+                      <div class="gloss-row gloss-header" role="row">
+                        <span role="columnheader">Nguồn</span><span role="columnheader">Tiếng Việt</span><span role="columnheader" title="Bắt buộc">Bắt buộc</span><span role="columnheader">Ghi chú</span><span></span>
+                      </div>
+                      <div id="gloss-rows"></div>
+                    </div>
+                    <p id="gloss-issues" class="hint" role="status"></p>
+                    <div class="sensitive-sound-row">
+                      <button id="gloss-add" class="secondary" type="button">+ Thêm thuật ngữ</button>
+                      <button id="gloss-import" class="secondary" type="button">Nhập từ file…</button>
+                      <button id="gloss-export" class="secondary" type="button">Xuất CSV…</button>
+                      <button id="gloss-delete" class="link danger" type="button">Xóa bộ này</button>
+                      <input id="gloss-file" type="file" accept=".csv,.tsv,.txt,.json" hidden />
+                    </div>
+                  </div>
+                  <p id="gloss-state" class="hint" role="status" aria-live="polite"></p>
                 </section>
               </div>
             </section>

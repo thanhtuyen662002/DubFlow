@@ -798,7 +798,9 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
     case "edit_lut_frame": return await previewFrame(Number(args.time), false) as T;
     case "expand_video_paths": return (args.paths as string[]).filter((path) => /\.(mp4|mkv|mov|avi|webm|m4v)$/i.test(path)) as T;
     case "pick_folder": return "D:/Videos/Kết quả DubFlow" as T;
-    case "start_job": running.set(String(args.jobId), { startedAt: Date.now(), dubbing: !!args.enableDubbing, cancelled: false }); return null as T;
+    case "glossary_export": return `D:\\Tai lieu\\${String(args.fileName)}` as T;
+    // The last start, for checks of the browser preview (never in the app).
+    case "start_job": (globalThis as Record<string, unknown>).__previewLastStart = args; running.set(String(args.jobId), { startedAt: Date.now(), dubbing: !!args.enableDubbing, cancelled: false }); return null as T;
     case "cancel_job": { const job = running.get(String(args.jobId)); if (job) job.cancelled = true; return null as T; }
     case "job_status": return status(String(args.jobId)) as T;
     case "open_path": case "reveal_path": case "reveal_download": console.info(`[preview] ${command}`, args.path); return null as T;
