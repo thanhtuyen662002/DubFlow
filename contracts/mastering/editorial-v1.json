@@ -128,13 +128,14 @@
                             "properties": {"min_confidence": {"type": "integer", "minimum": 0, "maximum": 1000},
                                            "flagged_pieces": {"type": "integer", "minimum": 0},
                                            "needs_review": {"type": "boolean"}}},
-            "claims": {"description": "Only for a sentence that states a number, a written title or a card's words (#802): whether it speaks of something displayed, and which of those claims the chosen shots' content evidence shows, leaves unshown or contradicts. Absent otherwise and in older logs. 'disputed' (#817, only when not empty): the counts for which a chosen shot ties another figure to the same kind of thing (a population), also when another chosen shot shows the stated figure (then also in 'verified'); for review only, never a conflict.",
+            "claims": {"description": "Only for a sentence that states a number, a written title or a card's words (#802): whether it speaks of something displayed, and which of those claims the chosen shots' content evidence shows, leaves unshown or contradicts. Absent otherwise and in older logs. 'disputed' (#817, only when not empty): the counts for which a chosen shot ties another figure to the same kind of thing (a population), also when another chosen shot shows the stated figure (then also in 'verified'); for review only, never a conflict. 'heard_conflicts' (#893, only when not empty): the sentence's figures that a source cue played under it states otherwise (the same sentence with another figure in the same place); for a person to settle, never a change of shot. It may come without any other claim (then 'verified', 'unverified' and 'conflicts' are empty).",
                        "type": "object", "additionalProperties": false, "required": ["display", "verified", "unverified", "conflicts"],
                        "properties": {"display": {"type": "boolean"},
                                       "verified": {"type": "array", "maxItems": 50, "items": {"type": "string", "maxLength": 200}},
                                       "unverified": {"type": "array", "maxItems": 50, "items": {"type": "string", "maxLength": 200}},
                                       "conflicts": {"type": "array", "maxItems": 50, "items": {"type": "string", "maxLength": 200}},
-                                      "disputed": {"type": "array", "maxItems": 50, "items": {"type": "string", "maxLength": 200}}}}}}
+                                      "disputed": {"type": "array", "maxItems": 50, "items": {"type": "string", "maxLength": 200}},
+                                      "heard_conflicts": {"type": "array", "maxItems": 50, "items": {"type": "string", "maxLength": 200}}}}}}
       }
     },
     "candidate": {

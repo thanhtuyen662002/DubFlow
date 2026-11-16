@@ -2984,7 +2984,7 @@ class ScopeTests(unittest.TestCase):
             self.assertNotEqual(path, "scripts/ci/component_registry.json")
 
 
-GOLDEN = "da57e6952187fb3e14e6ac49e2fcc53f4e4be4bcdd5d2326d57f581cc035df91"  # #843: the fixture logs carry coverage.astray_ms (only the two run_sha256 change; study numbers unchanged)
+GOLDEN = "25d46e7b7fb643d7c67a8ee596b1458f018c8f1083880e120c3355b84e7fa81b"  # #893: recipe v25/v23 (only the two run_sha256 change; study numbers unchanged); #843: the fixture logs carry coverage.astray_ms (only the two run_sha256 change; study numbers unchanged)
 
 
 if __name__ == "__main__":
