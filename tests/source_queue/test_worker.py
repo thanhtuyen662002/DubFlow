@@ -17,7 +17,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from engine.dubflow.download.enumeration import worker
-from engine.dubflow.download.materializer import DownloadResult, MediaMaterializer
+from engine.dubflow.download.materializer import DownloadResult, EgressPolicy, MediaMaterializer, UrllibHttpTransport
 from engine.dubflow.download.source_adapter import (
     MediaCandidate, SourceError, SourceErrorCode, SourceIdentity, SourceItem,
     SourcePage, SourcePageFailure, SubtitleCandidate,
@@ -129,7 +129,7 @@ class SourceWorkerTests(unittest.TestCase):
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
-        materializer = MediaMaterializer()
+        materializer = MediaMaterializer(UrllibHttpTransport(egress=EgressPolicy(allow_loopback=True)))
         candidate = MediaCandidate("video", f"http://127.0.0.1:{server.server_port}/media.mp4?token=private",
             "progressive", "video/mp4")
         self.adapter.inspect.return_value = SourceItem(SourceIdentity("generic", "one", "https://example.test/one"), "one",

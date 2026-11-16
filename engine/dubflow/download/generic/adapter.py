@@ -22,7 +22,7 @@ import time
 from typing import Any, Mapping, Protocol, Sequence
 from urllib.parse import unquote, urlsplit
 
-from ..materializer import DownloadError, DownloadErrorCode, DownloadResult, HttpTransport, MediaMaterializer, UrllibHttpTransport, _reject_links, validate_http_url
+from ..materializer import DownloadError, DownloadErrorCode, DownloadResult, EgressPolicy, HttpTransport, MediaMaterializer, PUBLIC_EGRESS, UrllibHttpTransport, _reject_links, validate_http_url
 from ..source_adapter import MediaCandidate, PageCursor, SourceAdapter, SourceError, SourceErrorCode, SourceIdentity, SourceItem, SourcePage, SubtitleCandidate, canonicalize_url
 from ..stream_materializer import StreamMaterializer
 from .windows_job import WindowsSourceJob
@@ -114,7 +114,9 @@ class YtDlpTransport:
     """App-owned yt-dlp JSON boundary.  It never invokes a shell."""
 
     def __init__(self, executable: str | Path, *, trusted_root: str | Path | None = None,
-                 expected_sha256: str | None = None, runner: YtDlpRunner | None = None, timeout_s: float = 180.0) -> None:
+                 expected_sha256: str | None = None, runner: YtDlpRunner | None = None, timeout_s: float = 180.0,
+                 egress: EgressPolicy | None = None) -> None:
+        self.egress = egress or PUBLIC_EGRESS
         path = Path(executable)
         root = None if trusted_root is None else Path(trusted_root)
         if root is None or not root.is_absolute() or not root.is_dir() or not isinstance(expected_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
@@ -160,6 +162,14 @@ class YtDlpTransport:
 
     def inspect_url(self, source_url: str) -> Mapping[str, Any]:
         url = validate_http_url(source_url)
+        try:
+            # yt-dlp opens its own sockets, so this is a resolve-time refusal
+            # of private/loopback/link-local targets before it ever runs (#490).
+            self.egress.check_url(url)
+        except DownloadError as error:
+            if error.retryable:
+                raise SourceError(SourceErrorCode.NETWORK, "generic source host could not be resolved", provider_id="generic", retryable=True, action="retry") from None
+            raise SourceError(SourceErrorCode.INVALID_INPUT, "generic source must be a public Internet address", provider_id="generic") from None
         self._verify_extractor()
         argv = (str(self.executable), "--dump-single-json", "--no-warnings", "--skip-download", "--no-playlist",
                 "--ignore-config", "--no-plugin-dirs", "--no-cache-dir", "--no-js-runtimes", "--no-remote-components", "--", url)
@@ -230,6 +240,7 @@ class DirectUrlTransport:
                 DownloadErrorCode.RATE_LIMITED: SourceErrorCode.RATE_LIMITED,
                 DownloadErrorCode.SOURCE_CHANGED: SourceErrorCode.SOURCE_CHANGED,
                 DownloadErrorCode.NETWORK: SourceErrorCode.NETWORK,
+                DownloadErrorCode.INVALID_SOURCE: SourceErrorCode.INVALID_INPUT,
             }
             raise SourceError(code_map.get(error.code, SourceErrorCode.NETWORK), "generic URL inspection failed", retryable=error.retryable, action=error.action) from error
         try:

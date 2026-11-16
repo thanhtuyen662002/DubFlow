@@ -15,7 +15,7 @@ import time
 import unittest
 
 from engine.dubflow.download.materializer import (
-    DownloadError, DownloadErrorCode, HttpResponse, MediaMaterializer, UrllibHttpTransport,
+    DownloadError, DownloadErrorCode, EgressPolicy, HttpResponse, MediaMaterializer, UrllibHttpTransport,
 )
 from engine.dubflow.download.source_adapter import MediaCandidate
 from engine.dubflow.download.stream_materializer import StreamInfo, StreamMaterializer
@@ -159,7 +159,7 @@ def serve(server: RangeServer):
 def materializer(**overrides) -> MediaMaterializer:
     options = {"chunk_bytes": BLOCK, "segments": 4, "min_segment_bytes": 128 * KIB, "segment_threshold_bytes": 512 * KIB}
     options.update(overrides)
-    return MediaMaterializer(UrllibHttpTransport(timeout_s=10), **options)
+    return MediaMaterializer(UrllibHttpTransport(timeout_s=10, egress=EgressPolicy(allow_loopback=True)), **options)
 
 
 def candidate(url: str) -> MediaCandidate:

@@ -6,6 +6,7 @@ import json
 from typing import Mapping
 from urllib.parse import parse_qsl, urlsplit
 
+from ..materializer import DownloadError, EgressPolicy, PUBLIC_EGRESS
 from ..source_adapter import SourceError, SourceErrorCode, SourceIdentity, SourceItem, SourcePage, SourcePageFailure, canonicalize_url
 
 MAX_ITEMS = 10_000
@@ -49,14 +50,31 @@ def sdk_identity(raw: Mapping) -> SourceIdentity:
         raise SourceError(SourceErrorCode.SOURCE_CHANGED, "generic SDK source identity is malformed", provider_id="generic") from None
 
 
+def require_public(url: str, egress: EgressPolicy) -> str:
+    """Refuse a page/playlist URL whose host is not public before the SDK runs.
+
+    The SDK/helper makes its own connections, so this is a resolve-time check
+    only; the media it returns is fetched through the peer-bound
+    ``UrllibHttpTransport``. See #490 for the residual rebinding window.
+    """
+    try:
+        egress.check_url(url)
+    except DownloadError as error:
+        if error.retryable:
+            raise SourceError(SourceErrorCode.NETWORK, "generic source host could not be resolved", provider_id="generic", retryable=True, action="retry") from None
+        raise SourceError(SourceErrorCode.INVALID_INPUT, "generic source must be a public Internet address", provider_id="generic") from None
+    return url
+
+
 class GenericSdkTransport:
     """No session bridge or custom request headers are granted to this adapter."""
 
-    def __init__(self, transport):
+    def __init__(self, transport, *, egress: EgressPolicy | None = None):
         self._sdk = transport
+        self._egress = egress or PUBLIC_EGRESS
 
     def inspect_url(self, url: str) -> Mapping:
-        raw = self._sdk.inspect_url(source_url(url), provider_id="generic")
+        raw = self._sdk.inspect_url(require_public(source_url(url), self._egress), provider_id="generic")
         if not isinstance(raw, dict):
             raise SourceError(SourceErrorCode.SOURCE_CHANGED, "generic SDK metadata is malformed", provider_id="generic")
         identity = sdk_identity(raw)
@@ -81,7 +99,7 @@ class GenericSdkTransport:
             url = source_url(entry.get("webpage_url") or entry.get("url"))
         except SourceError:
             raise SourceError(SourceErrorCode.SOURCE_CHANGED, "generic playlist source URL is invalid", provider_id="generic") from None
-        resolved = self._sdk.inspect_url(url, provider_id="generic")
+        resolved = self._sdk.inspect_url(require_public(url, self._egress), provider_id="generic")
         if not isinstance(resolved, dict):
             raise SourceError(SourceErrorCode.SOURCE_CHANGED, "generic SDK metadata is malformed", provider_id="generic")
         sdk_identity(resolved)
@@ -96,7 +114,7 @@ class GenericSdkTransport:
     def enumerate_playlist(self, url: str, *, cursor: str | None, page_size: int) -> SourcePage:
         if type(page_size) is not int or not 1 <= page_size <= MAX_PAGE:
             raise SourceError(SourceErrorCode.INVALID_INPUT, "playlist page size must be between 1 and 100", provider_id="generic")
-        url = source_url(url)
+        url = require_public(source_url(url), self._egress)
         binding = sha256(url.encode()).hexdigest()
         recipe = sha256(json.dumps({"recipe": ENUMERATION_RECIPE, "pins": self._sdk.pins}, sort_keys=True).encode()).hexdigest()
         offset = 0

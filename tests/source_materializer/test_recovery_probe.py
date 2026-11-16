@@ -6,7 +6,7 @@ import unittest
 from dataclasses import replace
 from unittest.mock import Mock
 
-from engine.dubflow.download.materializer import HttpResponse, MediaMaterializer, DownloadError, DownloadErrorCode
+from engine.dubflow.download.materializer import EgressPolicy, HttpResponse, MediaMaterializer, DownloadError, DownloadErrorCode, UrllibHttpTransport
 from engine.dubflow.download.source_adapter import MediaCandidate, SourceIdentity, SourceItem, SourceError, SourceErrorCode
 from engine.dubflow.download.bilibili.adapter import BilibiliSourceAdapter
 from engine.dubflow.download.douyin.adapter import DouyinSourceAdapter
@@ -71,7 +71,7 @@ class RecoveryProbeTests(unittest.TestCase):
             origin = "http://127.0.0.1:" + str(server.server_port)
             video = replace(self.video, locator=origin + "/video", has_audio=False)
             audio = replace(self.audio, locator=origin + "/audio")
-            materializer = MediaMaterializer()
+            materializer = MediaMaterializer(UrllibHttpTransport(egress=EgressPolicy(allow_loopback=True)))
             with self.assertRaises(SourceError) as failure:
                 materializer.probe_access(video, audio)
             self.assertEqual(failure.exception.code, SourceErrorCode.NETWORK)

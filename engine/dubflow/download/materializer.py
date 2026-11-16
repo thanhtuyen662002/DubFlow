@@ -16,8 +16,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from http.client import HTTPException
+from http.client import HTTPConnection, HTTPException, HTTPSConnection
 import hashlib
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -29,7 +30,7 @@ import time
 from typing import Any, BinaryIO, Callable, Mapping, Protocol
 from urllib.parse import urljoin, urlsplit
 from urllib.error import HTTPError, URLError
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import HTTPHandler, HTTPRedirectHandler, HTTPSHandler, Request, build_opener
 
 from .source_adapter import MediaCandidate, SourceError, SourceErrorCode
 
@@ -111,6 +112,168 @@ class HttpTransport(Protocol):
         ...
 
 
+Resolver = Callable[[str, int], "list[str]"]
+
+
+def _system_resolver(host: str, port: int) -> list[str]:
+    infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    return [str(info[4][0]) for info in infos]
+
+
+def is_public_address(value: str) -> bool:
+    """True only for a globally routable unicast address.
+
+    IPv4-mapped, 6to4 and Teredo IPv6 forms are judged by the IPv4 address
+    they carry, so ``::ffff:127.0.0.1`` cannot pass as an IPv6 address.
+    """
+    try:
+        address = ipaddress.ip_address(str(value).split("%", 1)[0])
+    except ValueError:
+        return False
+    if isinstance(address, ipaddress.IPv6Address):
+        embedded = address.ipv4_mapped or address.sixtofour or (address.teredo[1] if address.teredo else None)
+        if embedded is not None:
+            address = embedded
+    if isinstance(address, ipaddress.IPv4Address) and address in _FAKE_IP_RANGE:
+        return True
+    return bool(address.is_global and not address.is_multicast and not address.is_reserved
+                and not address.is_unspecified and not address.is_loopback and not address.is_link_local)
+
+
+# 198.18.0.0/15 (RFC 2544 benchmarking) hosts no LAN or loopback service. Clash/Surge-style "fake-ip" DNS in TUN mode
+# answers every public name from it, so refusing it would break every download for those users.
+_FAKE_IP_RANGE = ipaddress.ip_network("198.18.0.0/15")
+
+
+class EgressPolicy:
+    """Public-Internet-only network boundary for user-entered media URLs (#490).
+
+    A host is accepted only when every A/AAAA answer is public. A direct
+    connection is then made to one of those validated addresses (never a
+    second lookup), so DNS rebinding between check and connect cannot reach a
+    private peer; Host, TLS SNI and certificate checks still use the name.
+    ``allow_loopback`` exists for loopback test servers only.
+    """
+
+    def __init__(self, *, resolver: Resolver | None = None, allow_loopback: bool = False) -> None:
+        self._resolver = resolver or _system_resolver
+        self.allow_loopback = bool(allow_loopback)
+
+    def _allowed(self, address: str) -> bool:
+        if is_public_address(address):
+            return True
+        if not self.allow_loopback:
+            return False
+        try:
+            return ipaddress.ip_address(str(address).split("%", 1)[0]).is_loopback
+        except ValueError:
+            return False
+
+    def resolve(self, host: str, port: int) -> tuple[str, ...]:
+        if not isinstance(host, str) or not host:
+            raise _egress_denied("source URL host is missing")
+        host = host.strip("[]")
+        try:
+            answers = tuple(dict.fromkeys(str(value).split("%", 1)[0] for value in self._resolver(host, port)))
+        except (OSError, UnicodeError, ValueError) as error:
+            raise DownloadError(DownloadErrorCode.NETWORK, "source host could not be resolved", retryable=True, action="retry") from error
+        if not answers:
+            raise DownloadError(DownloadErrorCode.NETWORK, "source host could not be resolved", retryable=True, action="retry")
+        if not all(self._allowed(answer) for answer in answers):
+            raise _egress_denied("source URL points to a private or non-public network address")
+        return answers
+
+    def check_proxied(self, host: str, port: int) -> None:
+        """A user-configured proxy resolves the name itself, so a local lookup failure is not evidence of a private
+        target; a literal or locally resolved non-public address still is."""
+        try:
+            self.resolve(host, port)
+        except DownloadError as error:
+            if not error.retryable:
+                raise
+
+    def check_url(self, url: str) -> str:
+        url = validate_http_url(url)
+        _scheme, host, port = _origin(url)
+        self.resolve(host or "", port)
+        return url
+
+    def connect(self, address: tuple[str, int], timeout: object = socket._GLOBAL_DEFAULT_TIMEOUT,  # type: ignore[attr-defined]
+                source_address: tuple[str, int] | None = None) -> socket.socket:
+        host, port = address
+        validated = self.resolve(host, int(port))
+        last: OSError | None = None
+        for candidate in validated:
+            try:
+                sock = socket.create_connection((candidate, int(port)), timeout, source_address)  # type: ignore[arg-type]
+            except OSError as error:
+                last = error
+                continue
+            try:
+                peer = str(sock.getpeername()[0]).split("%", 1)[0]
+                if ipaddress.ip_address(peer) not in {ipaddress.ip_address(value) for value in validated}:
+                    raise _egress_denied("connected peer is not a validated public address")
+            except BaseException:
+                sock.close()
+                raise
+            return sock
+        raise last or OSError("no validated address accepted the connection")
+
+
+PUBLIC_EGRESS = EgressPolicy()
+
+
+def _egress_denied(condition: str) -> DownloadError:
+    return DownloadError(DownloadErrorCode.INVALID_SOURCE, condition)
+
+
+class _BoundHTTPConnection(HTTPConnection):
+    def __init__(self, *args, egress: EgressPolicy, **kwargs):  # type: ignore[no-untyped-def]
+        super().__init__(*args, **kwargs)
+        self._create_connection = egress.connect  # type: ignore[assignment]
+
+
+class _BoundHTTPSConnection(HTTPSConnection):
+    def __init__(self, *args, egress: EgressPolicy, **kwargs):  # type: ignore[no-untyped-def]
+        super().__init__(*args, **kwargs)
+        self._create_connection = egress.connect  # type: ignore[assignment]
+
+
+def _proxied(request: Request) -> bool:
+    return bool(getattr(request, "_tunnel_host", None)) or request.has_proxy()
+
+
+def _target_host_port(request: Request) -> tuple[str, int]:
+    scheme, host, port = _origin(request.full_url)
+    return host or "", port
+
+
+class _EgressHTTPHandler(HTTPHandler):
+    def __init__(self, egress: EgressPolicy) -> None:
+        super().__init__()
+        self._egress = egress
+
+    def http_open(self, request):  # type: ignore[no-untyped-def]
+        if _proxied(request):
+            # A user-configured proxy makes the connection; only the target
+            # name can be checked here. The proxy itself is trusted config.
+            self._egress.check_proxied(*_target_host_port(request))
+            return self.do_open(HTTPConnection, request)
+        return self.do_open(lambda *a, **k: _BoundHTTPConnection(*a, egress=self._egress, **k), request)
+
+
+class _EgressHTTPSHandler(HTTPSHandler):
+    def __init__(self, egress: EgressPolicy) -> None:
+        super().__init__()
+        self._egress = egress
+
+    def https_open(self, request):  # type: ignore[no-untyped-def]
+        if _proxied(request):
+            self._egress.check_proxied(*_target_host_port(request))
+            return self.do_open(HTTPSConnection, request, context=self._context)
+        return self.do_open(lambda *a, **k: _BoundHTTPSConnection(*a, egress=self._egress, **k), request, context=self._context)
+
+
 class _NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, request, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
         return None
@@ -119,14 +282,15 @@ class _NoRedirect(HTTPRedirectHandler):
 class UrllibHttpTransport:
     """Small app-owned HTTP boundary with bounded, credential-free redirects."""
 
-    def __init__(self, *, timeout_s: float = 60.0, max_redirects: int = MAX_REDIRECTS) -> None:
+    def __init__(self, *, timeout_s: float = 60.0, max_redirects: int = MAX_REDIRECTS, egress: EgressPolicy | None = None) -> None:
         if not 0 < timeout_s <= 600:
             raise ValueError("timeout_s must be in (0, 600]")
         if not 0 <= max_redirects <= MAX_REDIRECTS:
             raise ValueError(f"max_redirects must be between 0 and {MAX_REDIRECTS}")
         self.timeout_s = timeout_s
         self.max_redirects = max_redirects
-        self._opener = build_opener(_NoRedirect)
+        self.egress = egress or PUBLIC_EGRESS
+        self._opener = build_opener(_NoRedirect, _EgressHTTPHandler(self.egress), _EgressHTTPSHandler(self.egress))
 
     def open(self, url: str, *, headers: Mapping[str, str] | None = None) -> HttpResponse:
         current = validate_http_url(url)
@@ -161,7 +325,11 @@ class UrllibHttpTransport:
                 if 400 <= error.code < 500:
                     raise DownloadError(DownloadErrorCode.SOURCE_CHANGED, f"media endpoint rejected request ({error.code})") from error
                 raise DownloadError(DownloadErrorCode.NETWORK, "media endpoint returned a server error", retryable=True, action="retry") from error
+            except DownloadError:
+                raise
             except (URLError, OSError, TimeoutError) as error:
+                if isinstance(getattr(error, "reason", None), DownloadError):
+                    raise error.reason from error  # type: ignore[misc]
                 raise DownloadError(DownloadErrorCode.NETWORK, "media request failed", retryable=True, action="retry") from error
             status = int(getattr(response, "status", response.getcode()))
             if status in {301, 302, 303, 307, 308}:
@@ -1136,5 +1304,8 @@ __all__ = [
     "HttpTransport",
     "MediaMaterializer",
     "UrllibHttpTransport",
+    "EgressPolicy",
+    "PUBLIC_EGRESS",
+    "is_public_address",
     "validate_http_url",
 ]
