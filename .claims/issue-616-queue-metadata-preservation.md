@@ -2,7 +2,7 @@ DUBFLOW_PR_V1
 Issue: #616
 Lease-Owner: Claude/issue-616-queue-metadata-preservation
 Lease-Heartbeat: 2026-11-15T08:38:00Z
-Tested-Base-SHA: 425373bada2e76d17e29506864cb2e1d4a9b34ac
+Tested-Base-SHA: b44eb8ab0c69ddf077743113da3815d7d55eb11c
 Conflict-Domains: desktop-shell,media-persistence,local-storage-recovery
 Expected-Paths: .claims/issue-616-queue-metadata-preservation.md,apps/desktop/src/main.ts,apps/desktop/src/features/media/model.ts,apps/desktop/src/features/media/view.ts,apps/desktop/test/media.test.mjs
 Required-CI: PR Fast + PR Integration (desktop-editor-subtitles selected) + PR Desktop Editor Windows
@@ -83,4 +83,14 @@ ACCEPTED: NO
 - Existing branch HEAD before synchronization: `1998cf2a13af7aaf0e59697e24c42c7683eafee2`; prior comparison was ahead 5 / behind 2 because Main advanced by two commits.
 - The only branch-specific path is this claim file. Main's two intervening commits are preserved as the second parent; no product source/test, workflow, contract, schema, migration or lockfile path is changed.
 - Updated the top-level `Tested-Base-SHA` to the exact Main above. The original stale heartbeat `2026-11-15T08:38:00Z` is deliberately unchanged: this Lead sync is not Claude progress and does not renew the coder lease.
+- Phase remains ASSIGNED=YES; STARTED=YES (Draft lease only); CODED=NO; product TESTED=NOT_RUN; INTEGRATED=NO; ACCEPTED=NO.
+
+
+## Lead non-force post-merge base synchronization — 2026-11-16 13:53 ICT
+
+- Post-merge Main after Owner merged PR #876: `b44eb8ab0c69ddf077743113da3815d7d55eb11c` (merge SHA).
+- Previous branch HEAD: `3123678d771c770c6a14bf45f16ed196420ff741`; previous tested base: `425373bada2e76d17e29506864cb2e1d4a9b34ac`.
+- Preserved previous branch HEAD as first parent and current Main as second parent. The tree is current Main plus this claim file; no product source/test path is edited by Lead.
+- Updated the top-level `Tested-Base-SHA` to current Main. Required PR checks on the new HEAD are pending/being verified; this metadata sync is not product testing or coder progress.
+- Lease heartbeat remains `2026-11-15T08:38:00Z`; it is not renewed by this Lead sync.
 - Phase remains ASSIGNED=YES; STARTED=YES (Draft lease only); CODED=NO; product TESTED=NOT_RUN; INTEGRATED=NO; ACCEPTED=NO.

@@ -19,7 +19,7 @@ It can only add a reason to look; it must never remove one or raise a confidence
 """
 from __future__ import annotations
 
-import json, re, sys
+import json, re, sys, unicodedata
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -76,6 +76,25 @@ def _vietnamese(text: str) -> bool:
     return any(ch.isalpha() and ord(ch) > 127 for ch in text)
 
 
+def _plain(word: str) -> str:
+    """``word`` lower-cased without diacritics (``chẫm`` -> ``cham``, ``đồng`` -> ``dong``)."""
+    word = word.lower().replace("đ", "d")
+    return "".join(ch for ch in unicodedata.normalize("NFD", word) if not unicodedata.combining(ch))
+
+
+# units of three letters or more, keyed without diacritics: a word that only matches here was misheard or mistyped
+_UNIT_LOOKALIKES = {_plain(u) for u in UNITS if len(_plain(u)) >= 3}
+
+
+def _garbled_unit(word: str) -> bool:
+    """``word`` is not a unit but looks like one once diacritics go, or after the common ASR swap tr -> ch."""
+    w = word.lower()
+    if w in UNITS:
+        return False
+    plain = _plain(w)
+    return plain in _UNIT_LOOKALIKES or (plain.startswith("tr") and "ch" + plain[2:] in _UNIT_LOOKALIKES)
+
+
 def parse_number(raw: str, vietnamese: bool) -> float | None:
     """``raw`` digits with ``.``/``,`` -> value. Exactly three digits after one separator is a thousands group by the
     text's convention (vi: ``1.800`` = 1800, ``0,198`` = 0.198; en: ``631,000`` = 631000, ``1.800`` = 1.8)."""
@@ -96,10 +115,11 @@ def parse_number(raw: str, vietnamese: bool) -> float | None:
     return None
 
 
-def quantities(text: str) -> dict[str, list]:
+def quantities(text: str, lang: str | None = None) -> dict[str, list]:
     """What ``text`` says in numbers: ``measures`` [(dimension, base value, value as written)], ``bare`` [value] (no known unit),
-    ``models`` [(letter prefix, id)] (``X9``, ``IP68``), ``unknown`` [raw] (a number this parser cannot read)."""
-    vi = _vietnamese(text)
+    ``models`` [(letter prefix, id)] (``X9``, ``IP68``), ``unknown`` [raw] (a number this parser cannot read).
+    ``lang`` (``"vi"``/``"en"``) is the text's source language; without it, diacritics decide."""
+    vi = lang == "vi" if lang else _vietnamese(text)
     out: dict[str, list] = {"measures": [], "bare": [], "models": [], "unknown": []}
     for m in _NUM.finditer(text):
         prefix, raw, suffix = m.group(1), m.group(2), m.group(3)
@@ -113,7 +133,11 @@ def quantities(text: str) -> dict[str, list]:
         unit = suffix.lower()
         if not unit:
             nxt = _WORD.match(text, len(text) - len(text[m.end():].lstrip()))
-            unit = nxt.group(0).lower() if nxt and nxt.group(0).lower() in UNITS else ""
+            word = nxt.group(0).lower() if nxt else ""
+            if _garbled_unit(word):  # "64 chẫm": the unit is there but unreadable
+                out["unknown"].append(f"{raw} {word}")
+                continue
+            unit = word if word in UNITS else ""
         if unit in UNITS:
             dim, factor = UNITS[unit]
             out["measures"].append((dim, value * factor, value))
@@ -121,12 +145,21 @@ def quantities(text: str) -> dict[str, list]:
             out["unknown"].append(raw + suffix)
         else:
             out["bare"].append(value)
-    # number words right before a unit
-    tokens = [(t.group(0), t.start()) for t in _WORD.finditer(text)]
-    for (word, _), (after, _) in zip(tokens, tokens[1:]):
-        w, u = word.lower(), after.lower()
-        if w in NUMBER_WORDS and u in UNITS and u not in NUMBER_WORDS:
-            dim, factor = UNITS[u]
+    # number words right before a unit; "sáu phẩy năm in" is 6.5 inch, "sáu phẩy in" (no decimal part) is unknown
+    tokens = [t.group(0).lower() for t in _WORD.finditer(text)]
+    for i, w in enumerate(tokens):
+        if w not in NUMBER_WORDS or (i and tokens[i - 1] == "phẩy"):
+            continue
+        after = tokens[i + 1:i + 4]
+        if after[:1] == ["phẩy"]:
+            if len(after) == 3 and after[1] in NUMBER_WORDS and after[2] in UNITS:
+                value = float(f"{NUMBER_WORDS[w]}.{NUMBER_WORDS[after[1]]}")
+                dim, factor = UNITS[after[2]]
+                out["measures"].append((dim, value * factor, value))
+            else:
+                out["unknown"].append(" ".join([w] + after[:2]))
+        elif after and after[0] in UNITS and after[0] not in NUMBER_WORDS:
+            dim, factor = UNITS[after[0]]
             out["measures"].append((dim, NUMBER_WORDS[w] * factor, NUMBER_WORDS[w]))
     return out
 
@@ -135,11 +168,12 @@ def _same(a: float, b: float) -> bool:
     return abs(a - b) <= 1e-9 * max(1.0, abs(a), abs(b))
 
 
-def compare_numbers(sentence: str, cue: str) -> dict[str, Any]:
+def compare_numbers(sentence: str, cue: str, langs: tuple[str | None, str | None] | None = None) -> dict[str, Any]:
     """``conflict`` when the sentence states a value the cue states otherwise (same dimension, same bare-number frame,
     same model letters); ``unknown`` when a sentence number has nothing in the cue to be checked against, or cannot be
     read; ``agree`` when every sentence number is found; ``none`` when the sentence has no number."""
-    s, c = quantities(sentence), quantities(cue)
+    s_lang, c_lang = langs or (None, None)
+    s, c = quantities(sentence, s_lang), quantities(cue, c_lang)
     conflicts, unknown = [], list(s["unknown"])
     cue_bare = c["bare"]
     for dim, value, written in s["measures"]:
@@ -162,15 +196,16 @@ def compare_numbers(sentence: str, cue: str) -> dict[str, Any]:
     return {"state": state, "conflicts": conflicts, "unknown": unknown, "sentence": s, "cue": c}
 
 
-def contrast(sentence: str, cue: str) -> dict[str, Any]:
+def contrast(sentence: str, cue: str, langs: tuple[str | None, str | None] | None = None) -> dict[str, Any]:
     """``verdict``: ``number_conflict`` > ``number_unknown`` > ``substitution`` > ``consistent``. ``number`` and
-    ``words`` keep the two checks apart (a number verdict hides a word substitution in ``verdict`` only)."""
+    ``words`` keep the two checks apart (a number verdict hides a word substitution in ``verdict`` only).
+    ``langs`` = (sentence language, cue language) when the caller knows them; otherwise each text's diacritics decide."""
     s_words, _ = content(sentence)
     c_words, _ = content(cue)
     shared = s_words & c_words
     only_s, only_c = s_words - c_words, c_words - s_words
     words = "substitution" if shared and only_s and only_c else "consistent"
-    number = compare_numbers(sentence, cue)
+    number = compare_numbers(sentence, cue, langs)
     verdict = {"conflict": "number_conflict", "unknown": "number_unknown"}.get(number["state"], words)
     return {"verdict": verdict, "number": number["state"], "words": words, "shared": sorted(shared),
             "sentence_only": sorted(only_s), "cue_only": sorted(only_c),
