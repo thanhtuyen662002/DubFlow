@@ -10,7 +10,11 @@ import unittest
 from unittest.mock import Mock, patch
 
 from engine.dubflow.download.generic import SubprocessYtDlpRunner, YtDlpTransport
+from engine.dubflow.download.materializer import EgressPolicy
 from engine.dubflow.download.source_adapter import SourceError, SourceErrorCode
+
+
+PUBLIC_TEST_EGRESS = EgressPolicy(resolver=lambda host, port: ["93.184.216.34"])  # network-free stand-in for a public DNS answer
 
 
 class NativeExtractorBoundaryTests(unittest.TestCase):
@@ -85,12 +89,12 @@ class NativeExtractorBoundaryTests(unittest.TestCase):
             runner.run.return_value = (0, '{"id":"x"}', "")
             for options in ({}, {"trusted_root": root}, {"trusted_root": root, "expected_sha256": "0" * 64}):
                 with self.subTest(options=options), self.assertRaises(SourceError):
-                    YtDlpTransport(executable, runner=runner, **options)
+                    YtDlpTransport(executable, runner=runner, egress=PUBLIC_TEST_EGRESS, **options)
             sibling = root / "other-runtime"
             sibling.mkdir()
             with self.assertRaises(SourceError):
-                YtDlpTransport(executable, trusted_root=sibling, expected_sha256=pin, runner=runner)
-            transport = YtDlpTransport(executable, trusted_root=root, expected_sha256=pin, runner=runner)
+                YtDlpTransport(executable, trusted_root=sibling, expected_sha256=pin, runner=runner, egress=PUBLIC_TEST_EGRESS)
+            transport = YtDlpTransport(executable, trusted_root=root, expected_sha256=pin, runner=runner, egress=PUBLIC_TEST_EGRESS)
             executable.write_bytes(b"version-two")
             with self.assertRaises(SourceError) as context:
                 transport.inspect_url("https://example.test/video")
@@ -105,7 +109,7 @@ class NativeExtractorBoundaryTests(unittest.TestCase):
             runner = Mock()
             runner.run.return_value = (0, "x" * (4 * 1024 * 1024 + 1), "")
             transport = YtDlpTransport(executable, trusted_root=root,
-                expected_sha256=hashlib.sha256(b"pinned").hexdigest(), runner=runner)
+                expected_sha256=hashlib.sha256(b"pinned").hexdigest(), runner=runner, egress=PUBLIC_TEST_EGRESS)
             with self.assertRaises(SourceError) as context:
                 transport.inspect_url("https://example.test/video")
             self.assertEqual(context.exception.code, SourceErrorCode.SOURCE_CHANGED)

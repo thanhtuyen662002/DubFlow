@@ -7,12 +7,16 @@ import unittest
 from unittest.mock import Mock
 
 from engine.dubflow.download.authenticated_native import enumerate_page, provider_request
+from engine.dubflow.download.materializer import EgressPolicy
 from engine.dubflow.download.enumeration import EnumerationCoordinator
 from engine.dubflow.download.generic import GenericUrlAdapter
 from engine.dubflow.download.generic.sdk import GenericSdkTransport, RECIPE, sdk_identity
 from engine.dubflow.download.provider_transport import PublicProviderHttpTransport
 from engine.dubflow.download.materializer import DownloadError
 from engine.dubflow.download.source_adapter import SourceError, SourceErrorCode
+
+
+PUBLIC_TEST_EGRESS = EgressPolicy(resolver=lambda host, port: ["93.184.216.34"])  # network-free stand-in for a public DNS answer
 
 
 def entry(number=1, **changes):
@@ -41,7 +45,7 @@ class RecordedSDK:
 
 class GenericSdkTests(unittest.TestCase):
     def adapter(self, sdk, **kwargs):
-        return GenericUrlAdapter(GenericSdkTransport(sdk), **kwargs)
+        return GenericUrlAdapter(GenericSdkTransport(sdk, egress=PUBLIC_TEST_EGRESS), **kwargs)
 
     def test_missing_flat_identity_resolves_selected_slots_and_keeps_signed_media_private(self):
         sdk = RecordedSDK([entry(n, id=None, title=None) for n in (1, 2, 3)])
@@ -96,7 +100,7 @@ class GenericSdkTests(unittest.TestCase):
 
     def test_old_mapping_cursor_is_rejected_before_enumeration(self):
         sdk = RecordedSDK([entry(1), entry(2)])
-        transport = GenericSdkTransport(sdk)
+        transport = GenericSdkTransport(sdk, egress=PUBLIC_TEST_EGRESS)
         cursor = json.loads(transport.enumerate_playlist("https://video.example.test/list/1", cursor=None, page_size=1).next_cursor)
         cursor["recipe"] = sha256(json.dumps({"recipe":RECIPE,"pins":sdk.pins},sort_keys=True).encode()).hexdigest()
         with self.assertRaises(SourceError) as failure:
@@ -153,7 +157,7 @@ class GenericSdkTests(unittest.TestCase):
 
     def test_cursor_source_all_pins_offset_and_schema_are_bound_before_sdk_call(self):
         sdk = RecordedSDK([entry(1), entry(2)])
-        transport = GenericSdkTransport(sdk)
+        transport = GenericSdkTransport(sdk, egress=PUBLIC_TEST_EGRESS)
         cursor = transport.enumerate_playlist("https://video.example.test/list/1", cursor=None, page_size=1).next_cursor
         baseline = json.loads(cursor)
         for changes in ({"offset": 0}, {"offset": True}, {"offset": 10000}, {"v": True},
@@ -167,13 +171,13 @@ class GenericSdkTests(unittest.TestCase):
             other = RecordedSDK()
             other.pins = {**sdk.pins, pin: "f" * 64}
             with self.assertRaises(SourceError):
-                GenericSdkTransport(other).enumerate_playlist("https://video.example.test/list/1", cursor=cursor, page_size=1)
+                GenericSdkTransport(other, egress=PUBLIC_TEST_EGRESS).enumerate_playlist("https://video.example.test/list/1", cursor=cursor, page_size=1)
             self.assertFalse(other.calls)
         self.assertEqual(len(sdk.calls), 1)
 
     def test_malformed_no_progress_pages_and_bounds_fail_explicitly(self):
         sdk = RecordedSDK()
-        transport = GenericSdkTransport(sdk)
+        transport = GenericSdkTransport(sdk, egress=PUBLIC_TEST_EGRESS)
         for value in (None, [], {}, {"schema_version": True, "offset": 0, "entries": [], "has_more": False},
                       {"schema_version": 1, "offset": 1, "entries": [], "has_more": False},
                       {"schema_version": 1, "offset": 0, "entries": [], "has_more": True},
@@ -189,7 +193,7 @@ class GenericSdkTests(unittest.TestCase):
 
     def test_10000_slots_cannot_be_reported_complete_when_more_exist(self):
         sdk = RecordedSDK(entry(n) for n in range(10001))
-        transport = GenericSdkTransport(sdk)
+        transport = GenericSdkTransport(sdk, egress=PUBLIC_TEST_EGRESS)
         first = transport.enumerate_playlist("https://video.example.test/list/1", cursor=None, page_size=100)
         cursor = json.loads(first.next_cursor)
         cursor["offset"] = 9998

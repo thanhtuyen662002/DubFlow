@@ -15,7 +15,7 @@ import unittest
 from urllib.error import HTTPError
 
 from engine.dubflow.download.materializer import (
-    DownloadError, DownloadErrorCode, MediaMaterializer, UrllibHttpTransport,
+    DownloadError, DownloadErrorCode, EgressPolicy, MediaMaterializer, UrllibHttpTransport,
 )
 from engine.dubflow.download.source_adapter import MediaCandidate
 
@@ -76,11 +76,11 @@ class HttpTransportTests(unittest.TestCase):
             code = "\n".join((
                 "import sys; from pathlib import Path",
                 "sys.path.insert(0, " + repr(str(repo)) + ")",
-                "from engine.dubflow.download.materializer import MediaMaterializer",
+                "from engine.dubflow.download.materializer import EgressPolicy, MediaMaterializer, UrllibHttpTransport",
                 "from engine.dubflow.download.source_adapter import MediaCandidate",
                 "def progress(done, total):",
                 f"    if done == {stopped_at}: print('COMMITTED', flush=True)",
-                f"MediaMaterializer(chunk_bytes={chunk}, segments=1).download(MediaCandidate('media',sys.argv[1],'progressive','video/mp4'),Path(sys.argv[2]),progress=progress)",
+                f"MediaMaterializer(UrllibHttpTransport(egress=EgressPolicy(allow_loopback=True)), chunk_bytes={chunk}, segments=1).download(MediaCandidate('media',sys.argv[1],'progressive','video/mp4'),Path(sys.argv[2]),progress=progress)",
             ))
             process = subprocess.Popen([sys.executable, "-I", "-S", "-B", "-c", code, url, str(destination)],
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
@@ -104,7 +104,7 @@ class HttpTransportTests(unittest.TestCase):
                 self.assertEqual(json.loads(receipt.read_text()), checkpoint)
                 self.assertEqual(destination.read_bytes(), b"previous-good-export")
                 # Pinned to the single-connection path; ranged resume has its own suite.
-                result = MediaMaterializer(segments=1).download(MediaCandidate("media", url, "progressive", "video/mp4"), destination)
+                result = MediaMaterializer(UrllibHttpTransport(egress=EgressPolicy(allow_loopback=True)), segments=1).download(MediaCandidate("media", url, "progressive", "video/mp4"), destination)
                 self.assertTrue(result.resumed)
                 self.assertEqual(calls, [(None, None), (f"bytes={committed}-", '"fixture-version-1"')])
                 self.assertEqual(destination.read_bytes(), payload)
@@ -136,7 +136,7 @@ class HttpTransportTests(unittest.TestCase):
             destination = Path(temp) / "media.mp4"
             destination.write_bytes(b"previous-good-export")
             destination.with_name("media.mp4.part").write_bytes(b"stale")
-            result = MediaMaterializer().download(
+            result = MediaMaterializer(UrllibHttpTransport(egress=EgressPolicy(allow_loopback=True))).download(
                 MediaCandidate("media", url, "progressive", "video/mp4"), destination,
                 expected_sha256=hashlib.sha256(payload).hexdigest(), expected_size=len(payload),
             )
@@ -160,7 +160,7 @@ class HttpTransportTests(unittest.TestCase):
             partial = destination.with_name("media.mp4.part")
             partial.write_bytes(b"stale")
             with self.assertRaises(DownloadError) as context:
-                MediaMaterializer().download(
+                MediaMaterializer(UrllibHttpTransport(egress=EgressPolicy(allow_loopback=True))).download(
                     MediaCandidate("media", url, "progressive", "video/mp4"), destination,
                     expected_sha256="0" * 64,
                 )
@@ -187,7 +187,7 @@ class HttpTransportTests(unittest.TestCase):
                 request.end_headers()
 
             with endpoint(redirect) as source_url:
-                response = UrllibHttpTransport().open(source_url, headers={
+                response = UrllibHttpTransport(egress=EgressPolicy(allow_loopback=True)).open(source_url, headers={
                     "Authorization": "Bearer private", "Cookie": "session=private",
                     "Proxy-Authorization": "Basic private", "Accept-Encoding": "identity",
                 })

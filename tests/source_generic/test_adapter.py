@@ -8,8 +8,12 @@ import unittest
 from unittest.mock import Mock
 
 from engine.dubflow.download.generic import GenericUrlAdapter, YtDlpTransport
+from engine.dubflow.download.materializer import EgressPolicy
 from engine.dubflow.download.materializer import HttpResponse, MediaMaterializer
 from engine.dubflow.download.source_adapter import SourceError, SourceErrorCode
+
+
+PUBLIC_TEST_EGRESS = EgressPolicy(resolver=lambda host, port: ["93.184.216.34"])  # network-free stand-in for a public DNS answer
 
 
 class MetadataTransport:
@@ -64,14 +68,14 @@ class GenericAdapterTests(unittest.TestCase):
             executable.write_bytes(b"fixture")
             runner = Runner(payload='{"id":"x","title":"X"}')
             pin = hashlib.sha256(b"fixture").hexdigest()
-            payload = YtDlpTransport(executable, trusted_root=Path(temp), expected_sha256=pin, runner=runner).inspect_url("https://video.example.test/watch/1")
+            payload = YtDlpTransport(executable, trusted_root=Path(temp), expected_sha256=pin, runner=runner, egress=PUBLIC_TEST_EGRESS).inspect_url("https://video.example.test/watch/1")
             self.assertEqual(payload["id"], "x")
             self.assertEqual(runner.argv[1:5], ("--dump-single-json", "--no-warnings", "--skip-download", "--no-playlist"))
             self.assertEqual(runner.argv[-1], "https://video.example.test/watch/1")
             self.assertEqual(runner.argv[5:-1], ("--ignore-config", "--no-plugin-dirs", "--no-cache-dir", "--no-js-runtimes", "--no-remote-components", "--"))
 
             failing = Runner(code=1, error="Cookie: secret-token private video")
-            transport = YtDlpTransport(executable, trusted_root=Path(temp), expected_sha256=pin, runner=failing)
+            transport = YtDlpTransport(executable, trusted_root=Path(temp), expected_sha256=pin, runner=failing, egress=PUBLIC_TEST_EGRESS)
             with self.assertRaises(SourceError) as context:
                 transport.inspect_url("https://video.example.test/watch/1")
             self.assertEqual(context.exception.code, SourceErrorCode.AUTH_REQUIRED)

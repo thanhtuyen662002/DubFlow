@@ -185,6 +185,7 @@ def _qualify(archive: Path, helper_path: Path, descriptor_path: Path,
     else:
         raise ValueError("generic helper accepted a provider session")
     from engine.dubflow.download.generic.sdk import ENUMERATION_RECIPE, GenericSdkTransport, sdk_identity
+    from engine.dubflow.download.materializer import EgressPolicy
     class RecordedBoundary:
         pins = {"python": hashlib.sha256(Path(sys.executable).read_bytes()).hexdigest(),
                 "helper": helper_hash, "sdk_archive": expected}
@@ -195,7 +196,8 @@ def _qualify(archive: Path, helper_path: Path, descriptor_path: Path,
     missing_identity, population, poison = True, 10002, False
     generic_pages.clear()
     resolved_videos.clear()
-    transport = GenericSdkTransport(RecordedBoundary())
+    # Recorded pages are offline; stand in for a public DNS answer (#490).
+    transport = GenericSdkTransport(RecordedBoundary(), egress=EgressPolicy(resolver=lambda host, port: ["93.184.216.34"]))
     first = transport.enumerate_playlist("https://video.example.test/list/123",cursor=None,page_size=2)
     if resolved_videos != ["0","1"] or generic_pages != [0] or first.completed:
         raise ValueError("missing-ID generic page did not resolve only selected slots")

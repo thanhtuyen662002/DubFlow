@@ -16,7 +16,7 @@ import threading
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from engine.dubflow.download.bilibili import BilibiliSourceAdapter
 from engine.dubflow.download.generic import GenericUrlAdapter
-from engine.dubflow.download.materializer import DownloadError, DownloadErrorCode, MediaMaterializer
+from engine.dubflow.download.materializer import DownloadError, DownloadErrorCode, EgressPolicy, MediaMaterializer, UrllibHttpTransport
 from engine.dubflow.download.source_adapter import MediaCandidate, SourceError
 from engine.dubflow.download.stream_materializer import FfmpegStreamMuxer, StreamMaterializer
 
@@ -84,7 +84,7 @@ def main():
         def fetch_video(self, source_ref):
             return payload
     def adapter():
-        return BilibiliSourceAdapter(BiliTransport(), stream_materializer=StreamMaterializer(muxer, materializer=MediaMaterializer(chunk_bytes=1024)))
+        return BilibiliSourceAdapter(BiliTransport(), stream_materializer=StreamMaterializer(muxer, materializer=MediaMaterializer(UrllibHttpTransport(egress=EgressPolicy(allow_loopback=True)), chunk_bytes=1024)))
     try:
         first = adapter()
         item = first.inspect("BV1AbC2345")
