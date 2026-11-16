@@ -1680,6 +1680,22 @@ export class EditHistory {
     return this.current;
   }
 
+  /** Every kept state, oldest first, and where the current one is (Issue #896: kept with the draft). */
+  get states(): readonly Edit[] { return this.#states; }
+  get index(): number { return this.#index; }
+
+  /**
+   * The undo steps saved with the draft, around the draft's own edit (`current`),
+   * so Hoàn tác goes on after the editor is closed or DubFlow restarts. The change
+   * count stays the draft's; nothing is marked exported.
+   */
+  restore(past: readonly Edit[], current: Edit, future: readonly Edit[], changes: number): void {
+    this.#states = [...past, current, ...future].slice(-(HISTORY_LIMIT + 1));
+    this.#index = this.#states.lastIndexOf(current);
+    this.#exported = changes > 0 ? -1 : this.#index;
+    this.#base = Math.max(0, Math.round(changes)) - this.#index;
+  }
+
   /** The export of `edit` finished: it becomes the reference for the change count. */
   markExported(edit: Edit): void {
     let index = this.#states.lastIndexOf(edit);
