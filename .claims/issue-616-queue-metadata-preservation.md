@@ -2,7 +2,7 @@ DUBFLOW_PR_V1
 Issue: #616
 Lease-Owner: Claude/issue-616-queue-metadata-preservation
 Lease-Heartbeat: 2026-11-15T08:38:00Z
-Tested-Base-SHA: b44eb8ab0c69ddf077743113da3815d7d55eb11c
+Tested-Base-SHA: fab4b759fa99fa7d63dae3e73cf6dd0e14689f33
 Conflict-Domains: desktop-shell,media-persistence,local-storage-recovery
 Expected-Paths: .claims/issue-616-queue-metadata-preservation.md,apps/desktop/src/main.ts,apps/desktop/src/features/media/model.ts,apps/desktop/src/features/media/view.ts,apps/desktop/test/media.test.mjs
 Required-CI: PR Fast + PR Integration (desktop-editor-subtitles selected) + PR Desktop Editor Windows
@@ -93,4 +93,12 @@ ACCEPTED: NO
 - Preserved previous branch HEAD as first parent and current Main as second parent. The tree is current Main plus this claim file; no product source/test path is edited by Lead.
 - Updated the top-level `Tested-Base-SHA` to current Main. Required PR checks on the new HEAD are pending/being verified; this metadata sync is not product testing or coder progress.
 - Lease heartbeat remains `2026-11-15T08:38:00Z`; it is not renewed by this Lead sync.
+- Phase remains ASSIGNED=YES; STARTED=YES (Draft lease only); CODED=NO; product TESTED=NOT_RUN; INTEGRATED=NO; ACCEPTED=NO.
+
+
+## Lead base synchronization after PR #878 — 2026-11-16 14:51 ICT
+- Exact Main re-read before sync: `fab4b759fa99fa7d63dae3e73cf6dd0e14689f33` (Owner-merged PR #878; parent `b44eb8ab0c69ddf077743113da3815d7d55eb11c`).
+- Existing branch HEAD before sync: `9e80b10e88ac028054ce75bf4394e1b981c94993`; Main→branch comparison was ahead 7 / behind 3. The only branch-specific path was this claim file; Main's three commits touched `.claims/issue-877-ambiguous-separator.md` and `tests/mastering/x2/**`, with no overlap against the #616 allowlist.
+- Lead incorporated Main non-force as the second parent while preserving the prior branch HEAD as first parent. No product source/test path was changed by Lead.
+- `Tested-Base-SHA` now names the incorporated Main; PR Fast and Integration on the new exact HEAD are pending verification. This metadata sync is not coder progress and does not refresh the stale Lease-Heartbeat.
 - Phase remains ASSIGNED=YES; STARTED=YES (Draft lease only); CODED=NO; product TESTED=NOT_RUN; INTEGRATED=NO; ACCEPTED=NO.
