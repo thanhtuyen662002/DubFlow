@@ -87,8 +87,8 @@ class AsrMechanisms(unittest.TestCase):
         # a Vietnamese sentence typed without diacritics: "2.000" is two thousand, not 2.0
         self.assertEqual(hn.compare_numbers("Den 2.000 nits.", "độ sáng 2000 nits", langs=("vi", "vi"))["state"], "agree")
         self.assertEqual(hn.compare_numbers("A 2.000 mm rod.", "a 2 mm rod", langs=("en", "en"))["state"], "agree")
-        # without a language the old inference is kept
-        self.assertEqual(hn.compare_numbers("Den 2.000 nits.", "độ sáng 2000 nits")["state"], "conflict")
+        # without a language the two readings (2000 / 2.0) disagree: review, not conflict (#877)
+        self.assertEqual(hn.compare_numbers("Den 2.000 nits.", "độ sáng 2000 nits")["state"], "unknown")
 
     def test_spoken_decimal_is_read_whole(self) -> None:
         q = hn.quantities("màn hình bảy phẩy hai in", "vi")
