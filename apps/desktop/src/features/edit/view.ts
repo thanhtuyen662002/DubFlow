@@ -13,7 +13,7 @@ import type { AiSession } from "../ai/provider.ts";
 import { isAudioPath, type SfxLibrary } from "../sfx/library.ts";
 import {
   addAudio, addedId, addOverlay, addText, append, CANVAS_FILL_NAMES, canvasSize, createEdit, defaultExportName, EditHistory, estimateExportBytes, exportPlan, exportSize,
-  formatClock, formatSpeed, insertAt, isUnchanged, MAIN, mainLevel, MAX_MEDIA, MAX_OVERLAYS, MAX_SEGMENTS, matchesExport, MIN_SEGMENT,
+  formatClock, formatSpeed, insertAt, isUnchanged, MAIN, mainLevel, MAX_MEDIA, MAX_OVERLAYS, MAX_SEGMENTS, matchesExport, MIN_SEGMENT, moreSections,
   MIN_TRANSITION, mediaOf, moveOverlay, outputDuration, outputStarts, outputToSource, overlayHeight, overlayLength,
   overlayPreset, overlayPresetOf, parseClock, parseProject, RECENT_LIMIT, remapCues, remove, removeOverlay, resizeOverlay,
   samePath, serializeProject, setOverlayTime, setOverlayVolume, setSpeed, setTransition, setVolume, sourceToOutput, openingTime, resolveTarget, modeOffered,
@@ -45,6 +45,7 @@ import { mountCanvas } from "./canvas_view.ts";
 import { lookBadges } from "./look.ts";
 import { exportFolder } from "./library.ts";
 import { Autosaver, windowTimers } from "./autosave.ts";
+import { mountThumbnail } from "./thumbnail_view.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 type Facts = { duration: number; width: number; height: number; fps?: number; size_bytes: number; has_audio: boolean; cues: Cue[] };
@@ -116,6 +117,8 @@ export type EditorHost = {
   openAiSettings: () => void;
   /** Thu giọng: save recorded bytes with the edit at `outputPath` (`kind`); the saved file's path. */
   saveRecording: (bytes: ArrayBuffer, outputPath: string, kind: string) => Promise<string>;
+  /** Thumbnail (Issue #901): write the drawn PNG/JPEG as a new file in `folder`; its path. */
+  saveThumbnail: (bytes: ArrayBuffer, folder: string, name: string, format: "png" | "jpeg") => Promise<string>;
   /** Mẫu: render on the CPU only (Cài đặt). */
   cpuOnly: () => boolean;
   /** Cài đặt › Thư mục lưu kết quả, or null to save beside each video. */
@@ -988,6 +991,22 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       event.preventDefault();
     }
   }, true);
+  // Thumbnail (Issue #901): drawn here, kept with the draft; never a render.
+  const thumb = mountThumbnail(invoke, {
+    context: () => {
+      if (!session) return null;
+      const edit = session.history.current;
+      const point = outputToSource(edit, session.outputTime);
+      const media = point && point.segment.mediaId === MAIN ? mediaOf(edit, MAIN) : undefined;
+      return {
+        name: session.target.displayName,
+        frame: point && media ? { path: mediaPath(media), time: point.sourceTime } : null,
+        folder: exportFolder(session.outputPath, host.outputRoot?.() ?? null),
+      };
+    },
+    changed: () => scheduleSave(),
+    save: (bytes, folder, name, format) => host.saveThumbnail(bytes, folder, name, format),
+  });
   const cover = mountCover({
     video,
     picture: () => pictureRect(),
@@ -1398,6 +1417,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     try {
       const project = serializeProject(history.current, history.changes, selected, recent);
       if (session.plainCover) project.cover = cover.document();
+      const thumbnail = thumb.document();
+      if (thumbnail) (project as Record<string, unknown>).thumbnail = thumbnail;
       if (session.plainSubs && session.subsTouched) (project as Record<string, unknown>).subtitles = serializeLayers(session.plainSubs);
       await invoke("edit_project_save", { outputPath, kind, project });
       // only once the disk took it: an error stays on screen until a save succeeds
@@ -1889,6 +1910,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     exportButton.title = exportButton.disabled ? "Chưa có thay đổi để xuất" : "Xuất bản đã chỉnh sửa thành file video mới";
     const panelMode = mode === "subs" || mode === "cover" || mode === "audio" || mode === "text" || mode === "template" || mode === "more";
     $("#edit-more").hidden = mode !== "more";
+    $("#edit-more").classList.toggle("thumb-only", moreSections(session.target.kind) === "thumbnail");
     const overlay = panelMode ? undefined : selectedOverlay();
     const segment = selectedSegment();
     const inserted = !!segment && segment.mediaId !== MAIN;
@@ -3449,6 +3471,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       zoom.value = "0";
       cover.begin();
       docuCover.begin(outputPath, opened.kind);
+      thumb.begin(loaded.project && typeof loaded.project === "object" ? (loaded.project as Record<string, unknown>).thumbnail : null);
       docuCuts.begin(outputPath, opened.kind);
       docuLayers.begin(outputPath, opened.kind);
       if (session.plainCover) cover.loaded(plainCoverDocument(loaded.project), []);
@@ -3535,6 +3558,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     session.playing = false;
     await flush();
     cover.end();
+    thumb.end();
     docuCover.end();
     docuCuts.end();
     docuLayers.end();

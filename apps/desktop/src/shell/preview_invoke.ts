@@ -879,6 +879,9 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
     case "pick_audio_files": return [`${PREVIEW_AUDIO_FOLDER}\\tieng-vo-tay.mp3`] as T;
     case "expand_audio_paths": return (args.paths as string[]).filter((path) => /\.(mp3|wav|ogg|m4a|aac|flac)$/i.test(path)) as T;
     case "video_frame": return await previewFrame(Number(args.position), /final_vi\.mp4$/i.test(String(args.sourcePath))) as T;
+    case "thumbnail_frame": return await (/\.(png|jpe?g|webp|bmp)$/i.test(String(args.path)) ? previewBackgroundImage(1080, 1920, 28) : previewFrame(Math.min(1, Number(args.time) / 60))) as T;
+    case "thumbnail_save": return `${String(args.folder)}\\${String(args.name)}.${args.format === "png" ? "png" : "jpg"}` as T;
+    case "thumbnail_reveal": return undefined as T;
     case "save_douyin_session": douyinSession = true; return 12 as T;
     case "review_cues": return reviewCues.map((cue) => ({ ...cue, text: savedOverrides[cue.cue_id] ?? cue.machine_text, edited: cue.cue_id in savedOverrides })) as T;
     case "save_review": savedOverrides = { ...(args.overrides as Record<string, string>) }; return "D:\Videos\DubFlow Output\preview" as T;

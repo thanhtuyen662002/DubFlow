@@ -411,6 +411,23 @@ button.job.selected { background: var(--select); }
 .more-item > summary b, .more-row b { display: block; font-weight: 600; }
 .more-item > summary small, .more-row small { display: block; color: var(--text-3); font-size: 13px; }
 .more-item > form { padding: 12px 8px 16px; }
+/* Thumbnail (Issue #901); for a video that is not a dubbing job it is the only item of Đăng & Shorts. */
+.edit-more.thumb-only .more-item:not(#thumb-section), .edit-more.thumb-only > .edit-note { display: none; }
+.thumb-body { display: flex; flex-direction: column; gap: 10px; padding: 12px 8px 16px; }
+.thumb-stage { position: relative; width: 100%; aspect-ratio: 16 / 9; border-radius: 8px; overflow: hidden; background: #111827; }
+.thumb-stage canvas { display: block; width: 100%; height: 100%; cursor: grab; touch-action: none; }
+.thumb-stage canvas:active { cursor: grabbing; }
+.thumb-stage canvas:focus-visible { outline: 2px solid var(--accent, #38bdf8); outline-offset: 2px; }
+.thumb-texts { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.thumb-chips { display: contents; }
+.thumb-chips .chip { padding: 4px 10px; border: 1px solid var(--line, #374151); border-radius: 999px; background: transparent; color: var(--text); cursor: pointer; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.thumb-chips .chip[aria-pressed="true"] { border-color: var(--accent, #38bdf8); background: var(--raised); }
+.thumb-fields { display: flex; flex-direction: column; gap: 8px; }
+.thumb-fields label.check { display: flex; flex-direction: row; align-items: center; gap: 8px; }
+.thumb-colors { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
+.thumb-colors input[type="color"] { width: 44px; height: 28px; padding: 0; border: 0; background: none; }
+.thumb-folder-row { display: flex; gap: 8px; align-items: baseline; min-width: 0; font-size: 13px; color: var(--text-2); }
+.thumb-folder-row b { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; color: var(--text); }
 .more-item legend { display: none; }
 
 /* Forms inside the details column (credit, package, shorts, reframe) */
