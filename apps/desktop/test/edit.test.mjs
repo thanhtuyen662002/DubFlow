@@ -4,7 +4,7 @@ import {
   formatSpeed, HISTORY_LIMIT, insertAt, isUnchanged, matchesExport, moveOverlay, outputDuration, outputStarts, outputToSource,
   overlayHeight, overlayLength, overlayPreset, overlayPresetOf, parseClock, parseProject, remapCues, remove, removeOverlay,
   resizeOverlay, retargetEdit, sameEdit, sameSegments, serializeProject, setOverlayTime, setOverlayVolume, setSpeed, setTransition, setVolume,
-  sourceToOutput, openingTime, resolveTarget, modeOffered, split, thumbGrid, tickStep, transitionAt, transitionRoom, trim, zoomScale,
+  sourceToOutput, openingTime, resolveTarget, modeOffered, moreSections, split, thumbGrid, tickStep, transitionAt, transitionRoom, trim, zoomScale,
 } from "../src/features/edit/model.ts";
 
 const close = (actual, expected, message, tolerance = 1e-6) => assert.ok(Math.abs(actual - expected) < tolerance, `${message ?? ""} ${actual} != ${expected}`);
@@ -463,9 +463,10 @@ for (const kind of ["product", "compilation", "docu", "job"]) {
 assert.equal(modeOffered("template", "product", false), true);
 // Issue #523: Phụ đề for every video.
 for (const kind of ["job", "docu", "product", "compilation", "file"]) for (const reviewable of [true, false]) assert.equal(modeOffered("subs", kind, reviewable), true, `${kind}: subs`);
-// Issue #514: Tạo thêm (đóng gói, Shorts, đổi khung) for dubbing jobs only.
-assert.equal(modeOffered("more", "job", false), true);
-for (const kind of ["docu", "product", "compilation", "file"]) assert.equal(modeOffered("more", kind, true), false, `${kind}: no more`);
+// Issue #514: Tạo thêm (đóng gói, Shorts, đổi khung) for dubbing jobs only; Issue #901: its Thumbnail for every video.
+for (const kind of ["job", "docu", "product", "compilation", "file"]) assert.equal(modeOffered("more", kind, false), true, `${kind}: more`);
+assert.equal(moreSections("job"), "all");
+for (const kind of ["docu", "product", "compilation", "file"]) assert.equal(moreSections(kind), "thumbnail", `${kind}: only the thumbnail`);
 // Issue #510: Che for every video.
 for (const kind of ["job", "docu", "product", "compilation", "file"]) assert.equal(modeOffered("cover", kind, false), true, `${kind}: cover`);
 console.log("edit target tests passed");

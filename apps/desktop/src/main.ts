@@ -658,6 +658,10 @@ const editor = mountEditor(invoke, {
     ? tauriInvoke<string>("edit_save_recording", new Uint8Array(bytes),
       { headers: { "x-output-path": encodeURIComponent(outputPath), "x-kind": encodeURIComponent(kind) } })
     : previewInvoke<string>("edit_save_recording", { bytes: bytes.byteLength, outputPath, kind }),
+  saveThumbnail: (bytes, folder, name, format) => isTauri
+    ? tauriInvoke<string>("thumbnail_save", new Uint8Array(bytes),
+      { headers: { "x-folder": encodeURIComponent(folder), "x-name": encodeURIComponent(name), "x-format": format } })
+    : previewInvoke<string>("thumbnail_save", { bytes: bytes.byteLength, folder, name, format }),
   openReview: () => void openReview(),
   cpuOnly: () => cpuOnly(),
   outputRoot: () => outputRoot(),

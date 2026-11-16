@@ -1097,7 +1097,7 @@ fn validate_mix(clips: &[SoundClip], files: &[usize], durations: &[f64], main_vo
 }
 
 /// An existing folder chosen for the export.
-fn target_folder(folder: &str) -> Result<PathBuf, String> {
+pub(crate) fn target_folder(folder: &str) -> Result<PathBuf, String> {
     let path = Path::new(folder);
     if !path.is_absolute() {
         return Err(fail("Hãy chọn thư mục lưu trên máy"));
@@ -1109,7 +1109,7 @@ fn target_folder(folder: &str) -> Result<PathBuf, String> {
     Ok(resolved)
 }
 
-fn partial_of(file: &Path) -> PathBuf {
+pub(crate) fn partial_of(file: &Path) -> PathBuf {
     let mut name = file.file_name().map(OsString::from).unwrap_or_default();
     name.push(".partial");
     file.with_file_name(name)
@@ -2526,7 +2526,7 @@ const MAX_RECORDING_BYTES: usize = 200 * 1024 * 1024;
 const RECORDINGS_DIR: &str = "thu-am";
 
 /// `%XX` escapes (encodeURIComponent) back to text.
-fn percent_decoded(value: &str) -> Option<String> {
+pub(crate) fn percent_decoded(value: &str) -> Option<String> {
     let bytes = value.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut at = 0;

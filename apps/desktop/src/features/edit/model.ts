@@ -441,9 +441,14 @@ export function modeOffered(mode: string, kind: string, reviewable: boolean): bo
   if (mode === "template") return kind === "product";
   // Phụ đề for every video (Issue #523): a dubbing job's re-run, or lines kept in the draft.
   if (mode === "subs") return true;
-  // Tạo thêm: đóng gói, Shorts and đổi khung work from a dubbing job's outputs.
-  if (mode === "more") return kind === "job";
+  // Đăng & Shorts: đóng gói, Shorts and đổi khung work from a dubbing job's outputs (#514);
+  // Thumbnail (#901) is there for every video, so the tab is too.
   return true;
+}
+
+/** Đăng & Shorts: every section for a dubbing job, else only Thumbnail. */
+export function moreSections(kind: string): "all" | "thumbnail" {
+  return kind === "job" ? "all" : "thumbnail";
 }
 
 export function openingTime(kind: string, edit: Edit, playerTime: number | null): number {

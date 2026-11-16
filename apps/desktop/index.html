@@ -717,7 +717,7 @@
                 <button type="button" role="tab" data-mode="cover" aria-selected="false" aria-controls="edit-panel" title="Che chữ gốc trên hình"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><rect x="4" y="5" width="16" height="14" rx="2" stroke="currentColor" stroke-width="1.6" fill="none"/><rect x="6.5" y="12.5" width="11" height="4" rx="1" fill="currentColor" opacity=".55"/></svg><span>Che chữ</span></button>
                 <button type="button" role="tab" data-mode="audio" aria-selected="false" aria-controls="edit-panel" title="Hiệu ứng âm thanh, âm thanh của bạn và âm lượng gốc"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M4 12h2M8 8v8M12 5v14M16 9v6M20 11v2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg><span>Âm thanh</span></button>
                 <button type="button" role="tab" data-mode="text" aria-selected="false" aria-controls="edit-panel" title="Tiêu đề, chú thích, tên kênh trên video"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M5 6h14M12 6v13M9 19h6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg><span>Chữ</span></button>
-                <button type="button" role="tab" data-mode="more" aria-selected="false" aria-controls="edit-panel" title="Nội dung đăng bài, video đóng gói, Shorts và bản 16:9 từ video này"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M4 12l16-7-5 15-3-6z" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linejoin="round"/></svg><span>Đăng &amp; Shorts</span></button>
+                <button type="button" role="tab" data-mode="more" aria-selected="false" aria-controls="edit-panel" title="Nội dung đăng bài, video đóng gói, Shorts, bản 16:9 và thumbnail từ video này"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M4 12l16-7-5 15-3-6z" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linejoin="round"/></svg><span>Đăng &amp; Shorts</span></button>
               </div>
               <div id="edit-panel-body" class="edit-panel-body">
                 <section id="edit-layers" class="edit-layers" aria-label="Tách lớp phim tài liệu" hidden>
@@ -1241,7 +1241,7 @@
                   </div>
                 </section>
                 <section id="edit-more" class="edit-more" aria-label="Đăng &amp; Shorts" hidden>
-                  <p class="edit-note">Từ video này: nội dung đăng bài; bản đóng gói có mở đầu, kết thúc và nhạc; Shorts; bản đổi khung 16:9. Mỗi bản ra file mới, video gốc giữ nguyên.</p>
+                  <p class="edit-note">Từ video này: nội dung đăng bài; bản đóng gói có mở đầu, kết thúc và nhạc; Shorts; bản đổi khung 16:9; thumbnail. Mỗi bản ra file mới, video gốc giữ nguyên.</p>
                   <div class="more-list">
                     <details id="posts-section" class="more-item" hidden>
                       <summary>
@@ -1378,6 +1378,48 @@
                             <button id="reframe-folder" class="btn" type="button">Mở thư mục</button>
                           </div>
                         </form>
+                    </details>
+                    <details id="thumb-section" class="more-item">
+                      <summary>
+                        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M3 5h18v14H3zM3 16l5-5 4 4 3-3 6 6M15 9.5a1.5 1.5 0 1 0 0-.01" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+                        <span><b>Thumbnail</b><small>Ảnh bìa 1280×720 từ khung hình hoặc ảnh của bạn, thêm chữ; không render lại video</small></span>
+                      </summary>
+                      <div class="thumb-body">
+                        <div class="thumb-stage"><canvas id="thumb-canvas" width="1280" height="720" tabindex="0" aria-label="Xem trước thumbnail: kéo chữ để đổi chỗ, kéo nền để chọn phần hình giữ lại"></canvas></div>
+                        <div class="button-row">
+                          <button id="thumb-frame" class="btn" type="button">Lấy khung hình đang xem</button>
+                          <button id="thumb-image" class="btn" type="button">Chọn ảnh…</button>
+                        </div>
+                        <label>Mẫu<select id="thumb-template"><option value="">Chọn mẫu…</option></select></label>
+                        <label>Phóng to<input id="thumb-zoom" type="range" min="100" max="300" step="1" value="100" /></label>
+                        <label>Làm tối nền<input id="thumb-darken" type="range" min="0" max="70" step="1" value="0" /></label>
+                        <div class="thumb-texts">
+                          <span id="thumb-chips" class="thumb-chips"></span>
+                          <button id="thumb-add-text" class="btn" type="button">+ Thêm chữ</button>
+                        </div>
+                        <fieldset id="thumb-text-fields" class="settings thumb-fields" hidden>
+                          <label>Nội dung<textarea id="thumb-text" rows="2" maxlength="120"></textarea></label>
+                          <label>Phông chữ<select id="thumb-font"></select></label>
+                          <label>Cỡ chữ<input id="thumb-size" type="range" step="1" /></label>
+                          <div class="thumb-colors">
+                            <label>Màu chữ<input id="thumb-color" type="color" /></label>
+                            <label>Viền<input id="thumb-stroke" type="color" /></label>
+                            <label>Độ dày viền<input id="thumb-stroke-width" type="range" min="0" max="24" step="1" /></label>
+                          </div>
+                          <label class="check"><input id="thumb-shadow" type="checkbox" /> Đổ bóng</label>
+                          <div class="thumb-colors">
+                            <label class="check"><input id="thumb-band" type="checkbox" /> Dải màu nền</label>
+                            <label>Màu dải<input id="thumb-band-color" type="color" /></label>
+                          </div>
+                          <button id="thumb-delete-text" class="btn" type="button">Xóa chữ này</button>
+                        </fieldset>
+                        <label>Tên file<input id="thumb-name" maxlength="120" /></label>
+                        <label>Định dạng<select id="thumb-format"><option value="jpeg">JPEG (nhẹ, YouTube nhận)</option><option value="png">PNG (giữ nét)</option></select></label>
+                        <div class="thumb-folder-row"><span>Lưu vào</span><b id="thumb-folder"></b><button id="thumb-folder-pick" class="link" type="button">Đổi…</button></div>
+                        <button id="thumb-save" class="btn primary block" type="button">Lưu thumbnail</button>
+                        <p id="thumb-state" class="hint" role="status" aria-live="polite"></p>
+                        <div id="thumb-result" class="button-row" hidden><button id="thumb-reveal" class="btn" type="button">Mở thư mục</button></div>
+                      </div>
                     </details>
                   </div>
                 </section>
