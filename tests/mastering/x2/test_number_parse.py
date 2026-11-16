@@ -113,3 +113,19 @@ class AsrMechanisms(unittest.TestCase):
     def test_ordinary_words_after_numbers_stay_bare(self) -> None:
         self.assertEqual(hn.quantities("độ mỏng là 8,4 và nặng", "vi")["bare"], [8.4])
         self.assertEqual(hn.quantities("chip Snapdragon 8 Gen 3", "en")["bare"], [8.0, 3.0])
+
+
+class NoLanguageAmbiguity(unittest.TestCase):
+    """#877: without a language, a separator that reads differently in vi and en must not decide a conflict."""
+
+    def test_readings_that_disagree_are_unknown(self) -> None:
+        self.assertEqual(number("Sac 7.200 mAh.", "dung lượng 7200mAh"), "unknown")
+        self.assertEqual(number("The pack is 7.200 mAh.", "pack 7200 mAh"), "unknown")
+
+    def test_readings_that_agree_keep_the_verdict(self) -> None:
+        self.assertEqual(number("Sac 7.200 mAh.", "dung lượng 6000mAh"), "conflict")  # 7200 and 7.2 both differ
+        self.assertEqual(number("Sac 7200 mAh.", "dung lượng 7200mAh"), "agree")  # nothing ambiguous
+
+    def test_a_given_language_settles_it(self) -> None:
+        self.assertEqual(hn.compare_numbers("Sac 7.200 mAh.", "dung lượng 7200mAh", langs=("vi", "vi"))["state"], "agree")
+        self.assertEqual(hn.compare_numbers("Sac 7.200 mAh.", "dung lượng 7200mAh", langs=("en", "vi"))["state"], "conflict")
