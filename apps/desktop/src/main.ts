@@ -43,7 +43,7 @@ import { createSfxLibrary } from "./features/sfx/library.ts";
 import { mountSfxSettings } from "./features/sfx/settings.ts";
 import { mountPerformanceSettings } from "./features/performance/settings.ts";
 import { STYLE_STORAGE_KEY, storedStyle, type SubtitleStyle } from "./features/edit/subtitles.ts";
-import { finishedDubFor, mediaUse, MEDIA_STORAGE_KEY, readMedia, seedFromJobs, serializeMedia, USE_LABELS, type MediaEntry } from "./features/media/model.ts";
+import { finishedDubFor, mediaUse, MEDIA_STORAGE_KEY, openMedia, seedFromJobs, USE_LABELS, type MediaEntry } from "./features/media/model.ts";
 import { mountMediaScreen, pauseMedia, type DownloadRow, type MediaScreen } from "./features/media/view.ts";
 import { pickFromMedia } from "./features/media/picker.ts";
 import { COVER_STORAGE_KEY, describeCoverStyle, normalizeCoverStyle, storedCoverStyle, type CoverMode, type CoverStyle } from "./features/edit/cover.ts";
@@ -1884,11 +1884,15 @@ async function compileEntries(entries: readonly MediaEntry[]): Promise<void> {
   const added = compilation.pick(ready.map((job) => job.id));
   if (!added && ready.length) showError("Các video này đã có trong video ghép.");
 }
-const storedMedia = (() => {
-  try { return window.localStorage.getItem(MEDIA_STORAGE_KEY); } catch { return null; }
-})();
+// Read once at startup (#616): a read error or an unconfirmed backup never lets the rebuilt list overwrite the stored one.
+const openedMedia = openMedia({
+  getItem: (key) => window.localStorage.getItem(key),
+  setItem: (key, value) => window.localStorage.setItem(key, value),
+}, () => seedFromJobs(queue.getSnapshot().jobs));
 const mediaStore = {
   write: (value: string): boolean => {
+    // Session-only: the stored list could not be read or backed up, so it is left as it is until DubFlow restarts.
+    if (openedMedia.sessionOnly) return false;
     try {
       window.localStorage.setItem(MEDIA_STORAGE_KEY, value);
       return true;
@@ -1897,16 +1901,10 @@ const mediaStore = {
     }
   },
 };
-const storedState = readMedia(storedMedia);
-// An unreadable list is kept aside (never overwritten silently) and rebuilt from Lồng tiếng.
-if (storedState.state === "corrupt" && storedMedia !== null) {
-  try { window.localStorage.setItem(`${MEDIA_STORAGE_KEY}.corrupt`, storedMedia); } catch { /* the notice below still tells the user */ }
-}
-const parsedMedia = storedState.state === "ok" ? storedState.entries : null;
 media = mountMediaScreen({
   store: mediaStore,
-  // First run after the update: what was already downloaded comes along from Lồng tiếng.
-  initial: parsedMedia ?? seedFromJobs(queue.getSnapshot().jobs),
+  // First run after the update (or an unreadable list): what was already downloaded comes along from Lồng tiếng.
+  initial: openedMedia.entries,
   now: () => new Date().toISOString(),
   jobs: () => queue.getSnapshot().jobs,
   downloads: downloadRows,
@@ -1922,9 +1920,7 @@ media = mountMediaScreen({
 });
 // The link box sits at the top of Hàng đợi, where downloaded videos land.
 $("#media-col .queue-col-head").after($("#link-form"));
-if (!parsedMedia) mediaStore.write(serializeMedia(media.entries()));
-if (storedState.state === "corrupt") showError("Danh sách Hàng đợi đã lưu bị hỏng nên được dựng lại từ các video ở Lồng tiếng. Bản cũ được giữ riêng; file video trên máy không bị ảnh hưởng.");
-else if (storedState.state === "ok" && storedState.dropped) showError(`${storedState.dropped} mục hỏng trong danh sách Hàng đợi đã được bỏ qua.`);
+if (openedMedia.notice) showError(openedMedia.notice);
 const docu = mountDocu(invoke, claudeKey, { jobs: () => queue.getSnapshot().jobs, outputRoot, roots: outputRoots, mediaUrl: playableUrl, vibi: vibiStudio,
   edit: (video, seed) => void editVideo({ id: video.outputPath, kind: "docu", outputPath: video.outputPath, displayName: video.displayName, seed }, "docu"),
   // Claude working over MCP: a pulsing dot on "Phim tài liệu" wherever the user is.

@@ -74,6 +74,86 @@ assert.deepEqual(over.entries.map((entry) => entry.path), ["c:/1.MP4", "C:\\2.mp
 
 console.log("media ok");
 
+// #616: opening the stored list never overwrites what it cannot read or back up.
+{
+  const { openMedia, MEDIA_STORAGE_KEY, MEDIA_CORRUPT_KEY } = await import("../src/features/media/model.ts");
+  const fake = (initial, faults = {}) => {
+    const data = new Map(Object.entries(initial));
+    const writes = [];
+    return {
+      data, writes,
+      getItem(key) { if (faults.get?.(key)) throw new Error("SecurityError"); return data.has(key) ? data.get(key) : null; },
+      setItem(key, value) { writes.push(key); if (faults.set?.(key)) throw new Error("QuotaExceededError"); data.set(key, value); },
+    };
+  };
+  const seed = () => [{ id: "media-j1", path: "D:\\dl\\a.mp4", title: "a", addedAt: "t" }];
+  const curated = serializeMedia([{ id: "m-own", path: "C:\\mine.mp4", title: "của tôi", addedAt: "t" }]);
+
+  // 1. A read that throws is "unavailable", not "missing": nothing is written, the list is session-only.
+  let store = fake({ [MEDIA_STORAGE_KEY]: curated }, { get: () => true });
+  let opened = openMedia(store, seed);
+  assert.equal(opened.state, "unavailable");
+  assert.equal(opened.sessionOnly, true);
+  assert.equal(opened.saved, false);
+  assert.deepEqual(opened.entries.map((entry) => entry.id), ["media-j1"]);
+  assert.deepEqual(store.writes, []);
+  assert.equal(store.data.get(MEDIA_STORAGE_KEY), curated);
+  assert.match(opened.notice, /Không đọc được danh sách Hàng đợi/);
+
+  // 2. Corrupt list whose backup write fails, while the primary seed write would succeed: primary bytes stay unchanged.
+  const broken = '{"items": [ {"id": "m-own", "path": "C:\\\\mine.mp4"'; // truncated JSON
+  store = fake({ [MEDIA_STORAGE_KEY]: broken }, { set: (key) => key === MEDIA_CORRUPT_KEY });
+  opened = openMedia(store, seed);
+  assert.equal(opened.state, "corrupt");
+  assert.equal(opened.backup, "failed");
+  assert.equal(opened.sessionOnly, true);
+  assert.equal(store.data.get(MEDIA_STORAGE_KEY), broken);
+  assert.equal(store.writes.includes(MEDIA_STORAGE_KEY), false);
+  assert.match(opened.notice, /chưa sao lưu được bản cũ/);
+
+  // A backup that does not read back the same bytes is not confirmed either.
+  store = fake({ [MEDIA_STORAGE_KEY]: broken });
+  const setItem = store.setItem.bind(store);
+  store.setItem = (key, value) => setItem(key, key === MEDIA_CORRUPT_KEY ? value.slice(0, 5) : value);
+  opened = openMedia(store, seed);
+  assert.equal(opened.backup, "failed");
+  assert.equal(store.data.get(MEDIA_STORAGE_KEY), broken);
+
+  // Corrupt list with a confirmed backup: the old bytes are kept aside, the rebuilt list is saved, the usual message is shown.
+  store = fake({ [MEDIA_STORAGE_KEY]: broken });
+  opened = openMedia(store, seed);
+  assert.equal(opened.backup, "saved");
+  assert.equal(store.data.get(MEDIA_CORRUPT_KEY), broken);
+  assert.equal(opened.saved, true);
+  assert.equal(opened.sessionOnly, false);
+  assert.deepEqual(parseMedia(store.data.get(MEDIA_STORAGE_KEY)).map((entry) => entry.id), ["media-j1"]);
+  assert.equal(opened.notice, "Danh sách Hàng đợi đã lưu bị hỏng nên được dựng lại từ các video ở Lồng tiếng. Bản cũ được giữ riêng; file video trên máy không bị ảnh hưởng.");
+
+  // 3. First run whose seed write fails: the user is told the list is memory-only, never that it was saved.
+  store = fake({}, { set: (key) => key === MEDIA_STORAGE_KEY });
+  opened = openMedia(store, seed);
+  assert.equal(opened.state, "missing");
+  assert.equal(opened.saved, false);
+  assert.equal(opened.sessionOnly, false);
+  assert.equal(store.data.has(MEDIA_STORAGE_KEY), false);
+  assert.match(opened.notice, /chỉ nằm trong bộ nhớ/);
+
+  // Ordinary paths are unchanged: a first run saves the seed quietly, a stored list is read as is (bad rows counted).
+  store = fake({});
+  opened = openMedia(store, seed);
+  assert.deepEqual([opened.state, opened.saved, opened.notice], ["missing", true, null]);
+  assert.deepEqual(parseMedia(store.data.get(MEDIA_STORAGE_KEY)).map((entry) => entry.id), ["media-j1"]);
+  const withBad = '{"items":[{"id":"a","path":"C:/a.mp4","title":"a","addedAt":"t"},{"id":"b"}]}';
+  store = fake({ [MEDIA_STORAGE_KEY]: withBad });
+  opened = openMedia(store, seed);
+  assert.deepEqual([opened.state, opened.saved, opened.sessionOnly, opened.dropped], ["ok", true, false, 1]);
+  assert.deepEqual(store.writes, []);
+  assert.equal(opened.notice, "1 mục hỏng trong danh sách Hàng đợi đã được bỏ qua.");
+  store = fake({ [MEDIA_STORAGE_KEY]: curated });
+  assert.deepEqual([openMedia(store, seed).notice, store.writes], [null, []]);
+  console.log("media storage faults ok");
+}
+
 const { clock } = await import("../src/features/media/player_bar.ts");
 assert.equal(clock(0), "0:00");
 assert.equal(clock(75.9), "1:15");
