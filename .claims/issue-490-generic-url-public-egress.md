@@ -2,7 +2,7 @@ DUBFLOW_PR_V1
 Issue: #490
 Lease-Owner: Claude/issue-490-generic-url-public-egress
 Lease-Heartbeat: 2026-11-16T15:40:00Z
-Tested-Base-SHA: 95c992782523e8e2e6c902c93aa67d1f262b81c3
+Tested-Base-SHA: 435219ec74c9352a552c06d6804b122ce8c07a07
 Conflict-Domains: source-public-egress,generic-url-extractor,materializer-transport
 Expected-Paths:
 - .claims/issue-490-generic-url-public-egress.md
