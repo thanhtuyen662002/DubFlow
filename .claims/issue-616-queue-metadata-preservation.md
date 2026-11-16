@@ -2,7 +2,7 @@ DUBFLOW_PR_V1
 Issue: #616
 Lease-Owner: Claude/issue-616-queue-metadata-preservation
 Lease-Heartbeat: 2026-11-15T08:38:00Z
-Tested-Base-SHA: 98738be8c962ab83b9721c13c2958984a09efc2a
+Tested-Base-SHA: 425373bada2e76d17e29506864cb2e1d4a9b34ac
 Conflict-Domains: desktop-shell,media-persistence,local-storage-recovery
 Expected-Paths: .claims/issue-616-queue-metadata-preservation.md,apps/desktop/src/main.ts,apps/desktop/src/features/media/model.ts,apps/desktop/src/features/media/view.ts,apps/desktop/test/media.test.mjs
 Required-CI: PR Fast + PR Integration (desktop-editor-subtitles selected) + PR Desktop Editor Windows
@@ -75,3 +75,12 @@ ACCEPTED: NO
 - PR Integration #43748411229 passed on `98738be8c962ab83b9721c13c2958984a09efc2a` but explicitly selected no registered component because this branch remains claim-only.
 - This does not satisfy #616 product acceptance; exact final HEAD checks must rerun after this metadata update, and the desktop Windows lane remains pending until product/test paths are changed.
 - The claim now records the current base `98738be8c962ab83b9721c13c2958984a09efc2a`; the stale coder heartbeat remains unchanged.
+
+
+## Lead non-force base synchronization — 2026-11-16 13:42 ICT
+
+- Live Main re-read immediately before this update: `425373bada2e76d17e29506864cb2e1d4a9b34ac` (merge PR #874).
+- Existing branch HEAD before synchronization: `1998cf2a13af7aaf0e59697e24c42c7683eafee2`; prior comparison was ahead 5 / behind 2 because Main advanced by two commits.
+- The only branch-specific path is this claim file. Main's two intervening commits are preserved as the second parent; no product source/test, workflow, contract, schema, migration or lockfile path is changed.
+- Updated the top-level `Tested-Base-SHA` to the exact Main above. The original stale heartbeat `2026-11-15T08:38:00Z` is deliberately unchanged: this Lead sync is not Claude progress and does not renew the coder lease.
+- Phase remains ASSIGNED=YES; STARTED=YES (Draft lease only); CODED=NO; product TESTED=NOT_RUN; INTEGRATED=NO; ACCEPTED=NO.

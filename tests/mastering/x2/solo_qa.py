@@ -32,10 +32,11 @@ from tests.mastering.x2 import hard_negatives as hn  # noqa: E402
 LIMIT_MIN, LIMIT_MAX, LIMIT_DEFAULT = 5, 10, 8
 ANSWERS = ("ok", "wrong", "unsure")
 EXPERIMENT_REASON = "thử nghiệm #867"
-PRIORITY = {"number_conflict": 0, "substitution": 1, "cue_inpoint": 2, "speech_only": 3, "unclear": 4}
+PRIORITY = {"number_conflict": 0, "substitution": 1, "number_unknown": 2, "cue_inpoint": 3, "speech_only": 4, "unclear": 5}
 QUESTION = {
     "number_conflict": "Câu nói một năm/con số khác với lời trong cảnh. Hình có đúng là điều câu nói không?",
     "substitution": "Câu nói về một thứ/hành động khác với lời trong cảnh. Hình có đúng là điều câu nói không?",
+    "number_unknown": "Câu nêu một con số mà lời trong cảnh không cho kiểm tra được. Hình có đúng là điều câu nói không?",
     "cue_inpoint": "Đoạn phát đã dời tới chỗ lời được nói. Hình ở đoạn này có còn đúng với câu không?",
     "speech_only": "Cảnh được chọn chỉ vì lời nói trong cảnh. Hình có thật sự cho thấy điều câu nói không?",
     "unclear": "Cảnh chỉ minh họa một phần câu. Có chấp nhận được không?",
