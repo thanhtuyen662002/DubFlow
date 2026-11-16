@@ -134,8 +134,15 @@ def is_public_address(value: str) -> bool:
         embedded = address.ipv4_mapped or address.sixtofour or (address.teredo[1] if address.teredo else None)
         if embedded is not None:
             address = embedded
+    if isinstance(address, ipaddress.IPv4Address) and address in _FAKE_IP_RANGE:
+        return True
     return bool(address.is_global and not address.is_multicast and not address.is_reserved
                 and not address.is_unspecified and not address.is_loopback and not address.is_link_local)
+
+
+# 198.18.0.0/15 (RFC 2544 benchmarking) hosts no LAN or loopback service. Clash/Surge-style "fake-ip" DNS in TUN mode
+# answers every public name from it, so refusing it would break every download for those users.
+_FAKE_IP_RANGE = ipaddress.ip_network("198.18.0.0/15")
 
 
 class EgressPolicy:
@@ -175,6 +182,15 @@ class EgressPolicy:
         if not all(self._allowed(answer) for answer in answers):
             raise _egress_denied("source URL points to a private or non-public network address")
         return answers
+
+    def check_proxied(self, host: str, port: int) -> None:
+        """A user-configured proxy resolves the name itself, so a local lookup failure is not evidence of a private
+        target; a literal or locally resolved non-public address still is."""
+        try:
+            self.resolve(host, port)
+        except DownloadError as error:
+            if not error.retryable:
+                raise
 
     def check_url(self, url: str) -> str:
         url = validate_http_url(url)
@@ -241,7 +257,7 @@ class _EgressHTTPHandler(HTTPHandler):
         if _proxied(request):
             # A user-configured proxy makes the connection; only the target
             # name can be checked here. The proxy itself is trusted config.
-            self._egress.resolve(*_target_host_port(request))
+            self._egress.check_proxied(*_target_host_port(request))
             return self.do_open(HTTPConnection, request)
         return self.do_open(lambda *a, **k: _BoundHTTPConnection(*a, egress=self._egress, **k), request)
 
@@ -253,7 +269,7 @@ class _EgressHTTPSHandler(HTTPSHandler):
 
     def https_open(self, request):  # type: ignore[no-untyped-def]
         if _proxied(request):
-            self._egress.resolve(*_target_host_port(request))
+            self._egress.check_proxied(*_target_host_port(request))
             return self.do_open(HTTPSConnection, request, context=self._context)
         return self.do_open(lambda *a, **k: _BoundHTTPSConnection(*a, egress=self._egress, **k), request, context=self._context)
 
