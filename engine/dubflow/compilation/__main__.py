@@ -15,6 +15,13 @@ from .job import CompilationError, load_spec, probe_video, run
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        return _main(argv)
+    finally:
+        engine_lock.release_all()  # the run is settled by now; the process ends right after
+
+
+def _main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m engine.dubflow.compilation")
     for name in ("spec", "output-dir", "app-root", "model-root", "ffmpeg", "ffprobe"):
         parser.add_argument(f"--{name}", type=Path, required=True)

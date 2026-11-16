@@ -1,7 +1,7 @@
 DUBFLOW_PR_V1
 Issue: #890
 Lease-Owner: Claude/issue-890-status-and-final-qc
-Lease-Heartbeat: 2026-11-16T17:15:43Z
+Lease-Heartbeat: 2026-11-16T17:35:31Z
 Tested-Base-SHA: c29065ba06e5433a723cd90a06058aafa45bfb30
 Conflict-Domains: run-status-liveness,final-qc-state
 Expected-Paths:

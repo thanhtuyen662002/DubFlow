@@ -83,6 +83,17 @@ class EngineLockTests(unittest.TestCase):
                 process.kill()
                 process.wait()
 
+    def test_an_engine_run_in_process_gives_its_lock_up_when_it_returns(self):
+        # a test (or any caller) running the engine's main in its own process can then delete the run (Windows CI)
+        from engine.dubflow.product import __main__ as worker
+        with TemporaryDirectory() as tmp:
+            out = Path(tmp) / "run"
+            args = ["--spec", str(Path(tmp) / "missing.json"), "--output-dir", str(out), "--app-root", tmp,
+                    "--model-root", tmp, "--ffmpeg", "ffmpeg", "--ffprobe", "ffprobe"]
+            self.assertEqual(worker.main(args), 1)
+            self.assertEqual(try_hold(out / ".dubflow-work"), "held")
+            (out / ".dubflow-work" / "engine.lock").unlink()  # refused on Windows while held
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -17,6 +17,13 @@ from engine.dubflow.support import engine_lock
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        return _main(argv)
+    finally:
+        engine_lock.release_all()  # the run is settled by now; the process ends right after
+
+
+def _main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m engine.dubflow.product")
     parser.add_argument("--spec", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)

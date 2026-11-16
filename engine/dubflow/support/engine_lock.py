@@ -45,3 +45,18 @@ def hold(work: Path) -> None:
         os.close(fd)
         raise EngineBusy("another engine is working on this run") from error
     _HELD[key] = fd
+
+
+def release_all() -> None:
+    """Give up every lock this process holds, once its runs are settled (the engine's ``main`` returning: a caller in
+    the same process, such as a test, may then remove the run's folder; Windows refuses to delete a held file)."""
+    while _HELD:
+        _, fd = _HELD.popitem()
+        try:
+            if sys.platform == "win32":
+                import msvcrt
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass  # closing the descriptor releases it anyway
+        os.close(fd)
