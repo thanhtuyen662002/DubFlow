@@ -150,14 +150,20 @@ class StreamLengthTests(unittest.TestCase):
         from fractions import Fraction
         from unittest import mock
         out = json.dumps({"format": {"duration": "343.133"}, "streams": [
-            {"codec_type": "video", "width": 1920, "height": 1080, "avg_frame_rate": "10294000/343133", "duration": "343.133"},
+            {"codec_type": "video", "codec_name": "h264", "width": 1920, "height": 1080, "avg_frame_rate": "10294000/343133",
+             "duration": "343.133"},
             {"codec_type": "audio"}]}).encode()
-        with mock.patch.object(a.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, out, b"")):
-            info = a.probe(Path("ffprobe"), Path("v6.mp4"))
-        self.assertEqual(info.fps, Fraction(30, 1))
-        self.assertLessEqual(info.fps.numerator, 1_000_000)
-        with mock.patch.object(a.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, out.replace(b"10294000/343133", b"30000/1001"), b"")):
-            self.assertEqual(a.probe(Path("ffprobe"), Path("v.mp4")).fps, Fraction(30000, 1001))  # NTSC stays exact
+        with TemporaryDirectory() as tmp:
+            video = Path(tmp) / "v6.mp4"
+            video.write_bytes(b"\0\0\0\x18ftypmp42")
+            tail = subprocess.CompletedProcess([], 0, b"342.9\n343.1\n", b"")  # the last packets, read for a cut (#894)
+            with mock.patch.object(a.subprocess, "run", side_effect=[subprocess.CompletedProcess([], 0, out, b""), tail]):
+                info = a.probe(Path("ffprobe"), video)
+            self.assertEqual(info.fps, Fraction(30, 1))
+            self.assertLessEqual(info.fps.numerator, 1_000_000)
+            ntsc = out.replace(b"10294000/343133", b"30000/1001")
+            with mock.patch.object(a.subprocess, "run", side_effect=[subprocess.CompletedProcess([], 0, ntsc, b""), tail]):
+                self.assertEqual(a.probe(Path("ffprobe"), video).fps, Fraction(30000, 1001))  # NTSC stays exact
 
     def test_the_picture_length_is_read_from_mp4_and_matroska_fields(self):
         # rc4 D1: the picture ended 87 ms before the container; a moment placed there rendered without picture
