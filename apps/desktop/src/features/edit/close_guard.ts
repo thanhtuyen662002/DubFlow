@@ -48,6 +48,8 @@ export function unsavedPrompt(action: "close" | "exit", unapplied = false): Conf
 }
 
 export type CloseGuard = {
+  /** Something to wait for first: a close of the editor already asking (one question at a time). */
+  before?: () => Promise<unknown> | null;
   /** Write the pending draft; true when the disk has every change. */
   flush(): Promise<boolean>;
   /** Ask whether to close anyway; true only when the user chose to lose the change. */
@@ -66,6 +68,8 @@ export function closeGuard(guard: CloseGuard): () => Promise<boolean> {
   return () => {
     if (running) return running;
     const current = (async () => {
+      const first = guard.before?.();
+      if (first) await first.catch(() => undefined);  // whatever it answered, the draft is checked below
       if (await flushWithin(guard.flush, guard.waitMs ?? CLOSE_WAIT_MS, guard.timers)) return true;
       try {
         return (await guard.ask()) === true;

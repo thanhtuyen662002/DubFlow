@@ -149,6 +149,8 @@ export type Editor = {
   clickPicture(): void;
   /** Write a pending autosave now; true when the draft on disk has every change (Issue #929). */
   flush(): Promise<boolean>;
+  /** A close of the editor in progress (it may be asking), if any: the window close waits for it first. */
+  closing(): Promise<boolean> | null;
   /** Switch the open edit to a tool tab; false when this video does not have it. */
   show(mode: "subs" | "more"): boolean;
   /** Files dropped on the window while editing, at a point in client pixels (null when unknown). */
@@ -1064,26 +1066,15 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     note,
     confirm: (options) => host.confirm(options),
     // The film was rendered again: open it afresh, keeping its draft and the Che tab.
-    reload: async () => {
-      if (!session) return;
-      const target = session.target;
-      // The film file was replaced on disk: drop every cached copy of it.
-      host.mediaChanged(session.outputPath);
-      if (!(await close(false, true))) return;
-      if (await open(target)) setMode("cover");
-    },
+    reload: () => reopenSame(() => setMode("cover")),
   });
   // Each cut of a documentary as its own clip (Issue #630).
   const docuCuts = mountDocuCuts(invoke, {
     note,
     confirm: (options) => host.confirm(options),
-    reload: async () => {
-      if (!session) return;
-      const target = session.target;
+    reload: () => {
       const keep = mode;
-      host.mediaChanged(session.outputPath);
-      if (!(await close(false, true))) return;
-      if (await open(target)) setMode(keep);
+      return reopenSame(() => setMode(keep));
     },
     pps: () => pps,
     toTimeline: (time) => session ? sourceToOutput(current(), time) : null,
@@ -1094,15 +1085,24 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   const docuLayers = mountDocuLayers(invoke, {
     note,
     confirm: (options) => host.confirm(options),
-    reload: async (layers) => {
-      if (!session) return;
-      const target = session.target;
-      // The film file was replaced on disk: drop every cached copy of it.
-      host.mediaChanged(session.outputPath);
-      if (!(await close(false, true))) return;
-      if (await open(target)) await applyLayers(layers);
-    },
+    reload: (layers) => reopenSame(() => applyLayers(layers)),
   });
+
+  /**
+   * The open video's file was rendered again: open it afresh, then `then`. A draft change that could not be saved
+   * goes with it into the reopened editor (Issue #929), so this never asks and never loses it; a user who left the
+   * editor meanwhile is not taken back.
+   */
+  async function reopenSame(then: () => void | Promise<void>): Promise<void> {
+    if (!session) return;
+    const target = session.target;
+    const exit = exits;
+    // The film file was replaced on disk: drop every cached copy of it.
+    host.mediaChanged(session.outputPath);
+    if (!(await close(false, true, true))) return;
+    if (exits !== exit) return;
+    if (await open(target)) await then();
+  }
 
   /** The documentary's split layers back in the reopened draft (Issue #525). */
   async function applyLayers(layers: Layers): Promise<void> {
@@ -1296,7 +1296,9 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     reopen: async (next) => {
       if (!session) return;
       const from = session.target;
+      const exit = exits;
       if (!(await close(false, true))) return;
+      if (exits !== exit) return;
       mode = "template";
       const opened = await open({ id: next.outputPath, kind: "product", outputPath: next.outputPath, displayName: next.displayName });
       if (!opened) leave(from);
@@ -1419,18 +1421,25 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     scheduleSave();
   }
 
+  /** The draft as it goes to disk (project.json). */
+  function draftDocument(current: Session): Record<string, unknown> {
+    const { history, selected, recent } = current;
+    const project = serializeProject(history.current, history.changes, selected, recent);
+    if (current.plainCover) project.cover = cover.document();
+    const thumbnail = thumb.document();
+    if (thumbnail) (project as Record<string, unknown>).thumbnail = thumbnail;
+    // Hoàn tác after a restart (Issue #896): the steps around this edit, within a size budget.
+    const undo = packHistory(history.states, history.index);
+    if (undo) (project as Record<string, unknown>).undo = undo;
+    if (current.plainSubs && current.subsTouched) (project as Record<string, unknown>).subtitles = serializeLayers(current.plainSubs);
+    return project as Record<string, unknown>;
+  }
+
   async function save(): Promise<void> {
     if (!session) return;
-    const { outputPath, history, selected, recent, target: { kind } } = session;
+    const { outputPath, target: { kind } } = session;
     try {
-      const project = serializeProject(history.current, history.changes, selected, recent);
-      if (session.plainCover) project.cover = cover.document();
-      const thumbnail = thumb.document();
-      if (thumbnail) (project as Record<string, unknown>).thumbnail = thumbnail;
-      // Hoàn tác after a restart (Issue #896): the steps around this edit, within a size budget.
-      const undo = packHistory(history.states, history.index);
-      if (undo) (project as Record<string, unknown>).undo = undo;
-      if (session.plainSubs && session.subsTouched) (project as Record<string, unknown>).subtitles = serializeLayers(session.plainSubs);
+      const project = draftDocument(session);
       const { keepOld, oldKept } = session;
       await invoke("edit_project_save", { outputPath, kind, project, keepOld });
       // only once the disk took it: an error stays on screen until a save succeeds
@@ -1457,8 +1466,9 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   }
 
   /** Write a pending change now; true when the draft on disk has every change. */
-  function flush(): Promise<boolean> {
-    return saver.flush();
+  async function flush(): Promise<boolean> {
+    // a change carried by a reload that did not reopen is not on disk either
+    return (await saver.flush()) && !carried;
   }
 
   // the window hidden or the page going away: what is pending goes to disk now, not after the wait
@@ -2893,7 +2903,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       const block = track.querySelector<HTMLElement>(`.tl-seg[data-id="${ended.id}"]`);
       if (block) seekOutput(timeAt(ended.x));
       render();
-      void save();
+      saver.changed();
     }
   }
   content.addEventListener("pointerup", endDrag);
@@ -3471,6 +3481,9 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       if (ticket !== openTicket || (target.kind === "job" && listJob?.id !== target.id)) return false;
       const opened = resolveTarget(target, loaded.kind);
       const info = { path: outputPath, title: opened.displayName, width: loaded.width, height: loaded.height, fps: loaded.fps ?? 30, hasAudio: loaded.has_audio };
+      // A reload carried a change it could not save (Issue #929): it, not the older draft on disk, is the draft.
+      const carry = carried?.outputPath === outputPath ? carried : null;
+      if (carry) loaded.project = carry.project;
       const project = parseProject(loaded.project, loaded.duration, info);
       const edit = project?.edit ?? (opened.seed ?? ((fresh: Edit) => fresh))(createEdit(loaded.duration, info));
       const last = status?.exports.at(-1);
@@ -3485,8 +3498,9 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       session = {
         target: opened, reviewable: opened.kind === "job" && !!opened.job && reviewable !== false, outputPath, facts, history: new EditHistory(edit, changes), draft: null,
         selected: project?.selected ?? outputToSource(edit, start)?.segment.id ?? edit.segments[0].id, overlay: null,
-        outputTime: start, index: 0, playing: false, exporting: null, recent: project?.recent ?? [], plainCover: false, keepOld: !!loaded.project && !project,
-        oldKept: !!loaded.draft_problem || (!!loaded.project && !project), plainSubs: null, subsTouched: false,
+        outputTime: start, index: 0, playing: false, exporting: null, recent: project?.recent ?? [], plainCover: false,
+        keepOld: carry ? carry.keepOld : !!loaded.project && !project,
+        oldKept: carry ? carry.oldKept : !!loaded.draft_problem || (!!loaded.project && !project), plainSubs: null, subsTouched: false,
         steps: [], redoSteps: [], subsPast: [], subsFuture: [], subsShadow: "", subsAt: 0, subsBurst: null, markIn: null, markOut: null, shuttle: 1,
       };
       session.plainCover = !session.reviewable;
@@ -3534,6 +3548,11 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
         ? `Bản nháp cũ không mở được (${String(loaded.draft_problem).slice(0, 80)}); DubFlow giữ lại bản đó và bắt đầu bản nháp mới.`
         : loaded.project && !project ? "Bản nháp cũ không mở được (có thể làm cho bản dựng khác của video); DubFlow giữ lại bản đó và bắt đầu bản nháp mới." : "";
       $("#edit-hint").textContent = "";
+      if (carry) {
+        carried = null;
+        scheduleSave();  // still not on disk: written as soon as it can be
+      }
+      quietlyLeft = null;
       screen.classList.add("editing");
       host.refresh();
       seekOutput(start);
@@ -3558,23 +3577,53 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     }
   }
 
-  /** Leave edit mode; `quiet` keeps the page (the next video opens right after). */
-  let closing: Promise<boolean> | null = null;
-  function close(ask: boolean, quiet = false): Promise<boolean> {
-    // One close at a time: it waits for the draft and may ask, and navigating again meanwhile waits on the same answer.
-    if (closing) return closing;
-    const pending = closeNow(ask, quiet);
-    closing = pending;
-    void pending.finally(() => { if (closing === pending) closing = null; });
+  /**
+   * Leave edit mode; `quiet` keeps the page (the next video opens right after); `carry` (a reload of the same video)
+   * takes a change that could not be saved into the reopened editor instead of asking.
+   */
+  let closing: { pending: Promise<boolean>; key: string } | null = null;
+  /** Counts the closes that leave the page: a reload or a reopen started before one does not open the video again. */
+  let exits = 0;
+  function close(ask: boolean, quiet = false, carry = false): Promise<boolean> {
+    if (!quiet) exits += 1;
+    const key = `${ask}:${quiet}:${carry}`;
+    // One close at a time: it waits for the draft and may ask. The same request meanwhile (navigating again) gets the
+    // same answer; a different one runs after it.
+    if (closing?.key === key) return closing.pending;
+    const pending = (closing ? closing.pending.catch(() => false) : Promise.resolve(true)).then(() => closeNow(ask, quiet, carry));
+    const current = { pending, key };
+    closing = current;
+    void pending.finally(() => { if (closing === current) closing = null; });
     return pending;
   }
 
-  async function closeNow(ask: boolean, quiet: boolean): Promise<boolean> {
-    if (!session) return true;
+  /** A change a reload could not save, for the editor it reopens (Issue #929). */
+  let carried: { outputPath: string; project: Record<string, unknown>; keepOld: boolean; oldKept: boolean } | null = null;
+  /** The video a quiet close left (a reload about to reopen it). */
+  let quietlyLeft: EditTarget | null = null;
+
+  /** Keep the change `saver` could not write for the reopened editor, and stop trying to write it here. */
+  function carry(current: Session): void {
+    carried = { outputPath: current.outputPath, project: draftDocument(current), keepOld: current.keepOld, oldKept: current.oldKept };
+    saver.drop();
+  }
+
+  async function closeNow(ask: boolean, quiet: boolean, carrying: boolean): Promise<boolean> {
+    if (!session) {
+      // a reload left the video and has not reopened it: leaving the page now still leaves it
+      if (!quiet && quietlyLeft) {
+        const left = quietlyLeft;
+        quietlyLeft = null;
+        leave(left);
+      }
+      return true;
+    }
     // The draft first (Issue #929): a change that could not be saved is never left behind without asking.
     const saved = await flushWithin(() => saver.flush(), CLOSE_WAIT_MS, windowTimers);
     if (!session) return true;
-    if (!saved) {
+    if (!saved && carrying) {
+      carry(session);
+    } else if (!saved) {
       const unapplied = subs.dirty() || docuCover.dirty || docuCuts.dirty || templateMode.dirty();
       // "Ở lại" keeps the editor open, and the saver keeps trying
       if (!(await host.confirm(unsavedPrompt("exit", unapplied)))) return false;
@@ -3597,8 +3646,11 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     // a change made while the question was open goes to disk too
     if (saver.pending && !(await flushWithin(() => saver.flush(), CLOSE_WAIT_MS, windowTimers))) {
       if (!session) return true;
-      if (!(await host.confirm(unsavedPrompt("exit")))) return false;
-      saver.drop();
+      if (carrying) carry(session);
+      else {
+        if (!(await host.confirm(unsavedPrompt("exit")))) return false;
+        saver.drop();
+      }
     }
     if (!session) return true;
     const leaving = session.target;
@@ -3626,7 +3678,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     closePopover();
     dialog.hidden = true;
     versions.close();
-    if (!quiet) leave(leaving);
+    if (quiet) quietlyLeft = leaving;
+    else leave(leaving);
     return true;
   }
 
@@ -3678,7 +3731,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       session.history.markExported(session.exporting);
       session.exporting = null;
       renderPanel();
-      void save();
+      saver.changed();
     }
     if (dialogWaiting && state === "COMPLETED") dialogDone = response.status?.output_path ?? null;
     if (dialogWaiting && (state === "FAILED" || state === "CANCELLED")) {
@@ -3736,8 +3789,14 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     }));
   }
 
+  /** The queue selection the user chose to stay in the editor for (its draft could not be saved). */
+  let stayedFor: string | null = null;
   function select(job: QueueJob | null): void {
-    if (session && session.target.kind === "job" && job?.id !== session.target.id) void close(false);
+    if (session && session.target.kind === "job" && job?.id !== session.target.id) {
+      // asked once per selection: a refused close is not asked again on every render
+      const id = job?.id ?? "";
+      if (stayedFor !== id) void close(false).then((left) => { if (!left && session) stayedFor = id; });
+    } else stayedFor = null;
     const done = !!job && job.status.state === "COMPLETED" && !!job.outputPath;
     openButton.hidden = !done;
     // A version made by Phụ đề "Áp dụng" is offered for editing once it is ready.
@@ -3999,6 +4058,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     togglePlay,
     clickPicture,
     flush,
+    closing: () => closing?.pending ?? null,
     show(next) {
       if (!session || !offered(next)) return false;
       setMode(next);

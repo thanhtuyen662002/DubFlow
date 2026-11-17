@@ -339,6 +339,46 @@ for (const outcome of ["ok", "fail"]) {
   assert.equal(await closeGuard({ flush: async () => false, ask: async () => { throw new Error("x"); }, timers })(), false);
 }
 
+// The window close waits for an editor close that is already asking: never two questions at once.
+{
+  const { timers } = clock();
+  let answer, flushed = 0, asked = 0;
+  const editorClosing = new Promise((resolve) => { answer = resolve; });
+  let saved = false;
+  const mayClose = closeGuard({ before: () => editorClosing, flush: async () => { flushed += 1; return saved; },
+    ask: async () => { asked += 1; return false; }, timers });
+  const result = mayClose();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(flushed, 0, "nothing until the editor's own question is answered");
+  assert.equal(asked, 0);
+  saved = true;  // "Vẫn thoát" there: the change was let go, nothing is pending
+  answer(true);
+  assert.equal(await result, true);
+  assert.equal(flushed, 1);
+  assert.equal(asked, 0, "no second question");
+  // nothing closing: no wait at all
+  assert.equal(await closeGuard({ before: () => null, flush: async () => true, ask: async () => false, timers })(), true);
+}
+
+// A system clock step back cannot push the next try past RETRY_MAX_MS (windowTimers uses a steady clock too).
+{
+  let now = 0, next = 1;
+  const due = new Map();
+  const timers = { now: () => now, set: (callback, ms) => { const id = next++; due.set(id, { at: now + ms, callback }); return id; },
+    clear: (id) => { due.delete(id); } };
+  const saver = new Autosaver(async () => { throw new Error("held"); }, timers);
+  saver.changed();
+  due.get(1).callback();
+  due.delete(1);
+  await new Promise((resolve) => setImmediate(resolve));
+  now -= 3_600_000;  // the clock goes back an hour
+  saver.changed();
+  const waits = [...due.values()].map((timer) => timer.at - now);
+  assert.equal(waits.length, 1);
+  assert.ok(waits[0] <= RETRY_MAX_MS, `next try in ${waits[0]} ms`);
+  saver.drop();
+}
+
 // The wording never says the change is saved, and the safe answer is "Ở lại".
 for (const action of ["close", "exit"]) {
   const prompt = unsavedPrompt(action, true);
@@ -435,6 +475,19 @@ for (const action of ["close", "exit"]) {
   const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
   assert.match(main, /wireWindowClose\(appWindow, \$\("#window-close"\), mayClose\)/);
   assert.doesNotMatch(main, /editor\.flush\(\)\.finally\(/, "no close that ignores a failed save");
+  assert.match(main, /closeGuard\(\{ before: \(\) => editor\.closing\(\)/, "the window close waits for an editor close in progress");
+  // every save goes through the saver (a direct save() would neither be retried nor seen by a close)
+  assert.doesNotMatch(view, /void save\(\)/);
+  assert.equal((view.match(/\bsave\(\)/g) ?? []).length, 2, "save() is defined once and called only by the Autosaver");
+  // a reload of the same video carries an unsaved change instead of asking, and does not undo a later exit
+  const reopen = view.slice(view.indexOf("async function reopenSame("), view.indexOf("/** The documentary's split layers back"));
+  assert.match(reopen, /close\(false, true, true\)/);
+  assert.match(reopen, /if \(exits !== exit\) return;/);
+  assert.equal((view.match(/reopenSame\(/g) ?? []).length, 4, "the three documentary reloads use it");
+  assert.doesNotMatch(view, /reload: async/, "no reload of its own");
+  assert.match(view, /if \(carry\) loaded\.project = carry\.project;/);
+  // a refused close from a queue selection is not asked again on every render
+  assert.match(view, /if \(stayedFor !== id\) void close\(false\)\.then\(\(left\) => \{ if \(!left && session\) stayedFor = id; \}\);/);
   const capabilities = JSON.parse(readFileSync(new URL("../src-tauri/capabilities/default.json", import.meta.url), "utf8"));
   assert.ok(capabilities.permissions.includes("core:window:allow-destroy"), "a close request the guard lets through can end the window");
 }

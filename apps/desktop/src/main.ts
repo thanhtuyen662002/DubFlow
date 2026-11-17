@@ -3003,7 +3003,8 @@ $("#window-maximize").addEventListener("click", () => void appWindow?.toggleMaxi
 // Closing (the × button, Alt+F4, the taskbar) writes the editing draft first; a change that could not be saved is
 // not lost without asking (Issue #929).
 if (appWindow) {
-  const mayClose = closeGuard({ flush: () => editor.flush(), ask: () => confirmDialog(unsavedPrompt("close")), timers: windowTimers });
+  const mayClose = closeGuard({ before: () => editor.closing(), flush: () => editor.flush(), ask: () => confirmDialog(unsavedPrompt("close")),
+    timers: windowTimers });
   void wireWindowClose(appWindow, $("#window-close"), mayClose);
 }
 $("#app-header").addEventListener("mousedown", (event) => {

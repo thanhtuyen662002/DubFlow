@@ -72,6 +72,8 @@ export class Autosaver {
       if (this.editedSinceFailure === null) this.editedSinceFailure = now;
       delay = Math.max(delay, Math.min(this.editedSinceFailure + MAX_WAIT_MS, this.retryAt) - now, 0);
     }
+    // never later than a retry would be, whatever the clock did
+    delay = Math.min(delay, RETRY_MAX_MS);
     this.schedule(delay);
   }
 
@@ -157,7 +159,8 @@ export class Autosaver {
 }
 
 export const windowTimers: Timers = {
-  now: () => Date.now(),
+  // a steady clock: a system time change cannot push a save or a retry away
+  now: () => performance.now(),
   set: (callback, ms) => window.setTimeout(callback, ms),
   clear: (handle) => window.clearTimeout(handle),
 };
