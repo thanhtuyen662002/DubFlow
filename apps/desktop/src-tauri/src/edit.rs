@@ -1172,20 +1172,37 @@ fn clear_left_probes() {
     }
 }
 
-/// A new file opened to go away when it is closed (Windows), so a folder that
-/// does not allow removing it refuses the file instead of keeping it.
+/// A new file opened to go away when it is closed (Windows), so nothing is
+/// left even in a folder where a file cannot be removed later.
 fn new_probe(probe: &Path) -> std::io::Result<fs::File> {
     let mut options = fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt;
-        const DELETE: u32 = 0x0001_0000;
         const GENERIC_WRITE: u32 = 0x4000_0000;
         const FILE_FLAG_DELETE_ON_CLOSE: u32 = 0x0400_0000;
-        options.access_mode(GENERIC_WRITE | DELETE).custom_flags(FILE_FLAG_DELETE_ON_CLOSE);
+        options.access_mode(GENERIC_WRITE | DELETE_ACCESS).custom_flags(FILE_FLAG_DELETE_ON_CLOSE);
     }
     options.open(probe)
+}
+
+#[cfg(windows)]
+const DELETE_ACCESS: u32 = 0x0001_0000;
+
+/// Whether a file already in the folder may be removed or renamed, as putting
+/// a finished export in place does: a second open of the check file asking
+/// for DELETE. (The handle that makes a file is always given DELETE, so it
+/// cannot tell.)
+#[cfg(windows)]
+fn can_remove(probe: &Path) -> bool {
+    use std::os::windows::fs::OpenOptionsExt;
+    !matches!(fs::OpenOptions::new().access_mode(DELETE_ACCESS).open(probe), Err(error) if denied(&error))
+}
+
+#[cfg(not(windows))]
+fn can_remove(_probe: &Path) -> bool {
+    true
 }
 
 /// The check with the names it may use: a name already taken is never opened
@@ -1195,13 +1212,15 @@ fn probe_folder(folder: &Path, names: impl IntoIterator<Item = PathBuf>) -> Resu
     for probe in names {
         match new_probe(&probe) {
             Ok(file) => {
+                let removable = can_remove(&probe);
                 drop(file);
-                return removed(&probe).map_err(|_| {
+                if removed(&probe).is_err() {
                     if let Ok(mut left) = LEFT_PROBES.lock() {
                         left.push(probe.clone());
                     }
-                    no_write(folder)
-                });
+                    return Err(no_write(folder));
+                }
+                return if removable { Ok(()) } else { Err(no_write(folder)) };
             }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => {
@@ -4904,11 +4923,9 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
         assert!(unlock.status.success());
         let error = refused.unwrap_err();
         assert!(error.contains("Không có quyền ghi") && error.contains("Không xóa được"), "no delete: {error}");
-        // The check file opens to go away on close, so the refused folder keeps nothing; anything this
-        // process could not remove is its own, and goes at the next check once the deny is gone.
+        // The check file opens to go away on close, so the refused folder keeps nothing.
         let left: Vec<_> = fs::read_dir(&folder).unwrap().map(|entry| entry.unwrap().file_name()).collect();
-        eprintln!("no delete: left after the refusal: {left:?}");
-        assert!(left.iter().all(|name| name.to_string_lossy().starts_with(".dubflow-write-check-")), "{left:?}");
+        assert!(left.is_empty(), "no delete: nothing is left after the refusal: {left:?}");
         assert!(target_folder(&shown).is_ok(), "no delete: fine again once allowed");
         assert_eq!(fs::read_dir(&folder).unwrap().count(), 0, "no delete: nothing is left once the folder is accepted");
         fs::remove_dir_all(root).unwrap();
