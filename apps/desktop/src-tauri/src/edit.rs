@@ -4367,6 +4367,21 @@ mod tests {
         move |step, run| if step == target { Err(std::io::Error::other("injected")) } else { run() }
     }
 
+    /// Save `bytes` at `path` with the app's own steps, and return the steps whose real operation failed (the save
+    /// must fail).
+    fn failed_steps(path: &Path, bytes: &[u8]) -> Vec<DurableStep> {
+        let failed = std::cell::RefCell::new(Vec::new());
+        let hook = |step, run: &mut dyn FnMut() -> std::io::Result<()>| {
+            let result = run();
+            if result.is_err() {
+                failed.borrow_mut().push(step);
+            }
+            result
+        };
+        assert!(write_durable_with(path, bytes, &hook, temp_names(path)).is_err());
+        failed.into_inner()
+    }
+
     /// Where a test makes an outside file and a draft folder beside it (`<base>/work`), empty.
     fn scratch(name: &str) -> (PathBuf, PathBuf) {
         let base = std::env::temp_dir().join(format!("dubflow-{name}-{}", std::process::id()));
@@ -4387,6 +4402,9 @@ mod tests {
         fs::write(partial_of(&path), b"an old partial").unwrap();
         fs::write(dir.join("project.json.1-2-3.saving"), b"another save's temporary file").unwrap();
         fs::write(dir.join(format!("project.json.{}-0-0.saving", std::process::id())), b"another save of this run, still writing").unwrap();
+        let killed = dir.join("project.json.1-2-4.saving");
+        fs::write(&killed, b"left by a run killed while saving, an hour ago").unwrap();
+        fs::File::options().write(true).open(&killed).unwrap().set_modified(SystemTime::now() - Duration::from_secs(3600)).unwrap();
         fs::write(dir.join("project.unreadable-5.json"), b"kept aside").unwrap();
         let before = listing(&dir);
         let modified = fs::metadata(&path).unwrap().modified().unwrap();
@@ -4436,6 +4454,18 @@ mod tests {
             assert_eq!(seen.into_inner().iter().map(|(_, len)| *len).collect::<Vec<_>>(), vec![size], "{step:?} (after)");
             assert_eq!(listing(&dir), before, "{step:?} (after): the old draft and everything beside it as they were");
         }
+        // a real rename error (this call's temporary file is gone when the rename runs): the rename's own error, and
+        // the old draft still there, so nothing deleted it first
+        let hook = |at: DurableStep, run: &mut dyn FnMut() -> std::io::Result<()>| {
+            if at == DurableStep::Rename {
+                for (name, _) in new_temps(&dir, &before) {
+                    fs::remove_file(dir.join(name)).unwrap();
+                }
+            }
+            run()
+        };
+        assert_eq!(write_durable_with(&path, new, &hook, temp_names(&path)).unwrap_err().kind(), std::io::ErrorKind::NotFound);
+        assert_eq!(listing(&dir), before, "a failed rename: the old draft and everything beside it as they were");
         // the same save without a fault takes every step in order, replaces the draft and leaves no temporary file
         let steps = std::cell::RefCell::new(Vec::new());
         write_durable_with(&path, new, &|step, run| { steps.borrow_mut().push(step); run() }, temp_names(&path)).unwrap();
@@ -4463,7 +4493,7 @@ mod tests {
         fs::write(path.join("inside.txt"), b"kept").unwrap();
         let names = || { let mut names: Vec<_> = fs::read_dir(&dir).unwrap().flatten().map(|entry| entry.file_name()).collect(); names.sort(); names };
         let before = names();
-        assert!(write_durable(&path, new).is_err());
+        assert_eq!(failed_steps(&path, new), vec![DurableStep::Rename], "the system refused the rename itself");
         assert_eq!(names(), before, "nothing left beside the draft");
         assert_eq!(fs::read(path.join("inside.txt")).unwrap(), b"kept");
         fs::remove_dir_all(&path).unwrap();
@@ -4475,7 +4505,7 @@ mod tests {
             fs::write(&path, old).unwrap();
             let before = listing(&dir);
             let held = fs::OpenOptions::new().read(true).share_mode(1 | 2).open(&path).unwrap();
-            assert!(write_durable(&path, new).is_err(), "a draft held without delete sharing cannot be replaced");
+            assert_eq!(failed_steps(&path, new), vec![DurableStep::Rename], "a draft held without delete sharing cannot be replaced");
             drop(held);
             assert_eq!(listing(&dir), before, "the old draft byte for byte, and no temporary file");
             write_durable(&path, new).unwrap();
@@ -4544,6 +4574,55 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
     }
 
+    // #896: a real write error (the file size limit of the process, Linux) in the first half or in the rest keeps the
+    // old draft byte for byte and leaves no temporary file. The save runs in a child run of this same test under
+    // `ulimit -f 1` (1024 bytes for bash), with SIGXFSZ ignored so the write returns EFBIG.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_real_write_error_keeps_the_old_draft_and_leaves_no_temporary_file() {
+        const CHILD: &str = "DUBFLOW_TEST_REAL_WRITE_ERROR";
+        let draft = |size: usize| format!(r#"{{"schema_version":4,"segments":[{{}}],"note":"{}"}}"#, "x".repeat(size)).into_bytes();
+        if let Some(dir) = std::env::var_os(CHILD) {
+            let size: usize = std::env::var("DUBFLOW_TEST_REAL_WRITE_SIZE").unwrap().parse().unwrap();
+            let path = PathBuf::from(dir).join("project.json");
+            let failed = std::cell::RefCell::new(Vec::new());
+            let hook = |step, run: &mut dyn FnMut() -> std::io::Result<()>| {
+                let result = run();
+                if result.is_err() {
+                    failed.borrow_mut().push(step);
+                }
+                result
+            };
+            let error = write_durable_with(&path, &draft(size), &hook, temp_names(&path)).unwrap_err();
+            assert_eq!(error.raw_os_error(), Some(27), "EFBIG: {error}");
+            println!("real write error at {:?}", failed.into_inner());
+            return;
+        }
+        let (base, dir) = scratch("draft-real-write-error");
+        let path = dir.join("project.json");
+        let old = br#"{"schema_version":4,"segments":[{}]}"#;
+        fs::write(&path, old).unwrap();
+        fs::write(dir.join("project.json.1-2-3.saving"), b"another save's temporary file").unwrap();
+        let before = listing(&dir);
+        // 3000 bytes: the first half is already over the limit; 1500 bytes: the first half fits, the rest does not
+        for (size, step) in [(3000, "WriteStart"), (1500, "WriteRest")] {
+            let output = Command::new("bash")
+                .arg("-c")
+                .arg(r#"trap '' XFSZ; ulimit -f 1; exec "$0" "$@""#)
+                .arg(std::env::current_exe().unwrap())
+                .args(["--exact", "edit::tests::a_real_write_error_keeps_the_old_draft_and_leaves_no_temporary_file", "--nocapture", "--test-threads=1"])
+                .env(CHILD, &dir)
+                .env("DUBFLOW_TEST_REAL_WRITE_SIZE", size.to_string())
+                .output()
+                .unwrap();
+            let text = String::from_utf8_lossy(&output.stdout).into_owned() + &String::from_utf8_lossy(&output.stderr);
+            assert!(output.status.success() && text.contains("1 passed"), "{step}: {text}");
+            assert!(text.contains(&format!("real write error at [{step}]")), "{step}: {text}");
+            assert_eq!(listing(&dir), before, "{step}: the old draft and everything beside it as they were");
+        }
+        let _ = fs::remove_dir_all(&base);
+    }
+
     // #896: a link (hard or symbolic) left at the old `project.json.partial` name is never followed, written or cut
     #[test]
     fn a_draft_save_never_writes_through_a_link_at_the_old_partial_name() {
@@ -4583,13 +4662,21 @@ mod tests {
         let original = base.join("original");
         fs::create_dir_all(work_dir(&original)).unwrap();
         fs::write(work_dir(&original).join("project.json"), br#"{"schema_version":4,"segments":[{}],"media":[{"id":"main","path":"old.mp4"}]}"#).unwrap();
-        let target = base.join("target");
-        fs::create_dir_all(work_dir(&target)).unwrap();
-        fs::hard_link(&outside, partial_of(&work_dir(&target).join("project.json"))).unwrap();
-        carry_draft(&original, &target);
-        let carried: Value = serde_json::from_slice(&fs::read(work_dir(&target).join("project.json")).unwrap()).unwrap();
-        assert_eq!(carried["media"][0]["path"], json!(display_path(&target.join("final_vi.mp4"))));
-        assert_eq!(fingerprint(&outside), mark, "carry_draft: the outside file's bytes, SHA-256 and time");
+        for kind in kinds.clone() {
+            let target = base.join(format!("target-{}", kind.replace(' ', "-")));
+            fs::create_dir_all(work_dir(&target)).unwrap();
+            let partial = partial_of(&work_dir(&target).join("project.json"));
+            if kind == "symlink" {
+                assert!(crate::product::tests::link_file(&outside, &partial));
+            } else {
+                fs::hard_link(&outside, &partial).unwrap();
+            }
+            carry_draft(&original, &target);
+            let carried: Value = serde_json::from_slice(&fs::read(work_dir(&target).join("project.json")).unwrap()).unwrap();
+            assert_eq!(carried["media"][0]["path"], json!(display_path(&target.join("final_vi.mp4"))), "carry_draft, {kind}");
+            assert_eq!(fingerprint(&outside), mark, "carry_draft, {kind}: the outside file's bytes, SHA-256 and time");
+            assert!(fs::symlink_metadata(&partial).is_ok(), "carry_draft, {kind}: the link itself is left where it was");
+        }
         println!("checked: {}", kinds.join(", "));
         let _ = fs::remove_dir_all(&base);
     }
