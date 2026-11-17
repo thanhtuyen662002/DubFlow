@@ -173,12 +173,20 @@ for (const template of THUMB_TEMPLATES) {
   assert.deepEqual(next.texts.find((text) => text.text === "Phần 2"), added, `band → ${template.id}: the added text is as it was`);
   assert.equal(next.texts.length, template.labelled ? 3 : 2);
 }
-// A thumbnail saved before layouts marked their texts: its largest text is the title, an untouched MỚI goes.
+// A thumbnail saved before layouts marked their texts: the largest text is the title, the next one the label,
+// and nothing is dropped (nothing is known to be the layout's).
 const strip = (thumb) => ({ ...thumb, texts: thumb.texts.map(({ role, ...text }) => text) });
 const old = strip(typed(applyTemplate(doc, "two-lines", "x"), [undefined, "Tiêu đề cũ"]));
-assert.deepEqual(words(applyTemplate(old, "two-lines", "x")), ["MỚI", "Tiêu đề cũ"]);
-assert.deepEqual(words(applyTemplate(old, "band", "x")), ["Tiêu đề cũ"]);
-assert.deepEqual(words(applyTemplate(strip({ ...doc, texts: [twice.texts[0]] }), "band", "Tên video")), ["Tên video"], "an untouched MỚI is never an old title");
+assert.deepEqual(words(applyTemplate(old, "two-lines", "x")), ["MỚI", "Tiêu đề cũ"], "its MỚI is reused as the label, not doubled");
+assert.deepEqual(applyTemplate(old, "band", "x").texts[0], old.texts[0], "on a layout without a label, its MỚI stays as it was");
+assert.deepEqual(words(applyTemplate(old, "band", "x")), ["MỚI", "Tiêu đề cũ"]);
+const oldLabel = strip(typed(applyTemplate(doc, "two-lines", "x"), ["HOT", "Tiêu đề cũ"]));
+const relaid = applyTemplate(oldLabel, "two-lines", "x");
+assert.deepEqual(words(relaid), ["HOT", "Tiêu đề cũ"], "an old typed label is the label");
+assert.deepEqual(relaid.texts.map((text) => text.role), ["label", "title"], "and the result now has roles");
+const lone = strip({ ...doc, texts: [twice.texts[0]] });
+assert.deepEqual(words(applyTemplate(lone, "band", "Tên video")), ["MỚI", "Tên video"], "a MỚI-looking old text is never the title, and is kept");
+assert.deepEqual(words(applyTemplate(lone, "two-lines", "Tên video")), ["MỚI", "Tên video"]);
 // Six texts: all kept; a fresh MỚI is left out rather than drop one; no room at all leaves the thumbnail as it is.
 const five = ["một", "hai", "ba", "bốn", "năm"].map((text, index) => makeText(text, { size: 40 + index }));
 const full = { ...doc, texts: [...five, applyTemplate(doc, "big-bottom", "Tên video").texts[0]] };

@@ -252,9 +252,10 @@ export function untouchedLabel(text: ThumbText): boolean {
  * - the layout's own title and label (the texts a layout made) go to the new
  *   layout's places; on a layout without a label the label stays where it is;
  * - every other text, such as one the user added, stays exactly as it was;
- * - only an untouched "MỚI" label can go.
+ * - only the layout's own "MỚI", untouched, can go.
  * A thumbnail saved before layouts marked their texts takes its largest text
- * as the title. `name` titles a thumbnail that has no title.
+ * as the title and its next text as the label, and drops nothing. `name`
+ * titles a thumbnail that has no title.
  */
 export function applyTemplate(doc: ThumbDoc, id: string, name: string): ThumbDoc {
   const template = THUMB_TEMPLATES.find((item) => item.id === id);
@@ -264,9 +265,12 @@ export function applyTemplate(doc: ThumbDoc, id: string, name: string): ThumbDoc
   const title = marked
     ? words.find((text) => text.role === "title")
     : words.filter((text) => !untouchedLabel(text)).reduce<ThumbText | undefined>((best, text) => (!best || text.size > best.size ? text : best), undefined);
-  // The layout's own "MỚI", still as it made it; on a thumbnail saved before roles, any such "MỚI".
-  const generated = (text: ThumbText): boolean => (!marked || text.role === "label") && untouchedLabel(text);
-  const label = words.find((text) => text !== title && text.role === "label" && !generated(text));
+  // The layout's own "MỚI", still as it made it. On a thumbnail saved before roles nothing is known
+  // to be the layout's, so nothing is dropped and its next text is the label.
+  const generated = (text: ThumbText): boolean => marked && text.role === "label" && untouchedLabel(text);
+  const label = marked
+    ? words.find((text) => text !== title && text.role === "label" && !generated(text))
+    : words.find((text) => text !== title);
   const moved = template.labelled ? label : undefined;
   const kept = words.filter((text) => text !== title && text !== moved && !generated(text));
   let texts = template.texts(title?.text ?? (name.trim() || "Tiêu đề video"), moved?.text ?? TEMPLATE_LABEL);
