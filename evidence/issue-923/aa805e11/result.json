@@ -1,0 +1,503 @@
+{
+ "t45-left-column": {
+  "png": {
+   "type": "image/png",
+   "width": 1280,
+   "height": 720,
+   "bytes": 315443,
+   "pixelsDifferingFromWindow": 0,
+   "meanAbsDiff": 0,
+   "maxDiff": 0,
+   "edgeBright": {
+    "left": 0,
+    "right": 0,
+    "top": 0,
+    "bottom": 0
+   },
+   "sha256": "0f0dfa36de70108c9ab741ba3da86b9d3fc8dddf30d4375ac7f7563f0b6ce191"
+  },
+  "jpeg": {
+   "type": "image/jpeg",
+   "width": 1280,
+   "height": 720,
+   "bytes": 105538,
+   "pixelsDifferingFromWindow": 631216,
+   "meanAbsDiff": 0.917,
+   "maxDiff": 16,
+   "edgeBright": {
+    "left": 0,
+    "right": 0,
+    "top": 0,
+    "bottom": 0
+   },
+   "sha256": "241597ef22177152aa6f27d9e43d0ff033157669b79e825c8a71f900cf009e21"
+  }
+ },
+ "t45-band": {
+  "png": {
+   "type": "image/png",
+   "width": 1280,
+   "height": 720,
+   "bytes": 97362,
+   "pixelsDifferingFromWindow": 0,
+   "meanAbsDiff": 0,
+   "maxDiff": 0,
+   "edgeBright": {
+    "left": 0,
+    "right": 0,
+    "top": 0,
+    "bottom": 0
+   },
+   "sha256": "3ca43de00d2e9b88508bceaea7384283b1b8e4a346a2884cbf04bb52224ec464"
+  },
+  "jpeg": {
+   "type": "image/jpeg",
+   "width": 1280,
+   "height": 720,
+   "bytes": 77709,
+   "pixelsDifferingFromWindow": 396133,
+   "meanAbsDiff": 0.741,
+   "maxDiff": 17,
+   "edgeBright": {
+    "left": 0,
+    "right": 0,
+    "top": 0,
+    "bottom": 0
+   },
+   "sha256": "1bf07bb142d2a7737c76f07e7c2b48498178efcd6f039c6bd88a235d93642632"
+  }
+ },
+ "t45-big-bottom": {
+  "png": {
+   "type": "image/png",
+   "width": 1280,
+   "height": 720,
+   "bytes": 316409,
+   "pixelsDifferingFromWindow": 0,
+   "meanAbsDiff": 0,
+   "maxDiff": 0,
+   "edgeBright": {
+    "left": 0,
+    "right": 0,
+    "top": 0,
+    "bottom": 0
+   },
+   "sha256": "1589322b66ed1670d11756e62d150e889f8025d17295dbf2ebd07e404fbcded8"
+  },
+  "jpeg": {
+   "type": "image/jpeg",
+   "width": 1280,
+   "height": 720,
+   "bytes": 112666,
+   "pixelsDifferingFromWindow": 626174,
+   "meanAbsDiff": 0.951,
+   "maxDiff": 15,
+   "edgeBright": {
+    "left": 0,
+    "right": 0,
+    "top": 0,
+    "bottom": 0
+   },
+   "sha256": "96c9b4df5cd6e5c3ef1dfb5d3f5e8f7ef88c731e9e4c764c1f89cd72c9af3536"
+  }
+ },
+ "t45-two-lines": {
+  "png": {
+   "type": "image/png",
+   "width": 1280,
+   "height": 720,
+   "bytes": 296614,
+   "pixelsDifferingFromWindow": 0,
+   "meanAbsDiff": 0,
+   "maxDiff": 0,
+   "edgeBright": {
+    "left": 0,
+    "right": 0,
+    "top": 0,
+    "bottom": 0
+   },
+   "sha256": "287f74f2d2c93518e416d28689c8cae1d617bfbe24df1d569fb08de387bf7849"
+  },
+  "jpeg": {
+   "type": "image/jpeg",
+   "width": 1280,
+   "height": 720,
+   "bytes": 127313,
+   "pixelsDifferingFromWindow": 809006,
+   "meanAbsDiff": 2.523,
+   "maxDiff": 121,
+   "edgeBright": {
+    "left": 0,
+    "right": 0,
+    "top": 0,
+    "bottom": 0
+   },
+   "sha256": "a53d0112b418395854453cc6f2f92694360290a028863267b63445a727e1cf6c"
+  }
+ },
+ "t107-left-column": {
+  "png": {
+   "type": "image/png",
+   "width": 1280,
+   "height": 720,
+   "bytes": 410523,
+   "pixelsDifferingFromWindow": 0,
+   "meanAbsDiff": 0,
+   "maxDiff": 0,
+   "edgeBright": {
+    "left": 0,
+    "right": 0,
+    "top": 0,
+    "bottom": 0
+   },
+   "sha256": "b1920f311262043472c16fe560091b58989869a7c110a19ab642551b3c724f1b"
+  },
+  "jpeg": {
+   "type": "image/jpeg",
+   "width": 1280,
+   "height": 720,
+   "bytes": 159604,
+   "pixelsDifferingFromWindow": 598675,
+   "meanAbsDiff": 1.026,
+   "maxDiff": 19,
+   "edgeBright": {
+    "left": 0,
+    "right": 0,
+    "top": 0,
+    "bottom": 0
+   },
+   "sha256": "79f2cdc1cf44494d971ac80945ed414ec95408ecc2588645dc5abb282cbe826b"
+  }
+ },
+ "t107-band": {
+  "png": {
+   "type": "image/png",
+   "width": 1280,
+   "height": 720,
+   "bytes": 116702,
+   "pixelsDifferingFromWindow": 0,
+   "meanAbsDiff": 0,
+   "maxDiff": 0,
+   "edgeBright": {
+    "left": 0,
+    "right": 0,
+    "top": 0,
+    "bottom": 0
+   },
+   "sha256": "9700b008a019426b131a2d5dc743f9785ea7f817f9910bd2c9f58f0fb05cb415"
+  },
+  "jpeg": {
+   "type": "image/jpeg",
+   "width": 1280,
+   "height": 720,
+   "bytes": 122310,
+   "pixelsDifferingFromWindow": 603189,
+   "meanAbsDiff": 1.205,
+   "maxDiff": 19,
+   "edgeBright": {
+    "left": 0,
+    "right": 0,
+    "top": 0,
+    "bottom": 0
+   },
+   "sha256": "d705fc9705186dc7b9487a65bcab0f79344b5aed1e6620a66689e258f5fc1b5e"
+  }
+ },
+ "t107-big-bottom": {
+  "png": {
+   "type": "image/png",
+   "width": 1280,
+   "height": 720,
+   "bytes": 400526,
+   "pixelsDifferingFromWindow": 0,
+   "meanAbsDiff": 0,
+   "maxDiff": 0,
+   "edgeBright": {
+    "left": 0,
+    "right": 0,
+    "top": 0,
+    "bottom": 169
+   },
+   "sha256": "c06e398f20a79792ca358b2fed9312f9b5160dd325c0262febf5d63a92b5f013"
+  },
+  "jpeg": {
+   "type": "image/jpeg",
+   "width": 1280,
+   "height": 720,
+   "bytes": 146293,
+   "pixelsDifferingFromWindow": 625281,
+   "meanAbsDiff": 1.047,
+   "maxDiff": 19,
+   "edgeBright": {
+    "left": 0,
+    "right": 0,
+    "top": 0,
+    "bottom": 168
+   },
+   "sha256": "429d0acdf086c052e671269ece7cf570e7883b97ea1d55e660c5f2947af52fda"
+  }
+ },
+ "t107-two-lines": {
+  "png": {
+   "type": "image/png",
+   "width": 1280,
+   "height": 720,
+   "bytes": 460253,
+   "pixelsDifferingFromWindow": 0,
+   "meanAbsDiff": 0,
+   "maxDiff": 0,
+   "edgeBright": {
+    "left": 0,
+    "right": 0,
+    "top": 0,
+    "bottom": 0
+   },
+   "sha256": "552c0a6abc7e02dbb44fa95b3dab840753a7c1719c1aa7d7dc53954522e8c72f"
+  },
+  "jpeg": {
+   "type": "image/jpeg",
+   "width": 1280,
+   "height": 720,
+   "bytes": 210477,
+   "pixelsDifferingFromWindow": 830039,
+   "meanAbsDiff": 3.87,
+   "maxDiff": 111,
+   "edgeBright": {
+    "left": 0,
+    "right": 0,
+    "top": 0,
+    "bottom": 0
+   },
+   "sha256": "07a25ac06d0c28331d63673a23f7a9ef061bb20813454c55ce0afd5055f61ab2"
+  }
+ },
+ "drag": {
+  "left": {
+   "pushed": {
+    "left": 15,
+    "right": 450,
+    "top": 298,
+    "bottom": 389
+   },
+   "back": [
+    40,
+    0
+   ],
+   "after": {
+    "left": 55,
+    "right": 490,
+    "top": 298,
+    "bottom": 389
+   },
+   "movedBy": [
+    40,
+    0
+   ]
+  },
+  "right": {
+   "pushed": {
+    "left": 831,
+    "right": 1266,
+    "top": 314,
+    "bottom": 405
+   },
+   "back": [
+    -40,
+    0
+   ],
+   "after": {
+    "left": 791,
+    "right": 1226,
+    "top": 314,
+    "bottom": 405
+   },
+   "movedBy": [
+    -40,
+    0
+   ]
+  },
+  "bottom": {
+   "pushed": {
+    "left": 423,
+    "right": 858,
+    "top": 590,
+    "bottom": 681
+   },
+   "back": [
+    0,
+    -40
+   ],
+   "after": {
+    "left": 423,
+    "right": 858,
+    "top": 550,
+    "bottom": 641
+   },
+   "movedBy": [
+    0,
+    -40
+   ]
+  },
+  "top": {
+   "pushed": {
+    "left": 422,
+    "right": 857,
+    "top": 25,
+    "bottom": 116
+   },
+   "back": [
+    0,
+    40
+   ],
+   "after": {
+    "left": 422,
+    "right": 857,
+    "top": 65,
+    "bottom": 156
+   },
+   "movedBy": [
+    0,
+    40
+   ]
+  }
+ },
+ "scenarios": {
+  "A_twoStrokes120WithWobble4px": {
+   "start": "7aa9d2ed0fa02877",
+   "middleInk": {
+    "left": 300,
+    "right": 1219,
+    "top": 193,
+    "bottom": 681
+   },
+   "startInk": {
+    "left": 128,
+    "right": 1153,
+    "top": 319,
+    "bottom": 681
+   },
+   "end": "7aa9d2ed0fa02877",
+   "same": true
+  },
+  "B_outAndBack300OneStroke": {
+   "start": "7aa9d2ed0fa02877",
+   "end": "7aa9d2ed0fa02877",
+   "same": true
+  },
+  "C_twoStrokes200EndingTwoPxHigher": {
+   "start": "7aa9d2ed0fa02877",
+   "end": "7aa9d2ed0fa02877",
+   "same": true
+  },
+  "D_sideHeldPushAndJitter": {
+   "startAcross": [
+    14,
+    906
+   ],
+   "seen": [
+    [
+     14,
+     906
+    ],
+    [
+     14,
+     906
+    ],
+    [
+     14,
+     906
+    ],
+    [
+     14,
+     906
+    ],
+    [
+     14,
+     906
+    ],
+    [
+     14,
+     906
+    ]
+   ],
+   "sameAcrossEveryStep": true,
+   "start": "fbf02a6c2d2d58c7",
+   "end": "fbf02a6c2d2d58c7",
+   "same": true
+  },
+  "D_pulledAway40px": {
+   "before": [
+    14,
+    906
+   ],
+   "after": [
+    65,
+    1184
+   ],
+   "moved": true
+  },
+  "E_stretchUpBack": {
+   "stretched": {
+    "left": 497,
+    "right": 1184,
+    "top": 66,
+    "bottom": 681
+   },
+   "up": {
+    "left": 497,
+    "right": 1184,
+    "top": 46,
+    "bottom": 661
+   },
+   "upMovedPx": 20,
+   "backDownSameAsStretched": true,
+   "backAcrossSameAsStart": true,
+   "end": "7aa9d2ed0fa02877",
+   "same": true
+  },
+  "F_sideHeldRoomDependent": {
+   "fontWidths": {
+    "abcd": 298.265625,
+    "word": 447.421875
+   },
+   "targetX": 0.130572509765625,
+   "placed": [
+    15,
+    450,
+    201
+   ],
+   "heldAtLeftEdge": true,
+   "afterStrokes": [
+    [
+     15,
+     450,
+     202
+    ],
+    [
+     15,
+     450,
+     201
+    ],
+    [
+     15,
+     450,
+     202
+    ],
+    [
+     15,
+     450,
+     201
+    ]
+   ],
+   "afterKeys": [
+    15,
+    450,
+    201
+   ],
+   "sameLinesThroughout": true,
+   "note": "same ink left/right; ink height within 2 px (anti-aliasing at a new vertical sub-pixel place); one more line would add about 110 px"
+  }
+ },
+ "stageWidthPx": 311,
+ "browser": "Chromium 153.0.8010.12"
+}

@@ -1,0 +1,162 @@
+[
+ {
+  "case": "t45-left-column",
+  "ffprobe": {
+   "png": "png 1280x720",
+   "jpg": "mjpeg 1280x720"
+  },
+  "pngEdges": [
+   0,
+   0,
+   0,
+   0
+  ],
+  "jpgEdges": [
+   0,
+   0,
+   0,
+   0
+  ],
+  "jpgVsPngMeanAbs": 0.51
+ },
+ {
+  "case": "t45-band",
+  "ffprobe": {
+   "png": "png 1280x720",
+   "jpg": "mjpeg 1280x720"
+  },
+  "pngEdges": [
+   0,
+   0,
+   0,
+   0
+  ],
+  "jpgEdges": [
+   0,
+   0,
+   0,
+   0
+  ],
+  "jpgVsPngMeanAbs": 0.37
+ },
+ {
+  "case": "t45-big-bottom",
+  "ffprobe": {
+   "png": "png 1280x720",
+   "jpg": "mjpeg 1280x720"
+  },
+  "pngEdges": [
+   0,
+   0,
+   0,
+   0
+  ],
+  "jpgEdges": [
+   0,
+   0,
+   0,
+   0
+  ],
+  "jpgVsPngMeanAbs": 0.53
+ },
+ {
+  "case": "t45-two-lines",
+  "ffprobe": {
+   "png": "png 1280x720",
+   "jpg": "mjpeg 1280x720"
+  },
+  "pngEdges": [
+   0,
+   0,
+   0,
+   0
+  ],
+  "jpgEdges": [
+   0,
+   0,
+   0,
+   0
+  ],
+  "jpgVsPngMeanAbs": 1.22
+ },
+ {
+  "case": "t107-left-column",
+  "ffprobe": {
+   "png": "png 1280x720",
+   "jpg": "mjpeg 1280x720"
+  },
+  "pngEdges": [
+   0,
+   0,
+   0,
+   0
+  ],
+  "jpgEdges": [
+   0,
+   0,
+   0,
+   0
+  ],
+  "jpgVsPngMeanAbs": 0.62
+ },
+ {
+  "case": "t107-band",
+  "ffprobe": {
+   "png": "png 1280x720",
+   "jpg": "mjpeg 1280x720"
+  },
+  "pngEdges": [
+   0,
+   0,
+   0,
+   0
+  ],
+  "jpgEdges": [
+   0,
+   0,
+   0,
+   0
+  ],
+  "jpgVsPngMeanAbs": 0.61
+ },
+ {
+  "case": "t107-big-bottom",
+  "ffprobe": {
+   "png": "png 1280x720",
+   "jpg": "mjpeg 1280x720"
+  },
+  "pngEdges": [
+   0,
+   0,
+   0,
+   169
+  ],
+  "jpgEdges": [
+   0,
+   0,
+   0,
+   168
+  ],
+  "jpgVsPngMeanAbs": 0.61
+ },
+ {
+  "case": "t107-two-lines",
+  "ffprobe": {
+   "png": "png 1280x720",
+   "jpg": "mjpeg 1280x720"
+  },
+  "pngEdges": [
+   0,
+   0,
+   0,
+   0
+  ],
+  "jpgEdges": [
+   0,
+   0,
+   0,
+   0
+  ],
+  "jpgVsPngMeanAbs": 1.88
+ }
+]
