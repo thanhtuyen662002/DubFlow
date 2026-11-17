@@ -372,7 +372,7 @@ for (const ok of [false, true]) {
   // synchronous command runs on its main thread), so the new draft is written after the old one ends, or not at all
   const { readFileSync } = await import("node:fs");
   const edit = readFileSync(new URL("../src-tauri/src/edit.rs", import.meta.url), "utf8");
-  assert.match(edit, /#\[tauri::command\]\npub fn edit_project_save\(/, "edit_project_save is a synchronous command");
+  assert.match(edit, /#\[tauri::command\]\r?\npub fn edit_project_save\(/, "edit_project_save is a synchronous command");
 }
 
 // A write still waiting when the change is dropped (the user chose to lose it and opened another video) does not
