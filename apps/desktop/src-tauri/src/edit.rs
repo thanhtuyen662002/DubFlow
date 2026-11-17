@@ -1111,6 +1111,22 @@ pub(crate) fn target_folder(folder: &str) -> Result<PathBuf, String> {
     Ok(resolved)
 }
 
+/// The file removed, trying for about 200 ms: a scanner may hold a new file for a moment.
+fn removed(file: &Path) -> std::io::Result<()> {
+    let mut tries = 0;
+    loop {
+        match fs::remove_file(file) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) if tries >= 9 => return Err(error),
+            Err(_) => {
+                tries += 1;
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
+}
+
 fn folder_error(folder: &Path, error: &std::io::Error) -> String {
     if error.kind() == std::io::ErrorKind::PermissionDenied {
         return no_write(folder);
@@ -1126,16 +1142,17 @@ fn no_write(folder: &Path) -> String {
     fail(format!("Không có quyền ghi vào thư mục lưu “{name}” (thư mục chỉ đọc hoặc bị Windows chặn). Hãy chọn thư mục khác."))
 }
 
-/// Whether a file can be made in the folder: a new empty file, removed at once.
-/// It never touches a file that is there.
+/// Whether DubFlow can finish a file in the folder: a new empty file is made
+/// and removed at once. It never touches a file that is there. A folder that
+/// lets a file be made but not removed is refused too, since putting the
+/// finished export in place (renaming its `.partial`) needs the same right.
 fn writable(folder: &Path) -> Result<(), String> {
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |time| time.as_nanos());
     let probe = folder.join(format!(".dubflow-write-check-{}-{stamp}", std::process::id()));
     match fs::OpenOptions::new().write(true).create_new(true).open(&probe) {
         Ok(file) => {
             drop(file);
-            let _ = fs::remove_file(&probe);
-            Ok(())
+            removed(&probe).map_err(|_| no_write(folder))
         }
         Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => Err(no_write(folder)),
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
@@ -4798,6 +4815,26 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
             assert!(target_folder(&shown).is_ok(), "{right}: fine again once allowed");
             assert_eq!(fs::read_dir(&folder).unwrap().count(), 0, "{right}: nothing is left in the folder");
         }
+        // A file can be made but not removed (no delete on new files, no delete-child on the folder):
+        // the export could not be put in place either, so the folder is refused.
+        let folder = root.join("Không xóa được");
+        fs::create_dir_all(&folder).unwrap();
+        let shown = folder.to_string_lossy().into_owned();
+        let deny = |rights: &str| {
+            let out = Command::new("icacls").arg(&folder).args(["/deny", &*format!("*S-1-1-0:{rights}")]).output().unwrap();
+            assert!(out.status.success(), "icacls {rights}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        deny("(OI)(IO)(DE)");
+        deny("(DC)");
+        let refused = target_folder(&shown);
+        let unlock = Command::new("icacls").arg(&folder).args(["/remove:d", "*S-1-1-0"]).output().unwrap();
+        assert!(unlock.status.success());
+        let error = refused.unwrap_err();
+        assert!(error.contains("Không có quyền ghi") && error.contains("Không xóa được"), "no delete: {error}");
+        // The probe that could not be removed is the only thing there; it goes once the deny is gone.
+        let left: Vec<_> = fs::read_dir(&folder).unwrap().map(|entry| entry.unwrap().path()).collect();
+        assert!(left.len() <= 1 && left.iter().all(|path| path.file_name().unwrap().to_string_lossy().starts_with(".dubflow-write-check-")));
+        assert!(target_folder(&shown).is_ok(), "no delete: fine again once allowed");
         fs::remove_dir_all(root).unwrap();
     }
 

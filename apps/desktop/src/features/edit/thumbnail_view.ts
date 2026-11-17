@@ -255,8 +255,10 @@ export function mountThumbnail(invoke: Invoke, host: ThumbHost): ThumbnailView {
   });
   template.addEventListener("change", () => {
     if (!template.value) return;
-    doc = applyTemplate(doc, template.value, thumbName(host.context()?.name ?? "").replace(/ - thumbnail$/, ""));
+    const next = applyTemplate(doc, template.value, thumbName(host.context()?.name ?? "").replace(/ - thumbnail$/, ""));
     template.value = "";
+    if (next === doc) return note(`Ảnh bìa đã có ${MAX_THUMB_TEXTS} chữ. Xóa bớt một chữ rồi chọn lại mẫu.`);
+    doc = next;
     selected = doc.texts[doc.texts.length - 1]?.id ?? null;
     changed();
   });
