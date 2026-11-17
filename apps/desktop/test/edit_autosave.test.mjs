@@ -675,16 +675,20 @@ for (const action of ["close", "exit"]) {
     assert.equal(state.closed, 1);
     assert.equal(asked, 1, "one question");
   }
-  // the listener cannot start: the guard says so, so the editor does not open (see the view checks below); with
-  // nothing to save, × still closes
-  {
+  // the listener cannot start: the guard says so, so the editor does not open (see the view checks below) and no
+  // draft can be pending; with nothing to save, × and the system close (unguarded now) both still close
+  for (const via of ["button", "system"]) {
     const { window, state } = fakeWindow({ listen: false });
     const button = fakeButton();
     const { timers } = clock();
-    assert.equal(await wireWindowClose(window, button, closeGuard({ flush: async () => true, ask: async () => false, timers })), false);
-    button.click();
+    let flushed = 0;
+    assert.equal(await wireWindowClose(window, button, closeGuard({ flush: async () => { flushed += 1; return true; }, ask: async () => false, timers })), false);
+    assert.equal(state.handlers.length, 0, "no listener left in place");
+    if (via === "button") button.click();
+    else void window.close();
     await settle();
-    assert.equal(state.closed, 1);
+    assert.equal(state.closed, 1, `${via}: closes`);
+    assert.equal(flushed, via === "button" ? 1 : 0, `${via}: the × button still writes the draft first; the system close cannot be seen`);
   }
 
   // A reload (F5, Ctrl+R, Tải lại) leaves the page's close listener in Tauri, which then holds every close for a
