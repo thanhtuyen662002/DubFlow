@@ -297,6 +297,8 @@ const shorts = new Map<string, { started: number; cancelled: boolean; items: Arr
 const reframes = new Map<string, { started: number; cancelled: boolean }>();
 /** Edit drafts and exports per finished video (Cắt ghép, Chèn). */
 const editProjects = new Map<string, unknown>();
+/** Drafts the editor read but could not use, kept aside on its first save (the app's `project.unreadable-*.json`). */
+const editAside = new Map<string, unknown[]>();
 /** Tách giọng in the browser preview: when each video's started. */
 const previewSeparations = new Map<string, number>();
 type PreviewSegment = { media?: number; start: number; end: number; speed: number; volume: number };
@@ -596,7 +598,15 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
         path: `${project.dir}\\documentary.mp4`, kind: "docu", title: project.spec.title, modified: now - 86_400 * (9 + index), size_bytes: 412_000_000 }));
       return [...products, ...compilations, ...films] as T;
     }
-    case "edit_project_save": editProjects.set(String(args.outputPath), JSON.parse(JSON.stringify(args.project))); return null as T;
+    case "edit_project_save": {
+      const path = String(args.outputPath);
+      if (args.keepOld === true && editProjects.has(path)) {
+        editAside.set(path, [...(editAside.get(path) ?? []), editProjects.get(path)].slice(-5));
+        console.info(`[preview] kept aside the draft the editor could not use: ${path}`);
+      }
+      editProjects.set(path, JSON.parse(JSON.stringify(args.project)));
+      return null as T;
+    }
     case "edit_export": {
       const request = args.request as { outputPath: string; folder: string; fileName: string; quality: string; segments: PreviewSegment[];
         media?: string[]; transitions?: Array<{ after: number; type: string; duration: number }>; overlays?: unknown[];
