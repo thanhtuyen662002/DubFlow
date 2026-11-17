@@ -7,7 +7,7 @@
 
 import {
   MAX_TEXT_SIZE, MAX_THUMB_TEXTS, MIN_TEXT_SIZE, SUBTITLE_FONTS, THUMB_HEIGHT, THUMB_TEMPLATES, THUMB_WIDTH,
-  applyTemplate, coverRect, dragPan, emptyThumb, hasThumb, makeText, moveText, normalizeThumb, textAt, textBox, thumbName, wrapLines,
+  DRAG_START_PX, applyTemplate, coverRect, dragPan, dragText, emptyThumb, hasThumb, layoutText, makeText, normalizeThumb, nudgeText, textAt, thumbName,
   type Rect, type ThumbDoc, type ThumbText,
 } from "./thumbnail.ts";
 import { isFont } from "./fonts.ts";
@@ -39,7 +39,6 @@ export type ThumbnailView = {
 };
 
 const $ = <T extends HTMLElement = HTMLElement>(selector: string): T => document.querySelector(selector) as T;
-const MAX_TEXT_WIDTH = THUMB_WIDTH * 0.9;
 
 export function mountThumbnail(invoke: Invoke, host: ThumbHost): ThumbnailView {
   const section = $<HTMLDetailsElement>("#thumb-section");
@@ -111,9 +110,8 @@ export function mountThumbnail(invoke: Invoke, host: ThumbHost): ThumbnailView {
     for (const text of doc.texts) {
       if (!text.text.trim()) continue;
       context.font = fontOf(text);
-      const lines = wrapLines(text.text, MAX_TEXT_WIDTH, (line) => context.measureText(line).width);
-      const widths = lines.map((line) => context.measureText(line).width);
-      const box = textBox(text, widths);
+      // Drawn inside the thumbnail: wrapped to the room around its centre (wider if that is too tall), moved in where it would be cut.
+      const { lines, box } = layoutText(text, (line) => context.measureText(line).width);
       boxes.push({ id: text.id, box });
       if (text.band) {
         context.fillStyle = text.band;
@@ -123,10 +121,10 @@ export function mountThumbnail(invoke: Invoke, host: ThumbHost): ThumbnailView {
       context.textBaseline = "middle";
       context.lineJoin = "round";
       const lineHeight = text.size * 1.15;
-      const top = text.y * THUMB_HEIGHT - (lines.length - 1) * lineHeight / 2;
+      const top = box.y + box.height / 2 - (lines.length - 1) * lineHeight / 2;
       lines.forEach((line, index) => {
         const y = top + index * lineHeight;
-        const x = text.x * THUMB_WIDTH;
+        const x = box.x + box.width / 2;
         context.save();
         if (text.shadow) {
           context.shadowColor = "rgba(0,0,0,0.75)";
@@ -299,8 +297,18 @@ export function mountThumbnail(invoke: Invoke, host: ThumbHost): ThumbnailView {
     changed();
   });
 
-  // Drag a text to move it; drag elsewhere to move the picture inside the frame.
-  let drag: { id: string | null; x: number; y: number; pointer: number } | null = null;
+  // Drag a text to move it; drag elsewhere to move the picture inside the frame. Keys move a text from where it is drawn.
+  const drawnBox = (id: string): Rect | undefined => boxes.find((item) => item.id === id)?.box;
+  /** The box a text would be drawn in, as `draw` lays it out. */
+  const placeOf = (text: ThumbText): Rect | undefined => {
+    if (!context || !text.text.trim()) return undefined;
+    context.font = fontOf(text);
+    return layoutText(text, (line) => context.measureText(line).width).box;
+  };
+  // A text drag goes by the pointer's whole way since the grab (`dragText`): where the text ends depends only on
+  // where the pointer is, so wobble on the way changes nothing and coming back puts it back where it was.
+  type TextDrag = { grabbed: ThumbText; start: { x: number; y: number } };
+  let drag: { id: string | null; x: number; y: number; pointer: number; text: TextDrag | null } | null = null;
   const point = (event: PointerEvent): { x: number; y: number } => {
     const rect = canvas.getBoundingClientRect();
     return { x: (event.clientX - rect.left) * THUMB_WIDTH / rect.width, y: (event.clientY - rect.top) * THUMB_HEIGHT / rect.height };
@@ -309,7 +317,8 @@ export function mountThumbnail(invoke: Invoke, host: ThumbHost): ThumbnailView {
     const at = point(event);
     const id = textAt(boxes, at.x, at.y);
     if (id !== selected) select(id);
-    drag = { id, ...at, pointer: event.pointerId };
+    const grabbed = doc.texts.find((text) => text.id === id);
+    drag = { id, ...at, pointer: event.pointerId, text: grabbed ? { grabbed, start: at } : null };
     canvas.setPointerCapture(event.pointerId);
   });
   canvas.addEventListener("pointermove", (event) => {
@@ -318,8 +327,13 @@ export function mountThumbnail(invoke: Invoke, host: ThumbHost): ThumbnailView {
     const dx = at.x - drag.x, dy = at.y - drag.y;
     drag.x = at.x;
     drag.y = at.y;
-    if (drag.id) doc = { ...doc, texts: doc.texts.map((text) => text.id === drag!.id ? moveText(text, dx, dy) : text) };
-    else if (picture) doc = { ...doc, ...dragPan(doc, picture.naturalWidth, picture.naturalHeight, dx, dy) };
+    const held = drag.text;
+    if (held) {
+      const rect = canvas.getBoundingClientRect();
+      const slop = { x: DRAG_START_PX * THUMB_WIDTH / rect.width, y: DRAG_START_PX * THUMB_HEIGHT / rect.height };
+      const moved = dragText(held.grabbed, { x: at.x - held.start.x, y: at.y - held.start.y }, slop, placeOf);
+      doc = { ...doc, texts: doc.texts.map((text) => text.id === moved.id ? moved : text) };
+    } else if (picture) doc = { ...doc, ...dragPan(doc, picture.naturalWidth, picture.naturalHeight, dx, dy) };
     else return;
     draw();
   });
@@ -338,7 +352,7 @@ export function mountThumbnail(invoke: Invoke, host: ThumbHost): ThumbnailView {
     if (!text || !move) return;
     event.preventDefault();
     event.stopPropagation();
-    doc = { ...doc, texts: doc.texts.map((item) => item.id === text.id ? moveText(item, move[0], move[1]) : item) };
+    doc = { ...doc, texts: doc.texts.map((item) => item.id === text.id ? nudgeText(item, drawnBox(item.id), move[0], move[1]) : item) };
     changed();
   });
 

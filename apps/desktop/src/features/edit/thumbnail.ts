@@ -184,6 +184,169 @@ export function wrapLines(text: string, maxWidth: number, measure: (line: string
   return lines;
 }
 
+/** The widest a text's lines are drawn: 90 % of the thumbnail. */
+export const MAX_LINE_WIDTH = THUMB_WIDTH * 0.9;
+
+/**
+ * The widest a line of `text` may be so that, drawn around its centre, it
+ * stays on the thumbnail (rc23: "Chữ bên trái" put a long title centred at
+ * 30 % across and cut its start off). Never under two letters' worth, so
+ * words still wrap one by one near an edge.
+ */
+export function textRoom(text: ThumbText): number {
+  const extra = text.strokeWidth * 2 + (text.band ? text.size * 0.6 : 0);
+  const around = 2 * Math.min(text.x, 1 - text.x) * THUMB_WIDTH - extra;
+  return Math.max(text.size * 2, Math.min(MAX_LINE_WIDTH, around));
+}
+
+/** Room to keep above and below a text's box: its outline, and accents stacked on capitals (Ể, Ấ) reach past the box. */
+export type InkMargin = { top: number; bottom: number };
+
+/** How far a text's ink can reach past its box at the top and bottom (a band already holds part of it). */
+export function inkMargin(text: ThumbText): InkMargin {
+  const band = text.band ? text.size * 0.15 : 0;
+  return { top: Math.max(0, text.size * 0.25 - band) + text.strokeWidth, bottom: Math.max(0, text.size * 0.05 - band) + text.strokeWidth };
+}
+
+/**
+ * The box moved onto the thumbnail where it fits, only as far as needed, so
+ * no text is cut at an edge: with its ink margin where that fits too. One
+ * too big stays where it is.
+ */
+export function fitBox(box: Rect, margin: InkMargin = { top: 0, bottom: 0 }): Rect {
+  const x = box.width <= THUMB_WIDTH ? clamp(box.x, 0, THUMB_WIDTH - box.width) : box.x;
+  const y = box.height + margin.top + margin.bottom <= THUMB_HEIGHT ? clamp(box.y, margin.top, THUMB_HEIGHT - box.height - margin.bottom)
+    : box.height <= THUMB_HEIGHT ? clamp(box.y, 0, THUMB_HEIGHT - box.height) : box.y;
+  return { ...box, x, y };
+}
+
+/** How a text is drawn: its lines, their widths, and its box on the thumbnail. */
+export type TextLayout = { lines: string[]; widths: number[]; box: Rect };
+
+/**
+ * A text laid out to stay on the thumbnail. Its lines wrap to the room
+ * around its centre (`textRoom`). Where that makes it taller than the
+ * thumbnail (with its ink margin), they wrap wider instead, as narrow as
+ * still fits top to bottom (at most 90 %), since a box can be moved in
+ * sideways but not shrunk. The box is then moved in where it would be cut
+ * (`fitBox`).
+ */
+export function layoutText(text: ThumbText, measure: (line: string) => number): TextLayout {
+  const wrap = (room: number): TextLayout => {
+    const lines = wrapLines(text.text, room, measure);
+    const widths = lines.map(measure);
+    return { lines, widths, box: textBox(text, widths) };
+  };
+  const margin = inkMargin(text);
+  const fits = (box: Rect): boolean => box.height + margin.top + margin.bottom <= THUMB_HEIGHT;
+  const room = textRoom(text);
+  let laid = wrap(room);
+  if (!fits(laid.box) && room < MAX_LINE_WIDTH) {
+    laid = wrap(MAX_LINE_WIDTH);
+    // Fewer lines never come from a narrower wrap, so the narrowest width that fits is found by halving.
+    let low = room, high = MAX_LINE_WIDTH;
+    while (fits(laid.box) && high - low > 1) {
+      const middle = (low + high) / 2;
+      const tried = wrap(middle);
+      if (fits(tried.box)) {
+        high = middle;
+        laid = tried;
+      } else low = middle;
+    }
+  }
+  return { ...laid, box: fitBox(laid.box, margin) };
+}
+
+/** The text with its centre where it is drawn: `box` is where `layoutText` put it. */
+export function centreOn(text: ThumbText, box: Rect | undefined): ThumbText {
+  if (!box) return text;
+  const x = clamp((box.x + box.width / 2) / THUMB_WIDTH, 0, 1);
+  const y = clamp((box.y + box.height / 2) / THUMB_HEIGHT, 0, 1);
+  return Math.abs(x - text.x) < 1e-6 && Math.abs(y - text.y) < 1e-6 ? text : { ...text, x, y };
+}
+
+/**
+ * Screen pixels the pointer must go away from an edge a text is held
+ * against before a drag takes the text off it (see `dragText`). Below it a
+ * hand's wobble changes nothing, so a sideways drag never lifts a title
+ * off the bottom, and a drag up or down never re-wraps a text held at a side.
+ */
+export const DRAG_START_PX = 3;
+
+/**
+ * Whether a move of `move` px along one axis goes away from the edge a
+ * text is held against: its drawn place (`drawn`) differs from its saved
+ * place (`saved`), both 0..1 of `span` px, only where the drawing moved it
+ * in from an edge, and away means toward the drawn place.
+ */
+export function leavesEdge(saved: number, drawn: number, move: number, span: number): boolean {
+  const shift = (drawn - saved) * span;
+  return Math.abs(shift) > 1e-6 && move !== 0 && Math.sign(move) === Math.sign(shift);
+}
+
+/**
+ * Whether the drawn `box` already touches the edge that a move of `move` px
+ * along `axis` goes toward, so that the drawing could not put it any
+ * further that way (`fitBox` with the text's ink `margin`).
+ */
+export function touchesEdge(box: Rect | undefined, margin: InkMargin, axis: "x" | "y", move: number): boolean {
+  if (!box || move === 0) return false;
+  const nudged = fitBox({ ...box, [axis]: box[axis] + Math.sign(move) }, margin);
+  return Math.abs(nudged[axis] - box[axis]) < 1e-6;
+}
+
+/**
+ * One axis of a text moved by `move` px, saved at `saved` and drawn at
+ * `drawn` (0..1 of `span`). A move toward an edge the drawn box already
+ * touches (`against`, see `touchesEdge`) keeps the saved place exactly:
+ * nothing could move, so nothing re-wraps either. Otherwise a text that is
+ * not held moves from its saved place, and a held one (drawn somewhere
+ * else than saved, moved in from an edge) keeps its saved place until the
+ * move goes `least` px away from that edge, then leaves it from where it is
+ * drawn.
+ */
+function moveAxis(saved: number, drawn: number, move: number, span: number, least: number, against: boolean): number {
+  if (move === 0 || against) return saved;
+  if (Math.abs((drawn - saved) * span) <= 1e-6) return clamp(saved + move / span, 0, 1);
+  return leavesEdge(saved, drawn, move, span) && Math.abs(move) >= least ? clamp(drawn + move / span, 0, 1) : saved;
+}
+
+/** The text moved by an arrow key's (dx, dy) px, drawn at `box` (see `moveAxis`): a held text leaves its edge at the first step away. */
+export function nudgeText(text: ThumbText, box: Rect | undefined, dx: number, dy: number): ThumbText {
+  const drawn = centreOn(text, box);
+  const margin = inkMargin(text);
+  const x = moveAxis(text.x, drawn.x, dx, THUMB_WIDTH, 0, touchesEdge(box, margin, "x", dx));
+  const y = moveAxis(text.y, drawn.y, dy, THUMB_HEIGHT, 0, touchesEdge(box, margin, "y", dy));
+  return x === text.x && y === text.y ? text : { ...text, x, y };
+}
+
+/**
+ * Where a dragged text goes. `grabbed` is the text as it was when grabbed,
+ * `way` the pointer's whole way since then and `slop` DRAG_START_PX, both in
+ * thumbnail px per axis, and `place` the box a text is drawn in
+ * (`layoutText`). The result depends only on `way`, never on the path, so
+ * the same pointer place always gives the same result and coming back to
+ * the start puts the text back exactly where it was.
+ *
+ * Each axis follows the pointer from the saved place (`moveAxis`). Going
+ * toward an edge the text's drawn box touches keeps the saved place
+ * exactly, so the text neither moves nor re-wraps. Where the drawing holds
+ * the text against an edge (its drawn place differs from the saved one),
+ * going less than `slop` away also keeps it, and going `slop` or more away
+ * takes it off the edge with the pointer, from where it is drawn. Left and
+ * right are judged at the grab; up and down at the new left and right
+ * (where the text may have been re-wrapped and lifted).
+ */
+export function dragText(grabbed: ThumbText, way: { x: number; y: number }, slop: { x: number; y: number }, place: (text: ThumbText) => Rect | undefined): ThumbText {
+  const margin = inkMargin(grabbed);
+  const atGrab = place(grabbed);
+  const x = moveAxis(grabbed.x, centreOn(grabbed, atGrab).x, way.x, THUMB_WIDTH, slop.x, touchesEdge(atGrab, margin, "x", way.x));
+  const there = x === grabbed.x ? grabbed : { ...grabbed, x };
+  const atThere = there === grabbed ? atGrab : place(there);
+  const y = moveAxis(grabbed.y, centreOn(there, atThere).y, way.y, THUMB_HEIGHT, slop.y, touchesEdge(atThere, margin, "y", way.y));
+  return x === grabbed.x && y === grabbed.y ? grabbed : { ...grabbed, x, y };
+}
+
 /** The box a text takes on the thumbnail, from its lines' widths. */
 export function textBox(text: ThumbText, widths: number[]): Rect {
   const lineHeight = text.size * 1.15;
