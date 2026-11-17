@@ -2944,53 +2944,62 @@ fn set_aside(path: &Path) -> std::io::Result<PathBuf> {
 /// - the temporary file is always new (`create_beside`), so a file or link already on disk under any name, such as
 ///   the `project.json.partial` older versions used, is never opened, followed or cut short;
 /// - a crash leaves the old draft or the new one, never an empty or half-written file under the draft's name;
-/// - a failure leaves the old draft byte for byte and removes only the temporary file this call made.
+/// - a failure leaves the old draft byte for byte and removes only the temporary file this call made; no save ever
+///   removes another's (one still writing, or one a killed run left: harmless, as nothing reads a `.saving` file).
 fn write_durable(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    write_durable_with(path, bytes, &|_| Ok(()))
+    write_durable_with(path, bytes, &|_, run| run(), temp_names(path))
 }
 
-/// Points where a test makes `write_durable` fail: before writing, after half the bytes, before the flush to disk,
-/// before the new file takes the draft's place.
+/// The steps of `write_durable`. Each runs through a hook: the app's hook just runs it; a test's may record it, or
+/// answer for it with an error, and the step then does not happen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DurableStep {
-    Write,
-    PartialWrite,
+    /// The first half of the bytes.
+    WriteStart,
+    /// The rest.
+    WriteRest,
     Sync,
     Rename,
+    /// The folder's record of the rename (Unix; nothing to do elsewhere). A failure here is not the save's.
+    SyncFolder,
 }
 
-fn write_durable_with(path: &Path, bytes: &[u8], fault: &dyn Fn(DurableStep) -> std::io::Result<()>) -> std::io::Result<()> {
+type StepHook<'a> = &'a dyn Fn(DurableStep, &mut dyn FnMut() -> std::io::Result<()>) -> std::io::Result<()>;
+
+fn write_durable_with(path: &Path, bytes: &[u8], hook: StepHook, names: impl IntoIterator<Item = PathBuf>) -> std::io::Result<()> {
     use std::io::Write;
-    let (temp, mut file) = create_beside(path)?;
+    let (temp, mut file) = create_beside(names)?;
     let made = Made(Some(temp));
+    let (start, rest) = bytes.split_at(bytes.len() / 2);
     let written = (|| {
-        fault(DurableStep::Write)?;
-        let (first, rest) = bytes.split_at(bytes.len() / 2);
-        file.write_all(first)?;
-        fault(DurableStep::PartialWrite)?;
-        file.write_all(rest)?;
-        fault(DurableStep::Sync)?;
-        file.sync_all()
+        hook(DurableStep::WriteStart, &mut || file.write_all(start))?;
+        hook(DurableStep::WriteRest, &mut || file.write_all(rest))?;
+        hook(DurableStep::Sync, &mut || file.sync_all())
     })();
     drop(file);
     written?;
-    fault(DurableStep::Rename)?;
-    fs::rename(made.path(), path)?;
+    hook(DurableStep::Rename, &mut || fs::rename(made.path(), path))?;
     made.keep();
-    sync_parent(path);
+    let _ = hook(DurableStep::SyncFolder, &mut || sync_parent(path));
     Ok(())
 }
 
-/// A new, empty file beside `path`, under a name of its own: `create_new` refuses any name already taken, a link
-/// (even a broken one) included, so the file returned is one this call made.
-fn create_beside(path: &Path) -> std::io::Result<(PathBuf, fs::File)> {
+/// Names for the temporary file beside `path`: `<name>.<pid>-<nanos>-<n>.saving`, a few to try.
+fn temp_names(path: &Path) -> impl Iterator<Item = PathBuf> + '_ {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let name = path.file_name().map(OsString::from).unwrap_or_default();
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |time| time.as_nanos());
-    for _ in 0..16 {
+    (0..16).map(move |_| {
         let mut temp = name.clone();
         temp.push(format!(".{}-{stamp}-{}.saving", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
-        let temp = path.with_file_name(temp);
+        path.with_file_name(temp)
+    })
+}
+
+/// A new, empty file at the first of `names` that is free: `create_new` refuses any name already taken, a link
+/// (even a broken one) included, so the file returned is one this call made and nothing on disk is ever opened.
+fn create_beside(names: impl IntoIterator<Item = PathBuf>) -> std::io::Result<(PathBuf, fs::File)> {
+    for temp in names {
         match fs::OpenOptions::new().write(true).create_new(true).open(&temp) {
             Ok(file) => return Ok((temp, file)),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
@@ -3023,14 +3032,14 @@ impl Drop for Made {
 
 /// The folder's record of the renamed draft on disk as well (Unix; on Windows the rename is all there is).
 #[cfg(unix)]
-fn sync_parent(path: &Path) {
-    if let Some(dir) = path.parent() {
-        let _ = fs::File::open(dir).and_then(|dir| dir.sync_all());
-    }
+fn sync_parent(path: &Path) -> std::io::Result<()> {
+    fs::File::open(path.parent().unwrap_or(Path::new("."))).and_then(|dir| dir.sync_all())
 }
 
 #[cfg(not(unix))]
-fn sync_parent(_: &Path) {}
+fn sync_parent(_: &Path) -> std::io::Result<()> {
+    Ok(())
+}
 
 // ---------- Phiên bản and Mẫu (Issue #534) ----------
 
@@ -4351,14 +4360,25 @@ mod tests {
         (bytes, sha, fs::metadata(file).unwrap().modified().unwrap())
     }
 
-    const STEPS: [DurableStep; 4] = [DurableStep::Write, DurableStep::PartialWrite, DurableStep::Sync, DurableStep::Rename];
+    const STEPS: [DurableStep; 4] = [DurableStep::WriteStart, DurableStep::WriteRest, DurableStep::Sync, DurableStep::Rename];
+
+    /// The app's hook, except that `target` answers with an error and does not happen.
+    fn failing(target: DurableStep) -> impl Fn(DurableStep, &mut dyn FnMut() -> std::io::Result<()>) -> std::io::Result<()> {
+        move |step, run| if step == target { Err(std::io::Error::other("injected")) } else { run() }
+    }
+
+    /// Where a test makes an outside file and a draft folder beside it (`<base>/work`), empty.
+    fn scratch(name: &str) -> (PathBuf, PathBuf) {
+        let base = std::env::temp_dir().join(format!("dubflow-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("work")).unwrap();
+        (base.clone(), base.join("work"))
+    }
 
     // #896: a save that fails at any point keeps the old draft byte for byte and removes only its own temporary file
     #[test]
     fn a_failed_draft_save_keeps_the_old_draft_and_removes_only_its_own_temporary_file() {
-        let dir = std::env::temp_dir().join(format!("dubflow-draft-fail-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let (base, dir) = scratch("draft-fail");
         let path = dir.join("project.json");
         let old = br#"{"schema_version":4,"duration":30.0,"segments":[{}]}"#;
         let new: &[u8] = r#"{"schema_version":4,"duration":30.0,"segments":[{},{},{}],"texts":[{"text":"MỚI"}]}"#.as_bytes();
@@ -4366,47 +4386,168 @@ mod tests {
         // what other saves and older versions leave beside the draft: none of it is this call's to touch
         fs::write(partial_of(&path), b"an old partial").unwrap();
         fs::write(dir.join("project.json.1-2-3.saving"), b"another save's temporary file").unwrap();
+        fs::write(dir.join(format!("project.json.{}-0-0.saving", std::process::id())), b"another save of this run, still writing").unwrap();
         fs::write(dir.join("project.unreadable-5.json"), b"kept aside").unwrap();
         let before = listing(&dir);
         let modified = fs::metadata(&path).unwrap().modified().unwrap();
+        // the names a save tries are its own: never the old partial name, never the same twice
+        let mut names: Vec<PathBuf> = temp_names(&path).chain(temp_names(&path)).collect();
+        assert!(names.iter().all(|name| *name != partial_of(&path) && name.parent() == Some(dir.as_path())));
+        names.sort();
+        names.dedup();
+        assert_eq!(names.len(), 32);
         for step in STEPS {
             let seen = std::cell::RefCell::new(Vec::new());
-            let fault = |at: DurableStep| -> std::io::Result<()> {
+            let hook = |at: DurableStep, run: &mut dyn FnMut() -> std::io::Result<()>| {
+                // the old draft stays in place, byte for byte, the whole time (never moved aside and put back)
+                assert_eq!(fs::read(&path).unwrap(), old, "{at:?}");
                 if at != step {
-                    return Ok(());
+                    return run();
                 }
                 seen.borrow_mut().extend(new_temps(&dir, &before));
                 Err(std::io::Error::other("injected"))
             };
-            let error = write_durable_with(&path, new, &fault).unwrap_err();
+            let error = write_durable_with(&path, new, &hook, temp_names(&path)).unwrap_err();
             assert_eq!(error.to_string(), "injected", "{step:?}");
             let seen = seen.into_inner();
             let size = match step {
-                DurableStep::Write => 0,
-                DurableStep::PartialWrite => (new.len() / 2) as u64,
-                DurableStep::Sync | DurableStep::Rename => new.len() as u64,
+                DurableStep::WriteStart => 0,
+                DurableStep::WriteRest => (new.len() / 2) as u64,
+                _ => new.len() as u64,
             };
             assert_eq!(seen.iter().map(|(_, len)| *len).collect::<Vec<_>>(), vec![size], "{step:?}: one temporary file of this call, as far as it got");
             assert!(seen[0].0.starts_with("project.json.") && seen[0].0 != "project.json.partial", "{step:?}: {}", seen[0].0);
             assert_eq!(listing(&dir), before, "{step:?}: the old draft and everything beside it as they were");
             assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), modified, "{step:?}: the old draft untouched");
         }
-        // the same save without a fault replaces the draft and leaves no temporary file
-        write_durable_with(&path, new, &|_| Ok(())).unwrap();
+        // the same steps failing after they really happened (the bytes reached the temporary file, the sync ran)
+        for step in [DurableStep::WriteStart, DurableStep::WriteRest, DurableStep::Sync] {
+            let seen = std::cell::RefCell::new(Vec::new());
+            let hook = |at: DurableStep, run: &mut dyn FnMut() -> std::io::Result<()>| {
+                run()?;
+                if at != step {
+                    return Ok(());
+                }
+                seen.borrow_mut().extend(new_temps(&dir, &before));
+                Err(std::io::Error::other("injected after"))
+            };
+            assert_eq!(write_durable_with(&path, new, &hook, temp_names(&path)).unwrap_err().to_string(), "injected after", "{step:?}");
+            let size = if step == DurableStep::WriteStart { (new.len() / 2) as u64 } else { new.len() as u64 };
+            assert_eq!(seen.into_inner().iter().map(|(_, len)| *len).collect::<Vec<_>>(), vec![size], "{step:?} (after)");
+            assert_eq!(listing(&dir), before, "{step:?} (after): the old draft and everything beside it as they were");
+        }
+        // the same save without a fault takes every step in order, replaces the draft and leaves no temporary file
+        let steps = std::cell::RefCell::new(Vec::new());
+        write_durable_with(&path, new, &|step, run| { steps.borrow_mut().push(step); run() }, temp_names(&path)).unwrap();
+        assert_eq!(steps.into_inner(), [STEPS.to_vec(), vec![DurableStep::SyncFolder]].concat());
         assert_eq!(fs::read(&path).unwrap(), new);
         let after: Vec<_> = before.iter().map(|(name, bytes)| (name.clone(), if name == "project.json" { new.to_vec() } else { bytes.clone() })).collect();
         assert_eq!(listing(&dir), after, "only the draft changed");
         assert_eq!(read_draft(&path).0.map(|draft| draft["segments"].as_array().map_or(0, Vec::len)), Some(3));
-        let _ = fs::remove_dir_all(&dir);
+        // the folder's record failing after the rename does not fail a save that is already in place
+        write_durable_with(&path, old, &failing(DurableStep::SyncFolder), temp_names(&path)).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), old);
+        assert!(new_temps(&dir, &before).is_empty());
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    // #896: a rename the system itself refuses fails the save, keeps what is at the draft's name and leaves no
+    // temporary file (no injected fault)
+    #[test]
+    fn a_draft_save_the_system_refuses_keeps_the_old_draft_and_leaves_no_temporary_file() {
+        let (base, dir) = scratch("draft-refused");
+        let path = dir.join("project.json");
+        let new = br#"{"schema_version":4,"segments":[{},{}]}"#;
+        // a folder (not empty) where the draft should be: no rename can put a file in its place
+        fs::create_dir_all(&path).unwrap();
+        fs::write(path.join("inside.txt"), b"kept").unwrap();
+        let names = || { let mut names: Vec<_> = fs::read_dir(&dir).unwrap().flatten().map(|entry| entry.file_name()).collect(); names.sort(); names };
+        let before = names();
+        assert!(write_durable(&path, new).is_err());
+        assert_eq!(names(), before, "nothing left beside the draft");
+        assert_eq!(fs::read(path.join("inside.txt")).unwrap(), b"kept");
+        fs::remove_dir_all(&path).unwrap();
+        // Windows: the draft held open by another program that does not share deleting (an editor, a scanner)
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            let old = br#"{"schema_version":4,"segments":[{}]}"#;
+            fs::write(&path, old).unwrap();
+            let before = listing(&dir);
+            let held = fs::OpenOptions::new().read(true).share_mode(1 | 2).open(&path).unwrap();
+            assert!(write_durable(&path, new).is_err(), "a draft held without delete sharing cannot be replaced");
+            drop(held);
+            assert_eq!(listing(&dir), before, "the old draft byte for byte, and no temporary file");
+            write_durable(&path, new).unwrap();
+            assert_eq!(fs::read(&path).unwrap(), new);
+        }
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    // #896: the draft's name itself a link to someone else's file: the save puts its own file there and never
+    // writes through the link
+    #[test]
+    fn a_draft_save_replaces_a_link_at_the_draft_name_and_never_writes_through_it() {
+        let (base, dir) = scratch("draft-name-link");
+        let outside = base.join("outside.bin");
+        fs::write(&outside, b"someone else's file, not a draft").unwrap();
+        let mark = fingerprint(&outside);
+        let path = dir.join("project.json");
+        let new = br#"{"schema_version":4,"segments":[{},{}]}"#;
+        let mut checked = vec!["hard link"];
+        fs::hard_link(&outside, &path).unwrap();
+        write_durable(&path, new).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), new);
+        assert_eq!(fingerprint(&outside), mark, "hard link: the outside file's bytes, SHA-256 and time");
+        fs::remove_file(&path).unwrap();
+        if crate::product::tests::link_file(&outside, &path) {
+            write_durable(&path, new).unwrap();
+            assert!(!is_link(&fs::symlink_metadata(&path).unwrap()), "the link itself was replaced");
+            assert_eq!(fs::read(&path).unwrap(), new);
+            assert_eq!(fingerprint(&outside), mark, "symlink: the outside file's bytes, SHA-256 and time");
+            checked.push("symlink");
+        }
+        println!("checked: {}", checked.join(", "));
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    // #896: the temporary file is always one the save creates; a name already taken (a file, a link, a broken link)
+    // is passed over, never opened
+    #[test]
+    fn a_draft_save_passes_over_taken_temporary_names_and_never_opens_them() {
+        let (base, dir) = scratch("draft-taken-names");
+        let outside = base.join("outside.bin");
+        fs::write(&outside, b"someone else's file, not a draft").unwrap();
+        let mark = fingerprint(&outside);
+        let path = dir.join("project.json");
+        let old = br#"{"schema_version":4,"segments":[{}]}"#;
+        let new = br#"{"schema_version":4,"segments":[{},{}]}"#;
+        fs::write(&path, old).unwrap();
+        let candidates: Vec<PathBuf> = (1..=3).map(|n| dir.join(format!("project.json.1-1-{n}.saving"))).collect();
+        fs::hard_link(&outside, &candidates[0]).unwrap();
+        let symlink = crate::product::tests::link_file(&base.join("missing.bin"), &candidates[1]);
+        if !symlink {
+            fs::write(&candidates[1], b"another save's temporary file").unwrap();
+        }
+        let before = listing(&dir);
+        // every name taken: the save fails and nothing changes
+        assert_eq!(write_durable_with(&path, new, &|_, run| run(), candidates[..2].to_vec()).unwrap_err().kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(listing(&dir), before);
+        // a free name after them: that one is used
+        write_durable_with(&path, new, &|_, run| run(), candidates.clone()).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), new);
+        assert_eq!(fingerprint(&outside), mark, "the outside file's bytes, SHA-256 and time");
+        assert_eq!(fs::read(&candidates[0]).unwrap(), mark.0, "the hard link left as it was");
+        assert_eq!(fs::symlink_metadata(&candidates[1]).unwrap().file_type().is_symlink(), symlink, "the second name left as it was");
+        assert!(!candidates[2].exists(), "the free name became the draft");
+        println!("checked: hard link{}", if symlink { ", broken symlink" } else { "" });
+        let _ = fs::remove_dir_all(&base);
     }
 
     // #896: a link (hard or symbolic) left at the old `project.json.partial` name is never followed, written or cut
     #[test]
     fn a_draft_save_never_writes_through_a_link_at_the_old_partial_name() {
-        let base = std::env::temp_dir().join(format!("dubflow-draft-partial-link-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&base);
-        let dir = base.join("work");
-        fs::create_dir_all(&dir).unwrap();
+        let (base, dir) = scratch("draft-partial-link");
         let outside = base.join("outside.bin");
         fs::write(&outside, b"someone else's file, not a draft").unwrap();
         let mark = fingerprint(&outside);
@@ -4419,13 +4560,7 @@ mod tests {
         for kind in ["hard link", "symlink"] {
             if kind == "symlink" {
                 fs::remove_file(&partial).unwrap();
-                #[cfg(unix)]
-                let made = std::os::unix::fs::symlink(&outside, &partial).is_ok();
-                #[cfg(windows)]
-                let made = std::os::windows::fs::symlink_file(&outside, &partial).is_ok();
-                #[cfg(unix)]
-                assert!(made, "file symlinks are made on Unix");
-                if !made {
+                if !crate::product::tests::link_file(&outside, &partial) {
                     continue;
                 }
                 kinds.push(kind);
@@ -4433,8 +4568,7 @@ mod tests {
             fs::write(&path, old).unwrap();
             let before = listing(&dir);
             for step in STEPS {
-                let fault = |at: DurableStep| if at == step { Err(std::io::Error::other("injected")) } else { Ok(()) };
-                assert!(write_durable_with(&path, new, &fault).is_err());
+                assert!(write_durable_with(&path, new, &failing(step), temp_names(&path)).is_err());
                 assert_eq!(fs::read(&path).unwrap(), old, "{kind}, {step:?}");
                 assert_eq!(listing(&dir), before, "{kind}, {step:?}: nothing left beside the draft");
                 assert_eq!(fingerprint(&outside), mark, "{kind}, {step:?}: the outside file's bytes, SHA-256 and time");

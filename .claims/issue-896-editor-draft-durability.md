@@ -1,7 +1,7 @@
 DUBFLOW_PR_V1
 Issue: #896
 Lease-Owner: Claude/issue-896-draft-replace-tests
-Lease-Heartbeat: 2026-11-17T14:45:01Z
+Lease-Heartbeat: 2026-11-17T14:56:36Z
 Tested-Base-SHA: 73aef91982a5e25e373a1969c72da3feb5ae432d
 Conflict-Domains: edit-project-draft-durability
 Expected-Paths:
