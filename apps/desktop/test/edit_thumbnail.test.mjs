@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import {
   THUMB_HEIGHT, THUMB_WIDTH, THUMB_TEMPLATES, applyTemplate, coverRect, dragPan, emptyThumb, hasThumb, makeText,
-  DRAG_START_PX, MAX_LINE_WIDTH, MAX_THUMB_TEXT, centreOn, dragText, fitBox, inkMargin, layoutText, leavesEdge, nudgeText, moveText, normalizeThumb, textAt, textBox, textRoom, thumbName, wrapLines,
+  DRAG_START_PX, MAX_LINE_WIDTH, MAX_THUMB_TEXT, centreOn, dragText, fitBox, inkMargin, layoutText, leavesEdge, nudgeText, moveText, normalizeThumb, textAt, textBox, textRoom, thumbName, touchesEdge, wrapLines,
 } from "../src/features/edit/thumbnail.ts";
 
 const covers = (rect) => rect.x <= 1e-9 && rect.y <= 1e-9 && rect.x + rect.width >= THUMB_WIDTH - 1e-9 && rect.y + rect.height >= THUMB_HEIGHT - 1e-9;
@@ -168,11 +168,26 @@ const sideHeld = makeText("NGHIÊNG AB CD", { x: 0.125, y: 0.4 });
 const sideBox = drawnAt(sideHeld);
 assert.ok(sideBox.x === 0 && centreOn(sideHeld, sideBox).x > sideHeld.x, "NGHIÊNG AB CD at x 0.125 is held at the left edge");
 assert.equal(nudgeText(sideHeld, sideBox, -8, 0), sideHeld, "a key toward the edge: the same text, the same lines");
+// Off the edge and back by the same step leaves a text exactly against the edge (drawn where saved): a further step
+// toward that edge cannot move it, so it keeps its saved place and lines too ("ABC DEF" is as wide as "NGHIÊNG" here).
+const flushStart = makeText("NGHIÊNG ABC DEF", { x: 0.125, y: 0.4 });
+const offEdge = nudgeText(flushStart, drawnAt(flushStart), 8, 0);
+const flush = nudgeText(offEdge, drawnAt(offEdge), -8, 0);
+assert.ok(drawnAt(flush).x === 0 && centreOn(flush, drawnAt(flush)) === flush, "off and back: against the left edge, drawn where saved");
+assert.equal(touchesEdge(drawnAt(flush), inkMargin(flush), "x", -1), true, "it touches the left edge");
+assert.equal(touchesEdge(drawnAt(flush), inkMargin(flush), "x", 1), false, "not the right one");
+assert.equal(nudgeText(flush, drawnAt(flush), -8, 0), flush, "a key toward that edge: the same text, so the same lines");
+assert.equal(dragText(flush, { x: -2, y: 60 }, { x: 12, y: 12 }, drawnAt).x, flush.x, "a drag down drifting toward it: its saved x kept");
 const big = applyTemplate({ ...emptyThumb(), texts: [] }, "big-bottom", longTitle).texts[0];
 const bigBox = drawnAt(big);
 assert.ok(bigBox.y + bigBox.height / 2 < big.y * THUMB_HEIGHT - 1, "big-bottom: a 3-line title is drawn moved up");
 assert.ok(Math.abs(drawnAt(nudgeText(big, bigBox, 0, -10)).y - (bigBox.y - 10)) < 1e-6, "and moves up at the first move");
 assert.equal(nudgeText(big, bigBox, 10, 0).y, big.y, "a sideways move keeps it held at the bottom");
+// The same on the other axis: a key down into the bottom a title is held against, or touches, changes nothing.
+assert.equal(nudgeText(big, bigBox, 0, 8), big, "a key down into the bottom: the same text");
+const bigUpKey = nudgeText(big, bigBox, 0, -8);
+const bigBackKey = nudgeText(bigUpKey, drawnAt(bigUpKey), 0, 8);
+assert.equal(nudgeText(bigBackKey, drawnAt(bigBackKey), 0, 8), bigBackKey, "up and back down leaves it against the bottom; another step down: the same text");
 assert.equal(leavesEdge(0.5, 0.5, 50, THUMB_WIDTH), false, "not held: the saved place");
 assert.equal(leavesEdge(0, 0.1, 1, THUMB_WIDTH), true, "a key move away: leaves");
 assert.equal(leavesEdge(0, 0.1, -8, THUMB_WIDTH), false, "toward the edge: still held");
@@ -180,6 +195,7 @@ assert.equal(leavesEdge(0, 0.1, 0, THUMB_WIDTH), false, "no move on this axis: a
 assert.equal(centreOn(big, undefined), big, "no box drawn: as it is");
 const unmoved = makeText("ngắn", { x: 0.5, y: 0.5 });
 assert.equal(centreOn(unmoved, drawnAt(unmoved)), unmoved, "a box that was not moved in: the same text");
+assert.equal(touchesEdge(drawnAt(unmoved), inkMargin(unmoved), "y", 1), false, "a text in the middle touches no edge");
 // A drag goes by the pointer's whole way since the grab: a text that is not held moves with it at once; a held one
 // stays held toward its edge and below the slop away from it, and past the slop moves from where it is drawn.
 const slop = { x: 12, y: 12 };
@@ -600,8 +616,45 @@ for (const [width, height] of [[THUMB_WIDTH, THUMB_HEIGHT], [320, 180]]) {
     assert.deepEqual(inks().map((line) => [line.line, line.left]), start.map((line) => [line.line, line.left]), `${width} px stage, (${dx}, ${dy}) screen px: the same lines, the same place across`);
     assert.equal(view.document().texts[0].x, sideHeld.x, `${width} px stage, (${dx}, ${dy}) screen px: its saved x kept`);
   }
+  const selectAt = inks()[0];
+  canvasElement.fire("pointerdown", at(selectAt.x, selectAt.y));
+  canvasElement.fire("pointerup", at(selectAt.x, selectAt.y));
+  assert.equal(element("#thumb-text-fields").hidden, false, `${width} px stage: selected, so keys reach it`);
   for (let press = 0; press < 5; press += 1) canvasElement.fire("keydown", { key: "ArrowLeft" });
   assert.equal(view.document().texts[0].x, sideHeld.x, `${width} px stage, ArrowLeft into the edge: its saved x kept`);
+  fresh();
+  view.begin(view.document());
+  assert.deepEqual(inks().map((line) => [line.line, line.left]), start.map((line) => [line.line, line.left]), `${width} px stage, after the keys: the same lines`);
+  canvasElement.fire("pointerdown", at(selectAt.x, selectAt.y));
+  canvasElement.fire("pointerup", at(selectAt.x, selectAt.y));
+  canvasElement.fire("keydown", { key: "ArrowRight" });
+  assert.notEqual(view.document().texts[0].x, sideHeld.x, `${width} px stage: ArrowRight does move it, so the presses were handled`);
+}
+// Off the edge and back with the pointer leaves "NGHIÊNG ABC DEF" against the left edge; a drag down drifting toward
+// it then keeps its lines and saved x, at 1:1 and at a 320 px stage.
+for (const [width, height] of [[THUMB_WIDTH, THUMB_HEIGHT], [320, 180]]) {
+  Object.assign(stage, { width, height });
+  const px = scale();
+  fresh();
+  view.begin({ ...emptyThumb(), texts: [flushStart] });
+  const stroke = (dx, dy) => {
+    const ink = inks()[0];
+    canvasElement.fire("pointerdown", at(ink.x, ink.y));
+    for (let step = 1; step <= 10; step += 1) canvasElement.fire("pointermove", at(ink.x + dx * px * step / 10, ink.y + dy * px * step / 10));
+    canvasElement.fire("pointerup", at(ink.x + dx * px, ink.y + dy * px));
+    fresh();
+    view.begin(view.document());
+  };
+  stroke(DRAG_START_PX, 0);
+  stroke(-DRAG_START_PX, 0);
+  const flushInk = inks();
+  const flushX = view.document().texts[0].x;
+  assert.ok(flushInk.every((line) => Math.abs(line.left - Math.min(...flushInk.map((other) => other.left))) < 1e-6) && Math.min(...flushInk.map((line) => line.left)) < 8, `${width} px stage: off and back, against the left edge`);
+  stroke(-2, 60);
+  stroke(-2, -60);
+  const shape = (list) => list.map((line) => [line.line, line.left, line.y.toFixed(6)]);
+  assert.deepEqual(shape(inks()), shape(flushInk), `${width} px stage: down and up drifting toward the edge: the same lines in the same place`);
+  assert.equal(view.document().texts[0].x, flushX, `${width} px stage: its saved x kept`);
 }
 Object.assign(stage, { width: THUMB_WIDTH, height: THUMB_HEIGHT });
 // Opening a thumbnail only draws it: its saved place is not changed by the drawing.

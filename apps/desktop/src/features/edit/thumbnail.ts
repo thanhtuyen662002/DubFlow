@@ -285,14 +285,28 @@ export function leavesEdge(saved: number, drawn: number, move: number, span: num
 }
 
 /**
- * One axis of a text moved by `move` px, saved at `saved` and drawn at
- * `drawn` (0..1 of `span`). A text that is not held moves from its saved
- * place. A held one keeps its saved place exactly, so it neither moves nor
- * re-wraps, while the move goes toward the edge it is held against or less
- * than `least` px away from it; a move of `least` px or more away takes it
- * off the edge from where it is drawn.
+ * Whether the drawn `box` already touches the edge that a move of `move` px
+ * along `axis` goes toward, so that the drawing could not put it any
+ * further that way (`fitBox` with the text's ink `margin`).
  */
-function moveAxis(saved: number, drawn: number, move: number, span: number, least: number): number {
+export function touchesEdge(box: Rect | undefined, margin: InkMargin, axis: "x" | "y", move: number): boolean {
+  if (!box || move === 0) return false;
+  const nudged = fitBox({ ...box, [axis]: box[axis] + Math.sign(move) }, margin);
+  return Math.abs(nudged[axis] - box[axis]) < 1e-6;
+}
+
+/**
+ * One axis of a text moved by `move` px, saved at `saved` and drawn at
+ * `drawn` (0..1 of `span`). A move toward an edge the drawn box already
+ * touches (`against`, see `touchesEdge`) keeps the saved place exactly:
+ * nothing could move, so nothing re-wraps either. Otherwise a text that is
+ * not held moves from its saved place, and a held one (drawn somewhere
+ * else than saved, moved in from an edge) keeps its saved place until the
+ * move goes `least` px away from that edge, then leaves it from where it is
+ * drawn.
+ */
+function moveAxis(saved: number, drawn: number, move: number, span: number, least: number, against: boolean): number {
+  if (move === 0 || against) return saved;
   if (Math.abs((drawn - saved) * span) <= 1e-6) return clamp(saved + move / span, 0, 1);
   return leavesEdge(saved, drawn, move, span) && Math.abs(move) >= least ? clamp(drawn + move / span, 0, 1) : saved;
 }
@@ -300,8 +314,9 @@ function moveAxis(saved: number, drawn: number, move: number, span: number, leas
 /** The text moved by an arrow key's (dx, dy) px, drawn at `box` (see `moveAxis`): a held text leaves its edge at the first step away. */
 export function nudgeText(text: ThumbText, box: Rect | undefined, dx: number, dy: number): ThumbText {
   const drawn = centreOn(text, box);
-  const x = moveAxis(text.x, drawn.x, dx, THUMB_WIDTH, 0);
-  const y = moveAxis(text.y, drawn.y, dy, THUMB_HEIGHT, 0);
+  const margin = inkMargin(text);
+  const x = moveAxis(text.x, drawn.x, dx, THUMB_WIDTH, 0, touchesEdge(box, margin, "x", dx));
+  const y = moveAxis(text.y, drawn.y, dy, THUMB_HEIGHT, 0, touchesEdge(box, margin, "y", dy));
   return x === text.x && y === text.y ? text : { ...text, x, y };
 }
 
@@ -313,19 +328,22 @@ export function nudgeText(text: ThumbText, box: Rect | undefined, dx: number, dy
  * the same pointer place always gives the same result and coming back to
  * the start puts the text back exactly where it was.
  *
- * Each axis follows the pointer from the saved place (`moveAxis`). Where
- * the drawing holds the text against an edge (its drawn place differs from
- * the saved one), going toward that edge or less than `slop` away keeps the
- * saved place exactly, so the text neither moves nor re-wraps, and going
- * `slop` or more away takes it off the edge with the pointer, from where it
- * is drawn: left and right from the place at the grab, up and down from the
- * place at the new left and right (where it may have been re-wrapped and
- * lifted).
+ * Each axis follows the pointer from the saved place (`moveAxis`). Going
+ * toward an edge the text's drawn box touches keeps the saved place
+ * exactly, so the text neither moves nor re-wraps. Where the drawing holds
+ * the text against an edge (its drawn place differs from the saved one),
+ * going less than `slop` away also keeps it, and going `slop` or more away
+ * takes it off the edge with the pointer, from where it is drawn. Left and
+ * right are judged at the grab; up and down at the new left and right
+ * (where the text may have been re-wrapped and lifted).
  */
 export function dragText(grabbed: ThumbText, way: { x: number; y: number }, slop: { x: number; y: number }, place: (text: ThumbText) => Rect | undefined): ThumbText {
-  const x = moveAxis(grabbed.x, centreOn(grabbed, place(grabbed)).x, way.x, THUMB_WIDTH, slop.x);
+  const margin = inkMargin(grabbed);
+  const atGrab = place(grabbed);
+  const x = moveAxis(grabbed.x, centreOn(grabbed, atGrab).x, way.x, THUMB_WIDTH, slop.x, touchesEdge(atGrab, margin, "x", way.x));
   const there = x === grabbed.x ? grabbed : { ...grabbed, x };
-  const y = moveAxis(grabbed.y, centreOn(there, place(there)).y, way.y, THUMB_HEIGHT, slop.y);
+  const atThere = there === grabbed ? atGrab : place(there);
+  const y = moveAxis(grabbed.y, centreOn(there, atThere).y, way.y, THUMB_HEIGHT, slop.y, touchesEdge(atThere, margin, "y", way.y));
   return x === grabbed.x && y === grabbed.y ? grabbed : { ...grabbed, x, y };
 }
 
