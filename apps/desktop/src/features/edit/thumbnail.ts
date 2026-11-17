@@ -264,9 +264,11 @@ export function applyTemplate(doc: ThumbDoc, id: string, name: string): ThumbDoc
   const title = marked
     ? words.find((text) => text.role === "title")
     : words.filter((text) => !untouchedLabel(text)).reduce<ThumbText | undefined>((best, text) => (!best || text.size > best.size ? text : best), undefined);
-  const label = words.find((text) => text !== title && text.role === "label" && !untouchedLabel(text));
+  // The layout's own "MỚI", still as it made it; on a thumbnail saved before roles, any such "MỚI".
+  const generated = (text: ThumbText): boolean => (!marked || text.role === "label") && untouchedLabel(text);
+  const label = words.find((text) => text !== title && text.role === "label" && !generated(text));
   const moved = template.labelled ? label : undefined;
-  const kept = words.filter((text) => text !== title && text !== moved && !untouchedLabel(text));
+  const kept = words.filter((text) => text !== title && text !== moved && !generated(text));
   let texts = template.texts(title?.text ?? (name.trim() || "Tiêu đề video"), moved?.text ?? TEMPLATE_LABEL);
   // No room for a fresh "MỚI": the layout goes without one rather than drop a text.
   if (kept.length + texts.length > MAX_THUMB_TEXTS && !moved) texts = texts.filter((text) => text.role !== "label");

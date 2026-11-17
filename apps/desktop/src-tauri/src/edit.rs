@@ -1148,16 +1148,28 @@ fn no_write(folder: &Path) -> String {
 /// finished export in place (renaming its `.partial`) needs the same right.
 fn writable(folder: &Path) -> Result<(), String> {
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |time| time.as_nanos());
-    let probe = folder.join(format!(".dubflow-write-check-{}-{stamp}", std::process::id()));
-    match fs::OpenOptions::new().write(true).create_new(true).open(&probe) {
-        Ok(file) => {
-            drop(file);
-            removed(&probe).map_err(|_| no_write(folder))
+    let names = (0..PROBE_TRIES).map(|try_| folder.join(format!(".dubflow-write-check-{}-{stamp}-{try_}", std::process::id())));
+    probe_folder(folder, names)
+}
+
+const PROBE_TRIES: usize = 5;
+
+/// The check with the names it may use: a name already taken is never opened
+/// or removed, and the next one is tried; if every name is taken the folder is
+/// not accepted.
+fn probe_folder(folder: &Path, names: impl IntoIterator<Item = PathBuf>) -> Result<(), String> {
+    for probe in names {
+        match fs::OpenOptions::new().write(true).create_new(true).open(&probe) {
+            Ok(file) => {
+                drop(file);
+                return removed(&probe).map_err(|_| no_write(folder));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => return Err(no_write(folder)),
+            Err(_) => return Err(fail("Không ghi được vào thư mục lưu. Hãy kiểm tra ổ đĩa hoặc chọn thư mục khác.")),
         }
-        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => Err(no_write(folder)),
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
-        Err(_) => Err(fail("Không ghi được vào thư mục lưu. Hãy kiểm tra ổ đĩa hoặc chọn thư mục khác.")),
     }
+    Err(fail("Không kiểm được thư mục lưu. Hãy thử lại hoặc chọn thư mục khác."))
 }
 
 pub(crate) fn partial_of(file: &Path) -> PathBuf {
@@ -4789,6 +4801,16 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
         let mut names: Vec<String> = fs::read_dir(&folder).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect();
         names.sort();
         assert_eq!(names, ["Phim (2).srt", "Phim (3).mp4.partial", "Phim.mp4"], "the write check leaves nothing behind");
+        // A check name that is taken is left alone and the next one is used; all taken: not accepted.
+        let taken = folder.join(".dubflow-write-check-taken");
+        fs::write(&taken, b"user").unwrap();
+        let fresh = folder.join(".dubflow-write-check-fresh");
+        assert!(probe_folder(&folder, [taken.clone(), fresh.clone()]).is_ok());
+        assert_eq!(fs::read(&taken).unwrap(), b"user", "a taken name is never opened or removed");
+        assert!(!fresh.exists(), "the check file that was made is removed");
+        assert_eq!(probe_folder(&folder, [taken.clone(), taken.clone()]).unwrap_err(), fail("Không kiểm được thư mục lưu. Hãy thử lại hoặc chọn thư mục khác."));
+        assert_eq!(fs::read(&taken).unwrap(), b"user");
+        fs::remove_file(&taken).unwrap();
         fs::remove_dir_all(folder).unwrap();
     }
 

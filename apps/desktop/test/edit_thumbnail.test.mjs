@@ -141,6 +141,21 @@ assert.deepEqual(band.texts.find((text) => text.text === "SIÊU TO"), two.texts[
 // A "MỚI" the user moved or restyled is theirs: kept.
 const movedLabel = { ...twice, texts: [{ ...twice.texts[0], x: 0.86, band: "#2563eb" }, twice.texts[1]] };
 assert.deepEqual(applyTemplate(movedLabel, "band", "x").texts[0], movedLabel.texts[0], "a moved, recoloured MỚI is kept");
+// A "MỚI" the user typed is theirs, even placed and styled exactly like the layout's label.
+const lookalike = makeText("MỚI", { x: 0.16, y: 0.16, size: 64, band: "#e11d48", strokeWidth: 0, shadow: false });
+const withOwn = { ...twice, texts: [...twice.texts, lookalike] };
+assert.deepEqual(applyTemplate(withOwn, "band", "x").texts.filter((text) => text.text === "MỚI"), [lookalike], "band: the layout's MỚI goes, the user's stays");
+assert.deepEqual(words(applyTemplate(withOwn, "two-lines", "x")), ["MỚI", "MỚI", "Tên video"], "two-lines: the user's MỚI and a fresh label");
+assert.deepEqual(applyTemplate(withOwn, "two-lines", "x").texts[0], lookalike);
+// The label is the text the layout made as its label, whatever the order or sizes of the others.
+const caption = makeText("Phần 2", { y: 0.5 });
+const shuffled = { ...two, texts: [caption, two.texts[1], two.texts[0]] };
+for (const id of ["two-lines", "band", "two-lines"]) {
+  const next = applyTemplate(shuffled, id, "x");
+  assert.equal(next.texts.find((text) => text.role === "label")?.text, "SIÊU TO", `${id}: the typed label is still the label`);
+  assert.equal(next.texts.at(-1).text, "Tháp nuôi lợn 26 tầng");
+  assert.deepEqual(next.texts[0], caption, `${id}: the caption is as it was`);
+}
 // Texts the user adds are never promoted or restyled by a layout.
 const mark = makeText("@kenhcuatoi", { x: 0.9, y: 0.95, size: 32 });
 let marked = { ...twice, texts: [...twice.texts, mark] };
