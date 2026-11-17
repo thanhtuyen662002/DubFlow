@@ -3645,11 +3645,11 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   /**
    * Keep the change `saver` could not write for the reopened editor. It stays pending, with the backoff of the write
    * that failed: tried again from the copy if no editor takes it up (the user left meanwhile), and asked about by a
-   * window close until it is on disk.
+   * window close until it is on disk. A write the close gave up on (still running) holds up no later one.
    */
   function carry(current: Session): void {
     carried = { outputPath: current.outputPath, kind: current.target.kind, project: draftDocument(current), keepOld: current.keepOld, oldKept: current.oldKept };
-    saver.changed();
+    saver.restart();
   }
 
   /** The user chose to lose what could not be saved ("Vẫn thoát"): a carried change too. */
@@ -3703,6 +3703,9 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       }
     }
     if (!session) return true;
+    // a reload's copy is only for a change the disk lacks: once a later write has every change (made during the wait
+    // too), the reopened editor opens what is on disk, never the older copy
+    if (carried?.outputPath === session.outputPath && !saver.pending) carried = null;
     const leaving = session.target;
     if (session.draft) session.draft = null;
     session.playing = false;

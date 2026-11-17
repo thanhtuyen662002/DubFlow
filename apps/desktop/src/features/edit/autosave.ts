@@ -100,6 +100,20 @@ export class Autosaver {
     return this.since === null && this.failures === 0;
   }
 
+  /**
+   * Keep what is pending, but stop waiting for a write still in progress: a close gave up on it after CLOSE_WAIT_MS,
+   * and the change goes on into a reopened editor (Issue #929). The change stays pending and a backoff still holds;
+   * the next write no longer queues behind that one, whose end changes nothing here.
+   */
+  restart(): void {
+    this.cancel();
+    this.waiting = 0;
+    this.forced = false;
+    this.epoch += 1;
+    this.writing = Promise.resolve();
+    this.changed();
+  }
+
   /** Forget a pending change: the session ended without it mattering, or the user chose to lose it. */
   drop(): void {
     this.cancel();

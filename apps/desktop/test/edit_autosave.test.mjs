@@ -213,6 +213,35 @@ for (const queued of [false, true]) {
   saver.drop();
 }
 
+// The Lead's exact order (review comment 4606816229): write #1 starts at 300, an edit at 400 sets its timer for 700,
+// the timer fires while write #1 still runs and queues a successor, write #1 fails at 800. The successor does not run
+// when write #1 settles: the next try is at 1800, the retry's own.
+{
+  const { timers, advance } = clock();
+  const attempts = [];
+  let release;
+  const saver = new Autosaver(() => new Promise((resolve, reject) => {
+    attempts.push(timers.now());
+    release = () => reject(new Error("held"));
+  }), timers);
+  saver.changed();
+  await advance(QUIET_MS);
+  assert.deepEqual(attempts, [300]);
+  await advance(100);
+  saver.changed();  // t=400: due at 700
+  await advance(300);  // t=700: the timer fires while write #1 runs, its write waits behind it
+  assert.deepEqual(attempts, [300], "nothing overlaps write #1");
+  await advance(100);
+  release();  // t=800: write #1 fails; due again at 1800
+  await advance(0);
+  assert.deepEqual(attempts, [300], "the queued write does not run when write #1 settles");
+  await advance(RETRY_FIRST_MS - 1);
+  assert.deepEqual(attempts, [300], "nor before 1800");
+  await advance(1);
+  assert.deepEqual(attempts, [300, 1800]);
+  saver.drop();
+}
+
 // A newer edit made while a write is running is not cleared when the older write ends, whether it worked or failed.
 for (const outcome of ["ok", "fail"]) {
   const { timers, advance } = clock();
@@ -339,6 +368,11 @@ for (const ok of [false, true]) {
   assert.equal(saver.pending, false);
   saver.changed();
   assert.equal(await saver.flush(), true);
+  // nor can the old write land over the new one: the host runs draft saves one after another, in the order asked (a
+  // synchronous command runs on its main thread), so the new draft is written after the old one ends, or not at all
+  const { readFileSync } = await import("node:fs");
+  const edit = readFileSync(new URL("../src-tauri/src/edit.rs", import.meta.url), "utf8");
+  assert.match(edit, /#\[tauri::command\]\npub fn edit_project_save\(/, "edit_project_save is a synchronous command");
 }
 
 // A write still waiting when the change is dropped (the user chose to lose it and opened another video) does not
@@ -463,6 +497,54 @@ for (const [name, fire, edit] of [["truncated", (ms) => Math.trunc(ms), true], [
   assert.equal(writes.length, 2, `${name}: tried again after the backoff`);
   assert.ok(writes[1] >= writes[0] + RETRY_FIRST_MS, `${name}: not before the backoff: ${writes}`);
   assert.equal(saver.pending, false, `${name}: on disk`);
+}
+
+// restart() (a reload carries the change on, Issue #929): the change stays pending, the backoff still holds, and a
+// write the close gave up on holds up nothing; when it ends after all, it changes nothing.
+{
+  const { timers, advance } = clock();
+  let calls = 0, endHung;
+  const writes = [];
+  const saver = new Autosaver(() => {
+    calls += 1;
+    if (calls === 1) return Promise.reject(new Error("held"));
+    if (calls === 2) return new Promise((_, reject) => { endHung = () => reject(new Error("late")); });
+    writes.push(timers.now());
+    return Promise.resolve();
+  }, timers);
+  saver.changed();
+  await advance(QUIET_MS);  // the first write fails: tried again at QUIET_MS + RETRY_FIRST_MS
+  await advance(RETRY_FIRST_MS);  // the second one never ends (a close gives up on it)
+  assert.equal(calls, 2);
+  saver.restart();
+  assert.equal(saver.pending, true);
+  await advance(QUIET_MS);
+  assert.equal(writes.length, 1, "written, not queued behind the write that never ended");
+  assert.equal(saver.pending, false);
+  endHung();
+  await advance(0);
+  assert.equal(saver.failing, false, "its late failure is not this change's");
+  saver.changed();
+  await advance(QUIET_MS);
+  assert.equal(writes.length, 2, "and puts no backoff on the next change");
+  await advance(RETRY_MAX_MS);
+  assert.equal(calls, 4, "nor schedules a write of its own");
+  assert.equal(saver.pending, false);
+}
+{
+  const { timers, advance } = clock();
+  let fails = 1;
+  const writes = [];
+  const saver = new Autosaver(async () => { writes.push(timers.now()); if (fails-- > 0) throw new Error("held"); }, timers);
+  saver.changed();
+  await advance(QUIET_MS);  // fails: due again at QUIET_MS + RETRY_FIRST_MS
+  await advance(100);
+  saver.restart();
+  await advance(RETRY_FIRST_MS - 101);
+  assert.equal(writes.length, 1, "restart keeps the backoff");
+  await advance(1);
+  assert.equal(writes.length, 2);
+  assert.equal(saver.pending, false);
 }
 
 // A system clock step back cannot push the next try past RETRY_MAX_MS (windowTimers uses a steady clock too).
@@ -756,11 +838,13 @@ for (const action of ["close", "exit"]) {
     "a change made while the question was open is written too, and dropped only on Vẫn thoát");
   assert.match(closeNow, /if \(saver\.pending && !\(await flushWithin\(\(\) => saver\.flush\(\), CLOSE_WAIT_MS, windowTimers\)\)\)/);
   assert.equal((closeNow.match(/discard\(\)/g) ?? []).length, 2);
+  assert.match(closeNow, /if \(carried\?\.outputPath === session\.outputPath && !saver\.pending\) carried = null;\s*const leaving = session\.target;/,
+    "a later write that has every change makes the reload's older copy go (it would be written over the newer draft)");
   assert.match(view, /function discard\(\): void \{\s*saver\.drop\(\);\s*carried = null;\s*\}/, "Vẫn thoát lets a carried change go too");
   assert.equal((view.match(/saver\.drop\(\)/g) ?? []).length, 1, "nothing else drops a change");
   // a carried change stays pending, with its backoff: written from its copy when no editor takes it up, and a window
   // close is not told the disk has it before then
-  assert.match(view, /function carry\(current: Session\): void \{\s*carried = \{ outputPath: current\.outputPath, kind: current\.target\.kind, project: draftDocument\(current\),[^}]*\};\s*saver\.changed\(\);\s*\}/);
+  assert.match(view, /function carry\(current: Session\): void \{\s*carried = \{ outputPath: current\.outputPath, kind: current\.target\.kind, project: draftDocument\(current\),[^}]*\};\s*saver\.restart\(\);\s*\}/);
   assert.match(save, /^async function save\(\): Promise<void> \{\s*const left = carried && carried\.outputPath !== session\?\.outputPath \? carried : null;\s*if \(left\) \{\s*try \{\s*await invoke\("edit_project_save", \{ outputPath: left\.outputPath, kind: left\.kind, project: left\.project, keepOld: left\.keepOld \}\);[\s\S]*?throw error;\s*\}[\s\S]*?if \(carried === left\) carried = null;\s*\}\s*if \(!session\) return;/);
   assert.match(view, /async function flush\(\): Promise<boolean> \{\s*return \(await saver\.flush\(\)\) && !carried;\s*\}/);
   const opening = view.slice(view.indexOf("async function open(target: EditTarget)"), view.indexOf("function close(ask: boolean"));
