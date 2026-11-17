@@ -35,8 +35,21 @@ pub(crate) const VOICE_PROVIDERS: [&str; 1] = ["vibi"];
 /// paid AI call is made, and nothing is saved or deleted.
 pub(crate) const NO_SAVED_KEYS_ENV: &str = "DUBFLOW_NO_SAVED_KEYS";
 
-fn keys_closed() -> bool {
+pub(crate) fn keys_closed() -> bool {
     closed_by(std::env::var(NO_SAVED_KEYS_ENV).ok().as_deref())
+}
+
+/// While keys are closed, a key handed in through the launch environment (a shell or test harness that set one)
+/// is dropped as well, before this host starts anything, so no job or helper inherits it. Called first in `main`.
+pub(crate) fn drop_inherited_keys() {
+    drop_inherited_keys_if(keys_closed());
+}
+
+fn drop_inherited_keys_if(closed: bool) {
+    if closed {
+        std::env::remove_var(JOB_KEY_ENV);
+        std::env::remove_var(crate::vibi::KEY_ENV);
+    }
 }
 
 fn closed_by(value: Option<&str>) -> bool {
@@ -369,6 +382,17 @@ mod tests {
         let seen = calls();
         assert_eq!(seen.first().map(String::as_str), Some("read DubFlow/ai-key/claude"));
         assert!(seen.contains(&"write DubFlow/ai-key/claude".to_owned()) && seen.contains(&"delete DubFlow/ai-key/vibi".to_owned()));
+    }
+
+    #[test]
+    fn closed_keys_drop_a_key_inherited_from_the_launch_environment() {
+        // the only test that touches these two variables; the values are not keys
+        std::env::set_var(JOB_KEY_ENV, "inherited-not-a-key-0001");
+        std::env::set_var(crate::vibi::KEY_ENV, "inherited-not-a-key-0002");
+        drop_inherited_keys_if(false);
+        assert!(std::env::var_os(JOB_KEY_ENV).is_some() && std::env::var_os(crate::vibi::KEY_ENV).is_some());
+        drop_inherited_keys_if(true);
+        assert!(std::env::var_os(JOB_KEY_ENV).is_none() && std::env::var_os(crate::vibi::KEY_ENV).is_none());
     }
 
     #[test]

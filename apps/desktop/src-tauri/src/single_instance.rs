@@ -44,7 +44,7 @@ pub enum Wait {
 }
 
 /// What a launch should do.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Launch {
     /// This host is the one; carry on.
     Run,
@@ -53,6 +53,16 @@ pub enum Launch {
     /// Whether another host runs is unknown; say so and quit rather than
     /// risk two hosts on one queue.
     Refuse,
+    /// Another host runs, and this one has the saved AI keys closed (a
+    /// candidate beside the installed app): say so and quit without handing
+    /// the user to the other host, which reads the saved keys (#911).
+    RefuseBeside,
+}
+
+/// A host with the saved keys closed never hands the user to a running
+/// DubFlow: work meant for the closed run would reach the saved keys there.
+pub fn beside(launch: Launch, keys_closed: bool) -> Launch {
+    if keys_closed && launch == Launch::FocusOther { Launch::RefuseBeside } else { launch }
 }
 
 /// The decision for a launch. An existing claim may have no holder any more
@@ -120,6 +130,7 @@ pub fn claim() -> bool {
     std::env::remove_var(RELAUNCH_AFTER);
     let (mutex, claim) = Mutex::open(CLAIM_NAME);
     let launch = decide(claim, relaunch, RELAUNCH_WAIT_MS, |ms| mutex.as_ref().map_or(Wait::Failed, |mutex| mutex.wait(ms)));
+    let launch = beside(launch, crate::ai_keys::keys_closed());
     // Held until the process ends.
     std::mem::forget(mutex);
     match launch {
@@ -130,6 +141,10 @@ pub fn claim() -> bool {
         }
         Launch::Refuse => {
             refuse();
+            false
+        }
+        Launch::RefuseBeside => {
+            refuse_beside();
             false
         }
     }
@@ -147,6 +162,15 @@ fn refuse() {
         .encode_utf16().chain(Some(0)).collect();
     let caption: Vec<u16> = "DubFlow".encode_utf16().chain(Some(0)).collect();
     unsafe { MessageBoxW(std::ptr::null_mut(), text.as_ptr(), caption.as_ptr(), MB_OK | MB_ICONERROR) };
+}
+
+#[cfg(windows)]
+fn refuse_beside() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONWARNING, MB_OK};
+    let text: Vec<u16> = "Một bản DubFlow khác đang chạy. Bản chạy thử này không dùng khóa AI đã lưu (DUBFLOW_NO_SAVED_KEYS) nên không chuyển sang bản đang chạy.\r\n\r\nHãy đóng DubFlow đang chạy rồi mở lại bản chạy thử."
+        .encode_utf16().chain(Some(0)).collect();
+    let caption: Vec<u16> = "DubFlow".encode_utf16().chain(Some(0)).collect();
+    unsafe { MessageBoxW(std::ptr::null_mut(), text.as_ptr(), caption.as_ptr(), MB_OK | MB_ICONWARNING) };
 }
 
 /// How long a second launch looks for the first one's window: a cold first
@@ -257,6 +281,15 @@ mod tests {
         assert_eq!(decide(Claim::Failed, true, 90, |_| unreachable!()), Launch::Refuse, "not even a restart guesses");
         for relaunch in [false, true] {
             assert_eq!(decide(Claim::Taken, relaunch, 90, |_| Wait::Failed), Launch::Refuse, "a failed wait proves nothing about another host");
+        }
+    }
+
+    #[test]
+    fn a_run_with_the_saved_keys_closed_never_hands_over_to_a_running_dubflow() {
+        assert_eq!(beside(Launch::FocusOther, true), Launch::RefuseBeside);
+        assert_eq!(beside(Launch::FocusOther, false), Launch::FocusOther, "an ordinary second launch still focuses the first");
+        for launch in [Launch::Run, Launch::Refuse] {
+            assert_eq!(beside(launch, true), launch, "a run that holds the claim, or cannot tell, is unchanged");
         }
     }
 
