@@ -100,16 +100,109 @@ const moved = moveText(title, 128, -72);
 assert.ok(Math.abs(moved.x - 0.6) < 1e-9 && Math.abs(moved.y - 0.4) < 1e-9);
 assert.deepEqual([moveText(title, 1e5, 1e5).x, moveText(title, 1e5, 1e5).y], [1, 1], "kept on the thumbnail");
 
-// Templates keep the background and replace the text, with the video's title.
-doc = { ...emptyThumb(), background: { kind: "image", path: "D:\\bg.jpg" }, texts: [makeText("cũ")] };
+// Templates keep the background and lay the texts out again; a thumbnail with no text takes the video's title.
+doc = { ...emptyThumb(), background: { kind: "image", path: "D:\\bg.jpg" }, texts: [] };
 for (const template of THUMB_TEMPLATES) {
   const next = applyTemplate(doc, template.id, "Lợn ở tòa nhà 26 tầng");
   assert.deepEqual(next.background, doc.background);
-  assert.ok(next.texts.some((text) => text.text === "Lợn ở tòa nhà 26 tầng"), template.id);
-  assert.ok(!next.texts.some((text) => text.text === "cũ"));
-  assert.deepEqual(normalizeThumb(next).texts, next.texts, `${template.id} texts are valid as saved`);
+  assert.equal(next.texts.at(-1).text, "Lợn ở tòa nhà 26 tầng", `${template.id}: the title is the last text, chosen after the change`);
+  assert.equal(next.texts.at(-1).role, "title");
+  assert.deepEqual(next.texts.map((text) => text.role), template.labelled ? ["label", "title"] : ["title"]);
+  assert.deepEqual(normalizeThumb(next).texts, next.texts, `${template.id} texts (with their roles) are valid as saved`);
 }
 assert.ok(applyTemplate(doc, "big-bottom", "  ").texts[0].text.length > 0, "an empty title still gives text to edit");
+assert.equal(normalizeThumb({ ...doc, texts: [{ ...makeText("x"), role: "boss" }] }).texts[0].role, undefined, "an unknown role is dropped");
+assert.ok(!("role" in normalizeThumb({ ...doc, texts: [makeText("x")] }).texts[0]), "a text the user adds has no role");
+
+// rc22 (#921): a change of layout never drops what the user typed (it replaced the typed title with "MỚI").
+const typed = (thumb, words) => ({ ...thumb, texts: thumb.texts.map((text, index) => (words[index] === undefined ? text : { ...text, text: words[index] })) });
+const words = (thumb) => thumb.texts.map((text) => text.text);
+const twice = applyTemplate(applyTemplate(doc, "two-lines", "Tên video"), "two-lines", "Tên video");
+assert.deepEqual(words(twice), ["MỚI", "Tên video"], "two-lines twice: the title is not taken from the label");
+let two = typed(applyTemplate(doc, "two-lines", "Tên video"), [undefined, "Tháp nuôi lợn 26 tầng"]);
+assert.deepEqual(words(applyTemplate(applyTemplate(two, "two-lines", "x"), "two-lines", "x")), ["MỚI", "Tháp nuôi lợn 26 tầng"], "rc22's exact steps");
+for (const template of THUMB_TEMPLATES.filter((item) => !item.labelled)) {
+  const next = applyTemplate(two, template.id, "Tên video");
+  assert.deepEqual(words(next), ["Tháp nuôi lợn 26 tầng"], `two-lines → ${template.id}: the typed title stays, the untouched label goes`);
+  assert.deepEqual(words(applyTemplate(next, "two-lines", "Tên video")), ["MỚI", "Tháp nuôi lợn 26 tầng"], `${template.id} → two-lines`);
+}
+// A typed label goes round every layout and comes back to its place.
+two = typed(two, ["SIÊU TO"]);
+let round = two;
+for (const id of ["band", "big-bottom", "left-column", "two-lines", "two-lines", "band", "two-lines"]) {
+  round = applyTemplate(round, id, "Tên video");
+  assert.deepEqual([...words(round)].sort(), ["SIÊU TO", "Tháp nuôi lợn 26 tầng"], `after ${id}: both typed texts are kept`);
+  assert.equal(round.texts.at(-1).text, "Tháp nuôi lợn 26 tầng", `after ${id}: the title stays the title`);
+}
+assert.deepEqual(words(round), ["SIÊU TO", "Tháp nuôi lợn 26 tầng"], "back on two-lines, the typed label is the label again");
+assert.equal(round.texts[0].role, "label");
+const band = applyTemplate(two, "band", "Tên video");
+assert.deepEqual(band.texts.find((text) => text.text === "SIÊU TO"), two.texts[0], "a label a layout has no place for stays as it was");
+// A "MỚI" the user moved or restyled is theirs: kept.
+const movedLabel = { ...twice, texts: [{ ...twice.texts[0], x: 0.86, band: "#2563eb" }, twice.texts[1]] };
+assert.deepEqual(applyTemplate(movedLabel, "band", "x").texts[0], movedLabel.texts[0], "a moved, recoloured MỚI is kept");
+// A "MỚI" the user typed is theirs, even placed and styled exactly like the layout's label.
+const lookalike = makeText("MỚI", { x: 0.16, y: 0.16, size: 64, band: "#e11d48", strokeWidth: 0, shadow: false });
+const withOwn = { ...twice, texts: [...twice.texts, lookalike] };
+assert.deepEqual(applyTemplate(withOwn, "band", "x").texts.filter((text) => text.text === "MỚI"), [lookalike], "band: the layout's MỚI goes, the user's stays");
+assert.deepEqual(words(applyTemplate(withOwn, "two-lines", "x")), ["MỚI", "MỚI", "Tên video"], "two-lines: the user's MỚI and a fresh label");
+assert.deepEqual(applyTemplate(withOwn, "two-lines", "x").texts[0], lookalike);
+// The label is the text the layout made as its label, whatever the order or sizes of the others.
+const caption = makeText("Phần 2", { y: 0.5 });
+const shuffled = { ...two, texts: [caption, two.texts[1], two.texts[0]] };
+for (const id of ["two-lines", "band", "two-lines"]) {
+  const next = applyTemplate(shuffled, id, "x");
+  assert.equal(next.texts.find((text) => text.role === "label")?.text, "SIÊU TO", `${id}: the typed label is still the label`);
+  assert.equal(next.texts.at(-1).text, "Tháp nuôi lợn 26 tầng");
+  assert.deepEqual(next.texts[0], caption, `${id}: the caption is as it was`);
+}
+// Texts the user adds are never promoted or restyled by a layout.
+const mark = makeText("@kenhcuatoi", { x: 0.9, y: 0.95, size: 32 });
+let marked = { ...twice, texts: [...twice.texts, mark] };
+for (let index = 0; index < 4; index += 1) {
+  marked = applyTemplate(marked, "two-lines", "Tên video");
+  assert.deepEqual(marked.texts.find((text) => text.text === "@kenhcuatoi"), mark, `two-lines ×${index + 1}: the watermark is untouched`);
+  assert.deepEqual(words(marked).filter((text) => text !== "@kenhcuatoi"), ["MỚI", "Tên video"]);
+}
+const added = makeText("Phần 2", { y: 0.5 });
+const onBand = { ...applyTemplate(doc, "band", "Tên video"), texts: [...applyTemplate(doc, "band", "Tên video").texts, added] };
+assert.equal(added.size > onBand.texts[0].size, true, "the added text is larger than the band title");
+for (const template of THUMB_TEMPLATES) {
+  const next = applyTemplate(onBand, template.id, "x");
+  assert.equal(next.texts.at(-1).text, "Tên video", `band → ${template.id}: a larger added text does not take the title`);
+  assert.deepEqual(next.texts.find((text) => text.text === "Phần 2"), added, `band → ${template.id}: the added text is as it was`);
+  assert.equal(next.texts.length, template.labelled ? 3 : 2);
+}
+// A thumbnail saved before layouts marked their texts: the largest text is the title, the next one the label,
+// and nothing is dropped (nothing is known to be the layout's).
+const strip = (thumb) => ({ ...thumb, texts: thumb.texts.map(({ role, ...text }) => text) });
+const old = strip(typed(applyTemplate(doc, "two-lines", "x"), [undefined, "Tiêu đề cũ"]));
+assert.deepEqual(words(applyTemplate(old, "two-lines", "x")), ["MỚI", "Tiêu đề cũ"], "its MỚI is reused as the label, not doubled");
+assert.deepEqual(applyTemplate(old, "band", "x").texts[0], old.texts[0], "on a layout without a label, its MỚI stays as it was");
+assert.deepEqual(words(applyTemplate(old, "band", "x")), ["MỚI", "Tiêu đề cũ"]);
+const oldLabel = strip(typed(applyTemplate(doc, "two-lines", "x"), ["HOT", "Tiêu đề cũ"]));
+const relaid = applyTemplate(oldLabel, "two-lines", "x");
+assert.deepEqual(words(relaid), ["HOT", "Tiêu đề cũ"], "an old typed label is the label");
+assert.deepEqual(relaid.texts.map((text) => text.role), ["label", "title"], "and the result now has roles");
+const lone = strip({ ...doc, texts: [twice.texts[0]] });
+assert.deepEqual(words(applyTemplate(lone, "band", "Tên video")), ["MỚI", "Tên video"], "a MỚI-looking old text is never the title, and is kept");
+assert.deepEqual(words(applyTemplate(lone, "two-lines", "Tên video")), ["MỚI", "Tên video"]);
+// Six texts: all kept; a fresh MỚI is left out rather than drop one; no room at all leaves the thumbnail as it is.
+const five = ["một", "hai", "ba", "bốn", "năm"].map((text, index) => makeText(text, { size: 40 + index }));
+const full = { ...doc, texts: [...five, applyTemplate(doc, "big-bottom", "Tên video").texts[0]] };
+for (const template of THUMB_TEMPLATES) {
+  const next = applyTemplate(full, template.id, "x");
+  assert.deepEqual([...words(next)].sort(), [...words(full)].sort(), `${template.id} keeps all 6 texts`);
+  assert.equal(next.texts.at(-1).text, "Tên video");
+  assert.deepEqual(next.texts.slice(0, 5), five, `${template.id}: the added texts are as they were`);
+}
+const crowded = { ...doc, texts: [...five, { ...makeText("sáu"), role: "label" }] };
+assert.equal(applyTemplate(crowded, "two-lines", "x"), crowded, "no room for a title beside a typed label: the thumbnail stays as it is");
+// Texts typed before any layout: the largest becomes the title.
+const plain = applyTemplate({ ...doc, texts: [...five, makeText("sáu", { size: 50 })] }, "big-bottom", "x");
+assert.deepEqual([...words(plain)].sort(), ["ba", "bốn", "hai", "một", "năm", "sáu"].sort());
+assert.equal(plain.texts.at(-1).text, "sáu");
+assert.deepEqual(words(applyTemplate({ ...doc, texts: [makeText("   "), makeText("cũ")] }, "band", "x")), ["cũ"], "blank texts are not kept");
 assert.equal(applyTemplate(doc, "nope", "x"), doc);
 assert.equal(new Set(THUMB_TEMPLATES.map((template) => template.id)).size, THUMB_TEMPLATES.length);
 

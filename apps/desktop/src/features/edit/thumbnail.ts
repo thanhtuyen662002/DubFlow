@@ -36,7 +36,11 @@ export type ThumbText = {
   shadow: boolean;
   /** A filled band behind the text, or none. */
   band: string | null;
+  /** The place a layout made this text for; a later layout puts it in its own place again. Texts the user adds have none. */
+  role?: ThumbRole;
 };
+
+export type ThumbRole = "title" | "label";
 
 export type ThumbDoc = {
   version: 1;
@@ -91,6 +95,7 @@ function normalizeText(value: unknown): ThumbText | null {
     strokeWidth: Math.round(clamp(finite(row.strokeWidth, 0), 0, 24)),
     shadow: row.shadow === true,
     band: row.band === null || row.band === undefined ? null : colour(row.band, "#e11d48"),
+    ...(row.role === "title" || row.role === "label" ? { role: row.role } : {}),
   };
 }
 
@@ -201,35 +206,78 @@ export function moveText(text: ThumbText, dx: number, dy: number): ThumbText {
   return { ...text, x: clamp(text.x + dx / THUMB_WIDTH, 0, 1), y: clamp(text.y + dy / THUMB_HEIGHT, 0, 1) };
 }
 
-export type ThumbTemplate = { id: string; label: string; darken: number; texts: (title: string) => ThumbText[] };
+export type ThumbTemplate = {
+  id: string; label: string; darken: number;
+  /** Whether the layout has a small label above its title. */
+  labelled: boolean;
+  texts: (title: string, label: string) => ThumbText[];
+};
 
-/** Ready layouts; each keeps the background and replaces the text. */
+/** The label a labelled layout starts with. */
+export const TEMPLATE_LABEL = "MỚI";
+const LABEL_LOOK: Partial<ThumbText> = { x: 0.16, y: 0.16, size: 64, band: "#e11d48", strokeWidth: 0, shadow: false, role: "label" };
+
+/** Ready layouts; each keeps the background and lays the texts out again. */
 export const THUMB_TEMPLATES: readonly ThumbTemplate[] = [
   {
-    id: "big-bottom", label: "Tiêu đề lớn phía dưới", darken: 0.15,
-    texts: (title) => [makeText(title, { y: 0.8, size: 110 })],
+    id: "big-bottom", label: "Tiêu đề lớn phía dưới", darken: 0.15, labelled: false,
+    texts: (title) => [makeText(title, { y: 0.8, size: 110, role: "title" })],
   },
   {
-    id: "two-lines", label: "Hai dòng: nhãn + tiêu đề", darken: 0.25,
-    texts: (title) => [
-      makeText("MỚI", { x: 0.16, y: 0.16, size: 64, band: "#e11d48", strokeWidth: 0, shadow: false }),
-      makeText(title, { y: 0.74, size: 100, color: "#facc15" }),
-    ],
+    id: "two-lines", label: "Hai dòng: nhãn + tiêu đề", darken: 0.25, labelled: true,
+    texts: (title, label) => [makeText(label, LABEL_LOOK), makeText(title, { y: 0.74, size: 100, color: "#facc15", role: "title" })],
   },
   {
-    id: "left-column", label: "Chữ bên trái", darken: 0.35,
-    texts: (title) => [makeText(title, { x: 0.3, y: 0.5, size: 92 })],
+    id: "left-column", label: "Chữ bên trái", darken: 0.35, labelled: false,
+    texts: (title) => [makeText(title, { x: 0.3, y: 0.5, size: 92, role: "title" })],
   },
   {
-    id: "band", label: "Dải màu ngang", darken: 0,
-    texts: (title) => [makeText(title, { y: 0.84, size: 84, band: "#111827", strokeWidth: 0, shadow: false })],
+    id: "band", label: "Dải màu ngang", darken: 0, labelled: false,
+    texts: (title) => [makeText(title, { y: 0.84, size: 84, band: "#111827", strokeWidth: 0, shadow: false, role: "title" })],
   },
 ];
 
-export function applyTemplate(doc: ThumbDoc, id: string, title: string): ThumbDoc {
+const LOOK_KEYS = ["x", "y", "size", "font", "bold", "color", "stroke", "strokeWidth", "shadow", "band"] as const;
+const PLAIN_LABEL = makeText(TEMPLATE_LABEL, LABEL_LOOK);
+
+/** The "MỚI" a layout put there, not retyped, moved or restyled: the one text a layout change may drop. */
+export function untouchedLabel(text: ThumbText): boolean {
+  return text.text.trim() === TEMPLATE_LABEL && LOOK_KEYS.every((key) => text[key] === PLAIN_LABEL[key]);
+}
+
+/**
+ * The layout `id` over the thumbnail, or the same thumbnail when the layout's
+ * texts do not fit beside the ones already there (at most MAX_THUMB_TEXTS).
+ * A change of layout never loses a text the user wrote:
+ * - the layout's own title and label (the texts a layout made) go to the new
+ *   layout's places; on a layout without a label the label stays where it is;
+ * - every other text, such as one the user added, stays exactly as it was;
+ * - only the layout's own "MỚI", untouched, can go.
+ * A thumbnail saved before layouts marked their texts takes its largest text
+ * as the title and its next text as the label, and drops nothing. `name`
+ * titles a thumbnail that has no title.
+ */
+export function applyTemplate(doc: ThumbDoc, id: string, name: string): ThumbDoc {
   const template = THUMB_TEMPLATES.find((item) => item.id === id);
   if (!template) return doc;
-  return { ...doc, darken: template.darken, texts: template.texts(title.trim() || "Tiêu đề video") };
+  const words = doc.texts.filter((text) => text.text.trim());
+  const marked = doc.texts.some((text) => text.role);
+  const title = marked
+    ? words.find((text) => text.role === "title")
+    : words.filter((text) => !untouchedLabel(text)).reduce<ThumbText | undefined>((best, text) => (!best || text.size > best.size ? text : best), undefined);
+  // The layout's own "MỚI", still as it made it. On a thumbnail saved before roles nothing is known
+  // to be the layout's, so nothing is dropped and its next text is the label.
+  const generated = (text: ThumbText): boolean => marked && text.role === "label" && untouchedLabel(text);
+  const label = marked
+    ? words.find((text) => text !== title && text.role === "label" && !generated(text))
+    : words.find((text) => text !== title);
+  const moved = template.labelled ? label : undefined;
+  const kept = words.filter((text) => text !== title && text !== moved && !generated(text));
+  let texts = template.texts(title?.text ?? (name.trim() || "Tiêu đề video"), moved?.text ?? TEMPLATE_LABEL);
+  // No room for a fresh "MỚI": the layout goes without one rather than drop a text.
+  if (kept.length + texts.length > MAX_THUMB_TEXTS && !moved) texts = texts.filter((text) => text.role !== "label");
+  if (kept.length + texts.length > MAX_THUMB_TEXTS) return doc;
+  return { ...doc, darken: template.darken, texts: [...kept, ...texts] };
 }
 
 /** The suggested file name: the video's name and " - thumbnail". */

@@ -1096,17 +1096,149 @@ fn validate_mix(clips: &[SoundClip], files: &[usize], durations: &[f64], main_vo
     Ok(Mix { sounds, main_volume, main_clean: Clean::default() })
 }
 
-/// An existing folder chosen for the export.
+/// An existing folder chosen for the export, that DubFlow may write into.
 pub(crate) fn target_folder(folder: &str) -> Result<PathBuf, String> {
     let path = Path::new(folder);
     if !path.is_absolute() {
         return Err(fail("Hãy chọn thư mục lưu trên máy"));
     }
-    let resolved = path.canonicalize().map_err(|_| fail("Không tìm thấy thư mục lưu"))?;
+    // rc22: a folder Windows refused to open was reported as missing.
+    let resolved = path.canonicalize().map_err(|error| folder_error(path, &error))?;
     if !resolved.is_dir() {
         return Err(fail("Không tìm thấy thư mục lưu"));
     }
+    writable(&resolved)?;
     Ok(resolved)
+}
+
+/// The file removed, trying for about 200 ms: a scanner may hold a new file for a moment.
+fn removed(file: &Path) -> std::io::Result<()> {
+    let mut tries = 0;
+    loop {
+        match fs::remove_file(file) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) if tries >= 9 => return Err(error),
+            Err(_) => {
+                tries += 1;
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
+}
+
+fn folder_error(folder: &Path, error: &std::io::Error) -> String {
+    if denied(error) {
+        return no_write(folder);
+    }
+    if folder.exists() || error.kind() != std::io::ErrorKind::NotFound {
+        return fail(format!("Không mở được thư mục lưu “{}”. Hãy kiểm tra ổ đĩa hoặc chọn thư mục khác.", folder_name(folder)));
+    }
+    fail("Không tìm thấy thư mục lưu")
+}
+
+/// Windows refused: no right, or a read-only or write-protected drive (a locked SD card).
+fn denied(error: &std::io::Error) -> bool {
+    matches!(error.kind(), std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem)
+}
+
+fn folder_name(folder: &Path) -> String {
+    folder.file_name().map_or_else(|| display_path(folder), |name| name.to_string_lossy().into_owned())
+}
+
+fn no_write(folder: &Path) -> String {
+    fail(format!("Không có quyền ghi vào thư mục lưu “{}” (thư mục chỉ đọc hoặc bị Windows chặn). Hãy chọn thư mục khác.", folder_name(folder)))
+}
+
+/// Whether DubFlow can finish a file in the folder: a new empty file is made
+/// and removed at once. It never touches a file that is there. A folder that
+/// lets a file be made but not removed is refused too, since putting the
+/// finished export in place (renaming its `.partial`) needs the same right.
+fn writable(folder: &Path) -> Result<(), String> {
+    clear_left_probes();
+    let stamp = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |time| time.as_nanos());
+    let names = (0..PROBE_TRIES).map(|try_| folder.join(format!(".dubflow-write-check-{}-{stamp}-{try_}", std::process::id())));
+    probe_folder(folder, names)
+}
+
+const PROBE_TRIES: usize = 5;
+
+/// Check files this process made and could not remove yet; only these are ever removed later.
+static LEFT_PROBES: LazyLock<Mutex<Vec<PathBuf>>> = LazyLock::new(|| Mutex::new(Vec::new()));
+
+fn clear_left_probes() {
+    if let Ok(mut left) = LEFT_PROBES.lock() {
+        left.retain(|probe| matches!(fs::remove_file(probe), Err(error) if error.kind() != std::io::ErrorKind::NotFound));
+    }
+}
+
+/// A new file opened to go away when it is closed (Windows), so nothing is
+/// left even in a folder where a file cannot be removed later.
+fn new_probe(probe: &Path) -> std::io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const GENERIC_WRITE: u32 = 0x4000_0000;
+        const FILE_FLAG_DELETE_ON_CLOSE: u32 = 0x0400_0000;
+        options.access_mode(GENERIC_WRITE | DELETE_ACCESS).custom_flags(FILE_FLAG_DELETE_ON_CLOSE);
+    }
+    options.open(probe)
+}
+
+#[cfg(windows)]
+const DELETE_ACCESS: u32 = 0x0001_0000;
+
+/// Whether a file already in the folder may be removed or renamed, as putting
+/// a finished export in place does: a second open of the check file asking
+/// for DELETE. (The handle that makes a file is always given DELETE, so it
+/// cannot tell.)
+#[cfg(windows)]
+fn can_remove(probe: &Path) -> bool {
+    use std::os::windows::fs::OpenOptionsExt;
+    !matches!(fs::OpenOptions::new().access_mode(DELETE_ACCESS).open(probe), Err(error) if denied(&error))
+}
+
+#[cfg(not(windows))]
+fn can_remove(_probe: &Path) -> bool {
+    true
+}
+
+/// The check with the names it may use: a name already taken is never opened
+/// or removed, and the next one is tried; if every name is taken the folder is
+/// not accepted.
+fn probe_folder(folder: &Path, names: impl IntoIterator<Item = PathBuf>) -> Result<(), String> {
+    for probe in names {
+        match new_probe(&probe) {
+            Ok(file) => {
+                let removable = can_remove(&probe);
+                drop(file);
+                if removed(&probe).is_err() {
+                    if let Ok(mut left) = LEFT_PROBES.lock() {
+                        left.push(probe.clone());
+                    }
+                    return Err(no_write(folder));
+                }
+                return if removable { Ok(()) } else { Err(no_write(folder)) };
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                // The name was free (not AlreadyExists), so a file there now is the one this call made.
+                if probe.exists() {
+                    if let Ok(mut left) = LEFT_PROBES.lock() {
+                        left.push(probe.clone());
+                    }
+                }
+                return Err(if denied(&error) {
+                    no_write(folder)
+                } else {
+                    fail(format!("Không ghi được vào thư mục lưu “{}”. Hãy kiểm tra ổ đĩa hoặc chọn thư mục khác.", folder_name(folder)))
+                });
+            }
+        }
+    }
+    Err(fail(format!("Không kiểm được thư mục lưu “{}”. Hãy thử lại hoặc chọn thư mục khác.", folder_name(folder))))
 }
 
 pub(crate) fn partial_of(file: &Path) -> PathBuf {
@@ -4734,7 +4866,69 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
         assert!(target_folder(&folder.join("missing").to_string_lossy()).is_err());
         assert!(target_folder(&folder.join("Phim.mp4").to_string_lossy()).is_err());
         assert!(target_folder(&folder.to_string_lossy()).is_ok());
+        assert_eq!(target_folder(&folder.join("missing").to_string_lossy()).unwrap_err(), fail("Không tìm thấy thư mục lưu"));
+        let mut names: Vec<String> = fs::read_dir(&folder).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        names.sort();
+        assert_eq!(names, ["Phim (2).srt", "Phim (3).mp4.partial", "Phim.mp4"], "the write check leaves nothing behind");
+        // A check name that is taken is left alone and the next one is used; all taken: not accepted.
+        let taken = folder.join(".dubflow-write-check-taken");
+        fs::write(&taken, b"user").unwrap();
+        let fresh = folder.join(".dubflow-write-check-fresh");
+        assert!(probe_folder(&folder, [taken.clone(), fresh.clone()]).is_ok());
+        assert_eq!(fs::read(&taken).unwrap(), b"user", "a taken name is never opened or removed");
+        assert!(!fresh.exists(), "the check file that was made is removed");
+        let all_taken = probe_folder(&folder, [taken.clone(), taken.clone()]).unwrap_err();
+        assert!(all_taken.starts_with(&fail("Không kiểm được thư mục lưu “dubflow-edit-names-")), "{all_taken}");
+        assert_eq!(fs::read(&taken).unwrap(), b"user");
+        fs::remove_file(&taken).unwrap();
         fs::remove_dir_all(folder).unwrap();
+    }
+
+    /// rc22: a folder the user may not write into is named as such, not as missing.
+    #[cfg(windows)]
+    #[test]
+    fn a_folder_windows_will_not_let_us_write_into_is_named_as_such() {
+        let root = std::env::temp_dir().join(format!("dubflow-edit-locked-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        // Everyone denied new files only (WD), then write as a whole: rc22 used (W,AD,WD), which also
+        // denies Synchronize, so Windows will not even open the folder.
+        for (name, right) in [("Không thêm file", "(WD)"), ("Chỉ đọc", "(W,AD,WD)")] {
+            let folder = root.join(name);
+            fs::create_dir_all(&folder).unwrap();
+            let shown = folder.to_string_lossy().into_owned();
+            let deny = format!("*S-1-1-0:{right}");
+            let lock = Command::new("icacls").arg(&folder).args(["/deny", deny.as_str()]).output().unwrap();
+            assert!(lock.status.success(), "icacls {right}: {}", String::from_utf8_lossy(&lock.stderr));
+            let refused = target_folder(&shown);
+            let unlock = Command::new("icacls").arg(&folder).args(["/remove:d", "*S-1-1-0"]).output().unwrap();
+            assert!(unlock.status.success());
+            let error = refused.unwrap_err();
+            assert!(error.contains("Không có quyền ghi") && error.contains(name), "{right}: {error}");
+            assert!(target_folder(&shown).is_ok(), "{right}: fine again once allowed");
+            assert_eq!(fs::read_dir(&folder).unwrap().count(), 0, "{right}: nothing is left in the folder");
+        }
+        // A file can be made but not removed (no delete on new files, no delete-child on the folder):
+        // the export could not be put in place either, so the folder is refused.
+        let folder = root.join("Không xóa được");
+        fs::create_dir_all(&folder).unwrap();
+        let shown = folder.to_string_lossy().into_owned();
+        let deny = |rights: &str| {
+            let out = Command::new("icacls").arg(&folder).args(["/deny", &*format!("*S-1-1-0:{rights}")]).output().unwrap();
+            assert!(out.status.success(), "icacls {rights}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        deny("(OI)(IO)(DE)");
+        deny("(DC)");
+        let refused = target_folder(&shown);
+        let unlock = Command::new("icacls").arg(&folder).args(["/remove:d", "*S-1-1-0"]).output().unwrap();
+        assert!(unlock.status.success());
+        let error = refused.unwrap_err();
+        assert!(error.contains("Không có quyền ghi") && error.contains("Không xóa được"), "no delete: {error}");
+        // The check file opens to go away on close, so the refused folder keeps nothing.
+        let left: Vec<_> = fs::read_dir(&folder).unwrap().map(|entry| entry.unwrap().file_name()).collect();
+        assert!(left.is_empty(), "no delete: nothing is left after the refusal: {left:?}");
+        assert!(target_folder(&shown).is_ok(), "no delete: fine again once allowed");
+        assert_eq!(fs::read_dir(&folder).unwrap().count(), 0, "no delete: nothing is left once the folder is accepted");
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
