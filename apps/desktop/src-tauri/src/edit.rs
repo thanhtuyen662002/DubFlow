@@ -4412,13 +4412,14 @@ mod tests {
     }
 
     /// What other saves leave beside the draft at `path`: another run's temporary file, one of this run's still
-    /// writing, and one a run killed while saving left decades ago. None of it is any save's to touch.
+    /// writing, and one a run killed while saving left decades ago (its pid, `u32::MAX`, is no live process on Linux
+    /// or Windows). None of it is any save's to touch.
     fn foreign_temps(path: &Path) -> Vec<PathBuf> {
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
         let files = [
             (format!("{name}.1-2-3.saving"), "another save's temporary file"),
             (format!("{name}.{}-0-0.saving", std::process::id()), "another save of this run, still writing"),
-            (format!("{name}.1-2-4.saving"), "left by a run killed while saving, decades ago"),
+            (format!("{name}.{}-2-4.saving", u32::MAX), "left by a run killed while saving, decades ago"),
         ].map(|(file, text)| {
             let file = path.with_file_name(file);
             fs::write(&file, text).unwrap();
