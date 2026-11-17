@@ -187,6 +187,8 @@ assert.equal(nudgeText(big, bigBox, 10, 0).y, big.y, "a sideways move keeps it h
 assert.equal(nudgeText(big, bigBox, 0, 8), big, "a key down into the bottom: the same text");
 const bigUpKey = nudgeText(big, bigBox, 0, -8);
 const bigBackKey = nudgeText(bigUpKey, drawnAt(bigUpKey), 0, 8);
+assert.ok(Math.abs(drawnAt(bigUpKey).y - (bigBox.y - 8)) < 1e-6, "one key step up: drawn 8 px up at once");
+assert.ok(centreOn(bigBackKey, drawnAt(bigBackKey)) === bigBackKey && touchesEdge(drawnAt(bigBackKey), inkMargin(bigBackKey), "y", 1), "back down: touching the bottom, drawn where saved");
 assert.equal(nudgeText(bigBackKey, drawnAt(bigBackKey), 0, 8), bigBackKey, "up and back down leaves it against the bottom; another step down: the same text");
 assert.equal(leavesEdge(0.5, 0.5, 50, THUMB_WIDTH), false, "not held: the saved place");
 assert.equal(leavesEdge(0, 0.1, 1, THUMB_WIDTH), true, "a key move away: leaves");
@@ -214,6 +216,17 @@ assert.ok(stretched.y < bigBox.y - 20, "350 px across it is re-wrapped and lifte
 const bigSide = dragText(big, { x: 350, y: -20 }, slop, drawnAt);
 assert.ok(Math.abs(drawnAt(bigSide).y - (stretched.y - 20)) < 1e-6, "sideways and up: 20 px up from where it is drawn at the new place");
 assert.equal(dragText(big, { x: 350, y: 0 }, slop, drawnAt).y, big.y, "sideways only: its saved height kept");
+// Touching the bottom without being held: a drag down into it keeps the text; touching is judged at the new left and
+// right, so where the text no longer touches the bottom there, it follows the pointer down.
+assert.equal(dragText(bigBackKey, { x: 0, y: 40 }, slop, drawnAt), bigBackKey, "touching the bottom, not held: a drag down into it keeps the text");
+let lowColumn = applyTemplate({ ...emptyThumb(), texts: [] }, "left-column", longTitle).texts[0];
+for (let step = 0; step < 100; step += 1) lowColumn = nudgeText(lowColumn, drawnAt(lowColumn), 0, 8);
+lowColumn = nudgeText(lowColumn, drawnAt(lowColumn), 0, -8);
+lowColumn = nudgeText(lowColumn, drawnAt(lowColumn), 0, 8);
+assert.ok(centreOn(lowColumn, drawnAt(lowColumn)) === lowColumn && touchesEdge(drawnAt(lowColumn), inkMargin(lowColumn), "y", 1), "left-column title keyed down: touching the bottom, not held");
+const across300 = drawnAt({ ...lowColumn, x: lowColumn.x + 300 / THUMB_WIDTH });
+assert.ok(!touchesEdge(across300, inkMargin(lowColumn), "y", 1), "300 px across it wraps shorter and no longer touches the bottom");
+assert.ok(Math.abs(drawnAt(dragText(lowColumn, { x: 300, y: 20 }, slop, drawnAt)).y - (across300.y + 20)) < 1e-6, "touching is judged at the new place: it follows the pointer 20 px down");
 
 // Picking and dragging text.
 const title = makeText("Tiêu đề", { x: 0.5, y: 0.5, size: 100, strokeWidth: 0 });
@@ -448,6 +461,38 @@ canvasElement.fire("pointerup", at(keyBefore.x, keyBefore.y));
 fresh();
 canvasElement.fire("keydown", { key: "ArrowRight" });
 assert.ok(Math.abs(inks()[0].x - keyBefore.x - 8) < 1e-6, "ArrowRight moves the drawn text 8 px at the first press");
+// Up and down keys reach the text too: one ArrowUp moves the held big-bottom title 8 px up at once; ArrowDown into the
+// bottom it touches changes nothing; ArrowDown on a text in the middle moves it 8 px down.
+{
+  fresh();
+  view.begin({ ...emptyThumb(), texts: [big] });
+  const startY = inks().map((ink) => ink.y);
+  const grip = inks()[0];
+  canvasElement.fire("pointerdown", at(grip.x, grip.y));
+  canvasElement.fire("pointerup", at(grip.x, grip.y));
+  fresh();
+  canvasElement.fire("keydown", { key: "ArrowUp" });
+  assert.ok(inks().every((ink, index) => Math.abs(ink.y - (startY[index] - 8)) < 1e-6), "ArrowUp: every line 8 px up at the first press");
+  canvasElement.fire("keydown", { key: "ArrowDown" });
+  const touching = view.document().texts[0];
+  fresh();
+  view.begin(view.document());
+  const touchingInk = inks();
+  canvasElement.fire("pointerdown", at(touchingInk[0].x, touchingInk[0].y));
+  canvasElement.fire("pointerup", at(touchingInk[0].x, touchingInk[0].y));
+  fresh();
+  canvasElement.fire("keydown", { key: "ArrowDown" });
+  assert.deepEqual(view.document().texts[0], touching, "ArrowDown into the bottom it touches: the same text");
+  assert.deepEqual(inks().map((ink) => [ink.line, ink.y]), touchingInk.map((ink) => [ink.line, ink.y]), "and drawn as before");
+  fresh();
+  view.begin({ ...emptyThumb(), texts: [word({ x: 0.5, y: 0.5 })] });
+  const middle = inks()[0];
+  canvasElement.fire("pointerdown", at(middle.x, middle.y));
+  canvasElement.fire("pointerup", at(middle.x, middle.y));
+  fresh();
+  canvasElement.fire("keydown", { key: "ArrowDown" });
+  assert.ok(Math.abs(inks()[0].y - middle.y - 8) < 1e-6, "ArrowDown on a text in the middle: 8 px down");
+}
 // A drag is measured from where the text was grabbed: going out and back leaves it where it was, even if it was
 // re-wrapped and lifted off the bottom on the way, and the same pointer place gives the same result however it got there.
 const titleOf = () => view.document().texts.find((text) => text.role === "title");

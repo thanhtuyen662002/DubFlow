@@ -1,7 +1,7 @@
 DUBFLOW_PR_V1
 Issue: #923
 Lease-Owner: Claude/issue-923-thumb-text-inside
-Lease-Heartbeat: 2026-11-17T11:43:54Z
+Lease-Heartbeat: 2026-11-17T12:05:51Z
 Tested-Base-SHA: e5aaec31aa273187ac0a19f99a7a92139610de64
 Conflict-Domains: thumbnail-render
 Expected-Paths:
