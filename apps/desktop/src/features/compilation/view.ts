@@ -1,7 +1,7 @@
 import { writeEditorial, MAX_CUES } from "./ai.ts";
 import {
   buildRequest, completedVideos, moveItem, newItem, parseRuns, parseStatus, runFraction, specToForm,
-  type CompilationRun, type CompletedVideo, type ItemForm,
+  type CompilationRun, type CompilationStatus, type CompletedVideo, type ItemForm,
 } from "./model.ts";
 import { PROVIDERS, type AiSession } from "../ai/provider.ts";
 import { parseVoiceCatalog, voiceOptionGroups } from "../voices/model.ts";
@@ -465,7 +465,10 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
       if (token !== runsToken) return;
       // A run started here may not be written yet: keep it until it is found.
       const known = new Set(found.map((run) => run.dir.toLocaleLowerCase("en")));
+      const was = output ? runOf(output)?.status?.state : undefined;
       runs = [...runs.filter((run) => run.dir === output && !known.has(run.dir.toLocaleLowerCase("en"))), ...found];
+      const now = output ? runOf(output)?.status : undefined;
+      if (now) outputRead(now, was);
     } catch {
       // The page still works without the list of earlier runs.
     }
@@ -573,8 +576,7 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
     if (!status || runOf(dir) !== run) return;
     const before = run.status;
     if (before && before.state === status.state && before.message === status.message && before.done === status.done && before.total === status.total) return;
-    run.status = status;
-    if (status.state === "COMPLETED") run.video = status.path;
+    take(run, status);
     renderRuns();
     renderSelected();
     schedule();
@@ -777,6 +779,24 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
   // ---------- Making a compilation ----------
 
   /** Poll every running compilation; the list and the player follow. */
+  /** Keep a status read for `run`. The run this page started also drives the setup's state line, its Hủy and the lock. */
+  function take(run: CompilationRun, status: CompilationStatus): void {
+    const was = run.status?.state;
+    run.status = status;
+    if (status.state === "COMPLETED") run.video = status.path;
+    if (run.dir === output) outputRead(status, was);
+  }
+
+  /** The page's own run read as `status` (it was `was`): when it has just ended, the page is unlocked, whoever read it first. */
+  function outputRead(status: CompilationStatus, was: string | undefined): void {
+    $("state").textContent = `${status.message}${status.total ? ` (${status.done}/${status.total} đoạn)` : ""}`;
+    if (was === "RUNNING" && status.state !== "RUNNING") {
+      lock(false);
+      $("cancel").hidden = true; $<HTMLButtonElement>("cancel").disabled = false;
+      resultPath = status.path ?? "";
+    }
+  }
+
   function schedule(): void {
     const active = runs.some((run) => run.status?.state === "RUNNING");
     if (active && !timer) timer = window.setInterval(() => void poll(), POLL_MS);
@@ -796,16 +816,7 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
           continue;
         }
         if (!status) continue;
-        run.status = status;
-        if (status.state === "COMPLETED") run.video = status.path;
-        if (run.dir === output) {
-          $("state").textContent = `${status.message}${status.total ? ` (${status.done}/${status.total} đoạn)` : ""}`;
-          if (status.state !== "RUNNING") {
-            lock(false);
-            $("cancel").hidden = true; $<HTMLButtonElement>("cancel").disabled = false;
-            resultPath = status.path ?? "";
-          }
-        }
+        take(run, status);
       }
     } finally {
       polling = false;
@@ -846,11 +857,19 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
   }
 
   async function cancel(dir: string): Promise<void> {
-    $<HTMLButtonElement>("cancel").disabled = true;
+    // the setup's Hủy and state line follow the run this page started; another run is cancelled from its overlay only
+    const own = dir === output;
+    if (own) $<HTMLButtonElement>("cancel").disabled = true;
     $<HTMLButtonElement>("busy-cancel").disabled = true;
-    try { await invoke("compilation_cancel", { outputDir: dir }); $("state").textContent = "Đang hủy…"; }
-    catch (error) { $<HTMLButtonElement>("cancel").disabled = false; $("state").textContent = message(error); }
-    finally { $<HTMLButtonElement>("busy-cancel").disabled = false; }
+    try {
+      await invoke("compilation_cancel", { outputDir: dir });
+      if (own) $("state").textContent = "Đang hủy…";
+    } catch (error) {
+      if (own) { $<HTMLButtonElement>("cancel").disabled = false; $("state").textContent = message(error); }
+      else $("busy-detail").textContent = message(error);
+    } finally {
+      $<HTMLButtonElement>("busy-cancel").disabled = false;
+    }
   }
 
   async function loadVoices(): Promise<void> {

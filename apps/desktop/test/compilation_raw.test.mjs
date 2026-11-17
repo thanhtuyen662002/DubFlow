@@ -269,8 +269,10 @@ assert.ok(timers.size >= 1, "polling resumed");
 // A running run this session did not start (a re-render, or one that outlived a restart) can be stopped too.
 await node("busy-cancel").listeners.click();
 assert.ok(calls.some(([cmd, args]) => cmd === "compilation_cancel" && args.outputDir === rawDir));
-// A run of an unknown version says why it cannot open.
-node("runs").children.at(-1).listeners.click();
+// A run of an unknown version says why it cannot open, and is never read.
+reads = statusReads();
+node("runs").children.at(-1).listeners.click(); await flush(); await flush();
+assert.equal(statusReads(), reads, "a run of a newer DubFlow is not read when chosen");
 assert.match(node("result-note").textContent, /phiên bản DubFlow mới hơn \(định dạng 7\)/);
 assert.match(node("past-note").textContent, /cập nhật DubFlow/);
 delete globalThis.document; delete globalThis.window; delete globalThis.HTMLInputElement;
