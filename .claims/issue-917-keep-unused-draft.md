@@ -9,4 +9,5 @@ Expected-Paths:
 - apps/desktop/src-tauri/src/edit.rs
 - apps/desktop/src/features/edit/view.ts
 - apps/desktop/src/shell/preview_invoke.ts
+- apps/desktop/src-tauri/src/sfx.rs
 Required-CI: PR Fast + desktop-editor-windows (cargo test; PR Integration selects no component for this path)

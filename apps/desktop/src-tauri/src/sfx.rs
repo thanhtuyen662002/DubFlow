@@ -320,9 +320,14 @@ pub(crate) fn audio_file(value: &str) -> Result<PathBuf, String> {
     if !path.is_absolute() || !has_audio_extension(path) {
         return Err(fail("Chỉ dùng được file âm thanh MP3, WAV, OGG, M4A, AAC hoặc FLAC trên máy"));
     }
-    let resolved = path.canonicalize().map_err(|_| fail("Không tìm thấy file âm thanh"))?;
+    // named, so a draft whose sound was moved or deleted says which one to pick again (Phase 9A)
+    let missing = || {
+        let name = path.file_name().map_or_else(|| value.to_string(), |name| name.to_string_lossy().into_owned());
+        fail(format!("Không tìm thấy file âm thanh “{name}”. Hãy chọn lại file đó hoặc gỡ nó khỏi dòng thời gian."))
+    };
+    let resolved = path.canonicalize().map_err(|_| missing())?;
     if !resolved.is_file() || !has_audio_extension(&resolved) {
-        return Err(fail("Không tìm thấy file âm thanh"));
+        return Err(missing());
     }
     Ok(resolved)
 }
@@ -573,6 +578,8 @@ mod tests {
         fs::write(dir.join("Nhạc").join("Vui").join("a.ogg"), b"x").unwrap();
         assert!(audio_file(&sound.to_string_lossy()).is_ok());
         assert!(audio_file(&dir.join("clip.mp4").to_string_lossy()).is_err());
+        let gone = audio_file(&dir.join("tiếng vỗ tay.wav").to_string_lossy()).unwrap_err();
+        assert!(gone.contains("“tiếng vỗ tay.wav”"), "a missing sound is named: {gone}");
         assert!(audio_file("relative.mp3").is_err());
         let mut found = Vec::new();
         scan_audio(&dir, 1, &mut found);
