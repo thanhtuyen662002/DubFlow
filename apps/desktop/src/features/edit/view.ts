@@ -46,7 +46,7 @@ import { lookBadges } from "./look.ts";
 import { exportFolder } from "./library.ts";
 import { packHistory, unpackHistory } from "./undo_store.ts";
 import { Autosaver, windowTimers } from "./autosave.ts";
-import { CLOSE_WAIT_MS, flushWithin, unsavedPrompt } from "./close_guard.ts";
+import { askAlone, CLOSE_WAIT_MS, flushWithin, unsavedPrompt } from "./close_guard.ts";
 import { mountThumbnail } from "./thumbnail_view.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
@@ -123,6 +123,11 @@ export type EditorHost = {
   saveThumbnail: (bytes: ArrayBuffer, folder: string, name: string, format: "png" | "jpeg") => Promise<string>;
   /** Mẫu: render on the CPU only (Cài đặt). */
   cpuOnly: () => boolean;
+  /**
+   * Whether every window close goes through the draft check (Issue #929): the editor opens only once it does, since a
+   * system close the check cannot see would lose a change without asking. Absent: nothing to guard (no window).
+   */
+  closeGuarded?: () => Promise<boolean>;
   /** Cài đặt › Thư mục lưu kết quả, or null to save beside each video. */
   outputRoot?: () => string | null;
   /** Edit mode ended for `target` (to go back to the page it came from). */
@@ -3473,6 +3478,10 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     opening = true;
     openButton.disabled = true;
     try {
+      if (host.closeGuarded && !(await host.closeGuarded())) {
+        host.showError("Không mở được chế độ chỉnh sửa: DubFlow chưa bảo vệ được việc đóng cửa sổ, nên đóng lúc này có thể mất thay đổi chưa lưu. Hãy khởi động lại DubFlow.");
+        return false;
+      }
       const [loaded, status] = await Promise.all([
         invoke<LoadResponse>("edit_project_load", { outputPath, kind: target.kind }),
         invoke<StatusResponse>("edit_status", { outputPath, kind: target.kind }).catch(() => null),
@@ -3626,7 +3635,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     } else if (!saved) {
       const unapplied = subs.dirty() || docuCover.dirty || docuCuts.dirty || templateMode.dirty();
       // "Ở lại" keeps the editor open, and the saver keeps trying
-      if (!(await host.confirm(unsavedPrompt("exit", unapplied)))) return false;
+      if (!(await askAlone(() => host.confirm(unsavedPrompt("exit", unapplied))))) return false;
       saver.drop();
     } else if (ask && (unexported() || subs.dirty() || docuCover.dirty || docuCuts.dirty || docuLayers.busy || templateMode.dirty() || templateMode.busy)) {
       const leave = await host.confirm(templateMode.busy ? {
@@ -3648,7 +3657,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       if (!session) return true;
       if (carrying) carry(session);
       else {
-        if (!(await host.confirm(unsavedPrompt("exit")))) return false;
+        if (!(await askAlone(() => host.confirm(unsavedPrompt("exit"))))) return false;
         saver.drop();
       }
     }

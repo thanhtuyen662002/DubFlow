@@ -5,7 +5,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { connectDesktopShell, type DesktopShellModel } from "./shell/desktop_shell.ts";
 import { confirmDialog } from "./shell/confirm.ts";
-import { closeGuard, unsavedPrompt, wireWindowClose } from "./features/edit/close_guard.ts";
+import { askAlone, closeGuard, unsavedPrompt, wireWindowClose } from "./features/edit/close_guard.ts";
 import { windowTimers } from "./features/edit/autosave.ts";
 import { mountLayoutPanels, refitPanels, resetPanels } from "./shell/layout_panels.ts";
 import { mountListTools } from "./shell/list_tools.ts";
@@ -597,6 +597,10 @@ function renderPlayButton(): void {
   $("#player-time").textContent = editor.timeLabel() ?? `${duration(playerVideo.currentTime * 1000)} / ${duration(length * 1000)}`;
 }
 
+// Whether every window close goes through the editing draft check (set where the window's close is wired, below);
+// without a window (the browser preview) there is nothing to guard.
+let windowCloseGuarded: Promise<boolean> = Promise.resolve(true);
+
 // Edit mode (Cắt ghép, Chèn): the player previews the edit; the panel and timeline replace the list and details.
 const editor = mountEditor(invoke, {
   video: playerVideo,
@@ -671,6 +675,7 @@ const editor = mountEditor(invoke, {
     : previewInvoke<string>("thumbnail_save", { bytes: bytes.byteLength, folder, name, format }),
   openReview: () => void openReview(),
   cpuOnly: () => cpuOnly(),
+  closeGuarded: () => windowCloseGuarded,
   outputRoot: () => outputRoot(),
   // Back to the page the video was opened from: the Chỉnh sửa list, the queue or another page.
   left: () => {
@@ -3003,9 +3008,9 @@ $("#window-maximize").addEventListener("click", () => void appWindow?.toggleMaxi
 // Closing (the × button, Alt+F4, the taskbar) writes the editing draft first; a change that could not be saved is
 // not lost without asking (Issue #929).
 if (appWindow) {
-  const mayClose = closeGuard({ before: () => editor.closing(), flush: () => editor.flush(), ask: () => confirmDialog(unsavedPrompt("close")),
-    timers: windowTimers });
-  void wireWindowClose(appWindow, $("#window-close"), mayClose);
+  const mayClose = closeGuard({ before: () => editor.closing(), flush: () => editor.flush(),
+    ask: () => askAlone(() => confirmDialog(unsavedPrompt("close"))), timers: windowTimers });
+  windowCloseGuarded = wireWindowClose(appWindow, $("#window-close"), mayClose);
 }
 $("#app-header").addEventListener("mousedown", (event) => {
   if (!appWindow || event.button !== 0) return;

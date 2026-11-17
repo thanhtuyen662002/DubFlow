@@ -10,9 +10,10 @@
  *
  * A write that fails keeps its change pending (Issue #929: on the PC another program held the draft file, the
  * failed save was never tried again, and closing the app right after lost the change without a word). It is tried
- * again `RETRY_FIRST_MS` later, then after twice as long each time up to `RETRY_MAX_MS`; an edit brings the next
- * try forward to at most `MAX_WAIT_MS` after it (so at most one try a second while the user keeps editing). `flush` tries a pending change at once and says whether every change
- * reached the disk, so a close can ask instead of dropping one.
+ * again `RETRY_FIRST_MS` later, then after twice as long each time up to `RETRY_MAX_MS`. Nothing brings a try
+ * forward of that backoff, neither an edit nor a timer set before the write failed; only `flush` (a close, the window
+ * hidden) tries a pending change at once, and it says whether every change reached the disk, so a close can ask
+ * instead of dropping one.
  */
 export const QUIET_MS = 300;
 export const MAX_WAIT_MS = 1000;
@@ -43,12 +44,12 @@ export class Autosaver {
   private version = 0;
   /** Failed writes in a row; back to 0 once one succeeds. */
   private failures = 0;
-  /** When a failed write is due to be tried again. */
+  /** When a failed write is due to be tried again: no timer fires before it. */
   private retryAt = 0;
-  /** The first edit since the last failed write, if any. */
-  private editedSinceFailure: number | null = null;
   /** The ticket of the write waiting for the one in progress (it reads the draft as it is when it starts); 0: none. */
   private waiting = 0;
+  /** The waiting write was asked for by `flush`: it does not wait out a backoff. */
+  private forced = false;
   private tickets = 0;
   /** Changed by `drop`: a write that ends after it leaves the saver alone. */
   private epoch = 0;
@@ -67,14 +68,10 @@ export class Autosaver {
     this.version += 1;
     if (this.since === null) this.since = now;
     let delay = saveDelay(now, this.since);
-    if (this.failures > 0) {
-      // after a failed write: not before it is due again, but no later than MAX_WAIT_MS after the first edit since
-      if (this.editedSinceFailure === null) this.editedSinceFailure = now;
-      delay = Math.max(delay, Math.min(this.editedSinceFailure + MAX_WAIT_MS, this.retryAt) - now, 0);
-    }
-    // never later than a retry would be, whatever the clock did
-    delay = Math.min(delay, RETRY_MAX_MS);
-    this.schedule(delay);
+    // after a failed write: not before it is due again (an edit never shortens the backoff)
+    if (this.failures > 0) delay = Math.max(delay, this.retryAt - now);
+    // and never later than a retry would be, whatever the clock did
+    this.schedule(Math.min(Math.max(delay, 0), RETRY_MAX_MS));
   }
 
   /** Whether a change is waiting to be written (or being written, or tried again after a failed write). */
@@ -95,7 +92,7 @@ export class Autosaver {
     // a change made while flushing is written too, a few rounds at most
     for (let round = 0; round < 3 && this.since !== null; round += 1) {
       this.cancel();
-      this.start();
+      this.start(true);
       await this.writing;
       if (this.failures > 0) return false;
     }
@@ -108,10 +105,13 @@ export class Autosaver {
     this.cancel();
     // a write still waiting belongs to what was dropped: it ends without writing, and a new change gets its own
     this.waiting = 0;
+    this.forced = false;
     this.since = null;
     this.failures = 0;
-    this.editedSinceFailure = null;
     this.epoch += 1;
+    // nor does the next session wait for a write of the dropped change, even one that never ends (a close gave up on
+    // it after CLOSE_WAIT_MS); the host still runs draft saves one after another
+    this.writing = Promise.resolve();
   }
 
   private schedule(delay: number): void {
@@ -127,31 +127,37 @@ export class Autosaver {
     this.timer = 0;
   }
 
-  private start(): void {
+  private start(force = false): void {
     // one write after another, and at most one waiting: it saves every change made until it starts
+    if (force) this.forced = true;
     if (this.waiting) return;
     const ticket = ++this.tickets;
     this.waiting = ticket;
     const epoch = this.epoch;
     this.writing = this.writing.then(async () => {
-      if (this.waiting === ticket) this.waiting = 0;
+      const mine = this.waiting === ticket;
+      const forced = mine && this.forced;
+      if (mine) {
+        this.waiting = 0;
+        this.forced = false;
+      }
       if (epoch !== this.epoch || this.since === null) return;
+      // a timer's write that waited behind one that failed waits out the backoff too: the retry timer writes it
+      if (!forced && this.failures > 0 && this.timers.now() < this.retryAt) return;
       const version = this.version;
       try {
         await this.write();
       } catch {
         if (epoch !== this.epoch) return;
-        // still pending: try again later (a newer change's own timer may come first)
+        // still pending: tried again after the backoff, which also replaces a timer an edit set during this write
         this.failures += 1;
-        this.editedSinceFailure = null;
         const wait = retryDelay(this.failures);
         this.retryAt = this.timers.now() + wait;
-        if (!this.timer) this.schedule(wait);
+        this.schedule(wait);
         return;
       }
       if (epoch !== this.epoch) return;
       this.failures = 0;
-      this.editedSinceFailure = null;
       // a change made during the write is still pending: its own timer (or a flush) writes it
       if (this.version === version) this.since = null;
     });

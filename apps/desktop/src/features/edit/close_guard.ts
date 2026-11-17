@@ -85,24 +85,84 @@ export function closeGuard(guard: CloseGuard): () => Promise<boolean> {
 
 /** The bits of a Tauri window the close wiring uses. */
 export type ClosableWindow = {
-  /** Asks to close: the window's close request handlers run first. */
+  /** Asks to close. While a close request listener is in place the system holds the close and the listener runs. */
   close(): Promise<void>;
-  /** Listens to every close request (the × button through `close`, Alt+F4, the taskbar). */
-  onCloseRequested(handler: (event: { preventDefault(): void }) => Promise<void>): Promise<unknown>;
+  /** Listens to every close request (Alt+F4, the taskbar, `close`); resolves to the function that stops listening. */
+  onCloseRequested(handler: (event: { preventDefault(): void }) => Promise<void>): Promise<() => unknown>;
 };
 
 /**
  * The × button and the system's close (Alt+F4, the taskbar) both go through `mayClose`; the window stays open when it
- * answers false. Should the close request listener not start, the × button still asks first.
+ * answers false. A close request is always held: when `mayClose` lets it through, the listener is removed first and
+ * the window closed again, so the system closes it normally (Tauri's own wrapper would destroy the window instead,
+ * which needs a permission the app does not have). A close asked for while the listener is still starting waits for
+ * it. Resolves true once the guard is in place, false when it could not start: the editor opens only once it is in
+ * place (a system close the guard cannot see would lose a change without asking).
  */
 export function wireWindowClose(window: ClosableWindow, button: { addEventListener(type: "click", listener: () => void): void },
-  mayClose: () => Promise<boolean>): Promise<void> {
-  let listening = false;
-  button.addEventListener("click", () => {
-    if (listening) void window.close().catch(() => undefined);
-    else void mayClose().then((ok) => (ok ? window.close() : undefined)).catch(() => undefined);
-  });
-  return window.onCloseRequested(async (event) => {
-    if (!(await mayClose())) event.preventDefault();
-  }).then(() => { listening = true; }, () => undefined);
+  mayClose: () => Promise<boolean>): Promise<boolean> {
+  let stop: (() => unknown) | null = null;
+  let arming = false;
+  let wanted = false;
+  const release = async (): Promise<void> => {
+    if (arming) {
+      wanted = true;
+      return;
+    }
+    const unlisten = stop;
+    stop = null;
+    try {
+      if (unlisten) await unlisten();
+      await window.close();
+    } catch {
+      // still open: guarded again
+      void arm();
+    }
+  };
+  const request = async (): Promise<void> => {
+    if (await mayClose()) await release();
+  };
+  const arm = (): Promise<boolean> => {
+    arming = true;
+    return window.onCloseRequested(async (event) => {
+      event.preventDefault();
+      await request();
+    }).then((unlisten) => {
+      stop = unlisten;
+      return true;
+    }, () => false).then((armed) => {
+      arming = false;
+      if (wanted) {
+        wanted = false;
+        void release();
+      }
+      return armed;
+    });
+  };
+  button.addEventListener("click", () => { void request().catch(() => undefined); });
+  return arm();
+}
+
+/** Where a question shows: whether one is open now, and the "stay" button of the newest one. */
+export type QuestionPlace = { open(): boolean; focusStay(): void };
+
+/** confirmDialog's panels in the page (shell/confirm.ts puts the cancel button first). */
+export const pageQuestions: QuestionPlace = {
+  open: () => typeof document !== "undefined" && document.querySelector(".confirm-backdrop") !== null,
+  focusStay: () => {
+    const panels = typeof document !== "undefined" ? document.querySelectorAll<HTMLElement>(".confirm-panel") : [];
+    panels[panels.length - 1]?.querySelector<HTMLButtonElement>(".confirm-actions button")?.focus();
+  },
+};
+
+/**
+ * The unsaved-draft question, only when no other question is open: two at once would both take the keys, so Enter
+ * on one could answer the other. With another open the answer is "stay" (false), the safe one; the user closes again
+ * after answering it. The question starts on "Ở lại", so Enter right after Alt+F4 keeps the change.
+ */
+export function askAlone(ask: () => Promise<boolean>, place: QuestionPlace = pageQuestions): Promise<boolean> {
+  if (place.open()) return Promise.resolve(false);
+  const answer = ask();
+  place.focusStay();
+  return answer;
 }

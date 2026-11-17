@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { Autosaver, MAX_WAIT_MS, QUIET_MS, RETRY_FIRST_MS, RETRY_MAX_MS, retryDelay, saveDelay } from "../src/features/edit/autosave.ts";
-import { CLOSE_WAIT_MS, closeGuard, flushWithin, unsavedPrompt, wireWindowClose } from "../src/features/edit/close_guard.ts";
+import { askAlone, CLOSE_WAIT_MS, closeGuard, flushWithin, unsavedPrompt, wireWindowClose } from "../src/features/edit/close_guard.ts";
 
 // A fake clock: timers run when the test moves time on.
 function clock() {
@@ -137,60 +137,77 @@ assert.equal(retryDelay(99), RETRY_MAX_MS);
   assert.equal(attempts.length, 2, "nothing more to write");
 }
 
-// A file held for good: retried with a doubling delay up to 30 s, never two writes at once; flush says it failed.
+// A file held for good: retried with a doubling delay up to 30 s; flush says it failed and the backoff goes on.
 {
   const { timers, advance } = clock();
   const attempts = [];
-  let active = 0, most = 0;
-  const saver = new Autosaver(async () => {
-    active += 1; most = Math.max(most, active);
-    attempts.push(timers.now());
-    await null;  // the write ends a little later
-    active -= 1;
-    throw new Error("EBUSY");
-  }, timers);
+  const saver = new Autosaver(async () => { attempts.push(timers.now()); throw new Error("EBUSY"); }, timers);
   saver.changed();
   await advance(QUIET_MS + 1000 + 2000 + 4000 + 8000 + 16000 + 30000 + 30000);
   const gaps = attempts.slice(1).map((at, i) => at - attempts[i]);
   assert.deepEqual(gaps, [1000, 2000, 4000, 8000, 16000, 30000, 30000], `bounded backoff: ${gaps}`);
-  assert.equal(most, 1, "writes never overlap");
   assert.equal(saver.pending, true);
   const before = attempts.length;
+  const flushedAt = timers.now();
   assert.equal(await saver.flush(), false, "flush tries at once and reports the failure");
-  assert.equal(attempts.length, before + 1);
+  assert.deepEqual(attempts.slice(before), [flushedAt]);
   assert.equal(saver.pending, true, "a persistent failure stays pending");
-  await advance(RETRY_FIRST_MS * 2);  // still tried again after a failed flush (the 2nd failure in a row is long past)
-  assert.ok(attempts.length >= before + 1);
-  await advance(RETRY_MAX_MS);
-  assert.ok(attempts.length >= before + 2, "the background retry goes on after a failed flush");
-  assert.equal(most, 1);
+  await advance(RETRY_MAX_MS - 1);
+  assert.equal(attempts.length, before + 1, "not before the backoff after the failed flush");
+  await advance(1);
+  assert.deepEqual(attempts.slice(before), [flushedAt, flushedAt + RETRY_MAX_MS], "the background retry goes on after a failed flush");
+  saver.drop();
 }
 
-// An edit while failing brings the next try forward to at most MAX_WAIT_MS after it, but not before the retry is due.
+// An edit never brings a try before its backoff is over (Lead review): after the 1st, 2nd and 3rd failure in a row,
+// edits keep coming, and the next try is exactly at the end of the 1 s, 2 s and 4 s backoff.
 {
   const { timers, advance } = clock();
   const attempts = [];
   let fail = true;
   const saver = new Autosaver(async () => { attempts.push(timers.now()); if (fail) throw new Error("held"); }, timers);
   saver.changed();
-  await advance(QUIET_MS);  // fails at 300: due again at 1300
-  await advance(100);
-  saver.changed();  // at 400: not before 1300, and no later than 1400
-  await advance(899);
-  assert.equal(attempts.length, 1);
-  await advance(1);
-  assert.deepEqual(attempts, [300, 1300]);  // fails again: due at 3300
-  for (let i = 0; i < 20; i += 1) {  // typing while it fails: at most one try per MAX_WAIT_MS
-    saver.changed();
-    await advance(100);
+  await advance(QUIET_MS);  // fails at 300
+  let failedAt = 300;
+  for (const backoff of [1000, 2000, 4000]) {
+    for (let at = 100; at < backoff; at += 100) {  // typing all through the backoff
+      await advance(100);
+      saver.changed();
+    }
+    assert.equal(attempts.at(-1), failedAt, `no try during the ${backoff} ms backoff: ${attempts}`);
+    await advance(failedAt + backoff - timers.now());
+    assert.equal(attempts.at(-1), failedAt + backoff, `tried exactly when the ${backoff} ms backoff ends: ${attempts}`);
+    failedAt += backoff;
   }
-  const tries = attempts.slice(2);
-  for (let i = 1; i < tries.length; i += 1) assert.ok(tries[i] - tries[i - 1] >= MAX_WAIT_MS, `${attempts}`);
-  assert.ok(tries.length >= 1 && tries[0] - 1400 <= MAX_WAIT_MS, `an edit gets a try within MAX_WAIT_MS: ${attempts}`);
+  assert.deepEqual(attempts, [300, 1300, 3300, 7300]);
   fail = false;
-  saver.changed();
-  assert.equal(await saver.flush(), true);
+  await advance(8000);  // the 8 s backoff ends at 15300: the change, made during it, is written then
+  assert.deepEqual(attempts, [300, 1300, 3300, 7300, 15300]);
   assert.equal(saver.pending, false);
+}
+
+// An edit made while a write is running sets a timer; when that write then fails, the timer does not try before the
+// backoff either (Lead review), nor does a write the timer queued behind it.
+for (const queued of [false, true]) {
+  const { timers, advance } = clock();
+  const attempts = [];
+  let release;
+  const saver = new Autosaver(() => new Promise((resolve, reject) => {
+    attempts.push(timers.now());
+    release = () => reject(new Error("held"));
+  }), timers);
+  saver.changed();
+  await advance(QUIET_MS);  // the write starts at 300 and is still running
+  saver.changed();  // its timer is due at 600
+  if (queued) await advance(QUIET_MS);  // the timer fires during the write: its write waits behind it
+  release();  // the write fails at 300 (or 600): due again 1 s later
+  const failedAt = timers.now();
+  await advance(0);
+  await advance(RETRY_FIRST_MS - 1);
+  assert.deepEqual(attempts, [300], `queued ${queued}: nothing before the backoff ends`);
+  await advance(1);
+  assert.deepEqual(attempts, [300, failedAt + RETRY_FIRST_MS], `queued ${queued}: tried when it ends`);
+  saver.drop();
 }
 
 // A newer edit made while a write is running is not cleared when the older write ends, whether it worked or failed.
@@ -209,7 +226,11 @@ for (const outcome of ["ok", "fail"]) {
   release();
   await advance(0);
   assert.equal(saver.pending, true, `${outcome}: the newer edit is still pending`);
-  await advance(MAX_WAIT_MS + RETRY_FIRST_MS);
+  // written by its own timer after a success, and exactly when the backoff ends after a failure
+  const due = outcome === "ok" ? QUIET_MS : RETRY_FIRST_MS;
+  await advance(due - 1);
+  assert.equal(writes, 1, `${outcome}: not before ${due} ms`);
+  await advance(1);
   assert.equal(writes, 2, `${outcome}: the newer edit is written`);
   release();
   assert.equal(await saver.flush(), true);
@@ -239,6 +260,33 @@ for (const outcome of ["ok", "fail"]) {
   assert.equal(saver.pending, false);
 }
 
+// flush waits for a write the timer already started (the #929 path: × while the debounce's write to the held file runs)
+// and reports how it ended.
+for (const ok of [false, true]) {
+  const { timers, advance } = clock();
+  let release, writes = 0;
+  const saver = new Autosaver(() => new Promise((resolve, reject) => {
+    writes += 1;
+    release = () => (ok ? resolve() : reject(new Error("held")));
+  }), timers);
+  saver.changed();
+  await advance(QUIET_MS);
+  assert.equal(writes, 1, "the timer's write is running");
+  let settled = false;
+  const flushed = saver.flush().then((value) => { settled = true; return value; });
+  await advance(0);
+  assert.equal(settled, false, `${ok}: flush waits for the running write`);
+  release();
+  await advance(0);
+  // it worked: nothing more to write; it failed: flush tries the change again at once, and waits for that too
+  assert.equal(writes, ok ? 1 : 2, `${ok}: writes`);
+  if (!ok) assert.equal(settled, false, "the retry is still running");
+  if (!ok) release();
+  assert.equal(await flushed, ok, `${ok}: and says how it ended`);
+  assert.equal(saver.pending, !ok);
+  saver.drop();
+}
+
 // flush says true only when the disk has every change: edits that keep coming during every write are not on disk yet.
 {
   const { timers } = clock();
@@ -266,6 +314,30 @@ for (const outcome of ["ok", "fail"]) {
   assert.equal(writes, 1);
 }
 
+// A write that never ends (a close gave up on it after CLOSE_WAIT_MS and the user chose "Vẫn thoát") does not hold the
+// next session's saves (Lead review): the new edit is written, and flush answers.
+{
+  const { timers, advance } = clock();
+  const started = [];
+  const saver = new Autosaver(() => {
+    started.push(timers.now());
+    return started.length === 1 ? new Promise(() => {}) : Promise.resolve();
+  }, timers);
+  saver.changed();
+  await advance(QUIET_MS);
+  assert.equal(started.length, 1, "the old session's write hangs");
+  const closing = flushWithin(() => saver.flush(), CLOSE_WAIT_MS, timers);
+  await advance(CLOSE_WAIT_MS);
+  assert.equal(await closing, false, "the close counts it as not saved");
+  saver.drop();  // "Vẫn thoát"
+  saver.changed();  // the next video's first edit
+  await advance(QUIET_MS);
+  assert.equal(started.length, 2, "the new edit is written");
+  assert.equal(saver.pending, false);
+  saver.changed();
+  assert.equal(await saver.flush(), true);
+}
+
 // A write still waiting when the change is dropped (the user chose to lose it and opened another video) does not
 // swallow the next session's change: in-flight write -> queued successor -> drop -> new edit -> the new edit is written.
 {
@@ -288,6 +360,7 @@ for (const outcome of ["ok", "fail"]) {
   await advance(QUIET_MS);
   releases.shift()(false);  // the old write fails
   await advance(0);
+  assert.equal(saver.failing, false, "the dropped session's failure does not count against the new one");
   await advance(MAX_WAIT_MS);
   assert.equal(releases.length, 1, `the new session's edit is written: ${wrote}`);
   releases.shift()(true);
@@ -337,6 +410,11 @@ for (const outcome of ["ok", "fail"]) {
   assert.equal(await flushWithin(() => { throw new Error("x"); }, 1000, timers), false);
   assert.equal(await flushWithin(async () => { throw new Error("x"); }, 1000, timers), false);
   assert.equal(await closeGuard({ flush: async () => false, ask: async () => { throw new Error("x"); }, timers })(), false);
+  // only an explicit true counts: a flush or a question that answers nothing does not let the window go
+  assert.equal(await flushWithin(async () => undefined, 1000, timers), false);
+  let askedAfterVoid = 0;
+  assert.equal(await closeGuard({ flush: async () => undefined, ask: async () => { askedAfterVoid += 1; return undefined; }, timers })(), false);
+  assert.equal(askedAfterVoid, 1, "a flush that answers nothing is asked about");
 }
 
 // The window close waits for an editor close that is already asking: never two questions at once.
@@ -392,24 +470,37 @@ for (const action of ["close", "exit"]) {
 
 // The × button and the system's close (Alt+F4, the taskbar) both go through the guard.
 {
-  // a stand-in for the Tauri window: `close` raises a close request, and the window goes unless a handler prevents it
-  function fakeWindow({ listen = true } = {}) {
-    const state = { handlers: [], closed: 0, requests: 0 };
+  // A stand-in for the Tauri 2.12 window. As in tauri's manager/window.rs, while a close request listener is
+  // registered the system close is held and the listeners run; with none it closes. destroy() is not allowed (the app
+  // has no core:window:allow-destroy), and registering or removing a listener takes a moment.
+  function fakeWindow({ listen = true, armAfter = 0 } = {}) {
+    const state = { handlers: [], closed: 0, requests: 0, destroyed: 0 };
+    let armNow;
+    const armed = armAfter ? new Promise((resolve) => { armNow = resolve; }) : Promise.resolve();
     const window = {
       async onCloseRequested(handler) {
-        if (!listen) throw new Error("no event permission");
-        state.handlers.push(handler);
-        return () => undefined;
+        state.handlers.push(handler);  // the page side knows the handler at once
+        await armed;
+        if (!listen) {
+          state.handlers.splice(state.handlers.indexOf(handler), 1);
+          throw new Error("no event permission");
+        }
+        // like Tauri's wrapper: the window is destroyed unless the handler prevented it
+        return async () => { await null; state.handlers.splice(state.handlers.indexOf(handler), 1); };
       },
       async close() {
         state.requests += 1;
+        await null;
         if (!state.handlers.length) { state.closed += 1; return; }
-        let prevented = false;
-        for (const handler of state.handlers) await handler({ preventDefault: () => { prevented = true; } });
-        if (!prevented) state.closed += 1;
+        for (const handler of [...state.handlers]) {
+          let prevented = false;
+          await handler({ preventDefault: () => { prevented = true; } });
+          if (!prevented) state.destroyed += 1;
+        }
       },
+      async destroy() { throw new Error("window.destroy not allowed"); },
     };
-    return { window, state };
+    return { window, state, arm: () => armNow?.() };
   }
   function fakeButton() {
     const listeners = [];
@@ -423,7 +514,7 @@ for (const action of ["close", "exit"]) {
     const button = fakeButton();
     const { timers } = clock();
     const mayClose = closeGuard({ flush: async () => { flushed += 1; return false; }, ask: async () => { asked += 1; return answer; }, timers });
-    await wireWindowClose(window, button, mayClose);
+    assert.equal(await wireWindowClose(window, button, mayClose), true, "the guard is in place");
     const request = () => (via === "button" ? button.click() : void window.close());
     request();
     await settle();
@@ -434,8 +525,11 @@ for (const action of ["close", "exit"]) {
     request();
     await settle();
     assert.equal(state.closed, 1, `${via}: Vẫn đóng closes it`);
+    assert.equal(asked, 2, `${via}: one question per close, none more after Vẫn đóng`);
+    assert.equal(state.destroyed, 0, `${via}: never through destroy`);
+    assert.equal(state.handlers.length, 0, `${via}: the listener is removed before the window closes`);
   }
-  // saved: the window closes with no question
+  // saved: the window closes with no question, through the system close
   {
     let asked = 0;
     const { window, state } = fakeWindow();
@@ -446,41 +540,91 @@ for (const action of ["close", "exit"]) {
     await settle();
     assert.equal(state.closed, 1);
     assert.equal(asked, 0);
+    assert.equal(state.destroyed, 0);
   }
-  // no close request listener (the event permission missing): the × button still asks first
+  // × clicked while the listener is still starting: the close waits for it, then goes, with one question at most
   {
     let asked = 0;
+    const { window, state, arm } = fakeWindow({ armAfter: 1 });
+    const button = fakeButton();
+    const { timers } = clock();
+    const guarded = wireWindowClose(window, button, closeGuard({ flush: async () => false, ask: async () => { asked += 1; return true; }, timers }));
+    button.click();
+    await settle();
+    assert.equal(state.closed, 0, "not before the listener is in place");
+    arm();
+    assert.equal(await guarded, true);
+    await settle();
+    assert.equal(state.closed, 1);
+    assert.equal(asked, 1, "one question");
+  }
+  // the listener cannot start: the guard says so, so the editor does not open (see the view checks below); with
+  // nothing to save, × still closes
+  {
     const { window, state } = fakeWindow({ listen: false });
     const button = fakeButton();
     const { timers } = clock();
-    await wireWindowClose(window, button, closeGuard({ flush: async () => false, ask: async () => { asked += 1; return false; }, timers }));
+    assert.equal(await wireWindowClose(window, button, closeGuard({ flush: async () => true, ask: async () => false, timers })), false);
     button.click();
     await settle();
-    assert.equal(asked, 1);
-    assert.equal(state.closed, 0);
+    assert.equal(state.closed, 1);
   }
+}
+
+// One question at a time: with another open (the editor's exit question, or any other), the window close or the
+// editor exit stays without asking; the question starts on "Ở lại".
+{
+  const place = { opened: false, focused: 0, open() { return this.opened; }, focusStay() { this.focused += 1; } };
+  let asked = 0;
+  const ask = async () => { asked += 1; return true; };
+  assert.equal(await askAlone(ask, place), true);
+  assert.equal(place.focused, 1, "Enter right after Alt+F4 keeps the change");
+  place.opened = true;
+  assert.equal(await askAlone(ask, place), false, "another question open: stay");
+  assert.equal(asked, 1, "no second question");
+  const { readFileSync } = await import("node:fs");
+  const confirm = readFileSync(new URL("../src/shell/confirm.ts", import.meta.url), "utf8");
+  assert.match(confirm, /actions\.append\(cancel, confirm\)/, "the dialog's first button is the cancel (Ở lại) one");
+  assert.match(confirm, /backdrop\.className = "confirm-backdrop"/);
+  assert.match(confirm, /cancelFocused \? "cancel" : "confirm"/, "Enter on the focused Ở lại answers stay");
 }
 
 // The wiring (view.ts and main.ts are DOM code): a failed save reaches the saver, and every close goes through the guard.
 {
   const { readFileSync } = await import("node:fs");
-  const view = readFileSync(new URL("../src/features/edit/view.ts", import.meta.url), "utf8");
+  // the code without its comments, so a check cannot be met by text in a comment
+  const code = (path) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:"'`])\/\/.*$/gm, "$1");
+  const view = code("../src/features/edit/view.ts");
   const save = view.slice(view.indexOf("async function save(): Promise<void>"), view.indexOf("function scheduleSave(): void"));
-  assert.match(save, /catch \(error\) \{[\s\S]*throw error;\s*\}\s*\}\s*$/, "save() tells the saver that the write failed");
+  assert.match(save, /catch \(error\) \{[\s\S]*\n\s*throw error;\s*\}\s*\}\s*$/, "save() tells the saver that the write failed");
+  assert.match(view, /new Autosaver\(\(\) => save\(\), windowTimers\)/, "the saver gets save() as it is, failures included");
   const closeNow = view.slice(view.indexOf("async function closeNow("), view.indexOf("function leave(leaving: EditTarget)"));
-  assert.match(closeNow, /flushWithin\(\(\) => saver\.flush\(\), CLOSE_WAIT_MS, windowTimers\)/);
+  assert.match(closeNow, /const saved = await flushWithin\(\(\) => saver\.flush\(\), CLOSE_WAIT_MS, windowTimers\);/);
   assert.ok(closeNow.indexOf("flushWithin(") < closeNow.indexOf("cover.end()"), "the draft is written before the editor ends");
-  assert.match(closeNow, /unsavedPrompt\("exit"/);
-  assert.ok(closeNow.indexOf("saver.drop()") > closeNow.indexOf("unsavedPrompt(\"exit\""), "a change is dropped only after the user chose to");
-  const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
-  assert.match(main, /wireWindowClose\(appWindow, \$\("#window-close"\), mayClose\)/);
+  // a change is dropped only after the user chose to, never on "Ở lại"
+  assert.match(closeNow, /\} else if \(!saved\) \{[^}]*if \(!\(await askAlone\(\(\) => host\.confirm\(unsavedPrompt\("exit", unapplied\)\)\)\)\) return false;\s*saver\.drop\(\);/);
+  assert.match(closeNow, /if \(!\(await askAlone\(\(\) => host\.confirm\(unsavedPrompt\("exit"\)\)\)\)\) return false;\s*saver\.drop\(\);/,
+    "a change made while the question was open is written too, and dropped only on Vẫn thoát");
+  assert.match(closeNow, /if \(saver\.pending && !\(await flushWithin\(\(\) => saver\.flush\(\), CLOSE_WAIT_MS, windowTimers\)\)\)/);
+  assert.equal((closeNow.match(/saver\.drop\(\)/g) ?? []).length, 2);
+  // the editor opens only once every window close is guarded
+  const open = view.slice(view.indexOf("async function open(target: EditTarget)"), view.indexOf("edit_project_load"));
+  assert.match(open, /if \(host\.closeGuarded && !\(await host\.closeGuarded\(\)\)\) \{[^}]*return false;\s*\}/);
+  const main = code("../src/main.ts");
+  assert.match(main, /windowCloseGuarded = wireWindowClose\(appWindow, \$\("#window-close"\), mayClose\);/);
+  assert.match(main, /closeGuarded: \(\) => windowCloseGuarded,/);
+  assert.ok(main.indexOf("let windowCloseGuarded") < main.indexOf("const editor = mountEditor("), "set before the editor can open");
   assert.doesNotMatch(main, /editor\.flush\(\)\.finally\(/, "no close that ignores a failed save");
-  assert.match(main, /closeGuard\(\{ before: \(\) => editor\.closing\(\)/, "the window close waits for an editor close in progress");
+  assert.match(main, /closeGuard\(\{ before: \(\) => editor\.closing\(\), flush: \(\) => editor\.flush\(\),\s*ask: \(\) => askAlone\(\(\) => confirmDialog\(unsavedPrompt\("close"\)\)\)/,
+    "the window close waits for an editor close in progress, then asks one question at a time");
+  assert.doesNotMatch(main + view + code("../src/features/edit/close_guard.ts"), /\.destroy\(\)/, "never destroys the window");
+  const capabilities = JSON.parse(readFileSync(new URL("../src-tauri/capabilities/default.json", import.meta.url), "utf8"));
+  assert.ok(!capabilities.permissions.includes("core:window:allow-destroy"), "no new window permission (Issue #929 contract)");
   // every save goes through the saver (a direct save() would neither be retried nor seen by a close)
   assert.doesNotMatch(view, /void save\(\)/);
   assert.equal((view.match(/\bsave\(\)/g) ?? []).length, 2, "save() is defined once and called only by the Autosaver");
   // a reload of the same video carries an unsaved change instead of asking, and does not undo a later exit
-  const reopen = view.slice(view.indexOf("async function reopenSame("), view.indexOf("/** The documentary's split layers back"));
+  const reopen = view.slice(view.indexOf("async function reopenSame("), view.indexOf("async function applyLayers("));
   assert.match(reopen, /close\(false, true, true\)/);
   assert.match(reopen, /if \(exits !== exit\) return;/);
   assert.equal((view.match(/reopenSame\(/g) ?? []).length, 4, "the three documentary reloads use it");
@@ -488,8 +632,6 @@ for (const action of ["close", "exit"]) {
   assert.match(view, /if \(carry\) loaded\.project = carry\.project;/);
   // a refused close from a queue selection is not asked again on every render
   assert.match(view, /if \(stayedFor !== id\) void close\(false\)\.then\(\(left\) => \{ if \(!left && session\) stayedFor = id; \}\);/);
-  const capabilities = JSON.parse(readFileSync(new URL("../src-tauri/capabilities/default.json", import.meta.url), "utf8"));
-  assert.ok(capabilities.permissions.includes("core:window:allow-destroy"), "a close request the guard lets through can end the window");
 }
 
 console.log("edit autosave tests passed");

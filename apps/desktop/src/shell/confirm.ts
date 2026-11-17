@@ -32,14 +32,6 @@ export function cycleFocus(current: number, count: number, backwards: boolean): 
   return (start + (backwards ? count - 1 : 1)) % count;
 }
 
-/** The dialogs open now, the last on top: only the top one answers keys (Issue #929: two questions at once). */
-const openDialogs: object[] = [];
-
-/** Whether `dialog` is the one on top of `open` (only it answers keys). */
-export function onTop(open: readonly object[], dialog: object): boolean {
-  return open.length > 0 && open[open.length - 1] === dialog;
-}
-
 export function confirmDialog(options: ConfirmOptions): Promise<boolean> {
   const labels = confirmLabels(options);
   const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -77,7 +69,6 @@ export function confirmDialog(options: ConfirmOptions): Promise<boolean> {
     const buttons = [cancel, confirm];
     // Captured on the document so keys never reach the screen underneath.
     const onKey = (event: KeyboardEvent): void => {
-      if (!onTop(openDialogs, panel)) return;
       const action = confirmKeyAction(event.key, event.shiftKey, document.activeElement === cancel);
       if (!action) return;
       event.preventDefault();
@@ -89,7 +80,6 @@ export function confirmDialog(options: ConfirmOptions): Promise<boolean> {
     const finish = (value: boolean): void => {
       if (settled) return;
       settled = true;
-      openDialogs.splice(openDialogs.indexOf(panel), 1);
       document.removeEventListener("keydown", onKey, true);
       backdrop.remove();
       if (previous?.isConnected) previous.focus();
@@ -101,7 +91,6 @@ export function confirmDialog(options: ConfirmOptions): Promise<boolean> {
     backdrop.addEventListener("mousedown", (event) => {
       if (event.target === backdrop) finish(false);
     });
-    openDialogs.push(panel);
     document.body.append(backdrop);
     confirm.focus();
   });

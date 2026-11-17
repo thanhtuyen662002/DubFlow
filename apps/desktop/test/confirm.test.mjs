@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { confirmKeyAction, confirmLabels, cycleFocus, onTop } from "../src/shell/confirm.ts";
+import { confirmKeyAction, confirmLabels, cycleFocus } from "../src/shell/confirm.ts";
 
 // Labels fall back to a plain "Đồng ý / Hủy" pair.
 assert.deepEqual(confirmLabels({ title: "t", message: "m" }), { confirm: "Đồng ý", cancel: "Hủy" });
@@ -25,15 +25,6 @@ assert.equal(cycleFocus(1, 2, true), 0);
 assert.equal(cycleFocus(-1, 2, false), 0);
 assert.equal(cycleFocus(-1, 2, true), 1);
 assert.equal(cycleFocus(0, 0, false), -1);
-
-// Two dialogs open (Issue #929): only the top one answers keys, so Enter on "Ở lại" cannot confirm the one below.
-{
-  const lower = {}, upper = {};
-  assert.equal(onTop([lower, upper], upper), true);
-  assert.equal(onTop([lower, upper], lower), false);
-  assert.equal(onTop([lower], lower), true);
-  assert.equal(onTop([], lower), false);
-}
 
 console.log("confirm tests passed");
 
