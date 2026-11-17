@@ -139,6 +139,21 @@ class StoodInTests(unittest.TestCase):
         with self.answer({}, b"[mov] moov atom not found\nclip.mp4: Invalid data found when processing input", 1):
             self.assertIn("bị hỏng hoặc không phải file video", self.why())
 
+    def test_a_seek_that_lists_no_packet_once_is_not_a_cut(self):
+        """rc20 on Windows: one seek near the end of a whole 64 s MP4 listed no packet in 2 of 30 runs."""
+        probe = json.dumps({"format": {"duration": "64"}, "streams": [
+            {"codec_type": "video", "codec_name": "h264", "width": 1280, "height": 720, "avg_frame_rate": "30/1"}]}).encode()
+        done = lambda out: subprocess.CompletedProcess([], 0, out, b"")
+        tail = b"62.4\n63.9\n"
+        with mock.patch.object(a.subprocess, "run", side_effect=[done(probe), done(b""), done(tail)]) as run:
+            self.assertEqual(a.probe(Path("ffprobe"), self.video).duration_ms, 64000)
+        self.assertEqual(run.call_count, 3, "looked again once, from further back")
+        with mock.patch.object(a.subprocess, "run", side_effect=[done(probe), done(b""), done(b""), done(b"")]) as run:
+            self.assertIn("bị cắt cụt: file ghi dài 64 giây", self.why())
+        self.assertEqual(run.call_count, 4, "every look found nothing near the end")
+        with mock.patch.object(a.subprocess, "run", side_effect=[done(probe), done(b""), done(b"30.0\n"), done(b"")]):
+            self.assertIn("bị cắt cụt", self.why())  # data that stops at 30 s of 64 is short however it is read
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -192,19 +192,38 @@ def _unreadable(video: Path, head: bytes, errors: str) -> str:
 
 def _check_tail(ffprobe: Path, video: Path, length_ms: int, flags: int) -> None:
     """A source whose header gives a length its data does not reach is cut short (a stopped download of a file whose
-    index comes first, a Matroska or WebM cut part way): its last frames are missing and a cut there renders nothing."""
+    index comes first, a Matroska or WebM cut part way): its last frames are missing and a cut there renders nothing.
+
+    One seek near the end sometimes lists no packet at all for a whole MP4 (rc20 on Windows: 2 in 30 runs of the same
+    file), which is also what a cut MP4 shows; so a tail without packets is looked at again from further back, and a
+    file is called cut short only when every look agrees."""
     if length_ms <= 2 * TAIL_MS:
         return
-    at = (length_ms - TAIL_MS) / 1000
+    for back_ms in TAIL_LOOKS:
+        verdict = _tail_look(ffprobe, video, length_ms, max(0, length_ms - back_ms) / 1000, flags)
+        if verdict != "short":
+            break
+    if verdict in ("short", "ended"):
+        raise AnalysisError(f"{video.name} bị cắt cụt: file ghi dài {length_ms // 1000} giây nhưng dữ liệu dừng sớm hơn. "
+                            "Hãy tải hoặc chép lại file")
+
+
+TAIL_LOOKS = (TAIL_MS, TAIL_MS + 5000, TAIL_MS + 20000)  # how far back each look at the tail starts
+
+
+def _tail_look(ffprobe: Path, video: Path, length_ms: int, at: float, flags: int) -> str:
+    """One read of the packets from the keyframe before ``at`` to the end: "whole", "ended" (FFprobe says the file
+    ends before its data does), "short" (no packet near the end) or "unknown" (FFprobe could not seek or read)."""
     try:
-        # any stream, read from the keyframe before ``at`` to the end of the file: a cut ends every stream, and a
-        # picture that ends before the sound is no cut (rc4 D1: kept, handled where it is used)
+        # any stream: a cut ends every stream, and a picture that ends before the sound is no cut (rc4 D1: kept,
+        # handled where it is used)
         result = subprocess.run([str(ffprobe), "-v", "error", "-read_intervals", f"{at:.3f}%",
                                  "-show_entries", "packet=pts_time", "-of", "csv=p=0", str(video)],
                                 capture_output=True, timeout=60, creationflags=flags)
     except (OSError, subprocess.TimeoutExpired):
-        return  # the length was read; a tail that cannot be checked is not called cut short
-    ended = "ended prematurely" in result.stderr.decode("utf-8", "replace").casefold()
+        return "unknown"  # the length was read; a tail that cannot be checked is not called cut short
+    if "ended prematurely" in result.stderr.decode("utf-8", "replace").casefold():
+        return "ended"
     times = []
     for line in result.stdout.decode("utf-8", "replace").splitlines():
         try:
@@ -212,10 +231,10 @@ def _check_tail(ffprobe: Path, video: Path, length_ms: int, flags: int) -> None:
         except ValueError:
             pass  # a packet without a time ("N/A")
     if result.returncode != 0 and not times:
-        return  # FFprobe could not seek here at all: not proof of a cut
-    if ended or not times or max(times) * 1000 < length_ms - 3 * TAIL_MS:
-        raise AnalysisError(f"{video.name} bị cắt cụt: file ghi dài {length_ms // 1000} giây nhưng dữ liệu dừng sớm hơn. "
-                            "Hãy tải hoặc chép lại file")
+        return "unknown"  # FFprobe could not seek here at all: not proof of a cut
+    # the data must reach near the stated end; a short file is held closer, since a look from further back can start
+    # at its first frame
+    return "short" if not times or max(times) * 1000 < length_ms - min(3 * TAIL_MS, length_ms // 4) else "whole"
 
 
 def _stream_ms(stream: dict[str, Any]) -> int | None:
