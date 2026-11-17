@@ -556,6 +556,28 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
     setListOpen(false);
     renderRuns();
     renderSelected();
+    if (dir !== NEW) void reread(dir);
+  }
+
+  /** The chosen run's status read again from disk, so a card never keeps a state its run has left (Issue #915). */
+  async function reread(dir: string): Promise<void> {
+    const run = runOf(dir);
+    // a finished run does not change; a run of a newer DubFlow is only described, never read
+    if (!run || run.status?.state === "COMPLETED" || run.version > 2) return;
+    let status;
+    try {
+      status = parseStatus(await invoke("compilation_status", { outputDir: dir }));
+    } catch {
+      return;
+    }
+    if (!status || runOf(dir) !== run) return;
+    const before = run.status;
+    if (before && before.state === status.state && before.message === status.message && before.done === status.done && before.total === status.total) return;
+    run.status = status;
+    if (status.state === "COMPLETED") run.video = status.path;
+    renderRuns();
+    renderSelected();
+    schedule();
   }
 
   // ---------- The selected compilation: player, Thiết lập, Kết quả ----------
@@ -621,7 +643,8 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
       $("busy-title").textContent = fraction === null ? "Đang ghép video" : `Đang ghép video · ${Math.floor(fraction * 100)}%`;
       $("busy-bar").style.width = `${Math.round((fraction ?? 0) * 100)}%`;
       $("busy-detail").textContent = `${run.status!.message}${run.status!.total ? ` (${run.status!.done}/${run.status!.total} đoạn)` : ""}`;
-      $<HTMLButtonElement>("busy-cancel").hidden = run.dir !== output;
+      // any running compilation can be stopped here: one started before a restart, or a re-render (Issue #915)
+      $<HTMLButtonElement>("busy-cancel").hidden = false;
     }
     if (run && !$("failed").hidden) {
       $("failed-title").textContent = state === "CANCELLED" ? "Đã hủy lần ghép này" : "Không ghép được video";
