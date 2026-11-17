@@ -27,7 +27,9 @@ function clock({ start = 0, fire = (ms) => ms } = {}) {
     now = end;
     await new Promise((resolve) => setImmediate(resolve));
   };
-  return { timers, advance };
+  // when the next timer is due (Infinity: none)
+  const nextDue = () => Math.min(Infinity, ...[...due.values()].map((timer) => timer.at));
+  return { timers, advance, nextDue };
 }
 
 // ---------- The delay ----------
@@ -239,6 +241,18 @@ for (const queued of [false, true]) {
   assert.deepEqual(attempts, [300], "nor before 1800");
   await advance(1);
   assert.deepEqual(attempts, [300, 1800]);
+  saver.drop();
+}
+
+// An edit during a backoff does not even set a timer before the retry is due (no early wake that has to wait again).
+{
+  const { timers, advance, nextDue } = clock();
+  const saver = new Autosaver(async () => { throw new Error("held"); }, timers);
+  saver.changed();
+  await advance(QUIET_MS);  // fails at 300: due again at 1300
+  await advance(100);
+  saver.changed();
+  assert.equal(nextDue(), QUIET_MS + RETRY_FIRST_MS);
   saver.drop();
 }
 
@@ -901,35 +915,44 @@ for (const action of ["close", "exit"]) {
     "save() tells the saver that the write failed, its own or the carried change's");
   assert.match(view, /new Autosaver\(\(\) => save\(\), windowTimers\)/, "the saver gets save() as it is, failures included");
   const closeNow = view.slice(view.indexOf("async function closeNow("), view.indexOf("function leave(leaving: EditTarget)"));
-  assert.match(closeNow, /const saved = await flushWithin\(\(\) => saver\.flush\(\), CLOSE_WAIT_MS, windowTimers\);/);
+  assert.match(closeNow, /const saved = await flushWithin\(\(\) => saver\.flush\(\), CLOSE_WAIT_MS, windowTimers\) \|\| ownOnDisk\(\);/,
+    "only this editor's draft decides: another video's carried change is neither asked about here nor replaced");
   assert.ok(closeNow.indexOf("flushWithin(") < closeNow.indexOf("cover.end()"), "the draft is written before the editor ends");
   // a change is dropped only after the user chose to, never on "Ở lại"; a reload's close carries it instead of asking
-  assert.match(closeNow, /if \(!saved && carrying\) \{\s*carry\(session\);\s*\} else if \(!saved\) \{[^}]*if \(!\(await askAlone\(\(\) => host\.confirm\(unsavedPrompt\("exit", unapplied\)\)\)\)\) return false;\s*discard\(\);/);
-  assert.match(closeNow, /if \(carrying\) carry\(session\);\s*else \{\s*if \(!\(await askAlone\(\(\) => host\.confirm\(unsavedPrompt\("exit"\)\)\)\)\) return false;\s*discard\(\);/,
+  assert.match(closeNow, /if \(!saved && carrying\) \{\s*carry\(session\);\s*\} else if \(!saved\) \{[^}]*if \(!\(await askAlone\(\(\) => host\.confirm\(unsavedPrompt\("exit", unapplied\)\)\)\)\) return false;\s*discard\(session\);/);
+  assert.match(closeNow, /if \(!ownOnDisk\(\) && !\(await flushWithin\(\(\) => saver\.flush\(\), CLOSE_WAIT_MS, windowTimers\)\) && session && !ownOnDisk\(\)\) \{\s*if \(carrying\) carry\(session\);\s*else \{\s*if \(!\(await askAlone\(\(\) => host\.confirm\(unsavedPrompt\("exit"\)\)\)\)\) return false;\s*discard\(session\);/,
     "a change made while the question was open is written too, and dropped only on Vẫn thoát");
-  assert.match(closeNow, /if \(saver\.pending && !\(await flushWithin\(\(\) => saver\.flush\(\), CLOSE_WAIT_MS, windowTimers\)\)\)/);
-  assert.equal((closeNow.match(/discard\(\)/g) ?? []).length, 2);
-  assert.match(closeNow, /if \(carried\?\.outputPath === session\.outputPath && !saver\.pending\) carried = null;\s*const leaving = session\.target;/,
+  assert.equal((closeNow.match(/discard\(session\)/g) ?? []).length, 2);
+  assert.match(closeNow, /if \(ownOnDisk\(\)\) carried\.delete\(session\.outputPath\);\s*const leaving = session\.target;/,
     "a later write that has every change makes the reload's older copy go (it would be written over the newer draft)");
-  assert.match(view, /function discard\(\): void \{\s*saver\.drop\(\);\s*carried = null;\s*\}/, "Vẫn thoát lets a carried change go too");
+  // Vẫn thoát lets this editor's change go, and only it: another video's carried change stays pending and retried
+  assert.match(view, /function discard\(current: Session\): void \{\s*saver\.drop\(\);\s*carried\.delete\(current\.outputPath\);\s*edits = savedEdits;\s*if \(carried\.size\) saver\.changed\(\);\s*\}/);
   assert.equal((view.match(/saver\.drop\(\)/g) ?? []).length, 1, "nothing else drops a change");
+  // the open editor's own changes are counted, and counted as on disk only by its own write that worked
+  assert.match(view, /function changed\(\): void \{\s*edits \+= 1;\s*saver\.changed\(\);\s*\}/);
+  assert.equal((view.match(/saver\.changed\(\)/g) ?? []).length, 2, "every change goes through changed() (and discard keeps others retried)");
+  assert.match(view, /function ownOnDisk\(\): boolean \{\s*return savedEdits === edits;\s*\}/);
+  assert.equal((view.match(/savedEdits = /g) ?? []).length, 3, "set when an editor opens, by its own write, and by Vẫn thoát");
   // a carried change stays pending, with its backoff: written from its copy when no editor takes it up, and a window
   // close is not told the disk has it before then
-  assert.match(view, /function carry\(current: Session\): void \{\s*carried = \{ outputPath: current\.outputPath, kind: current\.target\.kind, project: draftDocument\(current\),[^}]*\};\s*saver\.restart\(\);\s*\}/);
+  // one carried copy per video: a reload of one never replaces another's
+  assert.match(view, /function carry\(current: Session\): void \{\s*carried\.set\(current\.outputPath, \{ outputPath: current\.outputPath, kind: current\.target\.kind, project: draftDocument\(current\),[^}]*\}\);\s*saver\.restart\(\);\s*\}/);
+  assert.match(view, /const carried = new Map<string, /);
   // ... written first, from its copy; once on disk its unreadable draft is kept aside (keepOld) for any editor of it;
   // a failure there does not hold up the open video's own draft
-  assert.match(save, /^async function save\(\): Promise<void> \{\s*const left = carried && carried\.outputPath !== session\?\.outputPath \? carried : null;\s*let leftFailed: unknown = null;\s*if \(left\) \{\s*try \{\s*await invoke\("edit_project_save", \{ outputPath: left\.outputPath, kind: left\.kind, project: left\.project, keepOld: left\.keepOld \}\);\s*left\.keepOld = false;\s*if \(session\?\.outputPath === left\.outputPath\) session\.keepOld = false;\s*if \(carried === left\) carried = null;\s*\} catch \(error\) \{\s*leftFailed = error;\s*\}\s*\}\s*if \(!session\) \{\s*if \(leftFailed\) throw leftFailed;\s*return;\s*\}/);
-  assert.match(save, /await invoke\("edit_project_save", \{ outputPath, kind, project, keepOld \}\);\s*if \(keepOld && carried\?\.outputPath === outputPath\) carried\.keepOld = false;/,
-    "a reload's copy of this editor does not keep aside again a draft this write kept aside");
+  assert.match(save, /^async function save\(\): Promise<void> \{\s*let leftFailed: unknown = null;\s*for \(const left of \[\.\.\.carried\.values\(\)\]\) \{\s*if \(left\.outputPath === session\?\.outputPath\) continue;\s*try \{\s*await invoke\("edit_project_save", \{ outputPath: left\.outputPath, kind: left\.kind, project: left\.project, keepOld: left\.keepOld \}\);\s*left\.keepOld = false;\s*if \(session\?\.outputPath === left\.outputPath\) session\.keepOld = false;\s*if \(carried\.get\(left\.outputPath\) === left\) carried\.delete\(left\.outputPath\);\s*\} catch \(error\) \{\s*leftFailed \?\?= error;\s*\}\s*\}\s*if \(!session\) \{\s*if \(leftFailed\) throw leftFailed;\s*return;\s*\}\s*const mine = session;\s*const at = edits;/);
+  assert.match(save, /await invoke\("edit_project_save", \{ outputPath, kind, project, keepOld \}\);\s*if \(session === mine\) savedEdits = Math\.max\(savedEdits, at\);\s*const copy = carried\.get\(outputPath\);\s*if \(keepOld && copy\) copy\.keepOld = false;/,
+    "its own write counts its changes as on disk, and a reload's copy does not keep aside again a draft it kept aside");
   assert.equal((save.match(/edit_project_save/g) ?? []).length, 2);
-  assert.match(view, /async function flush\(\): Promise<boolean> \{\s*return \(await saver\.flush\(\)\) && !carried;\s*\}/);
+  assert.match(view, /async function flush\(\): Promise<boolean> \{\s*return \(await saver\.flush\(\)\) && carried\.size === 0;\s*\}/);
   const opening = view.slice(view.indexOf("async function open(target: EditTarget"), view.indexOf("function close(ask: boolean"));
-  assert.ok(opening.indexOf("const carry = carried?.outputPath === outputPath ? carried : null;") > 0
-    && opening.indexOf("const carry = carried?.outputPath === outputPath ? carried : null;") < opening.indexOf("edit_project_load"),
+  assert.ok(opening.indexOf("const carry = carried.get(outputPath) ?? null;") > 0
+    && opening.indexOf("const carry = carried.get(outputPath) ?? null;") < opening.indexOf("edit_project_load"),
   "the carried change is taken before the load (a retry may write it after the load read the older draft)");
   assert.equal((opening.match(/const carry\b/g) ?? []).length, 1, "taken once, before the load (no later copy shadows it)");
   assert.match(opening, /if \(carry\) loaded\.project = carry\.project;/);
-  assert.match(opening, /if \(carry && carried === carry\) \{\s*carried = null;\s*scheduleSave\(\);\s*\}/, "the reopened editor writes it on");
+  assert.match(opening, /if \(carry && carried\.get\(outputPath\) === carry\) \{\s*carried\.delete\(outputPath\);\s*scheduleSave\(\);\s*\}/, "the reopened editor writes it on");
+  assert.match(opening, /edits = 0;\s*savedEdits = 0;\s*session = \{/, "a new editor's own draft starts as on disk, counted before anything can change it");
   // a draft on disk that could not be read now (held) is kept aside by the first save that can, never written over
   assert.match(opening, /keepOld: carry \? carry\.keepOld : !!loaded\.draft_problem \|\| \(!!loaded\.project && !project\),/);
   // a reopen the user left while it loaded opens nothing: checked after the load, before the editor is made
@@ -963,7 +986,8 @@ for (const action of ["close", "exit"]) {
   assert.match(main, /if \(editor\.target \|\| editor\.reopening\) \{\s*if \(view === "edit"\)/);
   assert.match(view, /get reopening\(\) \{ return !session && quietlyLeft !== null; \},/);
   // Phụ đề "Áp dụng" makes the new version from the draft on disk: refused while a change is not on it
-  assert.match(view, /flush: async \(\) => \{\s*if \(!\(await flush\(\)\)\) throw new Error\("Chưa lưu được bản nháp[^"]*"\);\s*\},\s*finish: async \(\) => \{ await close\(false\); \},/);
+  assert.match(view, /flush: async \(\) => \{\s*await flush\(\);\s*if \(!ownOnDisk\(\)\) throw new Error\("Chưa lưu được bản nháp[^"]*"\);\s*\},\s*finish: async \(\) => \{ await close\(false\); \},/,
+    "judged on this video's own draft: another video's carried change does not hold it up");
   assert.equal((view.match(/flush: async \(\) => \{ await flush\(\); \}/g) ?? []).length, 1, "only the template's, which carries the draft itself");
   const subtitles = code("../src/features/edit/subtitles_view.ts");
   assert.match(subtitles, /try \{\s*await context\.flush\(\);\s*const applied[\s\S]*?edit_subtitles_apply[\s\S]*?\} catch \(error\) \{\s*host\.showError\(`Không áp dụng được thay đổi/,
@@ -988,8 +1012,9 @@ for (const action of ["close", "exit"]) {
   assert.equal((view.match(/\bsave\(\)/g) ?? []).length, 2, "save() is defined once and called only by the Autosaver");
   // a reload of the same video carries an unsaved change instead of asking, and does not undo a later exit
   const reopen = view.slice(view.indexOf("async function reopenSame("), view.indexOf("async function applyLayers("));
-  assert.match(reopen, /const exit = exits;[\s\S]*if \(!\(await close\(false, true, true\)\)\) return;\s*if \(exits !== exit \|\| !\(await open\(target, \(\) => exits === exit\)\)\) return;\s*await then\(\);/,
-    "a user who left before or while it reopened is not taken back");
+  assert.match(reopen, /const exit = exits;[\s\S]*if \(!\(await close\(false, true, true\)\)\) return;\s*if \(exits !== exit\) return;\s*if \(!\(await open\(target, \(\) => exits === exit\)\)\) \{\s*if \(exits === exit\) leave\(target\);\s*return;\s*\}\s*await then\(\);/,
+    "a user who left before or while it reopened is not taken back; one that could not be reopened is left");
+  assert.match(view, /function leave\(leaving: EditTarget\): void \{\s*if \(session\) return;\s*quietlyLeft = null;/, "leaving ends a pending reopen");
   assert.match(view, /const exit = exits;\s*if \(!\(await close\(false, true\)\)\) return;\s*if \(exits !== exit\) return;[\s\S]{0,300}displayName: next\.displayName \},\s*\(\) => exits === exit\);\s*if \(!opened && exits === exit\) leave\(from\);/,
     "the template's reopen, likewise, and it does not leave a second time");
   assert.equal((view.match(/reopenSame\(/g) ?? []).length, 4, "the three documentary reloads use it");

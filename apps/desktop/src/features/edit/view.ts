@@ -379,6 +379,9 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   let session: Session | null = null;
   // Lưu nháp: at most MAX_WAIT_MS behind the user, even during a burst of edits (Phase 9A, PC baseline)
   const saver = new Autosaver(() => save(), windowTimers);
+  /** Changes of the open editor's draft, and how many of them are on disk (Issue #929: only its own, not a carried one). */
+  let edits = 0;
+  let savedEdits = 0;
   let loop = 0;
   let pps = 1;
   let opening = false;
@@ -1108,7 +1111,12 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     host.mediaChanged(session.outputPath);
     if (!(await close(false, true, true))) return;
     // not when the user left meanwhile, before or while it loads (a carried change stays pending and is written)
-    if (exits !== exit || !(await open(target, () => exits === exit))) return;
+    if (exits !== exit) return;
+    if (!(await open(target, () => exits === exit))) {
+      // it could not be opened again: the editor is left (the user, who did not leave, sees why in the error)
+      if (exits === exit) leave(target);
+      return;
+    }
     await then();
   }
 
@@ -1144,9 +1152,11 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     seek: seekTo,
     pps: () => pps,
     pause: () => { if (session?.playing) pausePlayback(); },
-    // the new version starts from the draft on disk (edit_subtitles_apply copies it): not while a change is missing
+    // the new version starts from this video's draft on disk (edit_subtitles_apply copies it): not while a change of
+    // it is missing there (another video's carried change does not hold it up)
     flush: async () => {
-      if (!(await flush())) throw new Error("Chưa lưu được bản nháp (tệp có thể đang bị chương trình khác giữ); DubFlow đang tự thử lưu lại, hãy Áp dụng lại sau.");
+      await flush();
+      if (!ownOnDisk()) throw new Error("Chưa lưu được bản nháp (tệp có thể đang bị chương trình khác giữ); DubFlow đang tự thử lưu lại, hãy Áp dụng lại sau.");
     },
     finish: async () => { await close(false); },
     changed: () => renderPanel(),
@@ -1449,33 +1459,38 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   }
 
   async function save(): Promise<void> {
-    // A change a reload carried that no editor took up (the user left the video meanwhile, or opened another): written
-    // first, from its copy, and tried again like any other (Issue #929).
-    const left = carried && carried.outputPath !== session?.outputPath ? carried : null;
+    // Changes reloads carried that no editor took up (the user left the video meanwhile, or opened another): written
+    // first, each from its copy, and tried again like any other (Issue #929).
     let leftFailed: unknown = null;
-    if (left) {
+    for (const left of [...carried.values()]) {
+      if (left.outputPath === session?.outputPath) continue;
       try {
         await invoke("edit_project_save", { outputPath: left.outputPath, kind: left.kind, project: left.project, keepOld: left.keepOld });
         // the draft it could not open is kept aside now, also for an editor of that video opening meanwhile
         left.keepOld = false;
         if (session?.outputPath === left.outputPath) session.keepOld = false;
-        if (carried === left) carried = null;
+        if (carried.get(left.outputPath) === left) carried.delete(left.outputPath);
       } catch (error) {
         // still pending, and tried again; the open video's own draft is written all the same
-        leftFailed = error;
+        leftFailed ??= error;
       }
     }
     if (!session) {
       if (leftFailed) throw leftFailed;
       return;
     }
+    const mine = session;
+    const at = edits;
     const { outputPath, target: { kind } } = session;
     try {
       const project = draftDocument(session);
       const { keepOld, oldKept } = session;
       await invoke("edit_project_save", { outputPath, kind, project, keepOld });
+      // every change of this editor up to `at` is on disk
+      if (session === mine) savedEdits = Math.max(savedEdits, at);
       // a reload carried this editor's change meanwhile: the draft it could not open is kept aside already
-      if (keepOld && carried?.outputPath === outputPath) carried.keepOld = false;
+      const copy = carried.get(outputPath);
+      if (keepOld && copy) copy.keepOld = false;
       // only once the disk took it: an error stays on screen until a save succeeds
       if (session?.outputPath === outputPath) {
         // the draft it could not open is kept aside now: later saves replace this one as usual
@@ -1502,13 +1517,24 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
 
   function scheduleSave(): void {
     if (session) $("#edit-save-state").textContent = "Có thay đổi chưa lưu…";
+    changed();
+  }
+
+  /** A change of the open editor's draft, for the saver. */
+  function changed(): void {
+    edits += 1;
     saver.changed();
+  }
+
+  /** Whether the open editor's own draft on disk has every change (another video's carried change aside). */
+  function ownOnDisk(): boolean {
+    return savedEdits === edits;
   }
 
   /** Write a pending change now; true when the draft on disk has every change. */
   async function flush(): Promise<boolean> {
     // a change carried by a reload that did not reopen is not on disk either
-    return (await saver.flush()) && !carried;
+    return (await saver.flush()) && carried.size === 0;
   }
 
   // the window hidden or the page going away: what is pending goes to disk now, not after the wait
@@ -2943,7 +2969,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       const block = track.querySelector<HTMLElement>(`.tl-seg[data-id="${ended.id}"]`);
       if (block) seekOutput(timeAt(ended.x));
       render();
-      saver.changed();
+      changed();
     }
   }
   content.addEventListener("pointerup", endDrag);
@@ -3515,7 +3541,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     openButton.disabled = true;
     // A reload carried a change it could not save (Issue #929): it, not the draft on disk, is the draft. Taken before
     // the load: a retry may write it meanwhile, after the load read the older draft.
-    const carry = carried?.outputPath === outputPath ? carried : null;
+    const carry = carried.get(outputPath) ?? null;
     try {
       if (host.closeGuarded && !(await host.closeGuarded())) {
         host.showError("Không mở được chế độ chỉnh sửa: DubFlow chưa bảo vệ được việc đóng cửa sổ, nên đóng lúc này có thể mất thay đổi chưa lưu. Hãy khởi động lại DubFlow.");
@@ -3541,6 +3567,9 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       // (the shared player may still hold another video's time).
       const start = openingTime(opened.kind, edit, video.readyState >= 1 ? video.currentTime : null);
       if (!video.paused) video.pause();
+      // this editor's own draft: on disk as loaded, unless a carried change goes on in it (below)
+      edits = 0;
+      savedEdits = 0;
       session = {
         target: opened, reviewable: opened.kind === "job" && !!opened.job && reviewable !== false, outputPath, facts, history: new EditHistory(edit, changes), draft: null,
         selected: project?.selected ?? outputToSource(edit, start)?.segment.id ?? edit.segments[0].id, overlay: null,
@@ -3596,8 +3625,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
         ? `Bản nháp cũ không mở được (${String(loaded.draft_problem).slice(0, 80)}); DubFlow giữ lại bản đó và bắt đầu bản nháp mới.`
         : loaded.project && !project ? "Bản nháp cũ không mở được (có thể làm cho bản dựng khác của video); DubFlow giữ lại bản đó và bắt đầu bản nháp mới." : "";
       $("#edit-hint").textContent = "";
-      if (carry && carried === carry) {
-        carried = null;
+      if (carry && carried.get(outputPath) === carry) {
+        carried.delete(outputPath);
         scheduleSave();  // still not on disk: written when the backoff of the write that failed allows
       }
       quietlyLeft = null;
@@ -3653,7 +3682,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
    * A change a reload could not save (Issue #929): for the editor it reopens, and written by the saver from this copy
    * until one takes it up.
    */
-  let carried: { outputPath: string; kind: EditTarget["kind"]; project: Record<string, unknown>; keepOld: boolean; oldKept: boolean } | null = null;
+  const carried = new Map<string, { outputPath: string; kind: EditTarget["kind"]; project: Record<string, unknown>; keepOld: boolean; oldKept: boolean }>();
   /** The video a quiet close left (a reload about to reopen it). */
   let quietlyLeft: EditTarget | null = null;
 
@@ -3663,14 +3692,20 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
    * window close until it is on disk. A write the close gave up on (still running) holds up no later one.
    */
   function carry(current: Session): void {
-    carried = { outputPath: current.outputPath, kind: current.target.kind, project: draftDocument(current), keepOld: current.keepOld, oldKept: current.oldKept };
+    // one copy per video: another video's carried change is never replaced
+    carried.set(current.outputPath, { outputPath: current.outputPath, kind: current.target.kind, project: draftDocument(current), keepOld: current.keepOld, oldKept: current.oldKept });
     saver.restart();
   }
 
-  /** The user chose to lose what could not be saved ("Vẫn thoát"): a carried change too. */
-  function discard(): void {
+  /**
+   * The user chose to lose what this editor could not save ("Vẫn thoát"). Another video's carried change is not
+   * part of that answer: it stays pending, and is tried again.
+   */
+  function discard(current: Session): void {
     saver.drop();
-    carried = null;
+    carried.delete(current.outputPath);
+    edits = savedEdits;
+    if (carried.size) saver.changed();
   }
 
   async function closeNow(ask: boolean, quiet: boolean, carrying: boolean): Promise<boolean> {
@@ -3684,7 +3719,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       return true;
     }
     // The draft first (Issue #929): a change that could not be saved is never left behind without asking.
-    const saved = await flushWithin(() => saver.flush(), CLOSE_WAIT_MS, windowTimers);
+    // only this editor's draft counts here: another video's carried change stays pending whatever happens to this one
+    const saved = await flushWithin(() => saver.flush(), CLOSE_WAIT_MS, windowTimers) || ownOnDisk();
     if (!session) return true;
     if (!saved && carrying) {
       carry(session);
@@ -3692,7 +3728,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       const unapplied = subs.dirty() || docuCover.dirty || docuCuts.dirty || templateMode.dirty();
       // "Ở lại" keeps the editor open, and the saver keeps trying
       if (!(await askAlone(() => host.confirm(unsavedPrompt("exit", unapplied))))) return false;
-      discard();
+      discard(session);
     } else if (ask && (unexported() || subs.dirty() || docuCover.dirty || docuCuts.dirty || docuLayers.busy || templateMode.dirty() || templateMode.busy)) {
       const leave = await host.confirm(templateMode.busy ? {
         title: "Thoát chỉnh sửa?", message: "Video đang được dựng lại theo mẫu mới. Bản mới vẫn được tạo và có trong Bán hàng › Video đã tạo, nhưng bản nháp chỉnh sửa không được chuyển sang.",
@@ -3709,18 +3745,17 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     }
     if (!session) return true;
     // a change made while the question was open goes to disk too
-    if (saver.pending && !(await flushWithin(() => saver.flush(), CLOSE_WAIT_MS, windowTimers))) {
-      if (!session) return true;
+    if (!ownOnDisk() && !(await flushWithin(() => saver.flush(), CLOSE_WAIT_MS, windowTimers)) && session && !ownOnDisk()) {
       if (carrying) carry(session);
       else {
         if (!(await askAlone(() => host.confirm(unsavedPrompt("exit"))))) return false;
-        discard();
+        discard(session);
       }
     }
     if (!session) return true;
-    // a reload's copy is only for a change the disk lacks: once a later write has every change (made during the wait
-    // too), the reopened editor opens what is on disk, never the older copy
-    if (carried?.outputPath === session.outputPath && !saver.pending) carried = null;
+    // a reload's copy is only for a change the disk lacks: once a later write has every change of this editor (made
+    // during the wait too), the reopened editor opens what is on disk, never the older copy
+    if (ownOnDisk()) carried.delete(session.outputPath);
     const leaving = session.target;
     if (session.draft) session.draft = null;
     session.playing = false;
@@ -3754,6 +3789,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   /** The screen without edit mode after `leaving` closed. */
   function leave(leaving: EditTarget): void {
     if (session) return;
+    // left for good: no reopen is pending any more
+    quietlyLeft = null;
     screen.classList.remove("editing");
     // Kết quả follows the queue's selection again.
     if (leaving.kind !== "job") {
@@ -3799,7 +3836,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       session.history.markExported(session.exporting);
       session.exporting = null;
       renderPanel();
-      saver.changed();
+      changed();
     }
     if (dialogWaiting && state === "COMPLETED") dialogDone = response.status?.output_path ?? null;
     if (dialogWaiting && (state === "FAILED" || state === "CANCELLED")) {
