@@ -184,6 +184,28 @@ export function wrapLines(text: string, maxWidth: number, measure: (line: string
   return lines;
 }
 
+/** The widest a text's lines are drawn: 90 % of the thumbnail. */
+export const MAX_LINE_WIDTH = THUMB_WIDTH * 0.9;
+
+/**
+ * The widest a line of `text` may be so that, drawn around its centre, it
+ * stays on the thumbnail (rc23: "Chữ bên trái" put a long title centred at
+ * 30 % across and cut its start off). Never under two letters' worth, so
+ * words still wrap one by one near an edge.
+ */
+export function textRoom(text: ThumbText): number {
+  const extra = text.strokeWidth * 2 + (text.band ? text.size * 0.6 : 0);
+  const around = 2 * Math.min(text.x, 1 - text.x) * THUMB_WIDTH - extra;
+  return Math.max(text.size * 2, Math.min(MAX_LINE_WIDTH, around));
+}
+
+/** The box moved onto the thumbnail where it fits, so no text is cut at an edge; one too big stays where it is. */
+export function fitBox(box: Rect): Rect {
+  const x = box.width <= THUMB_WIDTH ? clamp(box.x, 0, THUMB_WIDTH - box.width) : box.x;
+  const y = box.height <= THUMB_HEIGHT ? clamp(box.y, 0, THUMB_HEIGHT - box.height) : box.y;
+  return { ...box, x, y };
+}
+
 /** The box a text takes on the thumbnail, from its lines' widths. */
 export function textBox(text: ThumbText, widths: number[]): Rect {
   const lineHeight = text.size * 1.15;

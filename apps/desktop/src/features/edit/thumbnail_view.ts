@@ -7,7 +7,7 @@
 
 import {
   MAX_TEXT_SIZE, MAX_THUMB_TEXTS, MIN_TEXT_SIZE, SUBTITLE_FONTS, THUMB_HEIGHT, THUMB_TEMPLATES, THUMB_WIDTH,
-  applyTemplate, coverRect, dragPan, emptyThumb, hasThumb, makeText, moveText, normalizeThumb, textAt, textBox, thumbName, wrapLines,
+  applyTemplate, coverRect, dragPan, emptyThumb, fitBox, hasThumb, makeText, moveText, normalizeThumb, textAt, textBox, textRoom, thumbName, wrapLines,
   type Rect, type ThumbDoc, type ThumbText,
 } from "./thumbnail.ts";
 import { isFont } from "./fonts.ts";
@@ -39,7 +39,6 @@ export type ThumbnailView = {
 };
 
 const $ = <T extends HTMLElement = HTMLElement>(selector: string): T => document.querySelector(selector) as T;
-const MAX_TEXT_WIDTH = THUMB_WIDTH * 0.9;
 
 export function mountThumbnail(invoke: Invoke, host: ThumbHost): ThumbnailView {
   const section = $<HTMLDetailsElement>("#thumb-section");
@@ -111,9 +110,10 @@ export function mountThumbnail(invoke: Invoke, host: ThumbHost): ThumbnailView {
     for (const text of doc.texts) {
       if (!text.text.trim()) continue;
       context.font = fontOf(text);
-      const lines = wrapLines(text.text, MAX_TEXT_WIDTH, (line) => context.measureText(line).width);
+      const lines = wrapLines(text.text, textRoom(text), (line) => context.measureText(line).width);
       const widths = lines.map((line) => context.measureText(line).width);
-      const box = textBox(text, widths);
+      // Drawn inside the thumbnail: wrapped to the room around its centre, and moved in where it would be cut.
+      const box = fitBox(textBox(text, widths));
       boxes.push({ id: text.id, box });
       if (text.band) {
         context.fillStyle = text.band;
@@ -123,10 +123,10 @@ export function mountThumbnail(invoke: Invoke, host: ThumbHost): ThumbnailView {
       context.textBaseline = "middle";
       context.lineJoin = "round";
       const lineHeight = text.size * 1.15;
-      const top = text.y * THUMB_HEIGHT - (lines.length - 1) * lineHeight / 2;
+      const top = box.y + box.height / 2 - (lines.length - 1) * lineHeight / 2;
       lines.forEach((line, index) => {
         const y = top + index * lineHeight;
-        const x = text.x * THUMB_WIDTH;
+        const x = box.x + box.width / 2;
         context.save();
         if (text.shadow) {
           context.shadowColor = "rgba(0,0,0,0.75)";

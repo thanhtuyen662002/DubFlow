@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import {
   THUMB_HEIGHT, THUMB_WIDTH, THUMB_TEMPLATES, applyTemplate, coverRect, dragPan, emptyThumb, hasThumb, makeText,
-  moveText, normalizeThumb, textAt, textBox, thumbName, wrapLines,
+  MAX_LINE_WIDTH, fitBox, moveText, normalizeThumb, textAt, textBox, textRoom, thumbName, wrapLines,
 } from "../src/features/edit/thumbnail.ts";
 
 const covers = (rect) => rect.x <= 1e-9 && rect.y <= 1e-9 && rect.x + rect.width >= THUMB_WIDTH - 1e-9 && rect.y + rect.height >= THUMB_HEIGHT - 1e-9;
@@ -85,6 +85,33 @@ const measure = (line) => line.length * 10;
 assert.deepEqual(wrapLines("một hai ba bốn năm", 70, measure), ["một hai", "ba bốn", "năm"]);
 assert.deepEqual(wrapLines("siêuuuuuuuuuuudài x", 50, measure), ["siêuuuuuuuuuuudài", "x"]);
 assert.deepEqual(wrapLines("a\n\nb\n", 100, measure), ["a", "", "b"]);
+
+// rc23: every layout keeps a long title on the thumbnail. Lines wrap to the room around the text's centre,
+// and a box that would still be cut at an edge is drawn moved in.
+const inside = (rect) => rect.x >= -1e-9 && rect.y >= -1e-9 && rect.x + rect.width <= THUMB_WIDTH + 1e-9 && rect.y + rect.height <= THUMB_HEIGHT + 1e-9;
+const wide = (line) => line.length * 0.62 * 92; // about Segoe UI Black at 92 px
+const longTitle = "RC23 THÁP NUÔI LỢN 26 TẦNG Ở HỒ BẮC";
+for (const template of THUMB_TEMPLATES) {
+  const laid = applyTemplate({ ...emptyThumb(), texts: [] }, template.id, longTitle);
+  for (const text of laid.texts) {
+    const glyph = (line) => line.length * 0.62 * text.size;
+    const room = textRoom(text);
+    const lines = wrapLines(text.text, room, glyph);
+    assert.ok(lines.every((line) => glyph(line) <= room || !line.includes(" ")), `${template.id}: lines fit their room`);
+    const drawn = fitBox(textBox(text, lines.map(glyph)));
+    assert.ok(inside(drawn), `${template.id} "${text.text}": drawn inside the thumbnail ${JSON.stringify(drawn)}`);
+  }
+}
+const left = applyTemplate({ ...emptyThumb(), texts: [] }, "left-column", longTitle).texts[0];
+assert.equal(textRoom(left), 2 * 0.3 * THUMB_WIDTH - 16, "left-column: the room around 30 % across, less the outline");
+assert.ok(textBox(left, [wide(longTitle)]).x < 0, "on one line, as on rc23, its start would be cut");
+assert.equal(textRoom(makeText("x", { x: 0.5, strokeWidth: 0 })), MAX_LINE_WIDTH, "centred: 90 % of the width as before");
+assert.equal(textRoom(makeText("x", { x: 0, size: 50 })), 100, "at the edge: still two letters' worth");
+// A box is moved in only where it would be cut, and only as far as needed.
+assert.deepEqual(fitBox({ x: 100, y: 100, width: 200, height: 100 }), { x: 100, y: 100, width: 200, height: 100 });
+assert.deepEqual(fitBox({ x: -40, y: 650, width: 200, height: 100 }), { x: 0, y: 620, width: 200, height: 100 });
+assert.deepEqual(fitBox({ x: 1200, y: -5, width: 200, height: 100 }), { x: 1080, y: 0, width: 200, height: 100 });
+assert.deepEqual(fitBox({ x: -10, y: 0, width: 1400, height: 100 }), { x: -10, y: 0, width: 1400, height: 100 }, "too big: as it is");
 
 // Picking and dragging text.
 const title = makeText("Tiêu đề", { x: 0.5, y: 0.5, size: 100, strokeWidth: 0 });
