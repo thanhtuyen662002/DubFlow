@@ -36,10 +36,11 @@ pub(super) struct Source {
     /// The main video then the other media (not the sounds or stems after them).
     pub(super) media_count: usize,
     pub(super) frame: Frame,
-    /// The text layer and reframe steps of `Finish`, after the edit's picture.
+    /// The Phụ đề, text layer and reframe steps of `Finish`, after the edit's picture.
+    pub(super) burn: Option<String>,
     pub(super) texts: Option<String>,
     pub(super) reframe: Option<String>,
-    /// Che and Phụ đề on the main video before it is cut (`with_cover`).
+    /// Che on the main video before it is cut (`with_cover`).
     pub(super) prefilter: Option<String>,
     /// The whole edit's sound only (`export_script` with `audio_only`), when there is sound.
     pub(super) sound_script: Option<PathBuf>,
@@ -208,10 +209,11 @@ fn part_script(part: &Edit, source: &Source, quality: &str, from: f64, frames: u
         graph = with_cover(&graph, filter);
     }
     let mut steps: Vec<String> = Vec::new();
-    if let Some(texts) = &source.texts {
-        // The text layer is timed on the whole export.
+    let timed: Vec<&str> = source.burn.iter().chain(source.texts.iter()).map(String::as_str).collect();
+    if !timed.is_empty() {
+        // Phụ đề and the text layer are timed on the whole export.
         let shift = num(from);
-        steps.push(format!("setpts=PTS+{shift}/TB,{texts},setpts=PTS-{shift}/TB"));
+        steps.push(format!("setpts=PTS+{shift}/TB,{},setpts=PTS-{shift}/TB", timed.join(",")));
     }
     steps.extend(source.reframe.iter().cloned());
     let mut label = "vp".to_owned();
@@ -561,13 +563,34 @@ mod tests {
     #[test]
     fn a_part_graph_is_video_only_and_exactly_its_frames() {
         let frame = Frame { width: 1920, height: 1080, fps: "30/1".into() };
-        let source = Source { media_count: 1, frame, texts: Some("subtitles=filename=t.ass".into()), reframe: None, prefilter: Some("boxblur=10".into()), sound_script: None };
+        let source = Source { media_count: 1, frame, burn: None, texts: Some("subtitles=filename=t.ass".into()), reframe: None, prefilter: Some("boxblur=10".into()), sound_script: None };
         let part = window(&edit(vec![segment(0, 0.0, 1200.0)]), 600.0, 1200.0, &[false]);
         let graph = part_script(&part, &source, "source", 600.0, 18000);
         assert!(!graph.contains(":a]") && !graph.contains("atrim"), "{graph}");
         assert!(graph.starts_with("[0:v]boxblur=10[mcv]"), "{graph}");
         assert!(graph.contains("[vp]setpts=PTS+600/TB,subtitles=filename=t.ass,setpts=PTS-600/TB[vs0]"), "{graph}");
         assert!(graph.ends_with("[vs0]fps=30/1,tpad=stop_mode=clone:stop_duration=5,trim=end_frame=18000[v]"), "{graph}");
+    }
+
+    #[test]
+    fn a_part_burns_phu_de_on_the_export_clock() {
+        // Issue #930: Phụ đề is drawn on the part's finished picture shifted to the whole export's time, under Chữ,
+        // and the cover alone stays on the main video before it is cut.
+        let frame = Frame { width: 1920, height: 1080, fps: "30/1".into() };
+        let source = Source { media_count: 1, frame: frame.clone(), burn: Some("subtitles=filename=s.ass".into()), texts: Some("subtitles=filename=t.ass".into()),
+            reframe: Some("pad=1920:1920".into()), prefilter: Some("boxblur=10".into()), sound_script: None };
+        let part = window(&edit(vec![segment(0, 0.0, 1200.0)]), 600.0, 1200.0, &[false]);
+        let graph = part_script(&part, &source, "source", 600.0, 18000);
+        assert!(graph.starts_with("[0:v]boxblur=10[mcv]"), "{graph}");
+        assert!(graph.contains("[vp]setpts=PTS+600/TB,subtitles=filename=s.ass,subtitles=filename=t.ass,setpts=PTS-600/TB[vs0]"), "{graph}");
+        assert!(graph.contains("[vs0]pad=1920:1920[vs1]"), "the reframe after both: {graph}");
+        let burn_at = graph.find("subtitles=filename=s.ass").unwrap();
+        assert!(!graph[burn_at..].contains("trim=start"), "never inside a trim chain: {graph}");
+        // Phụ đề alone is timed the same way; nothing burned leaves the graph as before.
+        let alone = Source { burn: Some("subtitles=filename=s.ass".into()), texts: None, reframe: None, prefilter: None, ..source };
+        assert!(part_script(&part, &alone, "source", 600.0, 18000).contains("[vp]setpts=PTS+600/TB,subtitles=filename=s.ass,setpts=PTS-600/TB[vs0]"));
+        let none = Source { media_count: 1, frame, burn: None, texts: None, reframe: None, prefilter: None, sound_script: None };
+        assert!(!part_script(&part, &none, "source", 600.0, 18000).contains("setpts=PTS+600"));
     }
 
     #[test]
@@ -617,7 +640,7 @@ mod tests {
             target: dir.join("parts.mp4"), srt: None, seconds: total, has_audio, bitrate: 1_500_000, fps: "30/1".into(), ffmpeg: ffmpeg.clone(),
             quality: "source".into(), edit: timeline.clone(), audio: vec![], main_volume: 1.0, main_denoise: false, main_eq: None, stems: None,
             texts: vec![], aspect: None, fill: None, audio_only: false, parts: None };
-        let source = Source { media_count: 1, frame, texts: None, reframe: None, prefilter: None, sound_script: Some(sound_script) };
+        let source = Source { media_count: 1, frame, burn: None, texts: None, reframe: None, prefilter: None, sound_script: Some(sound_script) };
         let running = Running { children: Mutex::new(Vec::new()), cancelled: AtomicBool::new(false) };
         let single = dir.join("single.mp4");
         run_tracked(&ffmpeg, ffmpeg_args(&job.inputs, &job.script, true, &encoder, job.bitrate, &job.fps, &single), &work, &dir.join("single.log"), &running, |_| {})
