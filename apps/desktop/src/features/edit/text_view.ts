@@ -8,7 +8,7 @@
  */
 import { SUBTITLE_FONTS } from "./fonts.ts";
 import {
-  addText, animSpan, audioLanes, duplicateText, formatClock, MAX_TEXT_CHARS, MAX_TEXTS, MAX_TEXT_SIZE, MIN_TEXT_SIZE, MIN_TEXT, moveText, outputDuration, parseClock,
+  addText, animSpan, audioLanes, cleanTextValue, duplicateText, formatClock, MAX_TEXT_CHARS, MAX_TEXTS, MAX_TEXT_SIZE, MIN_TEXT_SIZE, MIN_TEXT, moveText, outputDuration, parseClock,
   removeText, resizeText, setTextProps, setTextTime, textLength, TEXT_ANIMATIONS, type Edit, type TextClip, type TextLook,
 } from "./model.ts";
 import {
@@ -18,6 +18,9 @@ import {
 import { rgba } from "./subtitles.ts";
 
 type Rect = { left: number; top: number; width: number; height: number };
+
+/** How long typing rests before the words typed become an undo step and go to the draft. */
+const TYPING_PAUSE_MS = 600;
 
 export type TextContext = {
   /** The edit on screen (a drag's draft included). */
@@ -113,6 +116,8 @@ export function mountText(context: TextContext): TextMode {
 
   const selectedText = (): TextClip | undefined => selected ? context.edit().texts.find((text) => text.id === selected) : undefined;
   const selectedId = (): string | null => selectedText() ? selected : null;
+  /** The selected text as last kept (a live preview left out). */
+  const keptText = (): TextClip | undefined => selected ? context.base().texts.find((text) => text.id === selected) : undefined;
 
   // ---------- Adding ----------
 
@@ -235,19 +240,51 @@ export function mountText(context: TextContext): TextMode {
   swatchRow($("#tx-outline"), OUTLINE_COLORS, "Màu viền", () => selectedText()?.outline ?? null, (color, live) => change({ outline: color }, live));
   swatchRow($("#tx-box-color"), BOX_COLORS, "Màu hộp", () => selectedText()?.box ?? null, (color, live) => change({ box: color }, live));
 
+  // Typing is kept as it goes (rc20: words typed into a box that kept the focus were shown as "Đã lưu nháp" but lost
+  // on a crash): a pause in typing, the window hidden or the page going away makes what is typed a step, which the
+  // draft then saves. The box keeps its focus and caret.
+  let typing: ReturnType<typeof setTimeout> | null = null;
+  function keepTyped(): void {
+    if (typing !== null) clearTimeout(typing);
+    typing = null;
+    const text = keptText();
+    if (!text || !textInput.value.trim() || cleanTextValue(textInput.value) === text.text) {
+      context.preview(null);
+      return;
+    }
+    change({ text: textInput.value });
+  }
   textInput.addEventListener("input", () => {
     $("#tx-chars").textContent = `${[...textInput.value].length}/${MAX_TEXT_CHARS} ký tự`;
-    if (textInput.value.trim()) change({ text: textInput.value }, true);
+    if (typing !== null) clearTimeout(typing);
+    typing = null;
+    if (!textInput.value.trim()) return;
+    change({ text: textInput.value }, true);
+    typing = setTimeout(keepTyped, TYPING_PAUSE_MS);
   });
   textInput.addEventListener("change", () => {
+    if (typing !== null) clearTimeout(typing);
+    typing = null;
     if (!textInput.value.trim()) {
       context.preview(null);
       context.note("Chữ không được để trống.");
       context.redraw();
       return;
     }
+    if (cleanTextValue(textInput.value) === keptText()?.text) {
+      context.preview(null);
+      return;
+    }
     change({ text: textInput.value });
   });
+  // before the editor's own save on these (capture on the window runs first)
+  // (the same for words typed on the preview itself)
+  function keepAll(): void {
+    if (typing !== null) keepTyped();
+    if (editing) stopEditing(true);
+  }
+  window.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") keepAll(); }, true);
+  window.addEventListener("pagehide", keepAll, true);
   textInput.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       context.preview(null);

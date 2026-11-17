@@ -1226,6 +1226,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     preview: (next) => {
       if (!session) return;
       session.draft = next;
+      // words being typed are not in the draft yet: say so until the pause in typing keeps them
+      if (next) $("#edit-save-state").textContent = "Có thay đổi chưa lưu…";
       renderPanel();
       renderTimeline();
       renderEffects();
