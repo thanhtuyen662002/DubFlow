@@ -2736,24 +2736,29 @@ pub fn edit_library(roots: Vec<String>) -> Vec<Value> {
     items.into_iter().map(|(_, item)| item).collect()
 }
 
+/// `keep_old`: the editor read the draft on disk but could not use it (made for another render of the video, or
+/// holding values it refuses) and started a new one. Its first save then sets that draft aside instead of
+/// replacing it, the way a draft the app cannot read at all is kept.
 #[tauri::command]
-pub fn edit_project_save(output_path: String, kind: String, project: Value) -> Result<(), String> {
+pub fn edit_project_save(output_path: String, kind: String, project: Value, keep_old: Option<bool>) -> Result<(), String> {
     let bytes = check_project(&project)?;
-    save_draft(&edit_target(&output_path, &kind)?, &bytes)
+    save_draft(&edit_target(&output_path, &kind)?, &bytes, keep_old == Some(true))
 }
 
-fn save_draft(target: &Target, bytes: &[u8]) -> Result<(), String> {
+fn save_draft(target: &Target, bytes: &[u8], keep_old: bool) -> Result<(), String> {
     target.prepare()?;
-    replace_draft(&target.work.join("project.json"), bytes)
+    replace_draft(&target.work.join("project.json"), bytes, keep_old)
 }
 
-/// Write the draft at `path`, setting aside first a draft there that cannot be read.
-fn replace_draft(path: &Path, bytes: &[u8]) -> Result<(), String> {
+/// Write the draft at `path`, setting aside first a draft there that cannot be read, or, with `keep_old`, any draft
+/// there at all.
+fn replace_draft(path: &Path, bytes: &[u8], keep_old: bool) -> Result<(), String> {
     let path = path.to_path_buf();
-    if read_draft(&path).1.is_some() {
-        // a draft this app cannot read (cut short by a crash, or saved by a newer DubFlow) is never overwritten: it is
-        // set aside first, so nothing the user made is lost (Phase 9A)
-        set_aside(&path).map_err(|_| fail("Không giữ lại được bản nháp cũ không đọc được; chưa lưu bản mới để không ghi đè nó"))?;
+    let (draft, problem) = read_draft(&path);
+    if problem.is_some() || (keep_old && draft.is_some()) {
+        // a draft this app cannot read (cut short by a crash, or saved by a newer DubFlow), or one the editor could
+        // not open, is never overwritten: it is set aside first, so nothing the user made is lost (Phase 9A)
+        set_aside(&path).map_err(|_| fail("Không giữ lại được bản nháp cũ; chưa lưu bản mới để không ghi đè nó"))?;
     }
     write_durable(&path, bytes).map_err(|_| fail("Không lưu được bản nháp chỉnh sửa"))
 }
@@ -4051,16 +4056,16 @@ mod tests {
         let path = dir.join("project.json");
         assert_eq!(read_draft(&path), (None, None), "no draft yet");
         let good = br#"{"schema_version":4,"segments":[{}]}"#;
-        replace_draft(&path, good).unwrap();
+        replace_draft(&path, good, false).unwrap();
         assert!(read_draft(&path).0.is_some() && read_draft(&path).1.is_none());
-        replace_draft(&path, br#"{"schema_version":4,"segments":[{},{}]}"#).unwrap();
+        replace_draft(&path, br#"{"schema_version":4,"segments":[{},{}]}"#, false).unwrap();
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 1, "a readable draft is simply replaced, nothing left beside it");
         for (body, why) in [(&b""[..], "file rỗng"), (&b"{\"schema_vers"[..], "nội dung hỏng"),
                             (&br#"{"schema_version":9,"segments":[{}]}"#[..], "mới hơn"), (&br#"[1,2]"#[..], "không đúng định dạng")] {
             fs::write(&path, body).unwrap();
             let (draft, problem) = read_draft(&path);
             assert!(draft.is_none() && problem.as_deref().is_some_and(|text| text.contains(why)), "{problem:?}");
-            replace_draft(&path, good).unwrap();
+            replace_draft(&path, good, false).unwrap();
             assert_eq!(fs::read(&path).unwrap(), good);
             let kept: Vec<_> = fs::read_dir(&dir).unwrap().flatten().filter(|entry| entry.file_name().to_string_lossy().starts_with("project.unreadable-"))
                 .map(|entry| fs::read(entry.path()).unwrap()).collect();
@@ -4068,10 +4073,40 @@ mod tests {
         }
         for _ in 0..8 {
             fs::write(&path, b"").unwrap();
-            replace_draft(&path, good).unwrap();
+            replace_draft(&path, good, false).unwrap();
         }
         let aside = fs::read_dir(&dir).unwrap().flatten().filter(|entry| entry.file_name().to_string_lossy().starts_with("project.unreadable-")).count();
         assert_eq!(aside, SET_ASIDE_KEEP, "only the last few are kept");
+        assert!(!partial_of(&path).exists(), "no partial file left");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // Phase 9A: a draft the editor read but could not use (made for another render) is kept aside on the first save
+    #[test]
+    fn a_draft_the_editor_could_not_use_is_kept_aside_on_its_first_save() {
+        let dir = std::env::temp_dir().join(format!("dubflow-draft-unused-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("project.json");
+        let aside = || -> Vec<Vec<u8>> {
+            fs::read_dir(&dir).unwrap().flatten().filter(|entry| entry.file_name().to_string_lossy().starts_with("project.unreadable-"))
+                .map(|entry| fs::read(entry.path()).unwrap()).collect()
+        };
+        let theirs = br#"{"schema_version":4,"duration":12.0,"segments":[{},{},{}]}"#;
+        fs::write(&path, theirs).unwrap();
+        assert!(read_draft(&path).0.is_some(), "the host reads it; only the editor finds it unusable");
+        let mine = br#"{"schema_version":4,"duration":30.0,"segments":[{}]}"#;
+        replace_draft(&path, mine, true).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), mine);
+        assert_eq!(aside(), vec![theirs.to_vec()], "the draft it could not use is kept byte for byte");
+        // the saves after it replace the new draft as usual
+        replace_draft(&path, br#"{"schema_version":4,"duration":30.0,"segments":[{},{}]}"#, false).unwrap();
+        assert_eq!(aside().len(), 1);
+        // nothing on disk: the first save just writes
+        fs::remove_file(&path).unwrap();
+        replace_draft(&path, mine, true).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), mine);
+        assert_eq!(aside().len(), 1);
         assert!(!partial_of(&path).exists(), "no partial file left");
         let _ = fs::remove_dir_all(&dir);
     }
@@ -4858,7 +4893,7 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
         assert_eq!(opened.work, child);
         fs::remove_dir(&child).unwrap();
         link_dir(&outside, &child);
-        assert!(save_draft(&opened, project).is_err());
+        assert!(save_draft(&opened, project, false).is_err());
         assert!(opened.confined().is_err(), "status and cancel writes are refused too");
         write_status(&opened.work, "FAILED", 0.0, "x", None);
         append_export(&opened.work, json!({"path": "x"}));
@@ -4868,7 +4903,7 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
         // Swapped for a link to a folder that does not exist yet: it is never created.
         let missing = outside.join("new");
         link_dir(&missing, &child);
-        assert!(save_draft(&opened, project).is_err() && opened.prepare().is_err() && opened.confined().is_err());
+        assert!(save_draft(&opened, project, false).is_err() && opened.prepare().is_err() && opened.confined().is_err());
         write_status(&opened.work, "FAILED", 0.0, "x", None);
         append_export(&opened.work, json!({"path": "x"}));
         assert!(!missing.exists(), "the link's missing target was not created");
@@ -4878,7 +4913,7 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
         assert_eq!(state(&source), source_before, "nothing beside the video changed");
         // The ordinary store still works.
         let opened = resolve_target(&path, "file", &data).unwrap();
-        save_draft(&opened, project).unwrap();
+        save_draft(&opened, project, false).unwrap();
         assert_eq!(fs::read(child.join("project.json")).unwrap(), project);
         assert_eq!(state(&outside), outside_before);
         fs::remove_dir_all(base).unwrap();
@@ -4952,19 +4987,19 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
         let record = crate::control_root().unwrap().join(format!("control/jobs/edit-test-{}.json", std::process::id()));
         fs::write(&record, json!({"schema_version": 1, "job_id": "edit-test", "status": {"state": "COMPLETED"}, "output_path": path}).to_string()).unwrap();
         let project = json!({"schema_version": 1, "duration": 10.0, "segments": [{"id": "s1", "start": 0, "end": 10, "speed": 1, "volume": 1}]});
-        edit_project_save(path.clone(), "job".into(), project.clone()).unwrap();
+        edit_project_save(path.clone(), "job".into(), project.clone(), None).unwrap();
         let saved: Value = serde_json::from_slice(&fs::read(dir.join(".dubflow-work/edit/project.json")).unwrap()).unwrap();
         assert_eq!(saved, project);
-        assert!(edit_project_save(path.clone(), "job".into(), json!({"schema_version": 5, "segments": [{}]})).is_err());
-        assert!(edit_project_save(path.clone(), "job".into(), json!({"schema_version": 3, "segments": [{}], "audio": [], "main_volume": 1})).is_ok(), "4e drafts");
-        assert!(edit_project_save(path.clone(), "job".into(), json!({"schema_version": 4, "segments": [{}], "texts": []})).is_ok(), "4f drafts");
-        assert!(edit_project_save(path.clone(), "job".into(), json!({"schema_version": 1, "segments": []})).is_err());
-        assert!(edit_project_save(path.clone(), "job".into(), json!({"schema_version": 1, "segments": [{}], "pad": "x".repeat(PROJECT_LIMIT)})).is_err());
+        assert!(edit_project_save(path.clone(), "job".into(), json!({"schema_version": 5, "segments": [{}]}), None).is_err());
+        assert!(edit_project_save(path.clone(), "job".into(), json!({"schema_version": 3, "segments": [{}], "audio": [], "main_volume": 1}), None).is_ok(), "4e drafts");
+        assert!(edit_project_save(path.clone(), "job".into(), json!({"schema_version": 4, "segments": [{}], "texts": []}), None).is_ok(), "4f drafts");
+        assert!(edit_project_save(path.clone(), "job".into(), json!({"schema_version": 1, "segments": []}), None).is_err());
+        assert!(edit_project_save(path.clone(), "job".into(), json!({"schema_version": 1, "segments": [{}], "pad": "x".repeat(PROJECT_LIMIT)}), None).is_err());
         fs::write(dir.join("other.mp4"), b"video").unwrap();
         // Any other video is a file (Issue #497): its draft never goes beside it or into the job's folder.
         let as_file = |path: &Path| edit_target(&crate::display_path(path), "job").map_or(true, |target| target.kind == Kind::File && !target.work.starts_with(&base));
         assert!(as_file(&dir.join("other.mp4")), "only final_vi.mp4 is the job's");
-        assert!(edit_project_save("relative/final_vi.mp4".into(), "job".into(), project.clone()).is_err());
+        assert!(edit_project_save("relative/final_vi.mp4".into(), "job".into(), project.clone(), None).is_err());
         let outside = base.join("elsewhere/final_vi.mp4");
         fs::create_dir_all(outside.parent().unwrap()).unwrap();
         fs::write(&outside, b"video").unwrap();
@@ -4978,7 +5013,7 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
         let target = file_target(&crate::display_path(&personal.join("final_vi.mp4")), &store).unwrap();
         assert!(target.kind == Kind::File && target.work.starts_with(&store));
         fs::write(personal.join("job_manifest.json"), json!({"source": {"path": "C:/clip.mp4"}}).to_string()).unwrap();
-        edit_project_save(crate::display_path(&personal.join("final_vi.mp4")), "job".into(), project.clone()).unwrap();
+        edit_project_save(crate::display_path(&personal.join("final_vi.mp4")), "job".into(), project.clone(), None).unwrap();
         assert!(edit_target(&crate::display_path(&personal.join("final_vi.mp4")), "job").unwrap().kind == Kind::File, "a manifest is not the app's record");
         assert!(!personal.join(".dubflow-work").exists(), "nothing written beside the user's video");
         assert_eq!(edit_target(&path, "job").unwrap().kind, Kind::Job, "a recorded job stays a job");

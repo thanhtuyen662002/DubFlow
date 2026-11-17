@@ -176,6 +176,10 @@ type Session = {
   recent: Media[];
   /** Che drawn here and applied at export (Issue #510): every video that is not a re-runnable dubbing job. */
   plainCover: boolean;
+  /** The draft on disk was read but could not be used: the first save sets it aside instead of replacing it. */
+  keepOld: boolean;
+  /** A draft on disk could not be opened (unreadable, or `keepOld`): the first save says it was kept. */
+  oldKept: boolean;
   /** Phụ đề kept in the draft (Issue #523), for the same videos; `touched` once changed or saved before. */
   /** A plain video's subtitle layers (Lớp phụ đề), saved in the draft. */
   plainSubs: PlainLayers | null;
@@ -1426,9 +1430,17 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       const undo = packHistory(history.states, history.index);
       if (undo) (project as Record<string, unknown>).undo = undo;
       if (session.plainSubs && session.subsTouched) (project as Record<string, unknown>).subtitles = serializeLayers(session.plainSubs);
-      await invoke("edit_project_save", { outputPath, kind, project });
+      const { keepOld, oldKept } = session;
+      await invoke("edit_project_save", { outputPath, kind, project, keepOld });
       // only once the disk took it: an error stays on screen until a save succeeds
-      if (session?.outputPath === outputPath) $("#edit-save-state").textContent = "Đã lưu nháp";
+      if (session?.outputPath === outputPath) {
+        // the draft it could not open is kept aside now: later saves replace this one as usual
+        if (keepOld) session.keepOld = false;
+        if (oldKept) session.oldKept = false;
+        $("#edit-save-state").textContent = oldKept
+          ? "Đã lưu nháp mới. Bản nháp cũ không mở được vẫn được giữ lại trong thư mục làm việc (project.unreadable-….json)."
+          : "Đã lưu nháp";
+      }
     } catch (error) {
       $("#edit-save-state").textContent = `Chưa lưu được bản nháp: ${String(error).slice(0, 140)}`;
     }
@@ -3467,7 +3479,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       session = {
         target: opened, reviewable: opened.kind === "job" && !!opened.job && reviewable !== false, outputPath, facts, history: new EditHistory(edit, changes), draft: null,
         selected: project?.selected ?? outputToSource(edit, start)?.segment.id ?? edit.segments[0].id, overlay: null,
-        outputTime: start, index: 0, playing: false, exporting: null, recent: project?.recent ?? [], plainCover: false, plainSubs: null, subsTouched: false,
+        outputTime: start, index: 0, playing: false, exporting: null, recent: project?.recent ?? [], plainCover: false, keepOld: !!loaded.project && !project,
+        oldKept: !!loaded.draft_problem || (!!loaded.project && !project), plainSubs: null, subsTouched: false,
         steps: [], redoSteps: [], subsPast: [], subsFuture: [], subsShadow: "", subsAt: 0, subsBurst: null, markIn: null, markOut: null, shuttle: 1,
       };
       session.plainCover = !session.reviewable;
@@ -3513,7 +3526,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       // a draft on disk that cannot be read is said, and kept aside on the first save, never silently replaced
       $("#edit-save-state").textContent = loaded.draft_problem
         ? `Bản nháp cũ không mở được (${String(loaded.draft_problem).slice(0, 80)}); DubFlow giữ lại bản đó và bắt đầu bản nháp mới.`
-        : loaded.project && !project ? "Bản nháp cũ không mở được; DubFlow bắt đầu bản nháp mới." : "";
+        : loaded.project && !project ? "Bản nháp cũ không mở được (có thể làm cho bản dựng khác của video); DubFlow giữ lại bản đó và bắt đầu bản nháp mới." : "";
       $("#edit-hint").textContent = "";
       screen.classList.add("editing");
       host.refresh();
