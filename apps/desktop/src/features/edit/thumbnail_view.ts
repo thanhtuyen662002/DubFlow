@@ -7,7 +7,7 @@
 
 import {
   MAX_TEXT_SIZE, MAX_THUMB_TEXTS, MIN_TEXT_SIZE, SUBTITLE_FONTS, THUMB_HEIGHT, THUMB_TEMPLATES, THUMB_WIDTH,
-  DRAG_START_PX, applyTemplate, centreOn, coverRect, dragPan, emptyThumb, hasThumb, layoutText, makeText, normalizeThumb, nudgeText, textAt, thumbName,
+  DRAG_START_PX, applyTemplate, coverRect, dragPan, dragText, emptyThumb, hasThumb, layoutText, makeText, normalizeThumb, nudgeText, textAt, thumbName,
   type Rect, type ThumbDoc, type ThumbText,
 } from "./thumbnail.ts";
 import { isFont } from "./fonts.ts";
@@ -297,13 +297,17 @@ export function mountThumbnail(invoke: Invoke, host: ThumbHost): ThumbnailView {
     changed();
   });
 
-  // Drag a text to move it; drag elsewhere to move the picture inside the frame. A move starts where the text is drawn.
+  // Drag a text to move it; drag elsewhere to move the picture inside the frame. Keys move a text from where it is drawn.
   const drawnBox = (id: string): Rect | undefined => boxes.find((item) => item.id === id)?.box;
-  // A text drag moves the text by the pointer's whole way since it was grabbed, on each axis only once the pointer
-  // has gone DRAG_START_PX screen pixels along it. That axis then starts from where the text is drawn at that moment,
-  // so a text held against an edge leaves it at once and never jumps; an axis the pointer did not go along keeps its
-  // saved place, so a sideways drag never moves a text up or down (or off an edge it is held against).
-  type TextDrag = { saved: ThumbText; start: { x: number; y: number }; from: { x: number | null; y: number | null } };
+  /** The box a text would be drawn in, as `draw` lays it out. */
+  const placeOf = (text: ThumbText): Rect | undefined => {
+    if (!context || !text.text.trim()) return undefined;
+    context.font = fontOf(text);
+    return layoutText(text, (line) => context.measureText(line).width).box;
+  };
+  // A text drag goes by the pointer's whole way since the grab (`dragText`): where the text ends depends only on
+  // where the pointer is, so wobble on the way changes nothing and coming back puts it back where it was.
+  type TextDrag = { grabbed: ThumbText; start: { x: number; y: number } };
   let drag: { id: string | null; x: number; y: number; pointer: number; text: TextDrag | null } | null = null;
   const point = (event: PointerEvent): { x: number; y: number } => {
     const rect = canvas.getBoundingClientRect();
@@ -314,7 +318,7 @@ export function mountThumbnail(invoke: Invoke, host: ThumbHost): ThumbnailView {
     const id = textAt(boxes, at.x, at.y);
     if (id !== selected) select(id);
     const grabbed = doc.texts.find((text) => text.id === id);
-    drag = { id, ...at, pointer: event.pointerId, text: grabbed ? { saved: grabbed, start: at, from: { x: null, y: null } } : null };
+    drag = { id, ...at, pointer: event.pointerId, text: grabbed ? { grabbed, start: at } : null };
     canvas.setPointerCapture(event.pointerId);
   });
   canvas.addEventListener("pointermove", (event) => {
@@ -325,18 +329,10 @@ export function mountThumbnail(invoke: Invoke, host: ThumbHost): ThumbnailView {
     drag.y = at.y;
     const held = drag.text;
     if (held) {
-      const { saved, start, from } = held;
       const rect = canvas.getBoundingClientRect();
-      const wayX = at.x - start.x, wayY = at.y - start.y;
-      const drawn = centreOn(doc.texts.find((text) => text.id === saved.id) ?? saved, drawnBox(saved.id));
-      if (from.x === null && Math.abs(wayX) * rect.width / THUMB_WIDTH >= DRAG_START_PX) from.x = drawn.x;
-      if (from.y === null && Math.abs(wayY) * rect.height / THUMB_HEIGHT >= DRAG_START_PX) from.y = drawn.y;
-      const moved = {
-        ...saved,
-        x: from.x === null ? saved.x : Math.min(1, Math.max(0, from.x + wayX / THUMB_WIDTH)),
-        y: from.y === null ? saved.y : Math.min(1, Math.max(0, from.y + wayY / THUMB_HEIGHT)),
-      };
-      doc = { ...doc, texts: doc.texts.map((text) => text.id === saved.id ? moved : text) };
+      const slop = { x: DRAG_START_PX * THUMB_WIDTH / rect.width, y: DRAG_START_PX * THUMB_HEIGHT / rect.height };
+      const moved = dragText(held.grabbed, { x: at.x - held.start.x, y: at.y - held.start.y }, slop, placeOf);
+      doc = { ...doc, texts: doc.texts.map((text) => text.id === moved.id ? moved : text) };
     } else if (picture) doc = { ...doc, ...dragPan(doc, picture.naturalWidth, picture.naturalHeight, dx, dy) };
     else return;
     draw();

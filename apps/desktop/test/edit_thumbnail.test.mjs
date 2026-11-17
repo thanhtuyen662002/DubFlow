@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import {
   THUMB_HEIGHT, THUMB_WIDTH, THUMB_TEMPLATES, applyTemplate, coverRect, dragPan, emptyThumb, hasThumb, makeText,
-  DRAG_START_PX, MAX_LINE_WIDTH, MAX_THUMB_TEXT, centreOn, fitBox, inkMargin, layoutText, leavesEdge, nudgeText, moveText, normalizeThumb, textAt, textBox, textRoom, thumbName, wrapLines,
+  DRAG_START_PX, MAX_LINE_WIDTH, MAX_THUMB_TEXT, centreOn, dragText, fitBox, inkMargin, layoutText, leavesEdge, nudgeText, moveText, normalizeThumb, textAt, textBox, textRoom, thumbName, wrapLines,
 } from "../src/features/edit/thumbnail.ts";
 
 const covers = (rect) => rect.x <= 1e-9 && rect.y <= 1e-9 && rect.x + rect.width >= THUMB_WIDTH - 1e-9 && rect.y + rect.height >= THUMB_HEIGHT - 1e-9;
@@ -175,6 +175,23 @@ assert.equal(leavesEdge(0, 0.1, 0, THUMB_WIDTH), false, "no move on this axis: a
 assert.equal(centreOn(big, undefined), big, "no box drawn: as it is");
 const unmoved = makeText("ngắn", { x: 0.5, y: 0.5 });
 assert.equal(centreOn(unmoved, drawnAt(unmoved)), unmoved, "a box that was not moved in: the same text");
+// A drag goes by the pointer's whole way since the grab: a text that is not held moves with it at once; a held one
+// stays held toward its edge and below the slop away from it, and past the slop moves from where it is drawn.
+const slop = { x: 12, y: 12 };
+assert.deepEqual(dragText(unmoved, { x: 5, y: -5 }, slop, drawnAt), moveText(unmoved, 5, -5), "not held: with the pointer");
+assert.equal(dragText(unmoved, { x: 0, y: 0 }, slop, drawnAt), unmoved, "no way: the same text");
+assert.equal(dragText(pushed, { x: 11, y: 0 }, slop, drawnAt), pushed, "below the slop away from the edge: as it was");
+assert.equal(dragText(pushed, { x: -40, y: 0 }, slop, drawnAt).x, 0, "toward the edge: held");
+assert.ok(Math.abs(drawnAt(dragText(pushed, { x: 12, y: 0 }, slop, drawnAt)).x - 12) < 1e-6, "past the slop: 12 px off the edge");
+const bigUp = dragText(big, { x: 0, y: -20 }, slop, drawnAt);
+assert.ok(Math.abs(drawnAt(bigUp).y - (bigBox.y - 20)) < 1e-6, "big-bottom 20 px up: drawn 20 px up");
+assert.equal(dragText(big, { x: 0, y: 40 }, slop, drawnAt).y, Math.min(1, big.y + 40 / THUMB_HEIGHT), "down into the bottom: held");
+const bigSide = dragText(big, { x: 150, y: -20 }, slop, drawnAt);
+const stretched = drawnAt({ ...big, x: big.x + 150 / THUMB_WIDTH });
+assert.ok(Math.abs(drawnAt(bigSide).y - (stretched.y - 20)) < 1e-6, "sideways and up: 20 px up from where it is drawn at the new place");
+for (const way of [{ x: 150, y: -20 }, { x: -300, y: 7 }, { x: 0, y: -500 }]) {
+  assert.deepEqual(dragText(big, way, slop, drawnAt), dragText(big, way, slop, drawnAt), "the same way, the same place");
+}
 
 // Picking and dragging text.
 const title = makeText("Tiêu đề", { x: 0.5, y: 0.5, size: 100, strokeWidth: 0 });
@@ -330,7 +347,9 @@ const element = (selector) => {
 const canvasContext = new FakeContext();
 const canvasElement = element("#thumb-canvas");
 canvasElement.getContext = () => canvasContext;
-canvasElement.getBoundingClientRect = () => ({ left: 0, top: 0, width: THUMB_WIDTH, height: THUMB_HEIGHT });
+// The stage the canvas is shown at, in screen px: 1:1 at first, then the app's small preview size.
+const stage = { width: THUMB_WIDTH, height: THUMB_HEIGHT };
+canvasElement.getBoundingClientRect = () => ({ left: 0, top: 0, ...stage });
 canvasElement.setPointerCapture = () => {};
 let blobOps = null;
 canvasElement.toBlob = (done, type) => {
@@ -368,7 +387,9 @@ for (const template of THUMB_TEMPLATES) {
   assert.ok(allInside(drawn), `${template.id}: every line drawn inside the image ${JSON.stringify(drawn)}`);
 }
 // Dragging a text that the drawing moved in: the first small drag moves it by the same distance and it stays under the pointer.
-const at = (x, y) => ({ clientX: x, clientY: y, pointerId: 1 });
+// Pointer places are screen px on the stage; the drawn ink is thumbnail px.
+const scale = () => THUMB_WIDTH / stage.width;
+const at = (x, y) => ({ clientX: x / scale(), clientY: y / scale(), pointerId: 1 });
 const dragCheck = (saved, dx, dy, label) => {
   fresh();
   view.begin({ ...emptyThumb(), texts: [saved] });
@@ -377,19 +398,25 @@ const dragCheck = (saved, dx, dy, label) => {
   const pointer = { x: before.x, y: before.y };
   canvasElement.fire("pointerdown", at(pointer.x, pointer.y));
   fresh();
-  canvasElement.fire("pointermove", at(pointer.x + dx, pointer.y + dy));
+  const move = { x: dx * scale(), y: dy * scale() };
+  canvasElement.fire("pointermove", at(pointer.x + move.x, pointer.y + move.y));
   const after = inks()[0];
-  assert.ok(Math.abs(after.x - before.x - dx) < 1e-6 && Math.abs(after.y - before.y - dy) < 1e-6, `${label}: the first drag moves the drawn text by (${dx}, ${dy}): ${JSON.stringify({ before, after })}`);
-  assert.ok(pointer.x + dx >= after.left && pointer.x + dx <= after.right && pointer.y + dy >= after.top && pointer.y + dy <= after.bottom, `${label}: still under the pointer`);
-  canvasElement.fire("pointerup", at(pointer.x + dx, pointer.y + dy));
+  assert.ok(Math.abs(after.x - before.x - move.x) < 1e-6 && Math.abs(after.y - before.y - move.y) < 1e-6, `${label}: the first drag moves the drawn text by (${dx}, ${dy}) screen px: ${JSON.stringify({ before, after })}`);
+  assert.ok(pointer.x + move.x >= after.left && pointer.x + move.x <= after.right && pointer.y + move.y >= after.top && pointer.y + move.y <= after.bottom, `${label}: still under the pointer`);
+  canvasElement.fire("pointerup", at(pointer.x + move.x, pointer.y + move.y));
   return after;
 };
 const word = (over) => ({ ...makeText("NGHIÊNG", over) });
-dragCheck(word({ x: 0, y: 0.5 }), 10, 0, "moved in from the left edge, dragged right");
-dragCheck(word({ x: 1, y: 0.5 }), -10, 0, "moved in from the right edge, dragged left");
-dragCheck(word({ x: 0.5, y: 1 }), 0, -10, "moved up from the bottom, dragged up");
-dragCheck(word({ x: 0.5, y: 0 }), 0, 10, "moved down from the top, dragged down");
-dragCheck(word({ x: 0, y: 1 }), 12, -12, "moved in from a corner, dragged out of it");
+for (const [width, height] of [[THUMB_WIDTH, THUMB_HEIGHT], [320, 180]]) {
+  Object.assign(stage, { width, height });
+  dragCheck(word({ x: 0, y: 0.5 }), 10, 0, `${width} px stage, moved in from the left edge, dragged right`);
+  dragCheck(word({ x: 1, y: 0.5 }), -10, 0, `${width} px stage, moved in from the right edge, dragged left`);
+  dragCheck(word({ x: 0.5, y: 1 }), 0, -10, `${width} px stage, moved up from the bottom, dragged up`);
+  dragCheck(word({ x: 0.5, y: 0 }), 0, 10, `${width} px stage, moved down from the top, dragged down`);
+  dragCheck(word({ x: 0, y: 1 }), 12, -12, `${width} px stage, moved in from a corner, dragged out of it`);
+  dragCheck(word({ x: 0.5, y: 0.5 }), 1, -1, `${width} px stage, a text that is not held follows at once`);
+}
+Object.assign(stage, { width: THUMB_WIDTH, height: THUMB_HEIGHT });
 // Arrow keys too: one press moves the drawn text one step.
 fresh();
 view.begin({ ...emptyThumb(), texts: [word({ x: 0, y: 0.5 })] });
@@ -444,7 +471,8 @@ for (let press = 0; press < 12; press += 1) canvasElement.fire("keydown", { key:
 for (let press = 0; press < 12; press += 1) canvasElement.fire("keydown", { key: "ArrowRight", shiftKey: true });
 assert.equal(titleOf().y, keyTitle.y, "sideways keys: the height is untouched");
 assert.ok(Math.abs(titleOf().x - keyTitle.x) < 1e-9, "and it is back where it was");
-// Out and back in several strokes, or with a hand's jitter, leaves a title held at the bottom where it was.
+// Out and back in several strokes, with a hand's wobble on the way, or ending a little higher (less than DRAG_START_PX
+// screen px), leaves a title held at the bottom where it was, at the 1:1 stage and at the app's small one.
 const strokes = (layout, moves) => {
   fresh();
   view.begin(null);
@@ -452,46 +480,102 @@ const strokes = (layout, moves) => {
   templateSelect.fire("change");
   const first = titleOf();
   const firstInk = inks();
-  for (const [dx, dy] of moves) {
+  for (const [dx, dy, wobble] of moves) {
     const ink = inks().find((line) => first.text.includes(line.line));
     canvasElement.fire("pointerdown", at(ink.x, ink.y));
-    for (let step = 1; step <= 10; step += 1) canvasElement.fire("pointermove", at(ink.x + dx * step / 10, ink.y + (step % 2 ? dy : 0)));
-    canvasElement.fire("pointerup", at(ink.x + dx, ink.y));
+    for (let step = 1; step < 10; step += 1) canvasElement.fire("pointermove", at(ink.x + dx * step / 10, ink.y + (step % 2 ? wobble : 0)));
+    canvasElement.fire("pointermove", at(ink.x + dx, ink.y + dy));
+    canvasElement.fire("pointerup", at(ink.x + dx, ink.y + dy));
     fresh();
     view.begin(view.document());
   }
   return { first, last: titleOf(), firstInk: firstInk.map((ink) => [ink.line, ink.y]), lastInk: inks().map((ink) => [ink.line, ink.y]) };
 };
-for (const layout of ["big-bottom", "band", "two-lines"]) {
-  const wobble = DRAG_START_PX - 1; // screen px; the fake stage is drawn at 1:1
-  for (const moves of [[[100, 0], [-100, 0]], [[100, 0], [100, 0], [-100, 0], [-100, 0]], [[100, -wobble], [-100, wobble]]]) {
-    const { first, last, firstInk, lastInk } = strokes(layout, moves);
-    assert.equal(last.y, first.y, `${layout} ${JSON.stringify(moves)}: the title is still held at its height`);
-    assert.ok(Math.abs(last.x - first.x) < 1e-9, `${layout} ${JSON.stringify(moves)}: and back across`);
-    assert.deepEqual(lastInk, firstInk, `${layout} ${JSON.stringify(moves)}: drawn as before`);
+for (const [width, height] of [[THUMB_WIDTH, THUMB_HEIGHT], [320, 180]]) {
+  Object.assign(stage, { width, height });
+  const wobble = (DRAG_START_PX + 1) * scale(); // thumbnail px: more than DRAG_START_PX screen px, up and back down
+  const drift = (DRAG_START_PX - 1) * scale(); // thumbnail px: less than DRAG_START_PX screen px, up
+  for (const layout of ["big-bottom", "band", "two-lines"]) {
+    for (const moves of [
+      [[100, 0, 0], [-100, 0, 0]],
+      [[100, 0, 0], [100, 0, 0], [-100, 0, 0], [-100, 0, 0]],
+      [[100, 0, -wobble], [-100, 0, -wobble]],
+      [[200, -drift, -wobble], [-200, 0, 0]],
+      // Ending a little higher where the title is held at the bottom (two-lines is held only once stretched).
+      ...(layout === "two-lines" ? [] : [[[0, -drift, -wobble]], [[200, -drift, 0], [-200, -drift, -wobble]]]),
+    ]) {
+      const { first, last, firstInk, lastInk } = strokes(layout, moves);
+      const label = `${width} px stage, ${layout} ${JSON.stringify(moves)}`;
+      assert.equal(last.y, first.y, `${label}: the title is still held at its height`);
+      assert.ok(Math.abs(last.x - first.x) < 1e-9, `${label}: and back across`);
+      assert.deepEqual(lastInk, firstInk, `${label}: drawn as before`);
+    }
   }
 }
-// Going up after a sideways stretch that re-wrapped and lifted the title: it moves up from where it is drawn, no jump.
-{
+Object.assign(stage, { width: THUMB_WIDTH, height: THUMB_HEIGHT });
+// Going up after a sideways stretch that re-wrapped and lifted the title: it moves up from where it is drawn, no jump;
+// coming back down and back across draws it exactly as before, at each stage.
+for (const [width, height] of [[THUMB_WIDTH, THUMB_HEIGHT], [320, 180]]) {
+  Object.assign(stage, { width, height });
   fresh();
   view.begin(null);
   templateSelect.value = "big-bottom";
   templateSelect.fire("change");
   const title = titleOf();
-  const grip = inks().find((ink) => title.text.includes(ink.line));
+  const start = inks();
+  const grip = start.find((ink) => title.text.includes(ink.line));
   canvasElement.fire("pointerdown", at(grip.x, grip.y));
   for (let step = 1; step <= 20; step += 1) {
     fresh();
     canvasElement.fire("pointermove", at(grip.x + step * 10, grip.y));
   }
   const sideways = inks();
-  assert.ok(sideways.length > 3 && titleOf().y === title.y, "re-wrapped and lifted, its saved height untouched");
+  assert.ok(sideways.length > start.length && titleOf().y === title.y, `${width} px stage: re-wrapped and lifted, its saved height untouched`);
   fresh();
   canvasElement.fire("pointermove", at(grip.x + 200, grip.y - 20));
   const up = inks();
-  assert.ok(up.every((ink, index) => Math.abs(ink.y - (sideways[index].y - 20)) < 1e-6), `20 px up: every line 20 px up ${JSON.stringify([sideways.map((ink) => ink.y), up.map((ink) => ink.y)])}`);
-  canvasElement.fire("pointerup", at(grip.x + 200, grip.y - 20));
+  assert.ok(up.every((ink, index) => Math.abs(ink.y - (sideways[index].y - 20)) < 1e-6 && ink.x === sideways[index].x), `${width} px stage, 20 px up: every line 20 px up ${JSON.stringify([sideways.map((ink) => ink.y), up.map((ink) => ink.y)])}`);
+  fresh();
+  canvasElement.fire("pointermove", at(grip.x + 200, grip.y));
+  assert.deepEqual(inks(), sideways, `${width} px stage: back down, drawn as when stretched`);
+  fresh();
+  canvasElement.fire("pointermove", at(grip.x, grip.y));
+  assert.deepEqual(inks(), start, `${width} px stage: back across, drawn as at the start`);
+  canvasElement.fire("pointerup", at(grip.x, grip.y));
+  assert.equal(titleOf().x, title.x);
+  assert.equal(titleOf().y, title.y);
 }
+Object.assign(stage, { width: THUMB_WIDTH, height: THUMB_HEIGHT });
+// A title held against the left edge (wrapped wider than the room around its centre): pushing it into that edge, or
+// dragging it up and down with less than DRAG_START_PX screen px sideways, never re-wraps it or moves it sideways;
+// pulling it away moves it; coming back draws it as before and leaves its saved place as it was.
+for (const [width, height] of [[THUMB_WIDTH, THUMB_HEIGHT], [320, 180]]) {
+  Object.assign(stage, { width, height });
+  const px = scale();
+  assert.ok(centreOn(tallTitle, layoutText(tallTitle, glyphs(tallTitle)).box).x > tallTitle.x + 0.01, "held against the left edge");
+  fresh();
+  view.begin({ ...emptyThumb(), texts: [tallTitle] });
+  const start = inks();
+  const across = (list) => list.map((ink) => [ink.line, ink.x]);
+  const grip = start[Math.floor(start.length / 2)];
+  canvasElement.fire("pointerdown", at(grip.x, grip.y));
+  const small = (DRAG_START_PX - 1) * px;
+  for (const [dx, dy] of [[-60 * px, 0], [-200 * px, 10 * px], [small, -20 * px], [small, 20 * px], [-small, 0]]) {
+    fresh();
+    canvasElement.fire("pointermove", at(grip.x + dx, grip.y + dy));
+    assert.deepEqual(across(inks()), across(start), `${width} px stage, (${dx}, ${dy}): same lines, same place across`);
+  }
+  fresh();
+  canvasElement.fire("pointermove", at(grip.x + 40 * px, grip.y));
+  assert.ok(Math.min(...inks().map((ink) => ink.left)) > Math.min(...start.map((ink) => ink.left)) + 1, `${width} px stage: pulled 40 screen px away, it leaves the edge`);
+  fresh();
+  canvasElement.fire("pointermove", at(grip.x, grip.y));
+  assert.deepEqual(inks(), start, `${width} px stage: back where it was grabbed, drawn as before`);
+  canvasElement.fire("pointerup", at(grip.x, grip.y));
+  assert.equal(view.document().texts[0].x, tallTitle.x);
+  assert.equal(view.document().texts[0].y, tallTitle.y);
+}
+Object.assign(stage, { width: THUMB_WIDTH, height: THUMB_HEIGHT });
 // Opening a thumbnail only draws it: its saved place is not changed by the drawing.
 const kept = word({ x: 0, y: 1 });
 view.begin({ ...emptyThumb(), texts: [kept] });

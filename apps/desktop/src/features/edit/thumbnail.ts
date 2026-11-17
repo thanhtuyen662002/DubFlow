@@ -266,9 +266,10 @@ export function centreOn(text: ThumbText, box: Rect | undefined): ThumbText {
 }
 
 /**
- * Screen pixels the pointer must go along an axis before a text drag moves
- * the text on that axis. Below it a hand's wobble changes nothing, so a
- * sideways drag never moves a text up or down.
+ * Screen pixels the pointer must go away from an edge a text is held
+ * against before a drag takes the text off it (see `dragText`). Below it a
+ * hand's wobble changes nothing, so a sideways drag never lifts a title
+ * off the bottom, and a drag up or down never re-wraps a text held at a side.
  */
 export const DRAG_START_PX = 3;
 
@@ -294,6 +295,33 @@ export function nudgeText(text: ThumbText, box: Rect | undefined, dx: number, dy
     y: leavesEdge(text.y, drawn.y, dy, THUMB_HEIGHT) ? drawn.y : text.y,
   };
   return moveText(from, dx, dy);
+}
+
+/**
+ * Where a dragged text goes. `grabbed` is the text as it was when grabbed,
+ * `way` the pointer's whole way since then and `slop` DRAG_START_PX, both in
+ * thumbnail px per axis, and `place` the box a text is drawn in
+ * (`layoutText`). The result depends only on `way`, never on the path, so
+ * the same pointer place always gives the same result and coming back to
+ * the start puts the text back exactly where it was.
+ *
+ * Each axis follows the pointer from the saved place. Where the drawing
+ * holds the text against an edge (its drawn place differs from the saved
+ * one, see `leavesEdge`), going toward that edge keeps it held, going less
+ * than `slop` away changes nothing, and going `slop` or more away takes it
+ * off the edge with the pointer, from where it is drawn: left and right
+ * from the place at the grab, up and down from the place at the new left
+ * and right (where it may have been re-wrapped and lifted).
+ */
+export function dragText(grabbed: ThumbText, way: { x: number; y: number }, slop: { x: number; y: number }, place: (text: ThumbText) => Rect | undefined): ThumbText {
+  const axis = (saved: number, drawn: number, move: number, span: number, least: number): number => {
+    if (!leavesEdge(saved, drawn, move, span)) return clamp(saved + move / span, 0, 1);
+    return Math.abs(move) < least ? saved : clamp(drawn + move / span, 0, 1);
+  };
+  const x = axis(grabbed.x, centreOn(grabbed, place(grabbed)).x, way.x, THUMB_WIDTH, slop.x);
+  const there = x === grabbed.x ? grabbed : { ...grabbed, x };
+  const y = axis(grabbed.y, centreOn(there, place(there)).y, way.y, THUMB_HEIGHT, slop.y);
+  return x === grabbed.x && y === grabbed.y ? grabbed : { ...grabbed, x, y };
 }
 
 /** The box a text takes on the thumbnail, from its lines' widths. */
