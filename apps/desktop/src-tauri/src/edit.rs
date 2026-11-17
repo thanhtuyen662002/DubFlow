@@ -4390,6 +4390,55 @@ mod tests {
         (base.clone(), base.join("work"))
     }
 
+    /// 1990-01-01: when a run killed while saving left its temporary file, decades back.
+    fn long_ago() -> SystemTime {
+        UNIX_EPOCH + Duration::from_secs(631_152_000)
+    }
+
+    /// Date `file` decades back on every timestamp this platform lets a program set (modified and accessed, and
+    /// created on Windows), so a sweep by the age of any of them would take it.
+    fn date_back(file: &Path) {
+        let times = fs::FileTimes::new().set_modified(long_ago()).set_accessed(long_ago());
+        #[cfg(windows)]
+        let times = {
+            use std::os::windows::fs::FileTimesExt;
+            times.set_created(long_ago())
+        };
+        fs::File::options().write(true).open(file).unwrap().set_times(times).unwrap();
+        let metadata = fs::metadata(file).unwrap();
+        assert_eq!(metadata.modified().unwrap(), long_ago(), "modified: {}", file.display());
+        #[cfg(windows)]
+        assert_eq!(metadata.created().unwrap(), long_ago(), "created: {}", file.display());
+    }
+
+    /// What other saves leave beside the draft at `path`: another run's temporary file, one of this run's still
+    /// writing, and one a run killed while saving left decades ago. None of it is any save's to touch.
+    fn foreign_temps(path: &Path) -> Vec<PathBuf> {
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let files = [
+            (format!("{name}.1-2-3.saving"), "another save's temporary file"),
+            (format!("{name}.{}-0-0.saving", std::process::id()), "another save of this run, still writing"),
+            (format!("{name}.1-2-4.saving"), "left by a run killed while saving, decades ago"),
+        ].map(|(file, text)| {
+            let file = path.with_file_name(file);
+            fs::write(&file, text).unwrap();
+            file
+        });
+        date_back(&files[2]);
+        files.to_vec()
+    }
+
+    /// A file's name, bytes, size and times (modified, and created where the platform keeps it). Not when it was
+    /// last read: reading it to compare its bytes moves that, so a test dates the killed run's file back again
+    /// (`date_back`) right before each save.
+    type Mark = (String, Vec<u8>, u64, SystemTime, Option<SystemTime>);
+
+    fn stamp(file: &Path) -> Mark {
+        let metadata = fs::symlink_metadata(file).unwrap();
+        (file.file_name().unwrap().to_string_lossy().into_owned(), fs::read(file).unwrap(), metadata.len(), metadata.modified().unwrap(),
+         metadata.created().ok())
+    }
+
     // #896: a save that fails at any point keeps the old draft byte for byte and removes only its own temporary file
     #[test]
     fn a_failed_draft_save_keeps_the_old_draft_and_removes_only_its_own_temporary_file() {
@@ -4400,11 +4449,8 @@ mod tests {
         fs::write(&path, old).unwrap();
         // what other saves and older versions leave beside the draft: none of it is this call's to touch
         fs::write(partial_of(&path), b"an old partial").unwrap();
-        fs::write(dir.join("project.json.1-2-3.saving"), b"another save's temporary file").unwrap();
-        fs::write(dir.join(format!("project.json.{}-0-0.saving", std::process::id())), b"another save of this run, still writing").unwrap();
-        let killed = dir.join("project.json.1-2-4.saving");
-        fs::write(&killed, b"left by a run killed while saving, an hour ago").unwrap();
-        fs::File::options().write(true).open(&killed).unwrap().set_modified(SystemTime::now() - Duration::from_secs(3600)).unwrap();
+        let foreign = foreign_temps(&path);
+        let marks: Vec<Mark> = foreign.iter().map(|file| stamp(file)).collect();
         fs::write(dir.join("project.unreadable-5.json"), b"kept aside").unwrap();
         let before = listing(&dir);
         let modified = fs::metadata(&path).unwrap().modified().unwrap();
@@ -4478,6 +4524,56 @@ mod tests {
         write_durable_with(&path, old, &failing(DurableStep::SyncFolder), temp_names(&path)).unwrap();
         assert_eq!(fs::read(&path).unwrap(), old);
         assert!(new_temps(&dir, &before).is_empty());
+        assert_eq!(foreign.iter().map(|file| stamp(file)).collect::<Vec<_>>(), marks, "every other save's temporary file, its bytes and times");
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    // #928: the app's entry point keeps every other save's temporary file too: a plain save through `replace_draft`,
+    // one that sets the old draft aside first, one over a draft it cannot read and, on Windows, one the system refuses
+    #[test]
+    fn a_draft_save_through_replace_draft_keeps_every_other_saves_temporary_file() {
+        let (base, dir) = scratch("draft-entry-temps");
+        let path = dir.join("project.json");
+        let old = br#"{"schema_version":4,"segments":[{}]}"#;
+        let new = br#"{"schema_version":4,"segments":[{},{}]}"#;
+        fs::write(&path, old).unwrap();
+        let foreign = foreign_temps(&path);
+        let marks: Vec<Mark> = foreign.iter().map(|file| stamp(file)).collect();
+        let mut names: Vec<String> = marks.iter().map(|mark| mark.0.clone()).collect();
+        names.sort();
+        let untouched = |what: &str| {
+            assert_eq!(foreign.iter().map(|file| stamp(file)).collect::<Vec<_>>(), marks, "{what}: every other save's temporary file, its bytes and times");
+            let mut temps: Vec<String> = fs::read_dir(&dir).unwrap().flatten().map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .filter(|name| name.ends_with(".saving")).collect();
+            temps.sort();
+            assert_eq!(temps, names, "{what}: no temporary file added or removed");
+        };
+        date_back(&foreign[2]);
+        replace_draft(&path, new, false).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), new);
+        untouched("a plain save");
+        date_back(&foreign[2]);
+        replace_draft(&path, old, true).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), old);
+        untouched("a save that sets the old draft aside first");
+        fs::write(&path, b"{\"schema_vers").unwrap();
+        date_back(&foreign[2]);
+        replace_draft(&path, new, false).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), new);
+        untouched("a save over a draft it cannot read");
+        let aside = fs::read_dir(&dir).unwrap().flatten().filter(|entry| entry.file_name().to_string_lossy().starts_with("project.unreadable-")).count();
+        assert_eq!(aside, 2, "the two drafts set aside");
+        // Windows: the draft held open by another program that does not share deleting
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            let held = fs::OpenOptions::new().read(true).share_mode(1 | 2).open(&path).unwrap();
+            date_back(&foreign[2]);
+            assert_eq!(replace_draft(&path, old, false).unwrap_err(), fail("Không lưu được bản nháp chỉnh sửa"));
+            drop(held);
+            assert_eq!(fs::read(&path).unwrap(), new, "the refused save kept the draft");
+            untouched("a save the system refused");
+        }
         let _ = fs::remove_dir_all(&base);
     }
 
@@ -4576,7 +4672,10 @@ mod tests {
 
     // #896: a real write error (the file size limit of the process, Linux) in the first half or in the rest keeps the
     // old draft byte for byte and leaves no temporary file. The save runs in a child run of this same test under
-    // `ulimit -f 1` (1024 bytes for bash), with SIGXFSZ ignored so the write returns EFBIG.
+    // `ulimit -f 1`, with SIGXFSZ ignored so the write returns EFBIG. Bash counts that limit in 1024-byte blocks, or in
+    // 512-byte blocks in POSIX mode (#928): the child's bash never starts in POSIX mode (`POSIXLY_CORRECT`, `BASH_ENV`
+    // and `ENV` removed) and switches it off before setting the limit, so the limit is 1024 bytes whatever the
+    // environment of the test run.
     #[cfg(target_os = "linux")]
     #[test]
     fn a_real_write_error_keeps_the_old_draft_and_leaves_no_temporary_file() {
@@ -4604,11 +4703,20 @@ mod tests {
         fs::write(&path, old).unwrap();
         fs::write(dir.join("project.json.1-2-3.saving"), b"another save's temporary file").unwrap();
         let before = listing(&dir);
+        // what the test run's own environment may carry: both would put the child's bash in POSIX mode
+        let posix = base.join("posix.sh");
+        fs::write(&posix, "set -o posix\n").unwrap();
+        let hostile: [(&str, &std::ffi::OsStr); 3] = [("POSIXLY_CORRECT", "1".as_ref()), ("BASH_ENV", posix.as_os_str()), ("ENV", posix.as_os_str())];
         // 3000 bytes: the first half is already over the limit; 1500 bytes: the first half fits, the rest does not
-        for (size, step) in [(3000, "WriteStart"), (1500, "WriteRest")] {
+        for (size, step, carried) in [(3000, "WriteStart", &hostile[..0]), (1500, "WriteRest", &hostile[..0]), (3000, "WriteStart", &hostile[..]),
+                                      (1500, "WriteRest", &hostile[..])] {
             let output = Command::new("bash")
+                .envs(carried.iter().copied())
+                .env_remove("POSIXLY_CORRECT")
+                .env_remove("BASH_ENV")
+                .env_remove("ENV")
                 .arg("-c")
-                .arg(r#"trap '' XFSZ; ulimit -f 1; exec "$0" "$@""#)
+                .arg(r#"set +o posix; trap '' XFSZ; ulimit -f 1; exec "$0" "$@""#)
                 .arg(std::env::current_exe().unwrap())
                 .args(["--exact", "edit::tests::a_real_write_error_keeps_the_old_draft_and_leaves_no_temporary_file", "--nocapture", "--test-threads=1"])
                 .env(CHILD, &dir)
@@ -4616,9 +4724,10 @@ mod tests {
                 .output()
                 .unwrap();
             let text = String::from_utf8_lossy(&output.stdout).into_owned() + &String::from_utf8_lossy(&output.stderr);
-            assert!(output.status.success() && text.contains("1 passed"), "{step}: {text}");
-            assert!(text.contains(&format!("real write error at [{step}]")), "{step}: {text}");
-            assert_eq!(listing(&dir), before, "{step}: the old draft and everything beside it as they were");
+            let with = if carried.is_empty() { "" } else { " (POSIXLY_CORRECT, BASH_ENV and ENV set around it)" };
+            assert!(output.status.success() && text.contains("1 passed"), "{step}{with}: {text}");
+            assert!(text.contains(&format!("real write error at [{step}]")), "{step}{with}: {text}");
+            assert_eq!(listing(&dir), before, "{step}{with}: the old draft and everything beside it as they were");
         }
         let _ = fs::remove_dir_all(&base);
     }
@@ -4671,7 +4780,12 @@ mod tests {
             } else {
                 fs::hard_link(&outside, &partial).unwrap();
             }
+            // #928: other saves' temporary files in the new version's folder are not the carry's to touch
+            let foreign = foreign_temps(&work_dir(&target).join("project.json"));
+            let marks: Vec<Mark> = foreign.iter().map(|file| stamp(file)).collect();
+            date_back(&foreign[2]);
             carry_draft(&original, &target);
+            assert_eq!(foreign.iter().map(|file| stamp(file)).collect::<Vec<_>>(), marks, "carry_draft, {kind}: every other save's temporary file, its bytes and times");
             let carried: Value = serde_json::from_slice(&fs::read(work_dir(&target).join("project.json")).unwrap()).unwrap();
             assert_eq!(carried["media"][0]["path"], json!(display_path(&target.join("final_vi.mp4"))), "carry_draft, {kind}");
             assert_eq!(fingerprint(&outside), mark, "carry_draft, {kind}: the outside file's bytes, SHA-256 and time");
