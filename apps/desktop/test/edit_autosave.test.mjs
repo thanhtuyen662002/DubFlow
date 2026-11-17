@@ -1,19 +1,22 @@
 import assert from "node:assert/strict";
 import { Autosaver, MAX_WAIT_MS, QUIET_MS, RETRY_FIRST_MS, RETRY_MAX_MS, retryDelay, saveDelay } from "../src/features/edit/autosave.ts";
-import { askAlone, CLOSE_WAIT_MS, closeGuard, flushWithin, unsavedPrompt, wireWindowClose } from "../src/features/edit/close_guard.ts";
+import { askAlone, CLOSE_EVENT, CLOSE_LISTENERS_KEY, CLOSE_WAIT_MS, closeGuard, closeRequests, flushWithin, pageQuestions, unsavedPrompt, wireWindowClose }
+  from "../src/features/edit/close_guard.ts";
 
-// A fake clock: timers run when the test moves time on.
-function clock() {
-  let now = 0, next = 1;
+// A fake clock: timers run when the test moves time on. `fire` is when a timer set for `ms` really fires (a browser
+// drops the fraction of a millisecond, for one).
+function clock({ start = 0, fire = (ms) => ms } = {}) {
+  let now = start, next = 1;
   const due = new Map();
   const timers = {
     now: () => now,
-    set: (callback, ms) => { const id = next++; due.set(id, { at: now + ms, callback }); return id; },
+    set: (callback, ms) => { const id = next++; due.set(id, { at: now + fire(ms), callback }); return id; },
     clear: (id) => { due.delete(id); },
   };
   const advance = async (ms) => {
     const end = now + ms;
-    for (;;) {
+    for (let fired = 0; ; fired += 1) {
+      if (fired > 10_000) throw new Error("timers keep firing without time passing");
       const [id, timer] = [...due.entries()].sort((a, b) => a[1].at - b[1].at)[0] ?? [];
       if (!timer || timer.at > end) break;
       now = timer.at;
@@ -415,6 +418,11 @@ for (const ok of [false, true]) {
   let askedAfterVoid = 0;
   assert.equal(await closeGuard({ flush: async () => undefined, ask: async () => { askedAfterVoid += 1; return undefined; }, timers })(), false);
   assert.equal(askedAfterVoid, 1, "a flush that answers nothing is asked about");
+  for (const truthy of ["yes", 1, {}]) {
+    assert.equal(await flushWithin(async () => truthy, 1000, timers), false, `a flush answering ${JSON.stringify(truthy)} is not saved`);
+    assert.equal(await closeGuard({ flush: async () => false, ask: async () => truthy, timers })(), false,
+      `a question answering ${JSON.stringify(truthy)} does not close`);
+  }
 }
 
 // The window close waits for an editor close that is already asking: never two questions at once.
@@ -436,6 +444,25 @@ for (const ok of [false, true]) {
   assert.equal(asked, 0, "no second question");
   // nothing closing: no wait at all
   assert.equal(await closeGuard({ before: () => null, flush: async () => true, ask: async () => false, timers })(), true);
+}
+
+// A timer that fires a little early (setTimeout drops the fraction of a millisecond, the steady clock has one) never
+// leaves a failed change without a retry: it is set again, and set in whole milliseconds rounded up.
+for (const [name, fire, edit] of [["truncated", (ms) => Math.trunc(ms), true], ["early", (ms) => ms - 0.5, true],
+  ["early, no edit", (ms) => ms - 0.5, false]]) {
+  const { timers, advance } = clock({ start: 0.25, fire });
+  let fails = 1;
+  const writes = [];
+  const saver = new Autosaver(async () => { writes.push(timers.now()); if (fails-- > 0) throw new Error("held"); }, timers);
+  saver.changed();
+  await advance(QUIET_MS + 1);
+  assert.equal(writes.length, 1, `${name}: the first write failed`);
+  await advance(100.3);
+  if (edit) saver.changed();  // an edit during the backoff, at a time with a fraction
+  await advance(RETRY_FIRST_MS + 50);
+  assert.equal(writes.length, 2, `${name}: tried again after the backoff`);
+  assert.ok(writes[1] >= writes[0] + RETRY_FIRST_MS, `${name}: not before the backoff: ${writes}`);
+  assert.equal(saver.pending, false, `${name}: on disk`);
 }
 
 // A system clock step back cannot push the next try past RETRY_MAX_MS (windowTimers uses a steady clock too).
@@ -472,9 +499,11 @@ for (const action of ["close", "exit"]) {
 {
   // A stand-in for the Tauri 2.12 window. As in tauri's manager/window.rs, while a close request listener is
   // registered the system close is held and the listeners run; with none it closes. destroy() is not allowed (the app
-  // has no core:window:allow-destroy), and registering or removing a listener takes a moment.
+  // has no core:window:allow-destroy), and registering or removing a listener takes a moment (a round trip to the
+  // host, longer than a microtask: a close that does not wait for the removal is held). `log` says, for every close,
+  // whether it was held or closed the window.
   function fakeWindow({ listen = true, armAfter = 0 } = {}) {
-    const state = { handlers: [], closed: 0, requests: 0, destroyed: 0 };
+    const state = { handlers: [], closed: 0, requests: 0, destroyed: 0, log: [] };
     let armNow;
     const armed = armAfter ? new Promise((resolve) => { armNow = resolve; }) : Promise.resolve();
     const window = {
@@ -486,11 +515,15 @@ for (const action of ["close", "exit"]) {
           throw new Error("no event permission");
         }
         // like Tauri's wrapper: the window is destroyed unless the handler prevented it
-        return async () => { await null; state.handlers.splice(state.handlers.indexOf(handler), 1); };
+        return async () => {
+          await new Promise((resolve) => setTimeout(resolve, 2));
+          state.handlers.splice(state.handlers.indexOf(handler), 1);
+        };
       },
       async close() {
         state.requests += 1;
         await null;
+        state.log.push(state.handlers.length ? "held" : "closed");
         if (!state.handlers.length) { state.closed += 1; return; }
         for (const handler of [...state.handlers]) {
           let prevented = false;
@@ -506,7 +539,7 @@ for (const action of ["close", "exit"]) {
     const listeners = [];
     return { addEventListener: (type, listener) => listeners.push(listener), click: () => listeners.forEach((l) => l()) };
   }
-  const settle = () => new Promise((resolve) => setTimeout(resolve, 5));
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
 
   for (const via of ["button", "system"]) {
     let flushed = 0, answer = false, asked = 0;
@@ -528,6 +561,8 @@ for (const action of ["close", "exit"]) {
     assert.equal(asked, 2, `${via}: one question per close, none more after Vẫn đóng`);
     assert.equal(state.destroyed, 0, `${via}: never through destroy`);
     assert.equal(state.handlers.length, 0, `${via}: the listener is removed before the window closes`);
+    assert.deepEqual(state.log, via === "button" ? ["closed"] : ["held", "held", "closed"],
+      `${via}: the close after Vẫn đóng waits for the listener to go, so it is not held again`);
   }
   // saved: the window closes with no question, through the system close
   {
@@ -569,16 +604,108 @@ for (const action of ["close", "exit"]) {
     await settle();
     assert.equal(state.closed, 1);
   }
+
+  // A reload (F5, Ctrl+R, Tải lại) leaves the page's close listener in Tauri, which then holds every close for a
+  // handler that no longer runs: the page after it removes that listener before it listens itself.
+  function fakeTauri({ failUnlisten = () => false } = {}) {
+    const state = { listeners: new Map(), next: 0, closed: 0, calls: [] };
+    const bridge = {
+      async listen(event, label, handler) {
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        const id = state.next++;
+        state.listeners.set(id, { event, label, handler });
+        state.calls.push(`listen ${id}`);
+        return id;
+      },
+      async unlisten(event, id) {
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        if (failUnlisten(id)) throw new Error("ipc");
+        state.calls.push(`unlisten ${id}`);
+        state.listeners.delete(id);
+      },
+    };
+    // as in tauri's manager/window.rs: held while any close listener is registered, and each listener is told
+    const close = async () => {
+      await null;
+      const listeners = [...state.listeners.values()].filter((listener) => listener.event === CLOSE_EVENT);
+      if (!listeners.length) { state.closed += 1; return; }
+      for (const listener of listeners) listener.handler();
+    };
+    return { state, bridge, close };
+  }
+  function memoryStore() {
+    let value = null;
+    return { get: () => value, set: (next) => { value = next; } };
+  }
+  {
+    const store = memoryStore();
+    const tauri = fakeTauri();
+    const { timers } = clock();
+    // the page before the reload
+    await wireWindowClose({ close: tauri.close, onCloseRequested: closeRequests("main", tauri.bridge, store) }, fakeButton(),
+      closeGuard({ flush: async () => true, ask: async () => false, timers }));
+    assert.equal(store.get(), "[0]", "the listener's id is kept where a reload finds it");
+    for (const listener of tauri.state.listeners.values()) listener.handler = () => {};  // reloaded: nothing runs it
+    // the page after it
+    const button = fakeButton();
+    assert.equal(await wireWindowClose({ close: tauri.close, onCloseRequested: closeRequests("main", tauri.bridge, store) }, button,
+      closeGuard({ flush: async () => true, ask: async () => false, timers })), true);
+    assert.deepEqual(tauri.state.calls, ["listen 0", "unlisten 0", "listen 1"], "the old listener goes before the new one starts");
+    assert.equal(tauri.state.listeners.get(1).label, "main");
+    assert.equal(store.get(), "[1]");
+    button.click();
+    await settle();
+    assert.equal(tauri.state.closed, 1, "the window still closes after a reload");
+    assert.equal(store.get(), null, "nothing left to remove");
+  }
+  // a removal that fails is kept, and tried again before the next listener
+  {
+    const store = memoryStore();
+    let failing = true;
+    const tauri = fakeTauri({ failUnlisten: () => failing });
+    const onCloseRequested = closeRequests("main", tauri.bridge, store);
+    const stop = await onCloseRequested(async () => {});
+    await assert.rejects(Promise.resolve(stop()));
+    assert.equal(store.get(), "[0]");
+    failing = false;
+    await onCloseRequested(async () => {});
+    assert.deepEqual(tauri.state.calls, ["listen 0", "unlisten 0", "listen 1"]);
+    assert.equal(store.get(), "[1]");
+  }
+  // a store that refuses or holds something else: the guard still starts, and nothing else is removed
+  for (const store of [
+    { get: () => { throw new Error("denied"); }, set: () => { throw new Error("denied"); } },
+    { get: () => "not json", set: () => {} },
+    { get: () => JSON.stringify(["7", -1, 2.5, null, { id: 3 }]), set: () => {} },
+  ]) {
+    const tauri = fakeTauri();
+    const stop = await closeRequests("main", tauri.bridge, store)(async () => {});
+    assert.deepEqual(tauri.state.calls, ["listen 0"]);
+    await stop();
+    assert.equal(tauri.state.listeners.size, 0);
+  }
+  // the close request reaches the guard's handler, which always holds it
+  {
+    const tauri = fakeTauri();
+    const events = [];
+    await closeRequests("main", tauri.bridge, memoryStore())(async (event) => { events.push(event); event.preventDefault(); });
+    await tauri.close();
+    await settle();
+    assert.equal(events.length, 1);
+    assert.equal(tauri.state.closed, 0);
+  }
 }
 
 // One question at a time: with another open (the editor's exit question, or any other), the window close or the
 // editor exit stays without asking; the question starts on "Ở lại".
 {
-  const place = { opened: false, focused: 0, open() { return this.opened; }, focusStay() { this.focused += 1; } };
+  const order = [];
+  const place = { opened: false, focused: 0, open() { return this.opened; }, focusStay() { this.focused += 1; order.push("focus"); } };
   let asked = 0;
-  const ask = async () => { asked += 1; return true; };
+  const ask = () => { asked += 1; order.push("ask"); return Promise.resolve(true); };
   assert.equal(await askAlone(ask, place), true);
   assert.equal(place.focused, 1, "Enter right after Alt+F4 keeps the change");
+  assert.deepEqual(order, ["ask", "focus"], "the question is on the page (confirmDialog adds it at once) before Ở lại takes the focus");
   place.opened = true;
   assert.equal(await askAlone(ask, place), false, "another question open: stay");
   assert.equal(asked, 1, "no second question");
@@ -586,6 +713,26 @@ for (const action of ["close", "exit"]) {
   const confirm = readFileSync(new URL("../src/shell/confirm.ts", import.meta.url), "utf8");
   assert.match(confirm, /actions\.append\(cancel, confirm\)/, "the dialog's first button is the cancel (Ở lại) one");
   assert.match(confirm, /backdrop\.className = "confirm-backdrop"/);
+  assert.match(confirm, /panel\.className = "confirm-panel"/);
+  assert.match(confirm, /actions\.className = "confirm-actions"/);
+  assert.match(confirm, /document\.body\.append\(backdrop\);\s*confirm\.focus\(\);\s*\}\);\s*\}/, "the dialog is on the page when confirmDialog returns");
+  // the page's questions, on a stand-in document: the newest panel's first button gets the focus
+  const focused = [];
+  const panel = (name) => ({ querySelector: (selector) => selector === ".confirm-actions button" ? { focus: () => focused.push(name) } : null });
+  let backdrop = null;
+  globalThis.document = {
+    querySelector: (selector) => (selector === ".confirm-backdrop" ? backdrop : null),
+    querySelectorAll: (selector) => (selector === ".confirm-panel" ? [panel("older"), panel("newest")] : []),
+  };
+  try {
+    assert.equal(pageQuestions.open(), false);
+    backdrop = {};
+    assert.equal(pageQuestions.open(), true);
+    pageQuestions.focusStay();
+    assert.deepEqual(focused, ["newest"]);
+  } finally {
+    delete globalThis.document;
+  }
   assert.match(confirm, /cancelFocused \? "cancel" : "confirm"/, "Enter on the focused Ở lại answers stay");
 }
 
@@ -594,6 +741,8 @@ for (const action of ["close", "exit"]) {
   const { readFileSync } = await import("node:fs");
   // the code without its comments, so a check cannot be met by text in a comment
   const code = (path) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:"'`])\/\/.*$/gm, "$1");
+  const capabilities = JSON.parse(readFileSync(new URL("../src-tauri/capabilities/default.json", import.meta.url), "utf8"));
+  const capabilitiesHaveEvents = () => capabilities.permissions.includes("core:default") || capabilities.permissions.includes("core:event:default");
   const view = code("../src/features/edit/view.ts");
   const save = view.slice(view.indexOf("async function save(): Promise<void>"), view.indexOf("function scheduleSave(): void"));
   assert.match(save, /catch \(error\) \{[\s\S]*\n\s*throw error;\s*\}\s*\}\s*$/, "save() tells the saver that the write failed");
@@ -601,32 +750,61 @@ for (const action of ["close", "exit"]) {
   const closeNow = view.slice(view.indexOf("async function closeNow("), view.indexOf("function leave(leaving: EditTarget)"));
   assert.match(closeNow, /const saved = await flushWithin\(\(\) => saver\.flush\(\), CLOSE_WAIT_MS, windowTimers\);/);
   assert.ok(closeNow.indexOf("flushWithin(") < closeNow.indexOf("cover.end()"), "the draft is written before the editor ends");
-  // a change is dropped only after the user chose to, never on "Ở lại"
-  assert.match(closeNow, /\} else if \(!saved\) \{[^}]*if \(!\(await askAlone\(\(\) => host\.confirm\(unsavedPrompt\("exit", unapplied\)\)\)\)\) return false;\s*saver\.drop\(\);/);
-  assert.match(closeNow, /if \(!\(await askAlone\(\(\) => host\.confirm\(unsavedPrompt\("exit"\)\)\)\)\) return false;\s*saver\.drop\(\);/,
+  // a change is dropped only after the user chose to, never on "Ở lại"; a reload's close carries it instead of asking
+  assert.match(closeNow, /if \(!saved && carrying\) \{\s*carry\(session\);\s*\} else if \(!saved\) \{[^}]*if \(!\(await askAlone\(\(\) => host\.confirm\(unsavedPrompt\("exit", unapplied\)\)\)\)\) return false;\s*discard\(\);/);
+  assert.match(closeNow, /if \(carrying\) carry\(session\);\s*else \{\s*if \(!\(await askAlone\(\(\) => host\.confirm\(unsavedPrompt\("exit"\)\)\)\)\) return false;\s*discard\(\);/,
     "a change made while the question was open is written too, and dropped only on Vẫn thoát");
   assert.match(closeNow, /if \(saver\.pending && !\(await flushWithin\(\(\) => saver\.flush\(\), CLOSE_WAIT_MS, windowTimers\)\)\)/);
-  assert.equal((closeNow.match(/saver\.drop\(\)/g) ?? []).length, 2);
+  assert.equal((closeNow.match(/discard\(\)/g) ?? []).length, 2);
+  assert.match(view, /function discard\(\): void \{\s*saver\.drop\(\);\s*carried = null;\s*\}/, "Vẫn thoát lets a carried change go too");
+  assert.equal((view.match(/saver\.drop\(\)/g) ?? []).length, 1, "nothing else drops a change");
+  // a carried change stays pending, with its backoff: written from its copy when no editor takes it up, and a window
+  // close is not told the disk has it before then
+  assert.match(view, /function carry\(current: Session\): void \{\s*carried = \{ outputPath: current\.outputPath, kind: current\.target\.kind, project: draftDocument\(current\),[^}]*\};\s*saver\.changed\(\);\s*\}/);
+  assert.match(save, /^async function save\(\): Promise<void> \{\s*const left = carried && carried\.outputPath !== session\?\.outputPath \? carried : null;\s*if \(left\) \{\s*try \{\s*await invoke\("edit_project_save", \{ outputPath: left\.outputPath, kind: left\.kind, project: left\.project, keepOld: left\.keepOld \}\);[\s\S]*?throw error;\s*\}[\s\S]*?if \(carried === left\) carried = null;\s*\}\s*if \(!session\) return;/);
+  assert.match(view, /async function flush\(\): Promise<boolean> \{\s*return \(await saver\.flush\(\)\) && !carried;\s*\}/);
+  const opening = view.slice(view.indexOf("async function open(target: EditTarget)"), view.indexOf("function close(ask: boolean"));
+  assert.ok(opening.indexOf("const carry = carried?.outputPath === outputPath ? carried : null;") > 0
+    && opening.indexOf("const carry = carried?.outputPath === outputPath ? carried : null;") < opening.indexOf("edit_project_load"),
+  "the carried change is taken before the load (a retry may write it after the load read the older draft)");
+  assert.match(opening, /if \(carry && carried === carry\) \{\s*carried = null;\s*scheduleSave\(\);\s*\}/, "the reopened editor writes it on");
+  // only a close that left counts as leaving: "Ở lại" does not stop a reload, "Thoát" does
+  const closing = view.slice(view.indexOf("function close(ask: boolean"), view.indexOf("async function closeNow("));
+  assert.match(closing, /\.then\(\(left\) => \{\s*if \(left && !quiet\) exits \+= 1;\s*return left;\s*\}\)/);
+  assert.equal((view.match(/exits \+= 1/g) ?? []).length, 1);
   // the editor opens only once every window close is guarded
   const open = view.slice(view.indexOf("async function open(target: EditTarget)"), view.indexOf("edit_project_load"));
   assert.match(open, /if \(host\.closeGuarded && !\(await host\.closeGuarded\(\)\)\) \{[^}]*return false;\s*\}/);
   const main = code("../src/main.ts");
-  assert.match(main, /windowCloseGuarded = wireWindowClose\(appWindow, \$\("#window-close"\), mayClose\);/);
+  assert.match(main, /const closable = \{ close: \(\) => appWindow\.close\(\), onCloseRequested: closeRequests\(appWindow\.label, events, reloadSafe\) \};\s*windowCloseGuarded = wireWindowClose\(closable, \$\("#window-close"\), mayClose\);/);
+  // the event bridge calls the commands Tauri's own listen and unlisten call, with the same arguments
+  assert.match(main, /tauriInvoke<number>\("plugin:event\|listen",\s*\{ event, target: \{ kind: "Window", label \}, handler: transformCallback\(handler\) \}\)/);
+  assert.match(main, /await tauriInvoke\("plugin:event\|unlisten", \{ event, eventId: id \}\);/);
+  assert.match(main, /window\.sessionStorage\.getItem\(CLOSE_LISTENERS_KEY\)/);
+  const tauriEvent = readFileSync(new URL("../node_modules/@tauri-apps/api/event.js", import.meta.url), "utf8");
+  assert.match(tauriEvent, /invoke\('plugin:event\|listen', \{\s*event,\s*target,\s*handler: transformCallback\(handler\)\s*\}\)/);
+  assert.match(tauriEvent, /invoke\('plugin:event\|unlisten', \{\s*event,\s*eventId\s*\}\)/);
+  const tauriWindow = readFileSync(new URL("../node_modules/@tauri-apps/api/window.js", import.meta.url), "utf8");
+  assert.match(tauriWindow, /target: \{ kind: 'Window', label: this\.label \}/, "the window's own listen targets it the same way");
+  assert.equal(CLOSE_EVENT, "tauri://close-requested");
+  assert.match(tauriEvent, /WINDOW_CLOSE_REQUESTED"\] = "tauri:\/\/close-requested"/);
+  assert.ok(capabilitiesHaveEvents(), "listening is allowed (core:default has core:event:default)");
   assert.match(main, /closeGuarded: \(\) => windowCloseGuarded,/);
   assert.ok(main.indexOf("let windowCloseGuarded") < main.indexOf("const editor = mountEditor("), "set before the editor can open");
   assert.doesNotMatch(main, /editor\.flush\(\)\.finally\(/, "no close that ignores a failed save");
   assert.match(main, /closeGuard\(\{ before: \(\) => editor\.closing\(\), flush: \(\) => editor\.flush\(\),\s*ask: \(\) => askAlone\(\(\) => confirmDialog\(unsavedPrompt\("close"\)\)\)/,
     "the window close waits for an editor close in progress, then asks one question at a time");
   assert.doesNotMatch(main + view + code("../src/features/edit/close_guard.ts"), /\.destroy\(\)/, "never destroys the window");
-  const capabilities = JSON.parse(readFileSync(new URL("../src-tauri/capabilities/default.json", import.meta.url), "utf8"));
   assert.ok(!capabilities.permissions.includes("core:window:allow-destroy"), "no new window permission (Issue #929 contract)");
   // every save goes through the saver (a direct save() would neither be retried nor seen by a close)
   assert.doesNotMatch(view, /void save\(\)/);
   assert.equal((view.match(/\bsave\(\)/g) ?? []).length, 2, "save() is defined once and called only by the Autosaver");
   // a reload of the same video carries an unsaved change instead of asking, and does not undo a later exit
   const reopen = view.slice(view.indexOf("async function reopenSame("), view.indexOf("async function applyLayers("));
-  assert.match(reopen, /close\(false, true, true\)/);
-  assert.match(reopen, /if \(exits !== exit\) return;/);
+  assert.match(reopen, /const exit = exits;[\s\S]*if \(!\(await close\(false, true, true\)\)\) return;\s*if \(exits !== exit \|\| !\(await open\(target\)\)\) return;\s*if \(exits !== exit\) \{\s*await close\(false\);\s*return;\s*\}\s*await then\(\);/,
+    "a user who left before or while it reopened is not taken back");
+  assert.match(view, /const exit = exits;\s*if \(!\(await close\(false, true\)\)\) return;\s*if \(exits !== exit\) return;[\s\S]{0,300}if \(!opened\) leave\(from\);\s*else if \(exits !== exit\) await close\(false\);/,
+    "the template's reopen, likewise");
   assert.equal((view.match(/reopenSame\(/g) ?? []).length, 4, "the three documentary reloads use it");
   assert.doesNotMatch(view, /reload: async/, "no reload of its own");
   assert.match(view, /if \(carry\) loaded\.project = carry\.project;/);

@@ -116,10 +116,11 @@ export class Autosaver {
 
   private schedule(delay: number): void {
     this.cancel();
+    // whole milliseconds, rounded up: a timer is never set to fire before a retry is due
     this.timer = this.timers.set(() => {
       this.timer = 0;
       this.start();
-    }, delay);
+    }, Math.ceil(delay));
   }
 
   private cancel(): void {
@@ -142,8 +143,13 @@ export class Autosaver {
         this.forced = false;
       }
       if (epoch !== this.epoch || this.since === null) return;
-      // a timer's write that waited behind one that failed waits out the backoff too: the retry timer writes it
-      if (!forced && this.failures > 0 && this.timers.now() < this.retryAt) return;
+      // a timer's write that waited behind one that failed waits out the backoff too: the retry timer writes it. A
+      // timer can also fire a little early (setTimeout drops the fraction of a millisecond): then it is set again,
+      // never left without one
+      if (!forced && this.failures > 0 && this.timers.now() < this.retryAt) {
+        if (!this.timer) this.schedule(this.retryAt - this.timers.now());
+        return;
+      }
       const version = this.version;
       try {
         await this.write();

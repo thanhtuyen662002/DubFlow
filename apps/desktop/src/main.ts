@@ -1,11 +1,12 @@
 import { isLevel, levelText } from "./features/mastering/model.ts";
 import { renderDubbingQc } from "./features/mastering/qc_card.ts";
-import { convertFileSrc, invoke as tauriInvoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke as tauriInvoke, transformCallback } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { connectDesktopShell, type DesktopShellModel } from "./shell/desktop_shell.ts";
 import { confirmDialog } from "./shell/confirm.ts";
-import { askAlone, closeGuard, unsavedPrompt, wireWindowClose } from "./features/edit/close_guard.ts";
+import { askAlone, CLOSE_LISTENERS_KEY, closeGuard, closeRequests, unsavedPrompt, wireWindowClose, type EventBridge, type IdStore }
+  from "./features/edit/close_guard.ts";
 import { windowTimers } from "./features/edit/autosave.ts";
 import { mountLayoutPanels, refitPanels, resetPanels } from "./shell/layout_panels.ts";
 import { mountListTools } from "./shell/list_tools.ts";
@@ -3010,7 +3011,29 @@ $("#window-maximize").addEventListener("click", () => void appWindow?.toggleMaxi
 if (appWindow) {
   const mayClose = closeGuard({ before: () => editor.closing(), flush: () => editor.flush(),
     ask: () => askAlone(() => confirmDialog(unsavedPrompt("close"))), timers: windowTimers });
-  windowCloseGuarded = wireWindowClose(appWindow, $("#window-close"), mayClose);
+  // Tauri's event plugin by listener id, the commands its own listen and unlisten use: a reload finds and removes the
+  // close listener the page before it left (see closeRequests)
+  const events: EventBridge = {
+    listen: (event, label, handler) => tauriInvoke<number>("plugin:event|listen",
+      { event, target: { kind: "Window", label }, handler: transformCallback(handler) }),
+    unlisten: async (event, id) => {
+      await tauriInvoke("plugin:event|unlisten", { event, eventId: id });
+      // the page's side, as Tauri's unlisten does (nothing there for a listener of the page before a reload); the
+      // listener is gone either way
+      try {
+        (window as unknown as { __TAURI_EVENT_PLUGIN_INTERNALS__?: { unregisterListener(event: string, id: number): void } })
+          .__TAURI_EVENT_PLUGIN_INTERNALS__?.unregisterListener(event, id);
+      } catch {
+        // only a callback left in the page
+      }
+    },
+  };
+  const reloadSafe: IdStore = {
+    get: () => window.sessionStorage.getItem(CLOSE_LISTENERS_KEY),
+    set: (value) => value === null ? window.sessionStorage.removeItem(CLOSE_LISTENERS_KEY) : window.sessionStorage.setItem(CLOSE_LISTENERS_KEY, value),
+  };
+  const closable = { close: () => appWindow.close(), onCloseRequested: closeRequests(appWindow.label, events, reloadSafe) };
+  windowCloseGuarded = wireWindowClose(closable, $("#window-close"), mayClose);
 }
 $("#app-header").addEventListener("mousedown", (event) => {
   if (!appWindow || event.button !== 0) return;

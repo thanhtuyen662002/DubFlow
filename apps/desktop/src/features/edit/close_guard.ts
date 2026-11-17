@@ -91,6 +91,66 @@ export type ClosableWindow = {
   onCloseRequested(handler: (event: { preventDefault(): void }) => Promise<void>): Promise<() => unknown>;
 };
 
+/** The system's close request, as Tauri names it. */
+export const CLOSE_EVENT = "tauri://close-requested";
+/** Where the page keeps the ids of its close request listeners (sessionStorage: it outlives a reload, not the app). */
+export const CLOSE_LISTENERS_KEY = "dubflow.closeListeners.v1";
+
+/** Tauri's event bridge, by listener id (its own `listen` hides the id). */
+export type EventBridge = {
+  /** Listens to `event` on the window `label`; resolves to the listener's id. */
+  listen(event: string, label: string, handler: () => void): Promise<number>;
+  unlisten(event: string, id: number): Promise<void>;
+};
+
+/** A small store that outlives a reload of the page; it may refuse (then nothing is remembered). */
+export type IdStore = { get(): string | null; set(value: string | null): void };
+
+function storedIds(store: IdStore): number[] {
+  try {
+    const value: unknown = JSON.parse(store.get() ?? "[]");
+    return Array.isArray(value) ? value.filter((id): id is number => Number.isSafeInteger(id) && id >= 0) : [];
+  } catch {
+    return [];
+  }
+}
+
+function storeIds(store: IdStore, ids: number[]): void {
+  try {
+    store.set(ids.length ? JSON.stringify(ids) : null);
+  } catch {
+    // a store that refuses: a reload then leaves the listener behind, as it did before
+  }
+}
+
+/**
+ * `ClosableWindow.onCloseRequested` that a reload cannot break (Issue #929). Tauri keeps a page's listeners after
+ * the page reloads (F5, Ctrl+R, Tải lại), and while one is there it holds every close of the window for it, though
+ * nothing runs it any more: the window could no longer be closed. So the ids are kept where a reload finds them, and
+ * every listener left behind (a page before a reload, or one this page could not remove) is removed before a new one
+ * starts. A removal that fails is tried again the next time.
+ */
+export function closeRequests(label: string, bridge: EventBridge, store: IdStore): ClosableWindow["onCloseRequested"] {
+  return async (handler) => {
+    for (const id of storedIds(store)) {
+      try {
+        await bridge.unlisten(CLOSE_EVENT, id);
+        storeIds(store, storedIds(store).filter((kept) => kept !== id));
+      } catch {
+        // kept: tried again before the next listener
+      }
+    }
+    const id = await bridge.listen(CLOSE_EVENT, label, () => {
+      void handler({ preventDefault: () => undefined }).catch(() => undefined);
+    });
+    storeIds(store, [...storedIds(store).filter((kept) => kept !== id), id]);
+    return async () => {
+      await bridge.unlisten(CLOSE_EVENT, id);
+      storeIds(store, storedIds(store).filter((kept) => kept !== id));
+    };
+  };
+}
+
 /**
  * The × button and the system's close (Alt+F4, the taskbar) both go through `mayClose`; the window stays open when it
  * answers false. A close request is always held: when `mayClose` lets it through, the listener is removed first and
