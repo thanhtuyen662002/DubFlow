@@ -29,6 +29,30 @@ const MAX_KEY_CHARS: usize = 512;
 /// Keys saved here that are not AI chat providers: the Vibi.pro voices (#632).
 pub(crate) const VOICE_PROVIDERS: [&str; 1] = ["vibi"];
 
+/// Set (to anything but empty or "0") for a candidate or test run beside the installed app: the saved keys are
+/// Windows', shared by every DubFlow of this Windows user, so such a run must not read them (rc21: a sandboxed
+/// candidate translated a test video with the owner's Claude key). The run then behaves as with no key saved: no
+/// paid AI call is made, and nothing is saved or deleted.
+pub(crate) const NO_SAVED_KEYS_ENV: &str = "DUBFLOW_NO_SAVED_KEYS";
+
+fn keys_closed() -> bool {
+    closed_by(std::env::var(NO_SAVED_KEYS_ENV).ok().as_deref())
+}
+
+fn closed_by(value: Option<&str>) -> bool {
+    value.is_some_and(|value| !value.trim().is_empty() && value.trim() != "0")
+}
+
+const CLOSED: &str = "Bản chạy thử này không dùng khóa AI đã lưu (DUBFLOW_NO_SAVED_KEYS)";
+
+/// A saved key, or none while keys are closed to this run.
+fn saved(target: &str) -> Result<Option<String>, String> {
+    if keys_closed() {
+        return Ok(None);
+    }
+    store::read(target)
+}
+
 fn target(provider: &str) -> Result<String, String> {
     if !PROVIDERS.contains(&provider) && !VOICE_PROVIDERS.contains(&provider) {
         return Err(fail("Nhà cung cấp AI không hợp lệ"));
@@ -142,8 +166,8 @@ mod store {
 pub fn ai_key_status() -> Result<Value, String> {
     let mut status = serde_json::Map::new();
     for provider in PROVIDERS.iter().chain(VOICE_PROVIDERS.iter()).copied() {
-        let saved = store::read(&target(provider)?)?;
-        status.insert(provider.to_owned(), json!(saved.as_deref().map(masked)));
+        let key = saved(&target(provider)?)?;
+        status.insert(provider.to_owned(), json!(key.as_deref().map(masked)));
     }
     Ok(Value::Object(status))
 }
@@ -151,18 +175,24 @@ pub fn ai_key_status() -> Result<Value, String> {
 /// The saved key for one provider, for the webview's call to that provider.
 #[tauri::command]
 pub fn ai_key_get(provider: String) -> Result<Option<String>, String> {
-    store::read(&target(&provider)?)
+    saved(&target(&provider)?)
 }
 
 #[tauri::command]
 pub fn ai_key_set(provider: String, key: String) -> Result<String, String> {
     let key = checked_key(&key)?;
+    if keys_closed() {
+        return Err(fail(CLOSED));
+    }
     store::write(&target(&provider)?, &key)?;
     Ok(masked(&key))
 }
 
 #[tauri::command]
 pub fn ai_key_delete(provider: String) -> Result<(), String> {
+    if keys_closed() {
+        return Err(fail(CLOSED));
+    }
     store::delete(&target(&provider)?)
 }
 
@@ -198,7 +228,7 @@ pub fn ai_key_page(provider: String) -> Result<(), String> {
 
 /// The saved key for a video job's AI translation, if any.
 pub(crate) fn job_key(provider: &str) -> Result<Option<String>, String> {
-    store::read(&target(provider)?)
+    saved(&target(provider)?)
 }
 
 /// One request to an OpenAI-compatible provider (or a model list), answered by
@@ -212,6 +242,9 @@ pub async fn ai_ask(request: Value, key: Option<String>) -> Result<Value, String
     }
     if !matches!(request.get("action").and_then(Value::as_str), Some("ask" | "models")) {
         return Err(fail("Yêu cầu AI không hợp lệ"));
+    }
+    if keys_closed() {
+        return Err(fail(CLOSED));
     }
     let key = match key.map(|key| key.trim().to_owned()).filter(|key| !key.is_empty()) {
         Some(key) => Some(checked_key(&key)?),
@@ -249,6 +282,15 @@ pub async fn ai_ask(request: Value, key: Option<String>) -> Result<Value, String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_run_beside_the_installed_app_can_close_the_saved_keys() {
+        assert!(!closed_by(None));
+        assert!(!closed_by(Some("")));
+        assert!(!closed_by(Some(" 0 ")));
+        assert!(closed_by(Some("1")));
+        assert!(closed_by(Some("sandbox")));
+    }
 
     #[test]
     fn only_known_providers_and_well_formed_keys_are_accepted() {
