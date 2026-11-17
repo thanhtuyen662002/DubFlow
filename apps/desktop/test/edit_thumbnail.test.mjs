@@ -280,4 +280,132 @@ assert.equal(new Set(THUMB_TEMPLATES.map((template) => template.id)).size, THUMB
 assert.equal(thumbName("Phim hay.mp4"), "Phim hay - thumbnail");
 assert.equal(thumbName(""), "video - thumbnail");
 
+// The view itself (#923): mounted on a small fake DOM whose canvas records what is drawn, with the same glyph model.
+// It checks the drawn composition, dragging from the drawn place, and that the saved image is that composition without the frame.
+class FakeElement {
+  constructor(id) { this.id = id; this.value = ""; this.checked = false; this.hidden = false; this.disabled = false; this.open = false; this.textContent = ""; this.title = ""; this.listeners = {}; this.options = []; }
+  addEventListener(type, listener) { (this.listeners[type] ??= []).push(listener); }
+  fire(type, event = {}) { for (const listener of this.listeners[type] ?? []) listener({ preventDefault() {}, stopPropagation() {}, shiftKey: false, ...event }); }
+  append(option) { this.options.push(option); }
+  replaceChildren(...children) { this.children = children; }
+  setAttribute(name, value) { this[name] = value; }
+  focus() { globalThis.document.activeElement = this; }
+  select() {}
+}
+class FakeContext {
+  constructor() { this.ops = []; this.font = ""; this.fillStyle = ""; this.strokeStyle = ""; this.lineWidth = 1; this.stack = []; }
+  size() { return Number(/(\d+(?:\.\d+)?)px/.exec(this.font)[1]); }
+  measureText(line) { return { width: line.length * 0.62 * this.size() }; }
+  save() {} restore() {} clearRect() {} setLineDash() {} drawImage() {}
+  fillRect(x, y, width, height) { this.ops.push({ op: "fillRect", x, y, width, height, style: this.fillStyle }); }
+  strokeRect(x, y, width, height) { this.ops.push({ op: "frame", x, y, width, height }); }
+  fillText(line, x, y) { this.ops.push({ op: "fill", line, x, y, size: this.size() }); }
+  strokeText(line, x, y) { this.ops.push({ op: "stroke", line, x, y, size: this.size(), lineWidth: this.lineWidth }); }
+}
+const elements = new Map();
+const element = (selector) => {
+  if (!elements.has(selector)) elements.set(selector, new FakeElement(selector));
+  return elements.get(selector);
+};
+const canvasContext = new FakeContext();
+const canvasElement = element("#thumb-canvas");
+canvasElement.getContext = () => canvasContext;
+canvasElement.getBoundingClientRect = () => ({ left: 0, top: 0, width: THUMB_WIDTH, height: THUMB_HEIGHT });
+canvasElement.setPointerCapture = () => {};
+let blobOps = null;
+canvasElement.toBlob = (done, type) => {
+  blobOps = { type, ops: canvasContext.ops.map((op) => ({ ...op })) };
+  setTimeout(() => done({ arrayBuffer: async () => new ArrayBuffer(8) }), 0);
+};
+globalThis.document = { activeElement: null, querySelector: element, createElement: (tag) => new FakeElement(tag) };
+globalThis.Option = class { constructor(label, value) { this.label = label; this.value = value; } };
+const { mountThumbnail } = await import("../src/features/edit/thumbnail_view.ts");
+const savedFiles = [];
+let changes = 0;
+const view = mountThumbnail(async () => { throw new Error("no host calls expected"); }, {
+  context: () => ({ name: `${longTitle} TRUNG QUỐC.mp4`, frame: null, folder: "D:\\out" }),
+  changed: () => { changes += 1; },
+  save: async (bytes, folder, name, format) => { savedFiles.push({ bytes: bytes.byteLength, folder, name, format }); return `${folder}\\${name}.${format}`; },
+});
+view.begin(null);
+const fresh = () => { canvasContext.ops = []; };
+/** The drawn ink of each line: its centre, half width (with outline) and half height, from the recorded calls. */
+const inks = () => canvasContext.ops.filter((op) => op.op === "fill").map((op) => {
+  const outline = canvasContext.ops.find((other) => other.op === "stroke" && other.line === op.line && other.x === op.x && other.y === op.y);
+  const half = op.line.length * 0.62 * op.size / 2 + (outline ? outline.lineWidth / 2 : 0);
+  return { line: op.line, left: op.x - half, right: op.x + half, top: op.y - op.size * 0.575, bottom: op.y + op.size * 0.575, x: op.x, y: op.y };
+});
+const allInside = (list) => list.every((ink) => ink.left >= -1e-6 && ink.right <= THUMB_WIDTH + 1e-6 && ink.top >= -1e-6 && ink.bottom <= THUMB_HEIGHT + 1e-6);
+const templateSelect = element("#thumb-template");
+for (const template of THUMB_TEMPLATES) {
+  view.begin(null);
+  fresh();
+  templateSelect.value = template.id;
+  templateSelect.fire("change");
+  const drawn = inks();
+  const title = `${longTitle} TRUNG QUỐC`;
+  assert.ok(drawn.map((ink) => ink.line).join(" ").includes(title), `${template.id}: the whole title is drawn (${drawn.map((ink) => ink.line).join(" | ")})`);
+  assert.ok(allInside(drawn), `${template.id}: every line drawn inside the image ${JSON.stringify(drawn)}`);
+}
+// Dragging a text that the drawing moved in: the first small drag moves it by the same distance and it stays under the pointer.
+const at = (x, y) => ({ clientX: x, clientY: y, pointerId: 1 });
+const dragCheck = (saved, dx, dy, label) => {
+  fresh();
+  view.begin({ ...emptyThumb(), texts: [saved] });
+  const before = inks()[0];
+  assert.ok(before, `${label}: drawn`);
+  const pointer = { x: before.x, y: before.y };
+  canvasElement.fire("pointerdown", at(pointer.x, pointer.y));
+  fresh();
+  canvasElement.fire("pointermove", at(pointer.x + dx, pointer.y + dy));
+  const after = inks()[0];
+  assert.ok(Math.abs(after.x - before.x - dx) < 1e-6 && Math.abs(after.y - before.y - dy) < 1e-6, `${label}: the first drag moves the drawn text by (${dx}, ${dy}): ${JSON.stringify({ before, after })}`);
+  assert.ok(pointer.x + dx >= after.left && pointer.x + dx <= after.right && pointer.y + dy >= after.top && pointer.y + dy <= after.bottom, `${label}: still under the pointer`);
+  canvasElement.fire("pointerup", at(pointer.x + dx, pointer.y + dy));
+  return after;
+};
+const word = (over) => ({ ...makeText("NGHIÊNG", over) });
+dragCheck(word({ x: 0, y: 0.5 }), 10, 0, "moved in from the left edge, dragged right");
+dragCheck(word({ x: 1, y: 0.5 }), -10, 0, "moved in from the right edge, dragged left");
+dragCheck(word({ x: 0.5, y: 1 }), 0, -10, "moved up from the bottom, dragged up");
+dragCheck(word({ x: 0.5, y: 0 }), 0, 10, "moved down from the top, dragged down");
+dragCheck(word({ x: 0, y: 1 }), 12, -12, "moved in from a corner, dragged out of it");
+// Arrow keys too: one press moves the drawn text one step.
+fresh();
+view.begin({ ...emptyThumb(), texts: [word({ x: 0, y: 0.5 })] });
+const keyBefore = inks()[0];
+canvasElement.fire("pointerdown", at(keyBefore.x, keyBefore.y));
+canvasElement.fire("pointerup", at(keyBefore.x, keyBefore.y));
+fresh();
+canvasElement.fire("keydown", { key: "ArrowRight" });
+assert.ok(Math.abs(inks()[0].x - keyBefore.x - 8) < 1e-6, "ArrowRight moves the drawn text 8 px at the first press");
+// Opening a thumbnail only draws it: its saved place is not changed by the drawing.
+const kept = word({ x: 0, y: 1 });
+view.begin({ ...emptyThumb(), texts: [kept] });
+const keptDoc = view.document();
+assert.equal(keptDoc.texts[0].x, 0);
+assert.equal(keptDoc.texts[0].y, 1);
+// Saving: the image is the window's composition, without the selection frame.
+view.begin(null);
+templateSelect.value = "left-column";
+templateSelect.fire("change");
+element("#thumb-format").value = "png";
+element("#thumb-format").fire("change");
+const section = element("#thumb-section");
+section.open = true;
+fresh();
+section.fire("toggle");
+const windowDraw = canvasContext.ops;
+assert.ok(windowDraw.some((op) => op.op === "frame"), "the window shows the selection frame");
+assert.ok(allInside(inks()), "left-column, as shown: inside");
+const shown = windowDraw.filter((op) => op.op !== "frame");
+fresh();
+element("#thumb-save").fire("click");
+await new Promise((resolve) => setTimeout(resolve, 20));
+assert.equal(blobOps.type, "image/png");
+assert.ok(!blobOps.ops.some((op) => op.op === "frame"), "no selection frame in the saved image");
+assert.deepEqual(blobOps.ops, shown, "the saved image draws exactly what the window shows");
+assert.deepEqual(savedFiles.at(-1), { bytes: 8, folder: "D:\\out", name: `${longTitle} TRUNG QUỐC - thumbnail`, format: "png" });
+assert.ok(changes > 0);
+
 console.log("edit thumbnail tests passed");
