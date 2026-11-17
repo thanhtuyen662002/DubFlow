@@ -257,18 +257,40 @@ export function layoutText(text: ThumbText, measure: (line: string) => number): 
   return { ...laid, box: fitBox(laid.box, margin) };
 }
 
-/**
- * The text with its centre where it is drawn, on the axes given. A move
- * starts from here, so a text `fitBox` moved in follows the pointer at once
- * instead of first using up the distance between its saved and drawn place.
- * Only the axes being moved are taken, so a sideways move never keeps a
- * passing upward shift.
- */
-export function centreOn(text: ThumbText, box: Rect | undefined, axes: { x: boolean; y: boolean } = { x: true, y: true }): ThumbText {
+/** The text with its centre where it is drawn: `box` is where `layoutText` put it. */
+export function centreOn(text: ThumbText, box: Rect | undefined): ThumbText {
   if (!box) return text;
-  const x = axes.x ? clamp((box.x + box.width / 2) / THUMB_WIDTH, 0, 1) : text.x;
-  const y = axes.y ? clamp((box.y + box.height / 2) / THUMB_HEIGHT, 0, 1) : text.y;
+  const x = clamp((box.x + box.width / 2) / THUMB_WIDTH, 0, 1);
+  const y = clamp((box.y + box.height / 2) / THUMB_HEIGHT, 0, 1);
   return Math.abs(x - text.x) < 1e-6 && Math.abs(y - text.y) < 1e-6 ? text : { ...text, x, y };
+}
+
+/** Pixels a move must go away from an edge a text is held against before the text leaves it (a hand's jitter stays). */
+export const MOVE_SLOP = 4;
+
+/**
+ * Whether a move of `move` px along one axis starts from where the text is
+ * drawn (`drawn`) rather than its saved place (`saved`), both 0..1 of
+ * `span` px. They differ only where the drawing moved the text in, holding
+ * it against an edge. Moving away from that edge by `MOVE_SLOP` px or more
+ * starts from the drawn place, so the text follows at once. A move toward
+ * the edge, along it, or a jitter keeps the saved place, so the text stays
+ * held there when it re-wraps, and a passing shift is never kept.
+ */
+export function leavesEdge(saved: number, drawn: number, move: number, span: number): boolean {
+  const shift = (drawn - saved) * span;
+  return Math.abs(shift) > 1e-6 && Math.sign(move) === Math.sign(shift) && Math.abs(move) >= MOVE_SLOP;
+}
+
+/** The text moved by (dx, dy) px from where it is (see `leavesEdge`), drawn at `box`. */
+export function nudgeText(text: ThumbText, box: Rect | undefined, dx: number, dy: number): ThumbText {
+  const drawn = centreOn(text, box);
+  const from = {
+    ...text,
+    x: leavesEdge(text.x, drawn.x, dx, THUMB_WIDTH) ? drawn.x : text.x,
+    y: leavesEdge(text.y, drawn.y, dy, THUMB_HEIGHT) ? drawn.y : text.y,
+  };
+  return moveText(from, dx, dy);
 }
 
 /** The box a text takes on the thumbnail, from its lines' widths. */

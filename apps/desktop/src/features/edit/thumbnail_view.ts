@@ -7,7 +7,7 @@
 
 import {
   MAX_TEXT_SIZE, MAX_THUMB_TEXTS, MIN_TEXT_SIZE, SUBTITLE_FONTS, THUMB_HEIGHT, THUMB_TEMPLATES, THUMB_WIDTH,
-  applyTemplate, centreOn, coverRect, dragPan, emptyThumb, hasThumb, layoutText, makeText, moveText, normalizeThumb, textAt, thumbName,
+  applyTemplate, centreOn, coverRect, dragPan, emptyThumb, hasThumb, layoutText, leavesEdge, makeText, moveText, normalizeThumb, nudgeText, textAt, thumbName,
   type Rect, type ThumbDoc, type ThumbText,
 } from "./thumbnail.ts";
 import { isFont } from "./fonts.ts";
@@ -299,9 +299,11 @@ export function mountThumbnail(invoke: Invoke, host: ThumbHost): ThumbnailView {
 
   // Drag a text to move it; drag elsewhere to move the picture inside the frame. A move starts where the text is drawn.
   const drawnBox = (id: string): Rect | undefined => boxes.find((item) => item.id === id)?.box;
-  // A text drag moves the text from where it was drawn when grabbed by the pointer's whole way since then,
-  // so a passing fit (near an edge, or while re-wrapped) is never kept, and the same pointer place gives the same result.
-  let drag: { id: string | null; x: number; y: number; pointer: number; from: { x: number; y: number }; origin: ThumbText | null } | null = null;
+  // A text drag moves the text by the pointer's whole way since it was grabbed. On an axis where the text is held
+  // against an edge, it starts from where it is drawn once the pointer leaves that edge (see leavesEdge), and stays
+  // held otherwise, so the same pointer place gives the same result and a passing fit is never kept.
+  type TextDrag = { saved: ThumbText; drawn: ThumbText; free: { x: boolean; y: boolean } };
+  let drag: { id: string | null; x: number; y: number; pointer: number; from: { x: number; y: number }; text: TextDrag | null } | null = null;
   const point = (event: PointerEvent): { x: number; y: number } => {
     const rect = canvas.getBoundingClientRect();
     return { x: (event.clientX - rect.left) * THUMB_WIDTH / rect.width, y: (event.clientY - rect.top) * THUMB_HEIGHT / rect.height };
@@ -311,7 +313,8 @@ export function mountThumbnail(invoke: Invoke, host: ThumbHost): ThumbnailView {
     const id = textAt(boxes, at.x, at.y);
     if (id !== selected) select(id);
     const grabbed = doc.texts.find((text) => text.id === id);
-    drag = { id, ...at, pointer: event.pointerId, from: at, origin: grabbed ? centreOn(grabbed, drawnBox(grabbed.id)) : null };
+    const text = grabbed ? { saved: grabbed, drawn: centreOn(grabbed, drawnBox(grabbed.id)), free: { x: false, y: false } } : null;
+    drag = { id, ...at, pointer: event.pointerId, from: at, text };
     canvas.setPointerCapture(event.pointerId);
   });
   canvas.addEventListener("pointermove", (event) => {
@@ -320,8 +323,14 @@ export function mountThumbnail(invoke: Invoke, host: ThumbHost): ThumbnailView {
     const dx = at.x - drag.x, dy = at.y - drag.y;
     drag.x = at.x;
     drag.y = at.y;
-    const origin = drag.origin, from = drag.from;
-    if (origin) doc = { ...doc, texts: doc.texts.map((text) => text.id === origin.id ? moveText(origin, at.x - from.x, at.y - from.y) : text) };
+    const held = drag.text, wayX = at.x - drag.from.x, wayY = at.y - drag.from.y;
+    if (held) {
+      const { saved, drawn, free } = held;
+      free.x ||= leavesEdge(saved.x, drawn.x, wayX, THUMB_WIDTH);
+      free.y ||= leavesEdge(saved.y, drawn.y, wayY, THUMB_HEIGHT);
+      const moved = moveText({ ...saved, x: free.x ? drawn.x : saved.x, y: free.y ? drawn.y : saved.y }, wayX, wayY);
+      doc = { ...doc, texts: doc.texts.map((text) => text.id === saved.id ? moved : text) };
+    }
     else if (picture) doc = { ...doc, ...dragPan(doc, picture.naturalWidth, picture.naturalHeight, dx, dy) };
     else return;
     draw();
@@ -341,8 +350,7 @@ export function mountThumbnail(invoke: Invoke, host: ThumbHost): ThumbnailView {
     if (!text || !move) return;
     event.preventDefault();
     event.stopPropagation();
-    const axes = { x: move[0] !== 0, y: move[1] !== 0 };
-    doc = { ...doc, texts: doc.texts.map((item) => item.id === text.id ? moveText(centreOn(item, drawnBox(item.id), axes), move[0], move[1]) : item) };
+    doc = { ...doc, texts: doc.texts.map((item) => item.id === text.id ? nudgeText(item, drawnBox(item.id), move[0], move[1]) : item) };
     changed();
   });
 

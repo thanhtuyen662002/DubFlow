@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import {
   THUMB_HEIGHT, THUMB_WIDTH, THUMB_TEMPLATES, applyTemplate, coverRect, dragPan, emptyThumb, hasThumb, makeText,
-  MAX_LINE_WIDTH, MAX_THUMB_TEXT, centreOn, fitBox, inkMargin, layoutText, moveText, normalizeThumb, textAt, textBox, textRoom, thumbName, wrapLines,
+  MAX_LINE_WIDTH, MAX_THUMB_TEXT, MOVE_SLOP, centreOn, fitBox, inkMargin, layoutText, leavesEdge, nudgeText, moveText, normalizeThumb, textAt, textBox, textRoom, thumbName, wrapLines,
 } from "../src/features/edit/thumbnail.ts";
 
 const covers = (rect) => rect.x <= 1e-9 && rect.y <= 1e-9 && rect.x + rect.width >= THUMB_WIDTH - 1e-9 && rect.y + rect.height >= THUMB_HEIGHT - 1e-9;
@@ -151,19 +151,27 @@ assert.deepEqual(inkMargin(makeText("x", { band: "#e11d48", size: 64, strokeWidt
 assert.deepEqual(fitBox({ x: 0, y: 0, width: 100, height: 100 }, { top: 20, bottom: 10 }), { x: 0, y: 20, width: 100, height: 100 });
 assert.deepEqual(fitBox({ x: 0, y: 650, width: 100, height: 100 }, { top: 20, bottom: 10 }), { x: 0, y: 610, width: 100, height: 100 });
 assert.deepEqual(fitBox({ x: 0, y: -50, width: 100, height: 700 }, { top: 20, bottom: 10 }), { x: 0, y: 0, width: 100, height: 700 }, "no room for the margin: the box itself still fits");
-// A move starts where the text is drawn: one pushed against an edge comes back at the first step, with no dead distance.
+// A move away from an edge the text is held against starts where it is drawn, so it comes back at the first step;
+// a move toward or along the edge, or a jitter, keeps the saved place, so the text stays held there.
 const drawnAt = (text) => layoutText(text, glyphs(text)).box;
 let pushed = makeText("Chữ mới", { x: 0.5, y: 0.5 });
-for (let step = 0; step < 100; step += 1) pushed = moveText(centreOn(pushed, drawnAt(pushed)), -10, 0);
+for (let step = 0; step < 100; step += 1) pushed = nudgeText(pushed, drawnAt(pushed), -10, 0);
 const atEdge = drawnAt(pushed);
 assert.equal(atEdge.x, 0, "pushed to the left edge");
-assert.ok(pushed.x * THUMB_WIDTH > -1e-9 && pushed.x * THUMB_WIDTH < atEdge.width / 2, "its saved centre is past the drawn one");
-const back = moveText(centreOn(pushed, atEdge), 8, 0);
+assert.equal(pushed.x, 0, "its saved centre went on to the edge itself");
+const back = nudgeText(pushed, atEdge, 8, 0);
 assert.ok(Math.abs(drawnAt(back).x - 8) < 1e-6, `one step right moves it 8 px at once (${drawnAt(back).x})`);
+assert.equal(nudgeText(pushed, atEdge, -8, 0).x, 0, "toward the edge: still held");
+assert.equal(nudgeText(pushed, atEdge, 0, 8).x, 0, "along the edge: still held");
 const big = applyTemplate({ ...emptyThumb(), texts: [] }, "big-bottom", longTitle).texts[0];
 const bigBox = drawnAt(big);
 assert.ok(bigBox.y + bigBox.height / 2 < big.y * THUMB_HEIGHT - 1, "big-bottom: a 3-line title is drawn moved up");
-assert.ok(Math.abs(drawnAt(moveText(centreOn(big, bigBox), 0, -10)).y - (bigBox.y - 10)) < 1e-6, "and moves up at the first drag");
+assert.ok(Math.abs(drawnAt(nudgeText(big, bigBox, 0, -10)).y - (bigBox.y - 10)) < 1e-6, "and moves up at the first move");
+assert.equal(nudgeText(big, bigBox, 10, 0).y, big.y, "a sideways move keeps it held at the bottom");
+assert.equal(leavesEdge(0.5, 0.5, 50, THUMB_WIDTH), false, "not held: the saved place");
+assert.equal(leavesEdge(0, 0.1, MOVE_SLOP - 1, THUMB_WIDTH), false, "a jitter away: still held");
+assert.equal(leavesEdge(0, 0.1, MOVE_SLOP, THUMB_WIDTH), true, "a move away: leaves");
+assert.equal(leavesEdge(0, 0.1, -MOVE_SLOP * 10, THUMB_WIDTH), false, "toward the edge: still held");
 assert.equal(centreOn(big, undefined), big, "no box drawn: as it is");
 const unmoved = makeText("ngắn", { x: 0.5, y: 0.5 });
 assert.equal(centreOn(unmoved, drawnAt(unmoved)), unmoved, "a box that was not moved in: the same text");
@@ -436,6 +444,32 @@ for (let press = 0; press < 12; press += 1) canvasElement.fire("keydown", { key:
 for (let press = 0; press < 12; press += 1) canvasElement.fire("keydown", { key: "ArrowRight", shiftKey: true });
 assert.equal(titleOf().y, keyTitle.y, "sideways keys: the height is untouched");
 assert.ok(Math.abs(titleOf().x - keyTitle.x) < 1e-9, "and it is back where it was");
+// Out and back in several strokes, or with a hand's jitter, leaves a title held at the bottom where it was.
+const strokes = (layout, moves) => {
+  fresh();
+  view.begin(null);
+  templateSelect.value = layout;
+  templateSelect.fire("change");
+  const first = titleOf();
+  const firstInk = inks();
+  for (const [dx, dy] of moves) {
+    const ink = inks().find((line) => first.text.includes(line.line));
+    canvasElement.fire("pointerdown", at(ink.x, ink.y));
+    for (let step = 1; step <= 10; step += 1) canvasElement.fire("pointermove", at(ink.x + dx * step / 10, ink.y + (step % 2 ? dy : 0)));
+    canvasElement.fire("pointerup", at(ink.x + dx, ink.y));
+    fresh();
+    view.begin(view.document());
+  }
+  return { first, last: titleOf(), firstInk: firstInk.map((ink) => [ink.line, ink.y]), lastInk: inks().map((ink) => [ink.line, ink.y]) };
+};
+for (const layout of ["big-bottom", "band", "two-lines"]) {
+  for (const moves of [[[100, 0], [-100, 0]], [[100, 0], [100, 0], [-100, 0], [-100, 0]], [[100, -2], [-100, 3]]]) {
+    const { first, last, firstInk, lastInk } = strokes(layout, moves);
+    assert.equal(last.y, first.y, `${layout} ${JSON.stringify(moves)}: the title is still held at its height`);
+    assert.ok(Math.abs(last.x - first.x) < 1e-9, `${layout} ${JSON.stringify(moves)}: and back across`);
+    assert.deepEqual(lastInk, firstInk, `${layout} ${JSON.stringify(moves)}: drawn as before`);
+  }
+}
 // Opening a thumbnail only draws it: its saved place is not changed by the drawing.
 const kept = word({ x: 0, y: 1 });
 view.begin({ ...emptyThumb(), texts: [kept] });
