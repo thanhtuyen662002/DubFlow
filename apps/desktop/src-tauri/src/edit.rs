@@ -4405,8 +4405,10 @@ mod tests {
             times.set_created(long_ago())
         };
         fs::File::options().write(true).open(file).unwrap().set_times(times).unwrap();
+        // read back before anything reads the file (a read moves the access time)
         let metadata = fs::metadata(file).unwrap();
         assert_eq!(metadata.modified().unwrap(), long_ago(), "modified: {}", file.display());
+        assert_eq!(metadata.accessed().unwrap(), long_ago(), "accessed: {}", file.display());
         #[cfg(windows)]
         assert_eq!(metadata.created().unwrap(), long_ago(), "created: {}", file.display());
     }
@@ -4417,12 +4419,13 @@ mod tests {
     /// synced, about to take the draft's place. None of it is any save's to touch.
     fn foreign_temps(path: &Path) -> Vec<PathBuf> {
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
         let files = [
             (format!("{name}.1-2-3.saving"), "another save's temporary file"),
             (format!("{name}.{}-0-0.saving", std::process::id()), "another save of this run, still writing"),
             (format!("{name}.{}-2-4.saving", u32::MAX), "left by a run killed while saving, decades ago"),
-            (format!("{name}.{}-1763400000000000000-7.saving", std::process::id()), ""),
-            (format!("{name}.1-1763400000000000000-8.saving"), r#"{"schema_version":4,"segments":[{},{},{},{}]}"#),
+            (format!("{name}.{}-{now}-7.saving", std::process::id()), ""),
+            (format!("{name}.1-{now}-8.saving"), r#"{"schema_version":4,"segments":[{},{},{},{}]}"#),
         ].map(|(file, text)| {
             let file = path.with_file_name(file);
             fs::write(&file, text).unwrap();
@@ -4537,7 +4540,7 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
     }
 
-    // #928: `replace_draft`, which every draft save of the app goes through (`save_draft`), keeps every other save's
+    // #928: `replace_draft`, which every save of the editor goes through (`save_draft`), keeps every other save's
     // temporary file too: a first save where no draft is yet, a plain save, one that sets the old draft aside first,
     // saves over a draft it cannot read (more of them than are kept aside) and, on Windows, saves the system refuses
     #[test]
@@ -4578,20 +4581,33 @@ mod tests {
         replace_draft(&path, new, false).unwrap();
         assert_eq!(fs::read(&path).unwrap(), new);
         untouched("a save over a draft it cannot read");
-        let aside = || fs::read_dir(&dir).unwrap().flatten().filter(|entry| entry.file_name().to_string_lossy().starts_with("project.unreadable-")).count();
-        assert_eq!(aside(), 2, "the two drafts set aside");
-        // more drafts set aside than are kept: only the oldest of those go
+        let aside = || {
+            let mut kept: Vec<(String, Vec<u8>)> = fs::read_dir(&dir).unwrap().flatten()
+                .filter(|entry| entry.file_name().to_string_lossy().starts_with("project.unreadable-"))
+                .map(|entry| (entry.file_name().to_string_lossy().into_owned(), fs::read(entry.path()).unwrap())).collect();
+            kept.sort();
+            kept
+        };
+        assert_eq!(aside().len(), 2, "the two drafts set aside");
+        // more drafts set aside than are kept: each save keeps the draft it set aside, and only the oldest go
+        let mut written = Vec::new();
         for n in 0..SET_ASIDE_KEEP {
-            fs::write(&path, b"{\"schema_vers").unwrap();
+            // a new millisecond for each, so the names set aside sort in the order they were made
+            std::thread::sleep(Duration::from_millis(2));
+            let unreadable = format!("{{\"schema_vers {n}").into_bytes();
+            fs::write(&path, &unreadable).unwrap();
             date_back(&foreign[2]);
             replace_draft(&path, new, false).unwrap();
             untouched(&format!("save {n} over a draft it cannot read, past the drafts kept aside"));
+            assert!(aside().iter().any(|(_, bytes)| *bytes == unreadable), "save {n}: the draft it set aside is kept");
+            written.push(unreadable);
         }
-        assert_eq!(aside(), SET_ASIDE_KEEP, "only the last few drafts set aside are kept");
+        assert_eq!(aside().into_iter().map(|(_, bytes)| bytes).collect::<Vec<_>>(), written, "only the last few drafts set aside are kept, the oldest went");
         // Windows: the draft held open by another program that does not share deleting
         #[cfg(windows)]
         {
             use std::os::windows::fs::OpenOptionsExt;
+            let kept = aside();
             let held = fs::OpenOptions::new().read(true).share_mode(1 | 2).open(&path).unwrap();
             date_back(&foreign[2]);
             assert_eq!(replace_draft(&path, old, false).unwrap_err(), fail("Không lưu được bản nháp chỉnh sửa"));
@@ -4601,7 +4617,7 @@ mod tests {
             assert_eq!(replace_draft(&path, old, true).unwrap_err(), fail("Không giữ lại được bản nháp cũ; chưa lưu bản mới để không ghi đè nó"));
             drop(held);
             assert_eq!(fs::read(&path).unwrap(), new, "the refused saves kept the draft");
-            assert_eq!(aside(), SET_ASIDE_KEEP, "no draft set aside");
+            assert_eq!(aside(), kept, "no draft set aside, none removed: the drafts kept aside, their names and bytes");
             untouched("a save whose setting aside the system refused");
         }
         let _ = fs::remove_dir_all(&base);
@@ -4704,9 +4720,10 @@ mod tests {
     // old draft byte for byte and leaves no temporary file. The save runs in a child run of this same test under
     // `ulimit -f 1`, with SIGXFSZ ignored so the write returns EFBIG. Bash counts that limit in 1024-byte blocks, or in
     // 512-byte blocks in POSIX mode (#928). The test run's environment can start bash in POSIX mode (`POSIXLY_CORRECT`,
-    // `SHELLOPTS`) or have it run a file that switches it on (`BASH_ENV`, `ENV`): the child's bash gets none of
-    // `POSIXLY_CORRECT`, `BASH_ENV` and `ENV`, and `set +o posix` switches POSIX mode off before the limit is set,
-    // whatever started it (an exported `SHELLOPTS` too), so the limit is 1024 bytes whatever the environment.
+    // `SHELLOPTS`) or have it source a file that switches it on (`BASH_ENV`): the child's bash gets neither
+    // `POSIXLY_CORRECT` nor `BASH_ENV`, and `set +o posix` switches POSIX mode off before the limit is set, whatever
+    // started it (an exported `SHELLOPTS` too), so the limit is 1024 bytes whatever the environment. (`ENV` is read
+    // only by interactive shells, never by `bash -c`.)
     #[cfg(target_os = "linux")]
     #[test]
     fn a_real_write_error_keeps_the_old_draft_and_leaves_no_temporary_file() {
@@ -4738,8 +4755,7 @@ mod tests {
         // passed on, so only `set +o posix` keeps the limit at 1024 bytes
         let posix = base.join("posix.sh");
         fs::write(&posix, "set -o posix\n").unwrap();
-        let hostile: [(&str, &std::ffi::OsStr); 4] = [("POSIXLY_CORRECT", "1".as_ref()), ("BASH_ENV", posix.as_os_str()), ("ENV", posix.as_os_str()),
-                                                      ("SHELLOPTS", "posix".as_ref())];
+        let hostile: [(&str, &std::ffi::OsStr); 3] = [("POSIXLY_CORRECT", "1".as_ref()), ("BASH_ENV", posix.as_os_str()), ("SHELLOPTS", "posix".as_ref())];
         // 3000 bytes: the first half is already over the limit; 1500 bytes: the first half fits, the rest does not
         for (size, step, carried) in [(3000, "WriteStart", &hostile[..0]), (1500, "WriteRest", &hostile[..0]), (3000, "WriteStart", &hostile[..]),
                                       (1500, "WriteRest", &hostile[..])] {
@@ -4747,7 +4763,6 @@ mod tests {
                 .envs(carried.iter().copied())
                 .env_remove("POSIXLY_CORRECT")
                 .env_remove("BASH_ENV")
-                .env_remove("ENV")
                 .arg("-c")
                 .arg(r#"set +o posix; trap '' XFSZ; ulimit -f 1; exec "$0" "$@""#)
                 .arg(std::env::current_exe().unwrap())
@@ -4757,7 +4772,7 @@ mod tests {
                 .output()
                 .unwrap();
             let text = String::from_utf8_lossy(&output.stdout).into_owned() + &String::from_utf8_lossy(&output.stderr);
-            let with = if carried.is_empty() { "" } else { " (POSIXLY_CORRECT, BASH_ENV, ENV and SHELLOPTS set around it)" };
+            let with = if carried.is_empty() { "" } else { " (POSIXLY_CORRECT, BASH_ENV and SHELLOPTS set around it)" };
             assert!(output.status.success() && text.contains("1 passed"), "{step}{with}: {text}");
             assert!(text.contains(&format!("real write error at [{step}]")), "{step}{with}: {text}");
             assert_eq!(listing(&dir), before, "{step}{with}: the old draft and everything beside it as they were");
