@@ -201,35 +201,56 @@ export function moveText(text: ThumbText, dx: number, dy: number): ThumbText {
   return { ...text, x: clamp(text.x + dx / THUMB_WIDTH, 0, 1), y: clamp(text.y + dy / THUMB_HEIGHT, 0, 1) };
 }
 
-export type ThumbTemplate = { id: string; label: string; darken: number; texts: (title: string) => ThumbText[] };
+export type ThumbTemplate = {
+  id: string; label: string; darken: number;
+  /** Whether the layout has a small label above its title. */
+  labelled: boolean;
+  texts: (title: string, label: string) => ThumbText[];
+};
 
-/** Ready layouts; each keeps the background and replaces the text. */
+/** The label a labelled layout starts with; the only text a change of layout may drop. */
+export const TEMPLATE_LABEL = "MỚI";
+
+/** Ready layouts; each keeps the background and lays the texts out again. */
 export const THUMB_TEMPLATES: readonly ThumbTemplate[] = [
   {
-    id: "big-bottom", label: "Tiêu đề lớn phía dưới", darken: 0.15,
+    id: "big-bottom", label: "Tiêu đề lớn phía dưới", darken: 0.15, labelled: false,
     texts: (title) => [makeText(title, { y: 0.8, size: 110 })],
   },
   {
-    id: "two-lines", label: "Hai dòng: nhãn + tiêu đề", darken: 0.25,
-    texts: (title) => [
-      makeText("MỚI", { x: 0.16, y: 0.16, size: 64, band: "#e11d48", strokeWidth: 0, shadow: false }),
+    id: "two-lines", label: "Hai dòng: nhãn + tiêu đề", darken: 0.25, labelled: true,
+    texts: (title, label) => [
+      makeText(label, { x: 0.16, y: 0.16, size: 64, band: "#e11d48", strokeWidth: 0, shadow: false }),
       makeText(title, { y: 0.74, size: 100, color: "#facc15" }),
     ],
   },
   {
-    id: "left-column", label: "Chữ bên trái", darken: 0.35,
+    id: "left-column", label: "Chữ bên trái", darken: 0.35, labelled: false,
     texts: (title) => [makeText(title, { x: 0.3, y: 0.5, size: 92 })],
   },
   {
-    id: "band", label: "Dải màu ngang", darken: 0,
+    id: "band", label: "Dải màu ngang", darken: 0, labelled: false,
     texts: (title) => [makeText(title, { y: 0.84, size: 84, band: "#111827", strokeWidth: 0, shadow: false })],
   },
 ];
 
-export function applyTemplate(doc: ThumbDoc, id: string, title: string): ThumbDoc {
+/**
+ * The layout `id` over the thumbnail. The words already on it are kept: the
+ * largest text becomes the layout's title, the next one its label (when it
+ * has one), and every other text stays as it is, so a change of layout never
+ * loses a text the user wrote; only the layout's own untouched label can go.
+ * `name` titles a thumbnail that has no text yet.
+ */
+export function applyTemplate(doc: ThumbDoc, id: string, name: string): ThumbDoc {
   const template = THUMB_TEMPLATES.find((item) => item.id === id);
   if (!template) return doc;
-  return { ...doc, darken: template.darken, texts: template.texts(title.trim() || "Tiêu đề video") };
+  const words = doc.texts.filter((text) => text.text.trim());
+  const main = words.reduce<ThumbText | null>((best, text) => (!best || text.size > best.size ? text : best), null);
+  const others = words.filter((text) => text !== main);
+  const label = template.labelled ? others.shift()?.text ?? TEMPLATE_LABEL : TEMPLATE_LABEL;
+  const kept = others.filter((text) => text.text.trim() !== TEMPLATE_LABEL);
+  const title = main?.text ?? (name.trim() || "Tiêu đề video");
+  return { ...doc, darken: template.darken, texts: [...kept, ...template.texts(title, label)].slice(-MAX_THUMB_TEXTS) };
 }
 
 /** The suggested file name: the video's name and " - thumbnail". */

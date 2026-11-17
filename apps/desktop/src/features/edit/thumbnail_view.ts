@@ -255,8 +255,7 @@ export function mountThumbnail(invoke: Invoke, host: ThumbHost): ThumbnailView {
   });
   template.addEventListener("change", () => {
     if (!template.value) return;
-    const title = doc.texts.find((text) => text.text.trim())?.text ?? thumbName(host.context()?.name ?? "").replace(/ - thumbnail$/, "");
-    doc = applyTemplate(doc, template.value, title);
+    doc = applyTemplate(doc, template.value, thumbName(host.context()?.name ?? "").replace(/ - thumbnail$/, ""));
     template.value = "";
     selected = doc.texts[doc.texts.length - 1]?.id ?? null;
     changed();

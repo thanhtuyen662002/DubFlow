@@ -100,16 +100,49 @@ const moved = moveText(title, 128, -72);
 assert.ok(Math.abs(moved.x - 0.6) < 1e-9 && Math.abs(moved.y - 0.4) < 1e-9);
 assert.deepEqual([moveText(title, 1e5, 1e5).x, moveText(title, 1e5, 1e5).y], [1, 1], "kept on the thumbnail");
 
-// Templates keep the background and replace the text, with the video's title.
-doc = { ...emptyThumb(), background: { kind: "image", path: "D:\\bg.jpg" }, texts: [makeText("cũ")] };
+// Templates keep the background and lay the texts out again; a thumbnail with no text takes the video's title.
+doc = { ...emptyThumb(), background: { kind: "image", path: "D:\\bg.jpg" }, texts: [] };
 for (const template of THUMB_TEMPLATES) {
   const next = applyTemplate(doc, template.id, "Lợn ở tòa nhà 26 tầng");
   assert.deepEqual(next.background, doc.background);
-  assert.ok(next.texts.some((text) => text.text === "Lợn ở tòa nhà 26 tầng"), template.id);
-  assert.ok(!next.texts.some((text) => text.text === "cũ"));
+  assert.equal(next.texts.at(-1).text, "Lợn ở tòa nhà 26 tầng", `${template.id}: the title is the last text, chosen after the change`);
+  assert.equal(next.texts.length, template.labelled ? 2 : 1);
   assert.deepEqual(normalizeThumb(next).texts, next.texts, `${template.id} texts are valid as saved`);
 }
 assert.ok(applyTemplate(doc, "big-bottom", "  ").texts[0].text.length > 0, "an empty title still gives text to edit");
+
+// rc22: a change of layout never drops what the user typed (it replaced the typed title with "MỚI").
+const typed = (thumb, words) => ({ ...thumb, texts: thumb.texts.map((text, index) => (words[index] === undefined ? text : { ...text, text: words[index] })) });
+const words = (thumb) => thumb.texts.map((text) => text.text);
+const twice = applyTemplate(applyTemplate(doc, "two-lines", "Tên video"), "two-lines", "Tên video");
+assert.deepEqual(words(twice), ["MỚI", "Tên video"], "two-lines twice: the title is not taken from the label");
+let two = typed(applyTemplate(doc, "two-lines", "Tên video"), [undefined, "Tháp nuôi lợn 26 tầng"]);
+for (const template of THUMB_TEMPLATES.filter((item) => !item.labelled)) {
+  const next = applyTemplate(two, template.id, "Tên video");
+  assert.deepEqual(words(next), ["Tháp nuôi lợn 26 tầng"], `two-lines → ${template.id}: the typed title stays, the untouched label goes`);
+  assert.deepEqual(words(applyTemplate(next, "two-lines", "Tên video")), ["MỚI", "Tháp nuôi lợn 26 tầng"], `${template.id} → two-lines`);
+}
+two = typed(two, ["SIÊU TO"]);
+let round = two;
+for (const id of ["band", "big-bottom", "left-column", "two-lines", "two-lines", "band", "two-lines"]) {
+  round = applyTemplate(round, id, "Tên video");
+  assert.deepEqual([...words(round)].sort(), ["SIÊU TO", "Tháp nuôi lợn 26 tầng"], `after ${id}: both typed texts are kept`);
+  assert.equal(round.texts.at(-1).text, "Tháp nuôi lợn 26 tầng", `after ${id}: the largest text is the title`);
+}
+assert.deepEqual(words(round), ["SIÊU TO", "Tháp nuôi lợn 26 tầng"], "back on two-lines, the typed label is the label again");
+const band = applyTemplate(two, "band", "Tên video");
+const carried = band.texts.find((text) => text.text === "SIÊU TO");
+assert.deepEqual(carried, two.texts[0], "a text the layout has no place for stays as it was");
+// A text the user added, and a full thumbnail, survive every layout.
+let many = { ...doc, texts: ["một", "hai", "ba", "bốn", "năm"].map((text, index) => makeText(text, { size: 40 + index })) };
+many = { ...many, texts: [...many.texts, makeText("Tiêu đề chính", { size: 120 })] };
+for (const template of THUMB_TEMPLATES) {
+  const next = applyTemplate(many, template.id, "Tên video");
+  assert.equal(next.texts.length, 6, template.id);
+  assert.deepEqual([...words(next)].sort(), [...words(many)].sort(), `${template.id} keeps all 6 texts`);
+  assert.equal(next.texts.at(-1).text, "Tiêu đề chính");
+}
+assert.deepEqual(words(applyTemplate({ ...doc, texts: [makeText("   "), makeText("cũ")] }, "band", "x")), ["cũ"], "blank texts are not kept");
 assert.equal(applyTemplate(doc, "nope", "x"), doc);
 assert.equal(new Set(THUMB_TEMPLATES.map((template) => template.id)).size, THUMB_TEMPLATES.length);
 
