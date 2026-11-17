@@ -3,6 +3,10 @@ import {
   activeTrack, addExtracted, addTrack, burnRequests, MAX_TRACKS, plainLayers, removeTrack, serializeLayers, serializePlain, srtLines,
 } from "../src/features/edit/plain_subs.ts";
 import { DEFAULT_STYLE } from "../src/features/edit/subtitles.ts";
+import { createEdit, split } from "../src/features/edit/model.ts";
+
+// The whole 10 s video: burned lines keep their times.
+const whole = createEdit(10, { path: "D:\\v\\a.mp4", width: 1280, height: 720 });
 
 // A draft from before layers is one layer, "Phụ đề", with its lines.
 const old = { subtitles: serializePlain({ burn: true, style: DEFAULT_STYLE, lines: [{ id: "c1", start_ms: 0, end_ms: 1000, text: "Một" }] }) };
@@ -24,14 +28,14 @@ assert.equal(made.source.style.y, 0.8);
 assert.equal(made.vi.style.y, undefined, "the Vietnamese keeps the usual place");
 
 // Both burn, the Vietnamese over the original; the .srt is the Vietnamese.
-const burns = burnRequests(empty);
+const burns = burnRequests(empty, whole);
 assert.deepEqual(burns.burn.lines.map((line) => line.text), ["大家好", "谢谢"]);
 assert.deepEqual(burns.burnExtra.map((burn) => burn.lines.map((line) => line.text)), [["Chào mọi người", "Cảm ơn"]]);
 assert.deepEqual(srtLines(empty).map((line) => line.text), ["Chào mọi người", "Cảm ơn"]);
 
 // A hidden layer is neither burned nor in the .srt.
 made.vi.hidden = true;
-assert.deepEqual(burnRequests(empty), { burn: burns.burn });
+assert.deepEqual(burnRequests(empty, whole), { burn: burns.burn });
 assert.deepEqual(srtLines(empty).map((line) => line.text), ["大家好", "谢谢"]);
 made.vi.hidden = false;
 
@@ -59,5 +63,21 @@ assert.equal(two.active, two.tracks[0].id);
 removeTrack(two, two.active);
 assert.equal(two.tracks.length, 1);
 assert.equal(two.tracks[0].lines.length, 0);
-assert.deepEqual(burnRequests(two), {});
+assert.deepEqual(burnRequests(two, whole), {});
+
+// Issue #930: the burned lines are on the edited timeline (the export draws them on the finished picture), every layer;
+// a layer with nothing left on it is not burned.
+{
+  const layered = plainLayers({ subtitles: saved }, [], null);
+  const parts = split(split(whole, 1.5), 2.5);  // 0–1.5 | 1.5–2.5 | 2.5–10
+  const cut = { ...parts, segments: [parts.segments[0], parts.segments[2]] };  // 1.5–2.5 deleted: "大家好" keeps 1–1.5
+  const remapped = burnRequests(layered, cut);
+  assert.deepEqual(remapped.burn.lines.map((line) => [line.start_ms, line.end_ms, line.text]), [[1000, 1500, "大家好"], [2000, 3000, "谢谢"]]);
+  assert.deepEqual(remapped.burnExtra[0].lines.map((line) => [line.start_ms, line.end_ms]), [[1000, 1500], [2000, 3000]]);
+  const onlyLate = { ...parts, segments: [parts.segments[2]] };  // from 2.5 s: only "谢谢" (3–4 s) is left, at 0.5–1.5 s
+  assert.deepEqual(burnRequests(layered, onlyLate).burn.lines.map((line) => [line.start_ms, line.end_ms]), [[500, 1500]]);
+  const early = split(whole, 0.5);
+  const none = { ...early, segments: [early.segments[0]] };  // the first 0.5 s: no line at all, nothing burned
+  assert.deepEqual(burnRequests(layered, none), {});
+}
 console.log("plain_layers ok");

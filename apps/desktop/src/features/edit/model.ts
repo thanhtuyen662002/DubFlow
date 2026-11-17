@@ -1592,27 +1592,62 @@ export function sameEdit(a: Edit, b: Edit): boolean {
  * dropped, partial ones clipped, the rest shifted and scaled by each segment's
  * speed, in output order. Only main-video segments carry cues. A cue split
  * only by a cut that keeps both sides adjacent comes back as one cue.
+ *
+ * `shown` (Issue #930: the lines burned into the picture) gives the lines as
+ * the preview shows them instead: a reversed part shows its lines (mirrored in
+ * time), a held frame the line on that frame for the whole hold, and each part
+ * only up to where the next one takes over, so a dissolve shows the incoming
+ * part's line, never two at once.
  */
-export function remapCues(cues: readonly Cue[], edit: Edit): Cue[] {
+export function remapCues(cues: readonly Cue[], edit: Edit, options: { shown?: boolean } = {}): Cue[] {
+  const shown = options.shown === true;
   const result: Array<Cue & { source: number }> = [];
   const starts = outputStarts(edit);
   const ordered = cues.map((cue, source) => ({ cue, source })).sort((a, b) => a.cue.start_ms - b.cue.start_ms || a.source - b.source);
+  const add = (start_ms: number, end_ms: number, cue: Cue, source: number): void => {
+    if (end_ms <= start_ms) return;
+    const previous = result.at(-1);
+    if (previous && previous.source === source && Math.abs(previous.end_ms - start_ms) <= 1) {
+      previous.end_ms = end_ms;
+      return;
+    }
+    result.push({ start_ms, end_ms, text: cue.text, source });
+  };
   edit.segments.forEach((segment, index) => {
-    // Reversed speech and a held frame carry no subtitles.
-    if (segment.mediaId !== MAIN || !playsForward(segment)) return;
-    for (const { cue, source } of ordered) {
+    if (segment.mediaId !== MAIN) return;
+    if (!shown) {
+      // Reversed speech and a held frame carry no subtitles.
+      if (!playsForward(segment)) return;
+      for (const { cue, source } of ordered) {
+        const cueStart = cue.start_ms / 1000, cueEnd = cue.end_ms / 1000;
+        const from = Math.max(cueStart, segment.start), to = Math.min(cueEnd, segment.end);
+        const kept = to - from;
+        if (kept <= 0 || (kept < MIN_CUE_PIECE && kept < cueEnd - cueStart - 1e-6)) continue;
+        add(Math.round((starts[index] + (from - segment.start) / segment.speed) * 1000),
+          Math.round((starts[index] + (to - segment.start) / segment.speed) * 1000), cue, source);
+      }
+      return;
+    }
+    // the output time this part shows: up to where the next one takes over
+    const owned = [starts[index], index + 1 < edit.segments.length ? starts[index + 1] : starts[index] + segmentLength(segment)];
+    const show = (from: number, to: number, cue: Cue, source: number): void => {
+      add(Math.round(Math.max(from, owned[0]) * 1000), Math.round(Math.min(to, owned[1]) * 1000), cue, source);
+    };
+    const freeze = segment.look?.freeze;
+    if (freeze != null) {
+      for (const { cue, source } of ordered) {
+        if (cue.start_ms <= segment.start * 1000 && segment.start * 1000 < cue.end_ms) show(starts[index], starts[index] + freeze, cue, source);
+      }
+      return;
+    }
+    const reverse = segment.look?.reverse === true;
+    for (const { cue, source } of reverse ? [...ordered].reverse() : ordered) {
       const cueStart = cue.start_ms / 1000, cueEnd = cue.end_ms / 1000;
       const from = Math.max(cueStart, segment.start), to = Math.min(cueEnd, segment.end);
       const kept = to - from;
       if (kept <= 0 || (kept < MIN_CUE_PIECE && kept < cueEnd - cueStart - 1e-6)) continue;
-      const start_ms = Math.round((starts[index] + (from - segment.start) / segment.speed) * 1000);
-      const end_ms = Math.round((starts[index] + (to - segment.start) / segment.speed) * 1000);
-      const previous = result.at(-1);
-      if (previous && previous.source === source && Math.abs(previous.end_ms - start_ms) <= 1) {
-        previous.end_ms = end_ms;
-        continue;
-      }
-      result.push({ start_ms, end_ms, text: cue.text, source });
+      const [a, b] = reverse ? [segment.end - to, segment.end - from] : [from - segment.start, to - segment.start];
+      show(starts[index] + a / segment.speed, starts[index] + b / segment.speed, cue, source);
     }
   });
   return result.map(({ start_ms, end_ms, text }) => ({ start_ms, end_ms, text }));

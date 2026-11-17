@@ -496,7 +496,9 @@ pub struct ExportRequest {
     /// Chuẩn hóa độ to (Issue #520): the sound brought to -14 LUFS.
     #[serde(default)]
     normalize: bool,
-    /// Phụ đề lines burned in (Issue #523): drawn on the main video, in its own time.
+    /// Phụ đề lines burned in (Issue #523): drawn on the finished picture, over the overlays and under Chữ, at times
+    /// the front end remapped to the edited timeline like `cues` (Issue #930: never moved by a part's zoom, tilt, crop,
+    /// rotation or flip, as the preview shows them).
     #[serde(default)]
     burn: Option<BurnSubtitles>,
     /// More Phụ đề layers burned over the first (Tiếng Trung above Tiếng Việt), at most 3.
@@ -546,6 +548,9 @@ pub struct StemLevels {
 /// What follows the edit's picture and sound in the export graph.
 #[derive(Debug, Default)]
 struct Finish {
+    /// Phụ đề (Issue #930): the burned layers (`subtitles` filters, each over the one before) on the edit's finished
+    /// picture, before the text layer.
+    burn: Option<String>,
     /// The text layer (`subtitles` filter), drawn on the exported frame.
     texts: Option<String>,
     /// The picture fitted into another frame shape (`reframe_filter`).
@@ -1059,6 +1064,10 @@ fn validate(request: &ExportRequest, durations: &[f64]) -> Result<Edit, String> 
             || cue.text.chars().any(|c| c.is_control() && c != '\n' && c != '\r' && c != '\t') {
             return Err(fail("Phụ đề của bản chỉnh sửa không hợp lệ"));
         }
+    }
+    // Burned lines are on the edited timeline too (Issue #930), so none ends past it.
+    if request.burn.iter().chain(&request.burn_extra).any(|burn| burn.lines.iter().any(|line| line.end_ms > limit_ms)) {
+        return Err(fail("Phụ đề của bản chỉnh sửa không hợp lệ"));
     }
     if request.luts.len() > MAX_LUTS || !request.luts.iter().all(|lut| is_lut_path(lut)) {
         return Err(fail("Chỉ dùng được tối đa 8 file LUT .cube"));
@@ -1727,8 +1736,9 @@ fn duck_filter(start: f64, end: f64, db: f64) -> String {
 /// added sounds or a volume change it is `render_script` as before. Chữ
 /// (Issue #422): with a text layer, `texts` (the `subtitles` filter drawing
 /// it) is the last filter of the picture; without texts nothing changes.
+/// Phụ đề (Issue #930) is drawn just before it, on the finished picture.
 fn export_script(edit: &Edit, inputs: &[Input], frame: &Frame, quality: &str, mix: &Mix, finish: &Finish) -> (String, bool) {
-    let steps: Vec<&String> = finish.texts.iter().chain(finish.reframe.iter()).collect();
+    let steps: Vec<&String> = finish.burn.iter().chain(finish.texts.iter()).chain(finish.reframe.iter()).collect();
     let video_out = if steps.is_empty() { "v" } else { "vt" };
     let audio_out = if finish.normalize { "an" } else { "a" };
     let (mut graph, has_audio) = mixed_script(edit, inputs, frame, quality, mix, video_out, audio_out);
@@ -2279,7 +2289,7 @@ const MAX_BURN_EXTRA: usize = 3;
 /// The lines as the worker burns subtitles (engine/dubflow/subtitle/style.py and
 /// production_job._write_subtitles): PlayRes 1920x1080, one Default style for
 /// the look (a box is BorderStyle 4 padded by the Shadow), a dragged block
-/// placed by its centre, text literal. Times are the main video's own.
+/// placed by its centre, text literal. Times are the export's (Issue #930).
 fn burn_ass(burn: &BurnSubtitles) -> Result<String, String> {
     let style = &burn.style;
     style.validate()?;
@@ -3454,7 +3464,24 @@ fn start_export(request: ExportRequest) -> Result<Value, String> {
     };
     let reframe = ((out_width, out_height) != (width, height))
         .then(|| reframe_filter(out_width, out_height, request.fill.as_deref().unwrap_or("black")));
-    let finish = Finish { texts: layer, reframe, normalize: request.normalize, audio_only: request.audio_only };
+    // Phụ đề on the finished picture (Issue #930), on the export's clock: over the overlays, under Chữ and before the
+    // reframe, where the preview draws it. A sound-only export has no picture to draw on.
+    if request.burn_extra.len() > MAX_BURN_EXTRA {
+        return Err(fail("Quá nhiều lớp phụ đề"));
+    }
+    let mut burned = Vec::new();
+    if !request.audio_only {
+        let burns = request.burn.iter().chain(request.burn_extra.iter()).filter(|burn| !burn.lines.is_empty());
+        for (index, burn) in burns.enumerate() {
+            let file = work.join(if index == 0 { BURN_FILE.to_owned() } else { format!("subtitles-{}.ass", index + 1) });
+            let body = burn_ass(burn)?;
+            guarded(&work)?;
+            fs::write(&file, body).map_err(|_| fail("Không ghi được phụ đề"))?;
+            burned.push(subtitles_filter(&display_path(&file)));
+        }
+    }
+    let finish = Finish { burn: (!burned.is_empty()).then(|| burned.join(",")), texts: layer, reframe, normalize: request.normalize,
+        audio_only: request.audio_only };
     let (text, has_audio) = export_script(&edit, &streams, &frame, &request.quality, &mix, &finish);
     // Xuất song song: the whole sound on its own, for a long export rendered as parts.
     let long = !request.audio_only && output_seconds(&edit.segments, &edit.transitions) >= parts::PARALLEL_MIN_SECONDS;
@@ -3473,23 +3500,11 @@ fn start_export(request: ExportRequest) -> Result<Value, String> {
     }
     let rate = match request.bitrate.as_deref() { Some("low") => 0.6, Some("high") => 1.6, _ => 1.0 };
     let bitrate = (video_bitrate(out_width, out_height, &fps) as f64 * rate).round() as u64;
-    // Che, then Phụ đề, on the main video before it is cut: both follow its own time.
-    let mut prefilter: Vec<String> = request.cover.as_ref().map(cover_filter).transpose()?.flatten().into_iter().collect();
-    if request.burn_extra.len() > MAX_BURN_EXTRA {
-        return Err(fail("Quá nhiều lớp phụ đề"));
-    }
-    let burns = request.burn.iter().chain(request.burn_extra.iter()).filter(|burn| !burn.lines.is_empty());
-    for (index, burn) in burns.enumerate() {
-        let file = work.join(if index == 0 { BURN_FILE.to_owned() } else { format!("subtitles-{}.ass", index + 1) });
-        let body = burn_ass(burn)?;
-        guarded(&work)?;
-        fs::write(&file, body).map_err(|_| fail("Không ghi được phụ đề"))?;
-        prefilter.push(subtitles_filter(&display_path(&file)));
-    }
-    let prefilter = (!prefilter.is_empty()).then(|| prefilter.join(","));
+    // Che on the main video before it is cut: it covers what the source picture shows, in its own time.
+    let prefilter = request.cover.as_ref().map(cover_filter).transpose()?.flatten();
     let text = prefilter.as_deref().map_or(text.clone(), |filter| with_cover(&text, filter));
-    let parts = long.then(|| parts::Source { media_count: streams.len(), frame: frame.clone(), texts: finish.texts.clone(), reframe: finish.reframe.clone(),
-        prefilter, sound_script });
+    let parts = long.then(|| parts::Source { media_count: streams.len(), frame: frame.clone(), burn: finish.burn.clone(), texts: finish.texts.clone(),
+        reframe: finish.reframe.clone(), prefilter, sound_script });
     inputs.extend(sound_inputs);
     inputs.extend(stem_inputs.into_iter().map(|(file, _)| file));
     guarded(&work)?;
@@ -5328,6 +5343,21 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
         let mut value = request(vec![segment(0.0, 10.0, 1.0, 1.0)]);
         value.cues = vec![Cue { start_ms: 9000, end_ms: 11_000, text: "dòng 1\ndòng 2".into() }];
         assert!(validate(&value, &[30.0]).is_ok(), "a last cue may run up to a second past the end");
+        // Burned lines are on the edited timeline too (Issue #930): up to a second past its end, like cues, every layer.
+        let look: SubtitleStyle = serde_json::from_value(style(json!({}))).unwrap();
+        for (end_ms, fits) in [(11_000, true), (11_001, false)] {
+            for extra in [false, true] {
+                let mut value = request(vec![segment(0.0, 10.0, 1.0, 1.0)]);
+                let burn = BurnSubtitles { style: look.clone(), lines: vec![Cue { start_ms: 9000, end_ms, text: "x".into() }] };
+                if extra {
+                    value.burn = Some(BurnSubtitles { style: look.clone(), lines: vec![] });
+                    value.burn_extra = vec![burn];
+                } else {
+                    value.burn = Some(burn);
+                }
+                assert_eq!(validate(&value, &[30.0]).is_ok(), fits, "burned line ending at {end_ms}, extra layer {extra}");
+            }
+        }
         assert!(serde_json::from_value::<ExportRequest>(json!({"outputPath": "x", "kind": "file", "segments": [], "quality": "source",
             "folder": "x", "fileName": "x", "cues": [], "overwrite": true})).is_err(), "no overwrite option");
         assert!(serde_json::from_value::<Segment>(json!({"start": 0, "end": 1, "speed": 1, "volume": 1, "id": "s1"})).is_err());
@@ -6280,6 +6310,31 @@ Dialogue: 3,0:00:05.00,0:00:07.00,T1,,256,256,0,,{\\an6\\pos(1024,360)}{\\ko10}G
         assert_eq!(with, format!("{};\n[vt]subtitles=filename=t.ass[v]", without.replace("setsar=1[v]", "setsar=1[vt]")));
         assert!(without.ends_with("[am]volume=0.5,alimiter=limit=0.891:level=0:latency=1[a]") && without.contains("setsar=1[v]"));
         assert_eq!(with.matches("[v]").count(), 1, "one picture output");
+    }
+
+    #[test]
+    fn burns_phu_de_on_the_finished_picture_under_the_texts() {
+        // Issue #930: Phụ đề is drawn on the edit's finished picture (after the cuts, the overlays and the quality
+        // scale), on the export's clock, under Chữ and before the reframe; never inside a part's trim chain.
+        let input = [Input { has_audio: true }];
+        let edit = Edit { segments: vec![segment(0.0, 10.0, 1.0, 1.0), segment(20.0, 30.0, 2.0, 1.0)],
+            transitions: vec![joint(0, TransitionKind::Fade, 0.8)],
+            overlays: vec![Overlay { media: 0, at: 1.0, start: 0.0, end: 2.0, x: 0.0, y: 0.0, w: 0.5, volume: 0.0, ..Default::default() }], ..Default::default() };
+        let mix = Mix { sounds: vec![], main_volume: 1.0, ..Default::default() };
+        let (plain, _) = export_script(&edit, &input, &frame(), "720p", &mix, &Finish::default());
+        let finish = Finish { burn: Some("subtitles=filename=s.ass,subtitles=filename=s2.ass".into()), texts: Some("subtitles=filename=t.ass".into()),
+            reframe: Some(reframe_filter(720, 720, "black")), ..Finish::default() };
+        let (burned, has_audio) = export_script(&edit, &input, &frame(), "720p", &mix, &finish);
+        assert!(has_audio);
+        assert_eq!(burned, format!("{};\n[vt]subtitles=filename=s.ass,subtitles=filename=s2.ass[vf0];\n[vf0]subtitles=filename=t.ass[vf1];\n[vf1]{}[v]",
+            plain.replace("setsar=1[v]", "setsar=1[vt]"), reframe_filter(720, 720, "black")));
+        let at = burned.find("subtitles=filename=s.ass").unwrap();
+        assert!(burned[..at].contains("overlay") && burned[..at].contains("setsar=1[vt]"), "after the overlays and the scale: {burned}");
+        assert!(!burned[at..].contains("trim") && !burned[at..].contains("concat"), "after the cuts: {burned}");
+        // Phụ đề alone ends the picture; a sound-only export keeps its null sink.
+        let (alone, _) = export_script(&whole(10.0), &input, &frame(), "source", &mix, &Finish { burn: Some("subtitles=filename=s.ass".into()), ..Finish::default() });
+        assert!(alone.ends_with("[v0][a0]concat=n=1:v=1:a=1[vt][a];\n[vt]subtitles=filename=s.ass[v]"), "{alone}");
+        assert_eq!(alone.matches("[v]").count(), 1, "one picture output");
     }
 
     #[test]
