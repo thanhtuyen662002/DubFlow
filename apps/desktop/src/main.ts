@@ -1806,6 +1806,9 @@ const discovery = mountDiscovery(invoke, async (url, title) => { await startFetc
   return key ? chineseKeyword(claudeKey.provider(), key, text) : null;
 });
 const aiSettings = mountAiSettings(claudeKey, () => openSettings("account"), invoke, playableUrl);
+// The saved keys load while the app starts: Cài đặt drawn before they arrived said "Chưa có khóa …" though a job then
+// used the key (rc21). Drawn again once they are in.
+void aiRestored.then(() => aiSettings.refresh());
 const glossaryBooks = mountGlossaryBooks(invoke);
 const jobGlossary = mountJobGlossary({
   job: () => {
