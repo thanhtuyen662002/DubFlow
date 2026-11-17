@@ -152,17 +152,22 @@ assert.deepEqual(fitBox({ x: 0, y: 0, width: 100, height: 100 }, { top: 20, bott
 assert.deepEqual(fitBox({ x: 0, y: 650, width: 100, height: 100 }, { top: 20, bottom: 10 }), { x: 0, y: 610, width: 100, height: 100 });
 assert.deepEqual(fitBox({ x: 0, y: -50, width: 100, height: 700 }, { top: 20, bottom: 10 }), { x: 0, y: 0, width: 100, height: 700 }, "no room for the margin: the box itself still fits");
 // A move away from an edge the text is held against starts where it is drawn, so it comes back at the first step;
-// a move toward or along the edge, or a jitter, keeps the saved place, so the text stays held there.
+// a move toward the edge keeps the saved place exactly, so the text neither moves nor re-wraps; along it, it stays held.
 const drawnAt = (text) => layoutText(text, glyphs(text)).box;
 let pushed = makeText("Chữ mới", { x: 0.5, y: 0.5 });
 for (let step = 0; step < 100; step += 1) pushed = nudgeText(pushed, drawnAt(pushed), -10, 0);
 const atEdge = drawnAt(pushed);
 assert.equal(atEdge.x, 0, "pushed to the left edge");
-assert.equal(pushed.x, 0, "its saved centre went on to the edge itself");
+assert.ok(centreOn(pushed, atEdge).x > pushed.x, "held there: drawn right of its saved centre");
+assert.equal(nudgeText(pushed, atEdge, -10, 0), pushed, "more presses toward the edge: its saved place stops where the drawing first held it");
 const back = nudgeText(pushed, atEdge, 8, 0);
 assert.ok(Math.abs(drawnAt(back).x - 8) < 1e-6, `one step right moves it 8 px at once (${drawnAt(back).x})`);
-assert.equal(nudgeText(pushed, atEdge, -8, 0).x, 0, "toward the edge: still held");
-assert.equal(nudgeText(pushed, atEdge, 0, 8).x, 0, "along the edge: still held");
+assert.equal(nudgeText(pushed, atEdge, 0, 8).x, pushed.x, "along the edge: still held");
+// A held text whose wrap depends on its room: a key toward the edge must not shrink the room and re-wrap it.
+const sideHeld = makeText("NGHIÊNG AB CD", { x: 0.125, y: 0.4 });
+const sideBox = drawnAt(sideHeld);
+assert.ok(sideBox.x === 0 && centreOn(sideHeld, sideBox).x > sideHeld.x, "NGHIÊNG AB CD at x 0.125 is held at the left edge");
+assert.equal(nudgeText(sideHeld, sideBox, -8, 0), sideHeld, "a key toward the edge: the same text, the same lines");
 const big = applyTemplate({ ...emptyThumb(), texts: [] }, "big-bottom", longTitle).texts[0];
 const bigBox = drawnAt(big);
 assert.ok(bigBox.y + bigBox.height / 2 < big.y * THUMB_HEIGHT - 1, "big-bottom: a 3-line title is drawn moved up");
@@ -181,17 +186,18 @@ const slop = { x: 12, y: 12 };
 assert.deepEqual(dragText(unmoved, { x: 5, y: -5 }, slop, drawnAt), moveText(unmoved, 5, -5), "not held: with the pointer");
 assert.equal(dragText(unmoved, { x: 0, y: 0 }, slop, drawnAt), unmoved, "no way: the same text");
 assert.equal(dragText(pushed, { x: 11, y: 0 }, slop, drawnAt), pushed, "below the slop away from the edge: as it was");
-assert.equal(dragText(pushed, { x: -40, y: 0 }, slop, drawnAt).x, 0, "toward the edge: held");
+assert.equal(dragText(pushed, { x: -40, y: 0 }, slop, drawnAt), pushed, "toward the edge: as it was");
+assert.equal(dragText(sideHeld, { x: -2, y: 150 }, slop, drawnAt).x, sideHeld.x, "down with a drift toward the held side: its saved x kept, so no re-wrap");
 assert.ok(Math.abs(drawnAt(dragText(pushed, { x: 12, y: 0 }, slop, drawnAt)).x - 12) < 1e-6, "past the slop: 12 px off the edge");
 const bigUp = dragText(big, { x: 0, y: -20 }, slop, drawnAt);
 assert.ok(Math.abs(drawnAt(bigUp).y - (bigBox.y - 20)) < 1e-6, "big-bottom 20 px up: drawn 20 px up");
-assert.equal(dragText(big, { x: 0, y: 40 }, slop, drawnAt).y, Math.min(1, big.y + 40 / THUMB_HEIGHT), "down into the bottom: held");
-const bigSide = dragText(big, { x: 150, y: -20 }, slop, drawnAt);
-const stretched = drawnAt({ ...big, x: big.x + 150 / THUMB_WIDTH });
+assert.equal(dragText(big, { x: 0, y: 40 }, slop, drawnAt), big, "down into the bottom: as it was");
+// Sideways far enough to re-wrap and lift it, then up: 20 px up from where it is drawn at the new place, not at the grab.
+const stretched = drawnAt({ ...big, x: big.x + 350 / THUMB_WIDTH });
+assert.ok(stretched.y < bigBox.y - 20, "350 px across it is re-wrapped and lifted");
+const bigSide = dragText(big, { x: 350, y: -20 }, slop, drawnAt);
 assert.ok(Math.abs(drawnAt(bigSide).y - (stretched.y - 20)) < 1e-6, "sideways and up: 20 px up from where it is drawn at the new place");
-for (const way of [{ x: 150, y: -20 }, { x: -300, y: 7 }, { x: 0, y: -500 }]) {
-  assert.deepEqual(dragText(big, way, slop, drawnAt), dragText(big, way, slop, drawnAt), "the same way, the same place");
-}
+assert.equal(dragText(big, { x: 350, y: 0 }, slop, drawnAt).y, big.y, "sideways only: its saved height kept");
 
 // Picking and dragging text.
 const title = makeText("Tiêu đề", { x: 0.5, y: 0.5, size: 100, strokeWidth: 0 });
@@ -574,6 +580,28 @@ for (const [width, height] of [[THUMB_WIDTH, THUMB_HEIGHT], [320, 180]]) {
   canvasElement.fire("pointerup", at(grip.x, grip.y));
   assert.equal(view.document().texts[0].x, tallTitle.x);
   assert.equal(view.document().texts[0].y, tallTitle.y);
+}
+Object.assign(stage, { width: THUMB_WIDTH, height: THUMB_HEIGHT });
+// A text held at a side whose wrap depends on its room ("NGHIÊNG AB CD" at x 0.125): drags up and down that drift
+// toward the side, a push into the side, and several such strokes keep its lines and saved place; so do keys.
+for (const [width, height] of [[THUMB_WIDTH, THUMB_HEIGHT], [320, 180]]) {
+  Object.assign(stage, { width, height });
+  const px = scale();
+  fresh();
+  view.begin({ ...emptyThumb(), texts: [sideHeld] });
+  const start = inks();
+  for (const [dx, dy] of [[-2, 60], [-1, -40], [-2, 40], [-40, 0], [-2, -60]]) {
+    const ink = inks()[0];
+    canvasElement.fire("pointerdown", at(ink.x, ink.y));
+    for (let step = 1; step <= 10; step += 1) canvasElement.fire("pointermove", at(ink.x + dx * px * step / 10, ink.y + dy * px * step / 10));
+    canvasElement.fire("pointerup", at(ink.x + dx * px, ink.y + dy * px));
+    fresh();
+    view.begin(view.document());
+    assert.deepEqual(inks().map((line) => [line.line, line.left]), start.map((line) => [line.line, line.left]), `${width} px stage, (${dx}, ${dy}) screen px: the same lines, the same place across`);
+    assert.equal(view.document().texts[0].x, sideHeld.x, `${width} px stage, (${dx}, ${dy}) screen px: its saved x kept`);
+  }
+  for (let press = 0; press < 5; press += 1) canvasElement.fire("keydown", { key: "ArrowLeft" });
+  assert.equal(view.document().texts[0].x, sideHeld.x, `${width} px stage, ArrowLeft into the edge: its saved x kept`);
 }
 Object.assign(stage, { width: THUMB_WIDTH, height: THUMB_HEIGHT });
 // Opening a thumbnail only draws it: its saved place is not changed by the drawing.
