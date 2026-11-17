@@ -258,6 +258,7 @@ export function mountThumbnail(invoke: Invoke, host: ThumbHost): ThumbnailView {
     const next = applyTemplate(doc, template.value, thumbName(host.context()?.name ?? "").replace(/ - thumbnail$/, ""));
     template.value = "";
     if (next === doc) return note(`Ảnh bìa đã có ${MAX_THUMB_TEXTS} chữ. Xóa bớt một chữ rồi chọn lại mẫu.`);
+    if (state.textContent?.startsWith("Ảnh bìa đã có")) note("");
     doc = next;
     selected = doc.texts[doc.texts.length - 1]?.id ?? null;
     changed();

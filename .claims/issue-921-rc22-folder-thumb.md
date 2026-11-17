@@ -1,7 +1,7 @@
 DUBFLOW_PR_V1
 Issue: #921
 Lease-Owner: Claude/issue-921-rc22-folder-thumb
-Lease-Heartbeat: 2026-11-17T06:51:34Z
+Lease-Heartbeat: 2026-11-17T07:00:27Z
 Tested-Base-SHA: dcc3cc05ba78f8d4ae899c6ecf155da2ed6326cc
 Conflict-Domains: edit-export-folder,thumbnail-templates
 Expected-Paths:
