@@ -46,6 +46,7 @@ import { lookBadges } from "./look.ts";
 import { exportFolder } from "./library.ts";
 import { packHistory, unpackHistory } from "./undo_store.ts";
 import { Autosaver, windowTimers } from "./autosave.ts";
+import { CLOSE_WAIT_MS, flushWithin, unsavedPrompt } from "./close_guard.ts";
 import { mountThumbnail } from "./thumbnail_view.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
@@ -146,8 +147,8 @@ export type Editor = {
   togglePlay(): void;
   /** A click on the picture: drops the selected overlay or text, else plays or pauses. */
   clickPicture(): void;
-  /** Write a pending autosave now. */
-  flush(): Promise<void>;
+  /** Write a pending autosave now; true when the draft on disk has every change (Issue #929). */
+  flush(): Promise<boolean>;
   /** Switch the open edit to a tool tab; false when this video does not have it. */
   show(mode: "subs" | "more"): boolean;
   /** Files dropped on the window while editing, at a point in client pixels (null when unknown). */
@@ -1135,7 +1136,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     seek: seekTo,
     pps: () => pps,
     pause: () => { if (session?.playing) pausePlayback(); },
-    flush: () => flush(),
+    flush: async () => { await flush(); },
     finish: async () => { await close(false); },
     changed: () => renderPanel(),
     cover,
@@ -1289,13 +1290,13 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   });
   const templateMode = mountTemplate(invoke, {
     draft: () => session ? { edit: session.history.current, changes: session.history.changes, selected: session.selected, recent: session.recent } : null,
-    flush: () => flush(),
+    flush: async () => { await flush(); },
     pause: () => { if (session?.playing) pausePlayback(); },
     cpuOnly: () => host.cpuOnly(),
     reopen: async (next) => {
       if (!session) return;
       const from = session.target;
-      await close(false, true);
+      if (!(await close(false, true))) return;
       mode = "template";
       const opened = await open({ id: next.outputPath, kind: "product", outputPath: next.outputPath, displayName: next.displayName });
       if (!opened) leave(from);
@@ -1442,7 +1443,11 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
           : "Đã lưu nháp";
       }
     } catch (error) {
-      $("#edit-save-state").textContent = `Chưa lưu được bản nháp: ${String(error).slice(0, 140)}`;
+      // the saver keeps the change pending and tries again (Issue #929): it has to know this write failed
+      if (session?.outputPath === outputPath) {
+        $("#edit-save-state").textContent = `Chưa lưu được bản nháp, DubFlow sẽ tự thử lại: ${String(error).slice(0, 140)}`;
+      }
+      throw error;
     }
   }
 
@@ -1451,8 +1456,9 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     saver.changed();
   }
 
-  async function flush(): Promise<void> {
-    await saver.flush();
+  /** Write a pending change now; true when the draft on disk has every change. */
+  function flush(): Promise<boolean> {
+    return saver.flush();
   }
 
   // the window hidden or the page going away: what is pending goes to disk now, not after the wait
@@ -3553,20 +3559,27 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   }
 
   /** Leave edit mode; `quiet` keeps the page (the next video opens right after). */
-  let asking: Promise<boolean> | null = null;
+  let closing: Promise<boolean> | null = null;
   function close(ask: boolean, quiet = false): Promise<boolean> {
-    // One "Thoát chỉnh sửa?" at a time: navigating again while it is open waits on the same answer.
-    if (asking) return asking;
+    // One close at a time: it waits for the draft and may ask, and navigating again meanwhile waits on the same answer.
+    if (closing) return closing;
     const pending = closeNow(ask, quiet);
-    if (!ask) return pending;
-    asking = pending;
-    void pending.finally(() => { if (asking === pending) asking = null; });
+    closing = pending;
+    void pending.finally(() => { if (closing === pending) closing = null; });
     return pending;
   }
 
   async function closeNow(ask: boolean, quiet: boolean): Promise<boolean> {
     if (!session) return true;
-    if (ask && (unexported() || subs.dirty() || docuCover.dirty || docuCuts.dirty || docuLayers.busy || templateMode.dirty() || templateMode.busy)) {
+    // The draft first (Issue #929): a change that could not be saved is never left behind without asking.
+    const saved = await flushWithin(() => saver.flush(), CLOSE_WAIT_MS, windowTimers);
+    if (!session) return true;
+    if (!saved) {
+      const unapplied = subs.dirty() || docuCover.dirty || docuCuts.dirty || templateMode.dirty();
+      // "Ở lại" keeps the editor open, and the saver keeps trying
+      if (!(await host.confirm(unsavedPrompt("exit", unapplied)))) return false;
+      saver.drop();
+    } else if (ask && (unexported() || subs.dirty() || docuCover.dirty || docuCuts.dirty || docuLayers.busy || templateMode.dirty() || templateMode.busy)) {
       const leave = await host.confirm(templateMode.busy ? {
         title: "Thoát chỉnh sửa?", message: "Video đang được dựng lại theo mẫu mới. Bản mới vẫn được tạo và có trong Bán hàng › Video đã tạo, nhưng bản nháp chỉnh sửa không được chuyển sang.",
         confirmLabel: "Thoát", cancelLabel: "Ở lại", danger: true,
@@ -3581,10 +3594,16 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       if (!leave) return false;
     }
     if (!session) return true;
+    // a change made while the question was open goes to disk too
+    if (saver.pending && !(await flushWithin(() => saver.flush(), CLOSE_WAIT_MS, windowTimers))) {
+      if (!session) return true;
+      if (!(await host.confirm(unsavedPrompt("exit")))) return false;
+      saver.drop();
+    }
+    if (!session) return true;
     const leaving = session.target;
     if (session.draft) session.draft = null;
     session.playing = false;
-    await flush();
     cover.end();
     thumb.end();
     docuCover.end();

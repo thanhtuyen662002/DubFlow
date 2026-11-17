@@ -5,6 +5,8 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { connectDesktopShell, type DesktopShellModel } from "./shell/desktop_shell.ts";
 import { confirmDialog } from "./shell/confirm.ts";
+import { closeGuard, unsavedPrompt, wireWindowClose } from "./features/edit/close_guard.ts";
+import { windowTimers } from "./features/edit/autosave.ts";
 import { mountLayoutPanels, refitPanels, resetPanels } from "./shell/layout_panels.ts";
 import { mountListTools } from "./shell/list_tools.ts";
 import { mountNamedHeading, mountRenames } from "./shell/names.ts";
@@ -2998,8 +3000,12 @@ async function syncMaximized(): Promise<void> {
 }
 $("#window-minimize").addEventListener("click", () => void appWindow?.minimize());
 $("#window-maximize").addEventListener("click", () => void appWindow?.toggleMaximize());
-// A pending edit autosave is written first.
-$("#window-close").addEventListener("click", () => void editor.flush().finally(() => appWindow?.close()));
+// Closing (the × button, Alt+F4, the taskbar) writes the editing draft first; a change that could not be saved is
+// not lost without asking (Issue #929).
+if (appWindow) {
+  const mayClose = closeGuard({ flush: () => editor.flush(), ask: () => confirmDialog(unsavedPrompt("close")), timers: windowTimers });
+  void wireWindowClose(appWindow, $("#window-close"), mayClose);
+}
 $("#app-header").addEventListener("mousedown", (event) => {
   if (!appWindow || event.button !== 0) return;
   if ((event.target as Element).closest("button, a, input, select, textarea, label, form")) return;
