@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import {
   THUMB_HEIGHT, THUMB_WIDTH, THUMB_TEMPLATES, applyTemplate, coverRect, dragPan, emptyThumb, hasThumb, makeText,
-  MAX_LINE_WIDTH, MAX_THUMB_TEXT, MOVE_SLOP, centreOn, fitBox, inkMargin, layoutText, leavesEdge, nudgeText, moveText, normalizeThumb, textAt, textBox, textRoom, thumbName, wrapLines,
+  DRAG_START_PX, MAX_LINE_WIDTH, MAX_THUMB_TEXT, centreOn, fitBox, inkMargin, layoutText, leavesEdge, nudgeText, moveText, normalizeThumb, textAt, textBox, textRoom, thumbName, wrapLines,
 } from "../src/features/edit/thumbnail.ts";
 
 const covers = (rect) => rect.x <= 1e-9 && rect.y <= 1e-9 && rect.x + rect.width >= THUMB_WIDTH - 1e-9 && rect.y + rect.height >= THUMB_HEIGHT - 1e-9;
@@ -169,9 +169,9 @@ assert.ok(bigBox.y + bigBox.height / 2 < big.y * THUMB_HEIGHT - 1, "big-bottom: 
 assert.ok(Math.abs(drawnAt(nudgeText(big, bigBox, 0, -10)).y - (bigBox.y - 10)) < 1e-6, "and moves up at the first move");
 assert.equal(nudgeText(big, bigBox, 10, 0).y, big.y, "a sideways move keeps it held at the bottom");
 assert.equal(leavesEdge(0.5, 0.5, 50, THUMB_WIDTH), false, "not held: the saved place");
-assert.equal(leavesEdge(0, 0.1, MOVE_SLOP - 1, THUMB_WIDTH), false, "a jitter away: still held");
-assert.equal(leavesEdge(0, 0.1, MOVE_SLOP, THUMB_WIDTH), true, "a move away: leaves");
-assert.equal(leavesEdge(0, 0.1, -MOVE_SLOP * 10, THUMB_WIDTH), false, "toward the edge: still held");
+assert.equal(leavesEdge(0, 0.1, 1, THUMB_WIDTH), true, "a key move away: leaves");
+assert.equal(leavesEdge(0, 0.1, -8, THUMB_WIDTH), false, "toward the edge: still held");
+assert.equal(leavesEdge(0, 0.1, 0, THUMB_WIDTH), false, "no move on this axis: as it is");
 assert.equal(centreOn(big, undefined), big, "no box drawn: as it is");
 const unmoved = makeText("ngắn", { x: 0.5, y: 0.5 });
 assert.equal(centreOn(unmoved, drawnAt(unmoved)), unmoved, "a box that was not moved in: the same text");
@@ -463,12 +463,34 @@ const strokes = (layout, moves) => {
   return { first, last: titleOf(), firstInk: firstInk.map((ink) => [ink.line, ink.y]), lastInk: inks().map((ink) => [ink.line, ink.y]) };
 };
 for (const layout of ["big-bottom", "band", "two-lines"]) {
-  for (const moves of [[[100, 0], [-100, 0]], [[100, 0], [100, 0], [-100, 0], [-100, 0]], [[100, -2], [-100, 3]]]) {
+  const wobble = DRAG_START_PX - 1; // screen px; the fake stage is drawn at 1:1
+  for (const moves of [[[100, 0], [-100, 0]], [[100, 0], [100, 0], [-100, 0], [-100, 0]], [[100, -wobble], [-100, wobble]]]) {
     const { first, last, firstInk, lastInk } = strokes(layout, moves);
     assert.equal(last.y, first.y, `${layout} ${JSON.stringify(moves)}: the title is still held at its height`);
     assert.ok(Math.abs(last.x - first.x) < 1e-9, `${layout} ${JSON.stringify(moves)}: and back across`);
     assert.deepEqual(lastInk, firstInk, `${layout} ${JSON.stringify(moves)}: drawn as before`);
   }
+}
+// Going up after a sideways stretch that re-wrapped and lifted the title: it moves up from where it is drawn, no jump.
+{
+  fresh();
+  view.begin(null);
+  templateSelect.value = "big-bottom";
+  templateSelect.fire("change");
+  const title = titleOf();
+  const grip = inks().find((ink) => title.text.includes(ink.line));
+  canvasElement.fire("pointerdown", at(grip.x, grip.y));
+  for (let step = 1; step <= 20; step += 1) {
+    fresh();
+    canvasElement.fire("pointermove", at(grip.x + step * 10, grip.y));
+  }
+  const sideways = inks();
+  assert.ok(sideways.length > 3 && titleOf().y === title.y, "re-wrapped and lifted, its saved height untouched");
+  fresh();
+  canvasElement.fire("pointermove", at(grip.x + 200, grip.y - 20));
+  const up = inks();
+  assert.ok(up.every((ink, index) => Math.abs(ink.y - (sideways[index].y - 20)) < 1e-6), `20 px up: every line 20 px up ${JSON.stringify([sideways.map((ink) => ink.y), up.map((ink) => ink.y)])}`);
+  canvasElement.fire("pointerup", at(grip.x + 200, grip.y - 20));
 }
 // Opening a thumbnail only draws it: its saved place is not changed by the drawing.
 const kept = word({ x: 0, y: 1 });

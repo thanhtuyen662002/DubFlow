@@ -7,7 +7,7 @@
 
 import {
   MAX_TEXT_SIZE, MAX_THUMB_TEXTS, MIN_TEXT_SIZE, SUBTITLE_FONTS, THUMB_HEIGHT, THUMB_TEMPLATES, THUMB_WIDTH,
-  applyTemplate, centreOn, coverRect, dragPan, emptyThumb, hasThumb, layoutText, leavesEdge, makeText, moveText, normalizeThumb, nudgeText, textAt, thumbName,
+  DRAG_START_PX, applyTemplate, centreOn, coverRect, dragPan, emptyThumb, hasThumb, layoutText, makeText, normalizeThumb, nudgeText, textAt, thumbName,
   type Rect, type ThumbDoc, type ThumbText,
 } from "./thumbnail.ts";
 import { isFont } from "./fonts.ts";
@@ -299,11 +299,12 @@ export function mountThumbnail(invoke: Invoke, host: ThumbHost): ThumbnailView {
 
   // Drag a text to move it; drag elsewhere to move the picture inside the frame. A move starts where the text is drawn.
   const drawnBox = (id: string): Rect | undefined => boxes.find((item) => item.id === id)?.box;
-  // A text drag moves the text by the pointer's whole way since it was grabbed. On an axis where the text is held
-  // against an edge, it starts from where it is drawn once the pointer leaves that edge (see leavesEdge), and stays
-  // held otherwise, so the same pointer place gives the same result and a passing fit is never kept.
-  type TextDrag = { saved: ThumbText; drawn: ThumbText; free: { x: boolean; y: boolean } };
-  let drag: { id: string | null; x: number; y: number; pointer: number; from: { x: number; y: number }; text: TextDrag | null } | null = null;
+  // A text drag moves the text by the pointer's whole way since it was grabbed, on each axis only once the pointer
+  // has gone DRAG_START_PX screen pixels along it. That axis then starts from where the text is drawn at that moment,
+  // so a text held against an edge leaves it at once and never jumps; an axis the pointer did not go along keeps its
+  // saved place, so a sideways drag never moves a text up or down (or off an edge it is held against).
+  type TextDrag = { saved: ThumbText; start: { x: number; y: number }; from: { x: number | null; y: number | null } };
+  let drag: { id: string | null; x: number; y: number; pointer: number; text: TextDrag | null } | null = null;
   const point = (event: PointerEvent): { x: number; y: number } => {
     const rect = canvas.getBoundingClientRect();
     return { x: (event.clientX - rect.left) * THUMB_WIDTH / rect.width, y: (event.clientY - rect.top) * THUMB_HEIGHT / rect.height };
@@ -313,8 +314,7 @@ export function mountThumbnail(invoke: Invoke, host: ThumbHost): ThumbnailView {
     const id = textAt(boxes, at.x, at.y);
     if (id !== selected) select(id);
     const grabbed = doc.texts.find((text) => text.id === id);
-    const text = grabbed ? { saved: grabbed, drawn: centreOn(grabbed, drawnBox(grabbed.id)), free: { x: false, y: false } } : null;
-    drag = { id, ...at, pointer: event.pointerId, from: at, text };
+    drag = { id, ...at, pointer: event.pointerId, text: grabbed ? { saved: grabbed, start: at, from: { x: null, y: null } } : null };
     canvas.setPointerCapture(event.pointerId);
   });
   canvas.addEventListener("pointermove", (event) => {
@@ -323,15 +323,21 @@ export function mountThumbnail(invoke: Invoke, host: ThumbHost): ThumbnailView {
     const dx = at.x - drag.x, dy = at.y - drag.y;
     drag.x = at.x;
     drag.y = at.y;
-    const held = drag.text, wayX = at.x - drag.from.x, wayY = at.y - drag.from.y;
+    const held = drag.text;
     if (held) {
-      const { saved, drawn, free } = held;
-      free.x ||= leavesEdge(saved.x, drawn.x, wayX, THUMB_WIDTH);
-      free.y ||= leavesEdge(saved.y, drawn.y, wayY, THUMB_HEIGHT);
-      const moved = moveText({ ...saved, x: free.x ? drawn.x : saved.x, y: free.y ? drawn.y : saved.y }, wayX, wayY);
+      const { saved, start, from } = held;
+      const rect = canvas.getBoundingClientRect();
+      const wayX = at.x - start.x, wayY = at.y - start.y;
+      const drawn = centreOn(doc.texts.find((text) => text.id === saved.id) ?? saved, drawnBox(saved.id));
+      if (from.x === null && Math.abs(wayX) * rect.width / THUMB_WIDTH >= DRAG_START_PX) from.x = drawn.x;
+      if (from.y === null && Math.abs(wayY) * rect.height / THUMB_HEIGHT >= DRAG_START_PX) from.y = drawn.y;
+      const moved = {
+        ...saved,
+        x: from.x === null ? saved.x : Math.min(1, Math.max(0, from.x + wayX / THUMB_WIDTH)),
+        y: from.y === null ? saved.y : Math.min(1, Math.max(0, from.y + wayY / THUMB_HEIGHT)),
+      };
       doc = { ...doc, texts: doc.texts.map((text) => text.id === saved.id ? moved : text) };
-    }
-    else if (picture) doc = { ...doc, ...dragPan(doc, picture.naturalWidth, picture.naturalHeight, dx, dy) };
+    } else if (picture) doc = { ...doc, ...dragPan(doc, picture.naturalWidth, picture.naturalHeight, dx, dy) };
     else return;
     draw();
   });

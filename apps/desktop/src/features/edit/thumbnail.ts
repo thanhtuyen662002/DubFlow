@@ -265,24 +265,27 @@ export function centreOn(text: ThumbText, box: Rect | undefined): ThumbText {
   return Math.abs(x - text.x) < 1e-6 && Math.abs(y - text.y) < 1e-6 ? text : { ...text, x, y };
 }
 
-/** Pixels a move must go away from an edge a text is held against before the text leaves it (a hand's jitter stays). */
-export const MOVE_SLOP = 4;
+/**
+ * Screen pixels the pointer must go along an axis before a text drag moves
+ * the text on that axis. Below it a hand's wobble changes nothing, so a
+ * sideways drag never moves a text up or down.
+ */
+export const DRAG_START_PX = 3;
 
 /**
- * Whether a move of `move` px along one axis starts from where the text is
- * drawn (`drawn`) rather than its saved place (`saved`), both 0..1 of
+ * Whether a key move of `move` px along one axis starts from where the text
+ * is drawn (`drawn`) rather than its saved place (`saved`), both 0..1 of
  * `span` px. They differ only where the drawing moved the text in, holding
- * it against an edge. Moving away from that edge by `MOVE_SLOP` px or more
- * starts from the drawn place, so the text follows at once. A move toward
- * the edge, along it, or a jitter keeps the saved place, so the text stays
- * held there when it re-wraps, and a passing shift is never kept.
+ * it against an edge. Moving away from that edge starts from the drawn
+ * place, so the text moves at once; moving toward it keeps the saved
+ * place, so the text stays held there when it re-wraps.
  */
 export function leavesEdge(saved: number, drawn: number, move: number, span: number): boolean {
   const shift = (drawn - saved) * span;
-  return Math.abs(shift) > 1e-6 && Math.sign(move) === Math.sign(shift) && Math.abs(move) >= MOVE_SLOP;
+  return Math.abs(shift) > 1e-6 && move !== 0 && Math.sign(move) === Math.sign(shift);
 }
 
-/** The text moved by (dx, dy) px from where it is (see `leavesEdge`), drawn at `box`. */
+/** The text moved by an arrow key's (dx, dy) px, drawn at `box` (see `leavesEdge`); the other axis is left as it is. */
 export function nudgeText(text: ThumbText, box: Rect | undefined, dx: number, dy: number): ThumbText {
   const drawn = centreOn(text, box);
   const from = {
