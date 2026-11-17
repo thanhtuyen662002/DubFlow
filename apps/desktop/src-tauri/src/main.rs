@@ -2399,6 +2399,8 @@ async fn douyin_logout(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 fn main() {
+    // a candidate run with the saved keys closed keeps no key from its launch environment either (#911)
+    ai_keys::drop_inherited_keys();
     if !single_instance::claim() {
         return;
     }

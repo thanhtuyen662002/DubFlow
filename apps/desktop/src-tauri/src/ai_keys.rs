@@ -29,6 +29,84 @@ const MAX_KEY_CHARS: usize = 512;
 /// Keys saved here that are not AI chat providers: the Vibi.pro voices (#632).
 pub(crate) const VOICE_PROVIDERS: [&str; 1] = ["vibi"];
 
+/// Set (to anything but empty or "0") for a candidate or test run beside the installed app: the saved keys are
+/// Windows', shared by every DubFlow of this Windows user, so such a run must not read them (rc21: a sandboxed
+/// candidate translated a test video with the owner's Claude key). The run then behaves as with no key saved: no
+/// paid AI call is made, and nothing is saved or deleted.
+pub(crate) const NO_SAVED_KEYS_ENV: &str = "DUBFLOW_NO_SAVED_KEYS";
+
+pub(crate) fn keys_closed() -> bool {
+    closed_by(std::env::var(NO_SAVED_KEYS_ENV).ok().as_deref())
+}
+
+/// While keys are closed, a key handed in through the launch environment (a shell or test harness that set one)
+/// is dropped as well, before this host starts anything, so no job or helper inherits it. Called first in `main`.
+pub(crate) fn drop_inherited_keys() {
+    drop_inherited_keys_if(keys_closed());
+}
+
+fn drop_inherited_keys_if(closed: bool) {
+    if closed {
+        std::env::remove_var(JOB_KEY_ENV);
+        std::env::remove_var(crate::vibi::KEY_ENV);
+    }
+}
+
+fn closed_by(value: Option<&str>) -> bool {
+    value.is_some_and(|value| !value.trim().is_empty() && value.trim() != "0")
+}
+
+const CLOSED: &str = "Bản chạy thử này không dùng khóa AI đã lưu (DUBFLOW_NO_SAVED_KEYS)";
+
+/// Where saved keys are kept: Windows Credential Manager, or a test's stand-in (so the closed mode is proved
+/// without touching the real user's entries).
+struct Store {
+    read: fn(&str) -> Result<Option<String>, String>,
+    write: fn(&str, &str) -> Result<(), String>,
+    delete: fn(&str) -> Result<(), String>,
+}
+
+const WINDOWS: Store = Store { read: store::read, write: store::write, delete: store::delete };
+
+/// A saved key, or none while keys are closed to this run (the store is then not asked at all).
+fn saved_in(closed: bool, from: &Store, target: &str) -> Result<Option<String>, String> {
+    if closed {
+        return Ok(None);
+    }
+    (from.read)(target)
+}
+
+fn saved(target: &str) -> Result<Option<String>, String> {
+    saved_in(keys_closed(), &WINDOWS, target)
+}
+
+fn status_in(closed: bool, from: &Store) -> Result<Value, String> {
+    let mut status = serde_json::Map::new();
+    for provider in PROVIDERS.iter().chain(VOICE_PROVIDERS.iter()).copied() {
+        let key = saved_in(closed, from, &target(provider)?)?;
+        status.insert(provider.to_owned(), json!(key.as_deref().map(masked)));
+    }
+    Ok(Value::Object(status))
+}
+
+/// Saves a key; refused while keys are closed to this run, before the store is touched.
+fn set_in(closed: bool, into: &Store, provider: &str, key: &str) -> Result<String, String> {
+    let key = checked_key(key)?;
+    if closed {
+        return Err(fail(CLOSED));
+    }
+    (into.write)(&target(provider)?, &key)?;
+    Ok(masked(&key))
+}
+
+/// Removes a key; refused while keys are closed to this run, before the store is touched.
+fn delete_in(closed: bool, from: &Store, provider: &str) -> Result<(), String> {
+    if closed {
+        return Err(fail(CLOSED));
+    }
+    (from.delete)(&target(provider)?)
+}
+
 fn target(provider: &str) -> Result<String, String> {
     if !PROVIDERS.contains(&provider) && !VOICE_PROVIDERS.contains(&provider) {
         return Err(fail("Nhà cung cấp AI không hợp lệ"));
@@ -140,30 +218,23 @@ mod store {
 /// Which providers have a saved key, masked to the last four characters.
 #[tauri::command]
 pub fn ai_key_status() -> Result<Value, String> {
-    let mut status = serde_json::Map::new();
-    for provider in PROVIDERS.iter().chain(VOICE_PROVIDERS.iter()).copied() {
-        let saved = store::read(&target(provider)?)?;
-        status.insert(provider.to_owned(), json!(saved.as_deref().map(masked)));
-    }
-    Ok(Value::Object(status))
+    status_in(keys_closed(), &WINDOWS)
 }
 
 /// The saved key for one provider, for the webview's call to that provider.
 #[tauri::command]
 pub fn ai_key_get(provider: String) -> Result<Option<String>, String> {
-    store::read(&target(&provider)?)
+    saved(&target(&provider)?)
 }
 
 #[tauri::command]
 pub fn ai_key_set(provider: String, key: String) -> Result<String, String> {
-    let key = checked_key(&key)?;
-    store::write(&target(&provider)?, &key)?;
-    Ok(masked(&key))
+    set_in(keys_closed(), &WINDOWS, &provider, &key)
 }
 
 #[tauri::command]
 pub fn ai_key_delete(provider: String) -> Result<(), String> {
-    store::delete(&target(&provider)?)
+    delete_in(keys_closed(), &WINDOWS, &provider)
 }
 
 /// Each provider's own page for creating an API key. Fixed here, so the webview
@@ -198,7 +269,7 @@ pub fn ai_key_page(provider: String) -> Result<(), String> {
 
 /// The saved key for a video job's AI translation, if any.
 pub(crate) fn job_key(provider: &str) -> Result<Option<String>, String> {
-    store::read(&target(provider)?)
+    saved(&target(provider)?)
 }
 
 /// One request to an OpenAI-compatible provider (or a model list), answered by
@@ -206,12 +277,21 @@ pub(crate) fn job_key(provider: &str) -> Result<Option<String>, String> {
 /// or `{ok: false, code, message}`. The key goes through the environment.
 #[tauri::command]
 pub async fn ai_ask(request: Value, key: Option<String>) -> Result<Value, String> {
+    ask(request, key, keys_closed()).await
+}
+
+/// `ai_ask` with the closed mode given: while keys are closed to this run no provider process is started, also
+/// for a key the caller hands in.
+async fn ask(request: Value, key: Option<String>, closed: bool) -> Result<Value, String> {
     let provider = request.get("provider").and_then(Value::as_str).unwrap_or_default().to_owned();
     if !PROVIDERS.contains(&provider.as_str()) {
         return Err(fail("Nhà cung cấp AI không hợp lệ"));
     }
     if !matches!(request.get("action").and_then(Value::as_str), Some("ask" | "models")) {
         return Err(fail("Yêu cầu AI không hợp lệ"));
+    }
+    if closed {
+        return Err(fail(CLOSED));
     }
     let key = match key.map(|key| key.trim().to_owned()).filter(|key| !key.is_empty()) {
         Some(key) => Some(checked_key(&key)?),
@@ -249,6 +329,84 @@ pub async fn ai_ask(request: Value, key: Option<String>) -> Result<Value, String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_run_beside_the_installed_app_can_close_the_saved_keys() {
+        assert!(!closed_by(None));
+        assert!(!closed_by(Some("")));
+        assert!(!closed_by(Some(" 0 ")));
+        assert!(closed_by(Some("1")));
+        assert!(closed_by(Some("sandbox")));
+    }
+
+    // A stand-in for Credential Manager that counts every call (per test thread): the real user's entries are
+    // never read, written or deleted here, and no real key is used.
+    thread_local! {
+        static CALLS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    fn calls() -> Vec<String> {
+        CALLS.with(|calls| calls.borrow().clone())
+    }
+
+    const STAND_IN: Store = Store {
+        read: |target| {
+            CALLS.with(|calls| calls.borrow_mut().push(format!("read {target}")));
+            Ok(Some("stand-in-key-not-real-0042".to_owned()))
+        },
+        write: |target, _| {
+            CALLS.with(|calls| calls.borrow_mut().push(format!("write {target}")));
+            Ok(())
+        },
+        delete: |target| {
+            CALLS.with(|calls| calls.borrow_mut().push(format!("delete {target}")));
+            Ok(())
+        },
+    };
+
+    #[test]
+    fn closed_keys_are_never_asked_for_saved_or_removed() {
+        // closed: every provider reads as "no key saved" and the store is not called once
+        assert_eq!(saved_in(true, &STAND_IN, "DubFlow/ai-key/claude").unwrap(), None);
+        let status = status_in(true, &STAND_IN).unwrap();
+        assert!(PROVIDERS.iter().chain(VOICE_PROVIDERS.iter()).all(|provider| status[*provider].is_null()));
+        let refused = set_in(true, &STAND_IN, "claude", "stand-in-key-not-real-0042").unwrap_err();
+        assert!(refused.contains(NO_SAVED_KEYS_ENV), "{refused}");
+        assert!(delete_in(true, &STAND_IN, "claude").unwrap_err().contains(NO_SAVED_KEYS_ENV));
+        assert!(calls().is_empty(), "the store was touched while closed: {:?}", calls());
+        // open: the same calls reach the store (so the test above proves the guard, not a broken stand-in)
+        assert_eq!(saved_in(false, &STAND_IN, "DubFlow/ai-key/claude").unwrap().as_deref(), Some("stand-in-key-not-real-0042"));
+        assert_eq!(status_in(false, &STAND_IN).unwrap()["gemini"], "…0042");
+        assert_eq!(set_in(false, &STAND_IN, "claude", "stand-in-key-not-real-0042").unwrap(), "…0042");
+        delete_in(false, &STAND_IN, "vibi").unwrap();
+        let seen = calls();
+        assert_eq!(seen.first().map(String::as_str), Some("read DubFlow/ai-key/claude"));
+        assert!(seen.contains(&"write DubFlow/ai-key/claude".to_owned()) && seen.contains(&"delete DubFlow/ai-key/vibi".to_owned()));
+    }
+
+    #[test]
+    fn closed_keys_drop_a_key_inherited_from_the_launch_environment() {
+        // the only test that touches these two variables; the values are not keys
+        std::env::set_var(JOB_KEY_ENV, "inherited-not-a-key-0001");
+        std::env::set_var(crate::vibi::KEY_ENV, "inherited-not-a-key-0002");
+        drop_inherited_keys_if(false);
+        assert!(std::env::var_os(JOB_KEY_ENV).is_some() && std::env::var_os(crate::vibi::KEY_ENV).is_some());
+        drop_inherited_keys_if(true);
+        assert!(std::env::var_os(JOB_KEY_ENV).is_none() && std::env::var_os(crate::vibi::KEY_ENV).is_none());
+    }
+
+    #[test]
+    fn closed_keys_start_no_provider_call_even_with_a_key_handed_in() {
+        let request = json!({"provider": "deepseek", "action": "ask", "messages": []});
+        let refused = tauri::async_runtime::block_on(ask(request.clone(), Some("stand-in-key-not-real-0042".to_owned()), true))
+            .unwrap_err();
+        assert!(refused.contains(NO_SAVED_KEYS_ENV), "{refused}");
+        let models = json!({"provider": "openai", "action": "models"});
+        assert!(tauri::async_runtime::block_on(ask(models, None, true)).unwrap_err().contains(NO_SAVED_KEYS_ENV));
+        // the request checks still come first: a bad request is named as such
+        let bad = tauri::async_runtime::block_on(ask(json!({"provider": "nobody", "action": "ask"}), None, true)).unwrap_err();
+        assert!(!bad.contains(NO_SAVED_KEYS_ENV), "{bad}");
+    }
 
     #[test]
     fn only_known_providers_and_well_formed_keys_are_accepted() {
