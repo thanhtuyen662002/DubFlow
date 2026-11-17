@@ -266,6 +266,38 @@ for (const outcome of ["ok", "fail"]) {
   assert.equal(writes, 1);
 }
 
+// A write still waiting when the change is dropped (the user chose to lose it and opened another video) does not
+// swallow the next session's change: in-flight write -> queued successor -> drop -> new edit -> the new edit is written.
+{
+  const { timers, advance } = clock();
+  const releases = [];
+  const wrote = [];
+  let session = "old";
+  const saver = new Autosaver(() => new Promise((resolve, reject) => {
+    const who = session;
+    releases.push((ok) => { wrote.push(`${who}:${ok ? "ok" : "fail"}`); (ok ? resolve : () => reject(new Error("held")))(); });
+  }), timers);
+  saver.changed();
+  await advance(QUIET_MS);  // the old session's write is running
+  assert.equal(releases.length, 1);
+  saver.changed();
+  await advance(QUIET_MS);  // its successor waits
+  saver.drop();  // "Vẫn thoát"
+  session = "new";
+  saver.changed();  // the next video's first edit, before the waiting write's turn
+  await advance(QUIET_MS);
+  releases.shift()(false);  // the old write fails
+  await advance(0);
+  await advance(MAX_WAIT_MS);
+  assert.equal(releases.length, 1, `the new session's edit is written: ${wrote}`);
+  releases.shift()(true);
+  await advance(0);
+  assert.deepEqual(wrote, ["old:fail", "new:ok"]);
+  assert.equal(saver.pending, false);
+  await advance(RETRY_MAX_MS);
+  assert.equal(releases.length, 0, "no stale retry of the dropped change");
+}
+
 // ---------- Issue #929: closing waits for the draft, and asks before losing a change ----------
 {
   const { timers, advance } = clock();

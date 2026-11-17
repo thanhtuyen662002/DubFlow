@@ -47,8 +47,9 @@ export class Autosaver {
   private retryAt = 0;
   /** The first edit since the last failed write, if any. */
   private editedSinceFailure: number | null = null;
-  /** A write is waiting for the one in progress (it reads the draft as it is when it starts). */
-  private queued = false;
+  /** The ticket of the write waiting for the one in progress (it reads the draft as it is when it starts); 0: none. */
+  private waiting = 0;
+  private tickets = 0;
   /** Changed by `drop`: a write that ends after it leaves the saver alone. */
   private epoch = 0;
   private writing: Promise<void> = Promise.resolve();
@@ -103,6 +104,8 @@ export class Autosaver {
   /** Forget a pending change: the session ended without it mattering, or the user chose to lose it. */
   drop(): void {
     this.cancel();
+    // a write still waiting belongs to what was dropped: it ends without writing, and a new change gets its own
+    this.waiting = 0;
     this.since = null;
     this.failures = 0;
     this.editedSinceFailure = null;
@@ -124,11 +127,12 @@ export class Autosaver {
 
   private start(): void {
     // one write after another, and at most one waiting: it saves every change made until it starts
-    if (this.queued) return;
-    this.queued = true;
+    if (this.waiting) return;
+    const ticket = ++this.tickets;
+    this.waiting = ticket;
     const epoch = this.epoch;
     this.writing = this.writing.then(async () => {
-      this.queued = false;
+      if (this.waiting === ticket) this.waiting = 0;
       if (epoch !== this.epoch || this.since === null) return;
       const version = this.version;
       try {
