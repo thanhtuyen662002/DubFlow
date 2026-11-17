@@ -7,7 +7,7 @@
 
 import {
   MAX_TEXT_SIZE, MAX_THUMB_TEXTS, MIN_TEXT_SIZE, SUBTITLE_FONTS, THUMB_HEIGHT, THUMB_TEMPLATES, THUMB_WIDTH,
-  applyTemplate, coverRect, dragPan, emptyThumb, fitBox, hasThumb, makeText, moveText, normalizeThumb, textAt, textBox, textRoom, thumbName, wrapLines,
+  applyTemplate, centreOn, coverRect, dragPan, emptyThumb, hasThumb, layoutText, makeText, moveText, normalizeThumb, textAt, thumbName,
   type Rect, type ThumbDoc, type ThumbText,
 } from "./thumbnail.ts";
 import { isFont } from "./fonts.ts";
@@ -110,10 +110,8 @@ export function mountThumbnail(invoke: Invoke, host: ThumbHost): ThumbnailView {
     for (const text of doc.texts) {
       if (!text.text.trim()) continue;
       context.font = fontOf(text);
-      const lines = wrapLines(text.text, textRoom(text), (line) => context.measureText(line).width);
-      const widths = lines.map((line) => context.measureText(line).width);
-      // Drawn inside the thumbnail: wrapped to the room around its centre, and moved in where it would be cut.
-      const box = fitBox(textBox(text, widths));
+      // Drawn inside the thumbnail: wrapped to the room around its centre (wider if that is too tall), moved in where it would be cut.
+      const { lines, box } = layoutText(text, (line) => context.measureText(line).width);
       boxes.push({ id: text.id, box });
       if (text.band) {
         context.fillStyle = text.band;
@@ -299,7 +297,8 @@ export function mountThumbnail(invoke: Invoke, host: ThumbHost): ThumbnailView {
     changed();
   });
 
-  // Drag a text to move it; drag elsewhere to move the picture inside the frame.
+  // Drag a text to move it; drag elsewhere to move the picture inside the frame. A move starts where the text is drawn.
+  const drawnBox = (id: string): Rect | undefined => boxes.find((item) => item.id === id)?.box;
   let drag: { id: string | null; x: number; y: number; pointer: number } | null = null;
   const point = (event: PointerEvent): { x: number; y: number } => {
     const rect = canvas.getBoundingClientRect();
@@ -318,7 +317,7 @@ export function mountThumbnail(invoke: Invoke, host: ThumbHost): ThumbnailView {
     const dx = at.x - drag.x, dy = at.y - drag.y;
     drag.x = at.x;
     drag.y = at.y;
-    if (drag.id) doc = { ...doc, texts: doc.texts.map((text) => text.id === drag!.id ? moveText(text, dx, dy) : text) };
+    if (drag.id) doc = { ...doc, texts: doc.texts.map((text) => text.id === drag!.id ? moveText(centreOn(text, drawnBox(text.id)), dx, dy) : text) };
     else if (picture) doc = { ...doc, ...dragPan(doc, picture.naturalWidth, picture.naturalHeight, dx, dy) };
     else return;
     draw();
@@ -338,7 +337,7 @@ export function mountThumbnail(invoke: Invoke, host: ThumbHost): ThumbnailView {
     if (!text || !move) return;
     event.preventDefault();
     event.stopPropagation();
-    doc = { ...doc, texts: doc.texts.map((item) => item.id === text.id ? moveText(item, move[0], move[1]) : item) };
+    doc = { ...doc, texts: doc.texts.map((item) => item.id === text.id ? moveText(centreOn(item, drawnBox(item.id)), move[0], move[1]) : item) };
     changed();
   });
 

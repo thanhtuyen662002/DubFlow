@@ -206,6 +206,52 @@ export function fitBox(box: Rect): Rect {
   return { ...box, x, y };
 }
 
+/** How a text is drawn: its lines, their widths, and its box on the thumbnail. */
+export type TextLayout = { lines: string[]; widths: number[]; box: Rect };
+
+/**
+ * A text laid out to stay on the thumbnail. Its lines wrap to the room
+ * around its centre (`textRoom`). Where that makes it taller than the
+ * thumbnail, they wrap wider instead, as narrow as still fits top to bottom
+ * (at most 90 %), since a box can be moved in sideways but not shrunk. The
+ * box is then moved in where it would be cut (`fitBox`).
+ */
+export function layoutText(text: ThumbText, measure: (line: string) => number): TextLayout {
+  const wrap = (room: number): TextLayout => {
+    const lines = wrapLines(text.text, room, measure);
+    const widths = lines.map(measure);
+    return { lines, widths, box: textBox(text, widths) };
+  };
+  const room = textRoom(text);
+  let laid = wrap(room);
+  if (laid.box.height > THUMB_HEIGHT && room < MAX_LINE_WIDTH) {
+    laid = wrap(MAX_LINE_WIDTH);
+    // Fewer lines never come from a narrower wrap, so the narrowest width that fits is found by halving.
+    let low = room, high = MAX_LINE_WIDTH;
+    while (laid.box.height <= THUMB_HEIGHT && high - low > 1) {
+      const middle = (low + high) / 2;
+      const tried = wrap(middle);
+      if (tried.box.height <= THUMB_HEIGHT) {
+        high = middle;
+        laid = tried;
+      } else low = middle;
+    }
+  }
+  return { ...laid, box: fitBox(laid.box) };
+}
+
+/**
+ * The text with its centre where it is drawn. A move starts from here, so a
+ * text `fitBox` moved in follows the pointer at once instead of first using
+ * up the distance between its saved and drawn place.
+ */
+export function centreOn(text: ThumbText, box: Rect | undefined): ThumbText {
+  if (!box) return text;
+  const x = clamp((box.x + box.width / 2) / THUMB_WIDTH, 0, 1);
+  const y = clamp((box.y + box.height / 2) / THUMB_HEIGHT, 0, 1);
+  return Math.abs(x - text.x) < 1e-6 && Math.abs(y - text.y) < 1e-6 ? text : { ...text, x, y };
+}
+
 /** The box a text takes on the thumbnail, from its lines' widths. */
 export function textBox(text: ThumbText, widths: number[]): Rect {
   const lineHeight = text.size * 1.15;

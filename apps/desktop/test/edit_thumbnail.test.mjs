@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import {
   THUMB_HEIGHT, THUMB_WIDTH, THUMB_TEMPLATES, applyTemplate, coverRect, dragPan, emptyThumb, hasThumb, makeText,
-  MAX_LINE_WIDTH, fitBox, moveText, normalizeThumb, textAt, textBox, textRoom, thumbName, wrapLines,
+  MAX_LINE_WIDTH, MAX_THUMB_TEXT, centreOn, fitBox, layoutText, moveText, normalizeThumb, textAt, textBox, textRoom, thumbName, wrapLines,
 } from "../src/features/edit/thumbnail.ts";
 
 const covers = (rect) => rect.x <= 1e-9 && rect.y <= 1e-9 && rect.x + rect.width >= THUMB_WIDTH - 1e-9 && rect.y + rect.height >= THUMB_HEIGHT - 1e-9;
@@ -87,31 +87,74 @@ assert.deepEqual(wrapLines("siêuuuuuuuuuuudài x", 50, measure), ["siêuuuuuuuu
 assert.deepEqual(wrapLines("a\n\nb\n", 100, measure), ["a", "", "b"]);
 
 // rc23: every layout keeps a long title on the thumbnail. Lines wrap to the room around the text's centre,
-// and a box that would still be cut at an edge is drawn moved in.
+// wider where that would be taller than the thumbnail, and a box that would still be cut at an edge is drawn moved in.
 const inside = (rect) => rect.x >= -1e-9 && rect.y >= -1e-9 && rect.x + rect.width <= THUMB_WIDTH + 1e-9 && rect.y + rect.height <= THUMB_HEIGHT + 1e-9;
-const wide = (line) => line.length * 0.62 * 92; // about Segoe UI Black at 92 px
+const glyphs = (text) => (line) => line.length * 0.62 * text.size; // about Segoe UI Black
 const longTitle = "RC23 THÁP NUÔI LỢN 26 TẦNG Ở HỒ BẮC";
-for (const template of THUMB_TEMPLATES) {
-  const laid = applyTemplate({ ...emptyThumb(), texts: [] }, template.id, longTitle);
-  for (const text of laid.texts) {
-    const glyph = (line) => line.length * 0.62 * text.size;
-    const room = textRoom(text);
-    const lines = wrapLines(text.text, room, glyph);
-    assert.ok(lines.every((line) => glyph(line) <= room || !line.includes(" ")), `${template.id}: lines fit their room`);
-    const drawn = fitBox(textBox(text, lines.map(glyph)));
-    assert.ok(inside(drawn), `${template.id} "${text.text}": drawn inside the thumbnail ${JSON.stringify(drawn)}`);
+const longerTitle = "Bên trong tòa tháp nuôi lợn 26 tầng lớn nhất thế giới ở Hồ Bắc Trung Quốc mỗi năm xuất chuồng 1,2 triệu con";
+const longestTitle = `${longerTitle} và hơn thế nữa`.slice(0, MAX_THUMB_TEXT);
+assert.equal(longestTitle.length, MAX_THUMB_TEXT);
+const checked = { inside: 0, tooLong: 0 };
+for (const title of [longTitle, longerTitle, longestTitle]) {
+  for (const template of THUMB_TEMPLATES) {
+    const laid = applyTemplate({ ...emptyThumb(), texts: [] }, template.id, title);
+    for (const text of laid.texts) {
+      const { lines, widths, box } = layoutText(text, glyphs(text));
+      assert.equal(lines.join(" "), text.text.split(/\s+/).join(" "), `${template.id}: every word drawn`);
+      assert.ok(widths.every((width) => width <= MAX_LINE_WIDTH), `${template.id}: no line over 90 %`);
+      // Inside whenever it fits top to bottom at 90 % (a title too long for its size even then is left as it is, below).
+      const fits = textBox(text, wrapLines(text.text, MAX_LINE_WIDTH, glyphs(text)).map(glyphs(text))).height <= THUMB_HEIGHT;
+      if (fits) assert.ok(inside(box), `${template.id} "${text.text.slice(0, 20)}…" (${title.length}): drawn inside the thumbnail ${JSON.stringify(box)}`);
+      else assert.deepEqual(lines, wrapLines(text.text, MAX_LINE_WIDTH, glyphs(text)), `${template.id} (${title.length}): the fewest lines`);
+      checked[fits ? "inside" : "tooLong"] += 1;
+    }
   }
 }
+assert.deepEqual(checked, { inside: 10, tooLong: 5 }, "the 35-letter title fits every layout; the 107/120-letter ones only some at their size");
 const left = applyTemplate({ ...emptyThumb(), texts: [] }, "left-column", longTitle).texts[0];
 assert.equal(textRoom(left), 2 * 0.3 * THUMB_WIDTH - 16, "left-column: the room around 30 % across, less the outline");
-assert.ok(textBox(left, [wide(longTitle)]).x < 0, "on one line, as on rc23, its start would be cut");
+assert.ok(textBox(left, [glyphs(left)(longTitle)]).x < 0, "on one line, as on rc23, its start would be cut");
+assert.ok(layoutText(left, glyphs(left)).widths.every((width) => width <= textRoom(left)), "a title that fits top to bottom wraps to its room");
+// Too tall in its room: wrapped wider (as narrow as still fits), then moved in sideways, instead of losing its first and last lines.
+const tallTitle = applyTemplate({ ...emptyThumb(), texts: [] }, "left-column", longerTitle).texts[0];
+assert.ok(textBox(tallTitle, wrapLines(tallTitle.text, textRoom(tallTitle), glyphs(tallTitle)).map(glyphs(tallTitle))).height > THUMB_HEIGHT, "in its room it would be taller than the thumbnail");
+const tallLaid = layoutText(tallTitle, glyphs(tallTitle));
+assert.ok(inside(tallLaid.box) && Math.max(...tallLaid.widths) > textRoom(tallTitle), "wrapped wider and drawn inside");
+const oneLineMore = textBox(tallTitle, wrapLines(tallTitle.text, Math.max(...tallLaid.widths) - 2, glyphs(tallTitle)).map(glyphs(tallTitle)));
+assert.ok(oneLineMore.height > THUMB_HEIGHT, "no narrower wrap fits top to bottom");
+const nearEdge = { ...left, x: 0.08 };
+assert.ok(inside(layoutText(nearEdge, glyphs(nearEdge)).box), "dragged near the edge: not one word per line off the top and bottom");
+assert.deepEqual(layoutText(makeText("x", { x: 0.5 }), glyphs({ size: 96 })).lines, ["x"]);
 assert.equal(textRoom(makeText("x", { x: 0.5, strokeWidth: 0 })), MAX_LINE_WIDTH, "centred: 90 % of the width as before");
 assert.equal(textRoom(makeText("x", { x: 0, size: 50 })), 100, "at the edge: still two letters' worth");
+const centred = makeText(longerTitle, { x: 0.5, y: 0.5, size: 92 });
+assert.deepEqual(layoutText(centred, glyphs(centred)).lines, wrapLines(longerTitle, MAX_LINE_WIDTH, glyphs(centred)), "centred: wrapped as before");
+// Taller than the thumbnail even at 90 %: the fewest lines, left where it is.
+const huge = makeText(longestTitle, { x: 0.5, y: 0.5, size: 200, strokeWidth: 0 });
+const hugeLaid = layoutText(huge, glyphs(huge));
+assert.deepEqual(hugeLaid.lines, wrapLines(longestTitle, MAX_LINE_WIDTH, glyphs(huge)));
+assert.deepEqual(hugeLaid.box, textBox(huge, hugeLaid.widths));
 // A box is moved in only where it would be cut, and only as far as needed.
 assert.deepEqual(fitBox({ x: 100, y: 100, width: 200, height: 100 }), { x: 100, y: 100, width: 200, height: 100 });
 assert.deepEqual(fitBox({ x: -40, y: 650, width: 200, height: 100 }), { x: 0, y: 620, width: 200, height: 100 });
 assert.deepEqual(fitBox({ x: 1200, y: -5, width: 200, height: 100 }), { x: 1080, y: 0, width: 200, height: 100 });
 assert.deepEqual(fitBox({ x: -10, y: 0, width: 1400, height: 100 }), { x: -10, y: 0, width: 1400, height: 100 }, "too big: as it is");
+// A move starts where the text is drawn: one pushed against an edge comes back at the first step, with no dead distance.
+const drawnAt = (text) => layoutText(text, glyphs(text)).box;
+let pushed = makeText("Chữ mới", { x: 0.5, y: 0.5 });
+for (let step = 0; step < 100; step += 1) pushed = moveText(centreOn(pushed, drawnAt(pushed)), -10, 0);
+const atEdge = drawnAt(pushed);
+assert.equal(atEdge.x, 0, "pushed to the left edge");
+assert.ok(pushed.x * THUMB_WIDTH > -1e-9 && pushed.x * THUMB_WIDTH < atEdge.width / 2, "its saved centre is past the drawn one");
+const back = moveText(centreOn(pushed, atEdge), 8, 0);
+assert.ok(Math.abs(drawnAt(back).x - 8) < 1e-6, `one step right moves it 8 px at once (${drawnAt(back).x})`);
+const big = applyTemplate({ ...emptyThumb(), texts: [] }, "big-bottom", longTitle).texts[0];
+const bigBox = drawnAt(big);
+assert.ok(bigBox.y + bigBox.height / 2 < big.y * THUMB_HEIGHT - 1, "big-bottom: a 3-line title is drawn moved up");
+assert.ok(Math.abs(drawnAt(moveText(centreOn(big, bigBox), 0, -10)).y - (bigBox.y - 10)) < 1e-6, "and moves up at the first drag");
+assert.equal(centreOn(big, undefined), big, "no box drawn: as it is");
+const unmoved = makeText("ngắn", { x: 0.5, y: 0.5 });
+assert.equal(centreOn(unmoved, drawnAt(unmoved)), unmoved, "a box that was not moved in: the same text");
 
 // Picking and dragging text.
 const title = makeText("Tiêu đề", { x: 0.5, y: 0.5, size: 100, strokeWidth: 0 });
