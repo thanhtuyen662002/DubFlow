@@ -139,6 +139,8 @@ export type Editor = {
   readonly jobId: string | null;
   /** The video whose edit is open, if any. */
   readonly target: EditTarget | null;
+  /** A video left for a moment to be opened again (a reload of the film, a template): leaving now means close(). */
+  readonly reopening: boolean;
   /** Open a Bán hàng video or a compilation (leaving any open edit first); false when it did not open. */
   openTarget(target: EditTarget): Promise<boolean>;
   /** Leave edit mode, asking first when `ask` and something is not saved; false when the user stays. */
@@ -1105,12 +1107,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     // The film file was replaced on disk: drop every cached copy of it.
     host.mediaChanged(session.outputPath);
     if (!(await close(false, true, true))) return;
-    if (exits !== exit || !(await open(target))) return;
-    // the user left while it opened again: not taken back
-    if (exits !== exit) {
-      await close(false);
-      return;
-    }
+    // not when the user left meanwhile, before or while it loads (a carried change stays pending and is written)
+    if (exits !== exit || !(await open(target, () => exits === exit))) return;
     await then();
   }
 
@@ -1146,7 +1144,10 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     seek: seekTo,
     pps: () => pps,
     pause: () => { if (session?.playing) pausePlayback(); },
-    flush: async () => { await flush(); },
+    // the new version starts from the draft on disk (edit_subtitles_apply copies it): not while a change is missing
+    flush: async () => {
+      if (!(await flush())) throw new Error("Chưa lưu được bản nháp (tệp có thể đang bị chương trình khác giữ); DubFlow đang tự thử lưu lại, hãy Áp dụng lại sau.");
+    },
     finish: async () => { await close(false); },
     changed: () => renderPanel(),
     cover,
@@ -1310,9 +1311,10 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       if (!(await close(false, true))) return;
       if (exits !== exit) return;
       mode = "template";
-      const opened = await open({ id: next.outputPath, kind: "product", outputPath: next.outputPath, displayName: next.displayName });
-      if (!opened) leave(from);
-      else if (exits !== exit) await close(false);  // the user left while it opened: not taken back
+      const opened = await open({ id: next.outputPath, kind: "product", outputPath: next.outputPath, displayName: next.displayName },
+        () => exits === exit);
+      // a user who left while it opened has left already
+      if (!opened && exits === exit) leave(from);
     },
     changed: () => renderPanel(),
   });
@@ -1450,19 +1452,23 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     // A change a reload carried that no editor took up (the user left the video meanwhile, or opened another): written
     // first, from its copy, and tried again like any other (Issue #929).
     const left = carried && carried.outputPath !== session?.outputPath ? carried : null;
+    let leftFailed: unknown = null;
     if (left) {
       try {
         await invoke("edit_project_save", { outputPath: left.outputPath, kind: left.kind, project: left.project, keepOld: left.keepOld });
+        // the draft it could not open is kept aside now, also for an editor of that video opening meanwhile
+        left.keepOld = false;
+        if (session?.outputPath === left.outputPath) session.keepOld = false;
+        if (carried === left) carried = null;
       } catch (error) {
-        if (session) $("#edit-save-state").textContent = `Chưa lưu được bản nháp của video trước, DubFlow sẽ tự thử lại: ${String(error).slice(0, 140)}`;
-        throw error;
+        // still pending, and tried again; the open video's own draft is written all the same
+        leftFailed = error;
       }
-      // the draft it could not open is kept aside now, also for an editor of that video opening meanwhile
-      left.keepOld = false;
-      if (session?.outputPath === left.outputPath) session.keepOld = false;
-      if (carried === left) carried = null;
     }
-    if (!session) return;
+    if (!session) {
+      if (leftFailed) throw leftFailed;
+      return;
+    }
     const { outputPath, target: { kind } } = session;
     try {
       const project = draftDocument(session);
@@ -1485,6 +1491,12 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
         $("#edit-save-state").textContent = `Chưa lưu được bản nháp, DubFlow sẽ tự thử lại: ${String(error).slice(0, 140)}`;
       }
       throw error;
+    }
+    if (leftFailed) {
+      if (session?.outputPath === outputPath) {
+        $("#edit-save-state").textContent = `Chưa lưu được bản nháp của video trước, DubFlow sẽ tự thử lại: ${String(leftFailed).slice(0, 140)}`;
+      }
+      throw leftFailed;
     }
   }
 
@@ -3494,7 +3506,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
 
   // ---------- Entering and leaving ----------
 
-  async function open(target: EditTarget): Promise<boolean> {
+  /** Open `target` for editing; `wanted`, checked once it has loaded, says whether that is still wanted (a reopen). */
+  async function open(target: EditTarget, wanted: () => boolean = () => true): Promise<boolean> {
     if (session || opening || !target.outputPath || (target.job && target.job.status.state !== "COMPLETED")) return false;
     const outputPath = target.outputPath;
     const ticket = ++openTicket;
@@ -3512,8 +3525,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
         invoke<LoadResponse>("edit_project_load", { outputPath, kind: target.kind }),
         invoke<StatusResponse>("edit_status", { outputPath, kind: target.kind }).catch(() => null),
       ]);
-      // The queue selection moved on while a queue video was opening.
-      if (ticket !== openTicket || (target.kind === "job" && listJob?.id !== target.id)) return false;
+      // The queue selection moved on while a queue video was opening; or the user left while it was opened again.
+      if (ticket !== openTicket || (target.kind === "job" && listJob?.id !== target.id) || !wanted()) return false;
       const opened = resolveTarget(target, loaded.kind);
       const info = { path: outputPath, title: opened.displayName, width: loaded.width, height: loaded.height, fps: loaded.fps ?? 30, hasAudio: loaded.has_audio };
       if (carry) loaded.project = carry.project;
@@ -3532,7 +3545,9 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
         target: opened, reviewable: opened.kind === "job" && !!opened.job && reviewable !== false, outputPath, facts, history: new EditHistory(edit, changes), draft: null,
         selected: project?.selected ?? outputToSource(edit, start)?.segment.id ?? edit.segments[0].id, overlay: null,
         outputTime: start, index: 0, playing: false, exporting: null, recent: project?.recent ?? [], plainCover: false,
-        keepOld: carry ? carry.keepOld : !!loaded.project && !project,
+        // a draft on disk that could not be read now (held by another program, Issue #929) is set aside by the first
+        // save once it can be, never written over
+        keepOld: carry ? carry.keepOld : !!loaded.draft_problem || (!!loaded.project && !project),
         oldKept: carry ? carry.oldKept : !!loaded.draft_problem || (!!loaded.project && !project), plainSubs: null, subsTouched: false,
         steps: [], redoSteps: [], subsPast: [], subsFuture: [], subsShadow: "", subsAt: 0, subsBurst: null, markIn: null, markOut: null, shuttle: 1,
       };
@@ -4096,6 +4111,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   return {
     get jobId() { return session?.target.job?.id ?? null; },
     get target() { return session?.target ?? null; },
+    get reopening() { return !session && quietlyLeft !== null; },
     openTarget: async (target) => {
       if (session?.target.outputPath === target.outputPath) return true;
       const from = session?.target ?? null;

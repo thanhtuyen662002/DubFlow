@@ -5,8 +5,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { connectDesktopShell, type DesktopShellModel } from "./shell/desktop_shell.ts";
 import { confirmDialog } from "./shell/confirm.ts";
-import { askAlone, CLOSE_LISTENERS_KEY, closeGuard, closeRequests, unsavedPrompt, wireWindowClose, type EventBridge, type IdStore }
-  from "./features/edit/close_guard.ts";
+import { askAlone, closeGuard, closeRequests, storageIds, unsavedPrompt, wireWindowClose, type EventBridge } from "./features/edit/close_guard.ts";
 import { windowTimers } from "./features/edit/autosave.ts";
 import { mountLayoutPanels, refitPanels, resetPanels } from "./shell/layout_panels.ts";
 import { mountListTools } from "./shell/list_tools.ts";
@@ -601,6 +600,18 @@ function renderPlayButton(): void {
 // Whether every window close goes through the editing draft check (set where the window's close is wired, below);
 // without a window (the browser preview) there is nothing to guard.
 let windowCloseGuarded: Promise<boolean> = Promise.resolve(true);
+/** Whether DubFlow may quit now (the window close guard's answer); without a window there is nothing to guard. */
+let mayQuit: () => Promise<boolean> = async () => true;
+/**
+ * Installing an update or restarting quits at once (the host's app.exit sends no close request): the editing draft
+ * is written first, and a change that could not be saved is asked about, as for a close (Issue #929).
+ */
+async function quitInvoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  if ((command === "install_update" || command === "restart_app") && !(await mayQuit())) {
+    throw new Error("DubFlow ở lại để lưu bản nháp chỉnh sửa chưa lưu được; hãy thử lại sau.");
+  }
+  return invoke<T>(command, args);
+}
 
 // Edit mode (Cắt ghép, Chèn): the player previews the edit; the panel and timeline replace the list and details.
 const editor = mountEditor(invoke, {
@@ -2045,7 +2056,8 @@ function showView(view: View, highlight: View = view): void {
 }
 /** Go to a page; editing another page's video ends first (asking when something is not saved). */
 async function navigate(view: View): Promise<void> {
-  if (editor.target) {
+  // a video being opened again (a reload of the film) counts as open: leaving it goes through the editor's close
+  if (editor.target || editor.reopening) {
     // "Chỉnh sửa" shows the open edit; another page ends it first.
     if (view === "edit") return showView("queue", "edit");
     const origin = editOrigin;
@@ -2765,7 +2777,7 @@ void invoke<ReleaseInfo>("release_info")
   .catch(() => {
     $("#release-version").textContent = "development";
   })
-  .finally(() => mountUpdates(invoke, (version) => {
+  .finally(() => mountUpdates(quitInvoke, (version) => {
     // A found update also shows as a compact button in the header and a dot on Cài đặt.
     updateVersion = version;
     $("#header-update").hidden = version === null;
@@ -3011,6 +3023,7 @@ $("#window-maximize").addEventListener("click", () => void appWindow?.toggleMaxi
 if (appWindow) {
   const mayClose = closeGuard({ before: () => editor.closing(), flush: () => editor.flush(),
     ask: () => askAlone(() => confirmDialog(unsavedPrompt("close"))), timers: windowTimers });
+  mayQuit = mayClose;
   // Tauri's event plugin by listener id, the commands its own listen and unlisten use: a reload finds and removes the
   // close listener the page before it left (see closeRequests)
   const events: EventBridge = {
@@ -3028,11 +3041,7 @@ if (appWindow) {
       }
     },
   };
-  const reloadSafe: IdStore = {
-    get: () => window.sessionStorage.getItem(CLOSE_LISTENERS_KEY),
-    set: (value) => value === null ? window.sessionStorage.removeItem(CLOSE_LISTENERS_KEY) : window.sessionStorage.setItem(CLOSE_LISTENERS_KEY, value),
-  };
-  const closable = { close: () => appWindow.close(), onCloseRequested: closeRequests(appWindow.label, events, reloadSafe) };
+  const closable = { close: () => appWindow.close(), onCloseRequested: closeRequests(appWindow.label, events, storageIds(() => window.sessionStorage)) };
   windowCloseGuarded = wireWindowClose(closable, $("#window-close"), mayClose);
 }
 $("#app-header").addEventListener("mousedown", (event) => {

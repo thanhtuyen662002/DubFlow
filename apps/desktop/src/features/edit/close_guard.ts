@@ -106,47 +106,102 @@ export type EventBridge = {
 /** A small store that outlives a reload of the page; it may refuse (then nothing is remembered). */
 export type IdStore = { get(): string | null; set(value: string | null): void };
 
-function storedIds(store: IdStore): number[] {
+/** The bits of Web Storage the store uses. */
+export type KeyStorage = { getItem(key: string): string | null; setItem(key: string, value: string): void; removeItem(key: string): void };
+
+/** An IdStore in Web Storage under `key` (sessionStorage: it outlives a reload, not the app); read only when used. */
+export function storageIds(storage: () => KeyStorage, key = CLOSE_LISTENERS_KEY): IdStore {
+  return {
+    get: () => storage().getItem(key),
+    set: (value) => {
+      if (value === null) storage().removeItem(key);
+      else storage().setItem(key, value);
+    },
+  };
+}
+
+/**
+ * What the store keeps: the ids of the close listeners still to remove, and, while a listen is under way, the lowest
+ * id it can get (`from`): a page that reloads before the id comes back leaves a listener nothing names.
+ */
+type Listeners = { ids: number[]; from?: number };
+
+const isId = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
+
+function readListeners(store: IdStore): Listeners {
   try {
-    const value: unknown = JSON.parse(store.get() ?? "[]");
-    return Array.isArray(value) ? value.filter((id): id is number => Number.isSafeInteger(id) && id >= 0) : [];
+    const value: unknown = JSON.parse(store.get() ?? "null");
+    const record = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+    const ids = Array.isArray(record.ids) ? record.ids.filter(isId) : [];
+    return isId(record.from) ? { ids, from: record.from } : { ids };
   } catch {
-    return [];
+    return { ids: [] };
   }
 }
 
-function storeIds(store: IdStore, ids: number[]): void {
+function writeListeners(store: IdStore, listeners: Listeners): void {
   try {
-    store.set(ids.length ? JSON.stringify(ids) : null);
+    store.set(listeners.ids.length || listeners.from !== undefined ? JSON.stringify(listeners) : null);
   } catch {
     // a store that refuses: a reload then leaves the listener behind, as it did before
   }
 }
+
+function forget(store: IdStore, id: number): void {
+  const listeners = readListeners(store);
+  writeListeners(store, { ...listeners, ids: listeners.ids.filter((kept) => kept !== id) });
+}
+
+function remember(store: IdStore, id: number): void {
+  const listeners = readListeners(store);
+  writeListeners(store, { ...listeners, ids: [...listeners.ids.filter((kept) => kept !== id), id] });
+}
+
+/** At most this many ids are tried when a listen's id never came back (Tauri counts every listener, any event). */
+export const SWEEP_LIMIT = 4096;
 
 /**
  * `ClosableWindow.onCloseRequested` that a reload cannot break (Issue #929). Tauri keeps a page's listeners after
  * the page reloads (F5, Ctrl+R, Tải lại), and while one is there it holds every close of the window for it, though
  * nothing runs it any more: the window could no longer be closed. So the ids are kept where a reload finds them, and
  * every listener left behind (a page before a reload, or one this page could not remove) is removed before a new one
- * starts. A removal that fails is tried again the next time.
+ * starts; a removal that fails is tried again the next time. A reload while a listen was under way leaves one whose
+ * id never came back: then every close listener between where that listen started and this page's own is removed
+ * (Tauri numbers listeners in order, removes by event and id, and nothing else listens to close requests).
  */
 export function closeRequests(label: string, bridge: EventBridge, store: IdStore): ClosableWindow["onCloseRequested"] {
   return async (handler) => {
-    for (const id of storedIds(store)) {
+    const before = readListeners(store);
+    for (const id of before.ids) {
       try {
         await bridge.unlisten(CLOSE_EVENT, id);
-        storeIds(store, storedIds(store).filter((kept) => kept !== id));
+        forget(store, id);
       } catch {
         // kept: tried again before the next listener
       }
     }
+    // this listen gets an id above every one known; a listen whose id never came back keeps its own start
+    const from = before.from ?? before.ids.reduce((top, id) => Math.max(top, id + 1), 0);
+    writeListeners(store, { ...readListeners(store), from });
     const id = await bridge.listen(CLOSE_EVENT, label, () => {
       void handler({ preventDefault: () => undefined }).catch(() => undefined);
     });
-    storeIds(store, [...storedIds(store).filter((kept) => kept !== id), id]);
+    remember(store, id);
+    if (before.from !== undefined) {
+      for (let lost = Math.max(before.from, id - SWEEP_LIMIT); lost < id; lost += 1) {
+        try {
+          await bridge.unlisten(CLOSE_EVENT, lost);
+          forget(store, lost);
+        } catch {
+          remember(store, lost);
+        }
+      }
+    }
+    const { from: _done, ...listeners } = readListeners(store);
+    writeListeners(store, listeners);
     return async () => {
       await bridge.unlisten(CLOSE_EVENT, id);
-      storeIds(store, storedIds(store).filter((kept) => kept !== id));
+      forget(store, id);
     };
   };
 }

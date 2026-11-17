@@ -1,7 +1,7 @@
 DUBFLOW_PR_V1
 Issue: #929
 Lease-Owner: Claude/issue-929-draft-save-retry
-Lease-Heartbeat: 2026-11-17T22:50:32Z
+Lease-Heartbeat: 2026-11-17T23:05:05Z
 Tested-Base-SHA: 0d18f38c94adb75c8204da978a4e081f204bc653
 Conflict-Domains: desktop-edit-autosave,desktop-window-close
 Expected-Paths:
