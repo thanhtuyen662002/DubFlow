@@ -199,10 +199,24 @@ export function textRoom(text: ThumbText): number {
   return Math.max(text.size * 2, Math.min(MAX_LINE_WIDTH, around));
 }
 
-/** The box moved onto the thumbnail where it fits, so no text is cut at an edge; one too big stays where it is. */
-export function fitBox(box: Rect): Rect {
+/** Room to keep above and below a text's box: its outline, and accents stacked on capitals (Ể, Ấ) reach past the box. */
+export type InkMargin = { top: number; bottom: number };
+
+/** How far a text's ink can reach past its box at the top and bottom (a band already holds part of it). */
+export function inkMargin(text: ThumbText): InkMargin {
+  const band = text.band ? text.size * 0.15 : 0;
+  return { top: Math.max(0, text.size * 0.25 - band) + text.strokeWidth, bottom: Math.max(0, text.size * 0.05 - band) + text.strokeWidth };
+}
+
+/**
+ * The box moved onto the thumbnail where it fits, only as far as needed, so
+ * no text is cut at an edge: with its ink margin where that fits too. One
+ * too big stays where it is.
+ */
+export function fitBox(box: Rect, margin: InkMargin = { top: 0, bottom: 0 }): Rect {
   const x = box.width <= THUMB_WIDTH ? clamp(box.x, 0, THUMB_WIDTH - box.width) : box.x;
-  const y = box.height <= THUMB_HEIGHT ? clamp(box.y, 0, THUMB_HEIGHT - box.height) : box.y;
+  const y = box.height + margin.top + margin.bottom <= THUMB_HEIGHT ? clamp(box.y, margin.top, THUMB_HEIGHT - box.height - margin.bottom)
+    : box.height <= THUMB_HEIGHT ? clamp(box.y, 0, THUMB_HEIGHT - box.height) : box.y;
   return { ...box, x, y };
 }
 
@@ -212,9 +226,10 @@ export type TextLayout = { lines: string[]; widths: number[]; box: Rect };
 /**
  * A text laid out to stay on the thumbnail. Its lines wrap to the room
  * around its centre (`textRoom`). Where that makes it taller than the
- * thumbnail, they wrap wider instead, as narrow as still fits top to bottom
- * (at most 90 %), since a box can be moved in sideways but not shrunk. The
- * box is then moved in where it would be cut (`fitBox`).
+ * thumbnail (with its ink margin), they wrap wider instead, as narrow as
+ * still fits top to bottom (at most 90 %), since a box can be moved in
+ * sideways but not shrunk. The box is then moved in where it would be cut
+ * (`fitBox`).
  */
 export function layoutText(text: ThumbText, measure: (line: string) => number): TextLayout {
   const wrap = (room: number): TextLayout => {
@@ -222,33 +237,37 @@ export function layoutText(text: ThumbText, measure: (line: string) => number): 
     const widths = lines.map(measure);
     return { lines, widths, box: textBox(text, widths) };
   };
+  const margin = inkMargin(text);
+  const fits = (box: Rect): boolean => box.height + margin.top + margin.bottom <= THUMB_HEIGHT;
   const room = textRoom(text);
   let laid = wrap(room);
-  if (laid.box.height > THUMB_HEIGHT && room < MAX_LINE_WIDTH) {
+  if (!fits(laid.box) && room < MAX_LINE_WIDTH) {
     laid = wrap(MAX_LINE_WIDTH);
     // Fewer lines never come from a narrower wrap, so the narrowest width that fits is found by halving.
     let low = room, high = MAX_LINE_WIDTH;
-    while (laid.box.height <= THUMB_HEIGHT && high - low > 1) {
+    while (fits(laid.box) && high - low > 1) {
       const middle = (low + high) / 2;
       const tried = wrap(middle);
-      if (tried.box.height <= THUMB_HEIGHT) {
+      if (fits(tried.box)) {
         high = middle;
         laid = tried;
       } else low = middle;
     }
   }
-  return { ...laid, box: fitBox(laid.box) };
+  return { ...laid, box: fitBox(laid.box, margin) };
 }
 
 /**
- * The text with its centre where it is drawn. A move starts from here, so a
- * text `fitBox` moved in follows the pointer at once instead of first using
- * up the distance between its saved and drawn place.
+ * The text with its centre where it is drawn, on the axes given. A move
+ * starts from here, so a text `fitBox` moved in follows the pointer at once
+ * instead of first using up the distance between its saved and drawn place.
+ * Only the axes being moved are taken, so a sideways move never keeps a
+ * passing upward shift.
  */
-export function centreOn(text: ThumbText, box: Rect | undefined): ThumbText {
+export function centreOn(text: ThumbText, box: Rect | undefined, axes: { x: boolean; y: boolean } = { x: true, y: true }): ThumbText {
   if (!box) return text;
-  const x = clamp((box.x + box.width / 2) / THUMB_WIDTH, 0, 1);
-  const y = clamp((box.y + box.height / 2) / THUMB_HEIGHT, 0, 1);
+  const x = axes.x ? clamp((box.x + box.width / 2) / THUMB_WIDTH, 0, 1) : text.x;
+  const y = axes.y ? clamp((box.y + box.height / 2) / THUMB_HEIGHT, 0, 1) : text.y;
   return Math.abs(x - text.x) < 1e-6 && Math.abs(y - text.y) < 1e-6 ? text : { ...text, x, y };
 }
 

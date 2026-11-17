@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import {
   THUMB_HEIGHT, THUMB_WIDTH, THUMB_TEMPLATES, applyTemplate, coverRect, dragPan, emptyThumb, hasThumb, makeText,
-  MAX_LINE_WIDTH, MAX_THUMB_TEXT, centreOn, fitBox, layoutText, moveText, normalizeThumb, textAt, textBox, textRoom, thumbName, wrapLines,
+  MAX_LINE_WIDTH, MAX_THUMB_TEXT, centreOn, fitBox, inkMargin, layoutText, moveText, normalizeThumb, textAt, textBox, textRoom, thumbName, wrapLines,
 } from "../src/features/edit/thumbnail.ts";
 
 const covers = (rect) => rect.x <= 1e-9 && rect.y <= 1e-9 && rect.x + rect.width >= THUMB_WIDTH - 1e-9 && rect.y + rect.height >= THUMB_HEIGHT - 1e-9;
@@ -90,6 +90,7 @@ assert.deepEqual(wrapLines("a\n\nb\n", 100, measure), ["a", "", "b"]);
 // wider where that would be taller than the thumbnail, and a box that would still be cut at an edge is drawn moved in.
 const inside = (rect) => rect.x >= -1e-9 && rect.y >= -1e-9 && rect.x + rect.width <= THUMB_WIDTH + 1e-9 && rect.y + rect.height <= THUMB_HEIGHT + 1e-9;
 const glyphs = (text) => (line) => line.length * 0.62 * text.size; // about Segoe UI Black
+const drawnTop = (text) => layoutText(text, glyphs(text)).box.y;
 const longTitle = "RC23 THÁP NUÔI LỢN 26 TẦNG Ở HỒ BẮC";
 const longerTitle = "Bên trong tòa tháp nuôi lợn 26 tầng lớn nhất thế giới ở Hồ Bắc Trung Quốc mỗi năm xuất chuồng 1,2 triệu con";
 const longestTitle = `${longerTitle} và hơn thế nữa`.slice(0, MAX_THUMB_TEXT);
@@ -139,6 +140,17 @@ assert.deepEqual(fitBox({ x: 100, y: 100, width: 200, height: 100 }), { x: 100, 
 assert.deepEqual(fitBox({ x: -40, y: 650, width: 200, height: 100 }), { x: 0, y: 620, width: 200, height: 100 });
 assert.deepEqual(fitBox({ x: 1200, y: -5, width: 200, height: 100 }), { x: 1080, y: 0, width: 200, height: 100 });
 assert.deepEqual(fitBox({ x: -10, y: 0, width: 1400, height: 100 }), { x: -10, y: 0, width: 1400, height: 100 }, "too big: as it is");
+// Accents stacked on capitals and the outline reach past the box: at the top or bottom edge that room is kept too.
+const topWord = makeText("NGHIÊNG Ể", { x: 0.5, y: 0, size: 96, strokeWidth: 8 });
+assert.deepEqual(inkMargin(topWord), { top: 96 * 0.25 + 8, bottom: 96 * 0.05 + 8 });
+assert.equal(drawnTop(topWord), 32, "at the top: its accents and outline stay on the image");
+const bottomWord = { ...topWord, y: 1 };
+const bottomBox = layoutText(bottomWord, glyphs(bottomWord)).box;
+assert.ok(Math.abs(bottomBox.y + bottomBox.height - (THUMB_HEIGHT - 96 * 0.05 - 8)) < 1e-6, "at the bottom: its descenders and outline too");
+assert.deepEqual(inkMargin(makeText("x", { band: "#e11d48", size: 64, strokeWidth: 0 })), { top: 64 * 0.1, bottom: 0 }, "a band holds part of it");
+assert.deepEqual(fitBox({ x: 0, y: 0, width: 100, height: 100 }, { top: 20, bottom: 10 }), { x: 0, y: 20, width: 100, height: 100 });
+assert.deepEqual(fitBox({ x: 0, y: 650, width: 100, height: 100 }, { top: 20, bottom: 10 }), { x: 0, y: 610, width: 100, height: 100 });
+assert.deepEqual(fitBox({ x: 0, y: -50, width: 100, height: 700 }, { top: 20, bottom: 10 }), { x: 0, y: 0, width: 100, height: 700 }, "no room for the margin: the box itself still fits");
 // A move starts where the text is drawn: one pushed against an edge comes back at the first step, with no dead distance.
 const drawnAt = (text) => layoutText(text, glyphs(text)).box;
 let pushed = makeText("Chữ mới", { x: 0.5, y: 0.5 });
@@ -379,6 +391,51 @@ canvasElement.fire("pointerup", at(keyBefore.x, keyBefore.y));
 fresh();
 canvasElement.fire("keydown", { key: "ArrowRight" });
 assert.ok(Math.abs(inks()[0].x - keyBefore.x - 8) < 1e-6, "ArrowRight moves the drawn text 8 px at the first press");
+// A drag is measured from where the text was grabbed: going out and back leaves it where it was, even if it was
+// re-wrapped and lifted off the bottom on the way, and the same pointer place gives the same result however it got there.
+const titleOf = () => view.document().texts.find((text) => text.role === "title");
+view.begin(null);
+templateSelect.value = "two-lines";
+templateSelect.fire("change");
+const grabbedTitle = titleOf();
+const grabbedInk = inks().filter((ink) => grabbedTitle.text.includes(ink.line));
+const grip = { x: grabbedInk[0].x, y: grabbedInk[0].y };
+canvasElement.fire("pointerdown", at(grip.x, grip.y));
+let lifted = false;
+for (let step = 1; step <= 40; step += 1) {
+  fresh();
+  canvasElement.fire("pointermove", at(grip.x - step * 10, grip.y));
+  lifted ||= inks().some((ink) => ink.y < grip.y - 1);
+}
+for (let step = 39; step >= 0; step -= 1) canvasElement.fire("pointermove", at(grip.x - step * 10, grip.y));
+canvasElement.fire("pointerup", at(grip.x, grip.y));
+assert.ok(lifted, "on the way it was re-wrapped and lifted off the bottom");
+assert.ok(Math.abs(titleOf().x - grabbedTitle.x) < 1e-9 && Math.abs(titleOf().y - grabbedTitle.y) < 1e-9, `out and back: where it was ${JSON.stringify([titleOf().x, titleOf().y, grabbedTitle.x, grabbedTitle.y])}`);
+const endAfter = (steps) => {
+  fresh();
+  view.begin({ ...emptyThumb(), texts: [makeText("Trường học ở Bắc Kinh", { x: 0.2, y: 0.5 })] });
+  const start = inks()[0];
+  canvasElement.fire("pointerdown", at(start.x, start.y));
+  for (let step = 1; step <= steps; step += 1) canvasElement.fire("pointermove", at(start.x - 400 * step / steps, start.y));
+  canvasElement.fire("pointerup", at(start.x - 400, start.y));
+  fresh();
+  view.begin(view.document());
+  const { x, y } = view.document().texts[0];
+  return { x, y, lines: inks().map((ink) => ink.line) };
+};
+assert.deepEqual(endAfter(1), endAfter(40), "one long step or forty short ones: the same place and lines");
+// Arrow keys sideways never keep an upward shift: 12 presses left and 12 right leave the title where it was.
+view.begin(null);
+templateSelect.value = "big-bottom";
+templateSelect.fire("change");
+element("#thumb-text").value = "Tháp nuôi lợn 26 tầng ở Hồ Bắc";
+element("#thumb-text").fire("input");
+const keyTitle = titleOf();
+assert.equal(keyTitle.text, "Tháp nuôi lợn 26 tầng ở Hồ Bắc");
+for (let press = 0; press < 12; press += 1) canvasElement.fire("keydown", { key: "ArrowLeft", shiftKey: true });
+for (let press = 0; press < 12; press += 1) canvasElement.fire("keydown", { key: "ArrowRight", shiftKey: true });
+assert.equal(titleOf().y, keyTitle.y, "sideways keys: the height is untouched");
+assert.ok(Math.abs(titleOf().x - keyTitle.x) < 1e-9, "and it is back where it was");
 // Opening a thumbnail only draws it: its saved place is not changed by the drawing.
 const kept = word({ x: 0, y: 1 });
 view.begin({ ...emptyThumb(), texts: [kept] });
