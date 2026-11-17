@@ -249,8 +249,30 @@ assert.equal(node("raw-result").hidden, false, "Kết quả of a raw run is the 
 assert.equal(node("result-card").hidden, true);
 await flush();
 assert.ok(calls.some(([cmd, args]) => cmd === "compilation_raw_open" && args.outputDir === rawDir));
-// A run of an unknown version says why it cannot open.
-node("runs").children.at(-1).listeners.click();
+// Issue #915: choosing a card reads its run's status again, so a card never keeps a state its run has left.
+const rawCard = () => node("runs").children.find((item) => item.children[1]?.children?.[0]?.textContent === "Top 2") ?? node("runs").children[0];
+const statusReads = () => calls.filter(([cmd]) => cmd === "compilation_status").length;
+rawStatus = { state: "FAILED", message: "Lần dựng trước bị gián đoạn", done: 0, total: 3 };
+let reads = statusReads();
+rawCard().listeners.click(); await flush(); await flush();
+assert.equal(statusReads(), reads + 1, "choosing the card reads its status");
+assert.equal(node("busy").hidden, true);
+assert.equal(node("failed").hidden, false);
+rawStatus = { state: "RUNNING", message: "Đang dựng phần 2/3", done: 1, total: 3 };
+reads = statusReads();
+rawCard().listeners.click(); await flush(); await flush();
+assert.equal(statusReads(), reads + 1);
+assert.equal(node("busy").hidden, false, "the run shows running again without ⟳");
+assert.equal(node("failed").hidden, true);
+assert.equal(node("busy-cancel").hidden, false, "Hủy ghép is offered for the running run");
+assert.ok(timers.size >= 1, "polling resumed");
+// A running run this session did not start (a re-render, or one that outlived a restart) can be stopped too.
+await node("busy-cancel").listeners.click();
+assert.ok(calls.some(([cmd, args]) => cmd === "compilation_cancel" && args.outputDir === rawDir));
+// A run of an unknown version says why it cannot open, and is never read.
+reads = statusReads();
+node("runs").children.at(-1).listeners.click(); await flush(); await flush();
+assert.equal(statusReads(), reads, "a run of a newer DubFlow is not read when chosen");
 assert.match(node("result-note").textContent, /phiên bản DubFlow mới hơn \(định dạng 7\)/);
 assert.match(node("past-note").textContent, /cập nhật DubFlow/);
 delete globalThis.document; delete globalThis.window; delete globalThis.HTMLInputElement;

@@ -102,16 +102,20 @@ const past = { dir: pastDir, created: 1_793_500_000, video: `${pastDir}/compilat
       { video: "D:/Videos/DubFlow Output/khac/final_vi.mp4", title: "Khác", lead: "", score: null, pros: [], cons: [], start_ms: null, end_ms: null }] },
   status: { state: "COMPLETED", message: "Đã tạo video tổng hợp.", done: 4, total: 4, path: `${pastDir}/compilation.mp4` } };
 const calls = []; let state = { state: "RUNNING", message: "Đang chạy", done: 0, total: 2 };
+let listed = [past];
+// A compilation this page did not start (a re-render, or one still running from before a restart).
+const otherDir = "D:/Videos/DubFlow Output/Tong hop - Khác/run-00000000c3d4";
+let otherState = { state: "RUNNING", message: "Đang dựng phần 1/2", done: 1, total: 2 };
 const edited = [];
 const session = createAiSession();
 const view = mountCompilation(async (command, args) => {
   calls.push([command, args]);
   if (command === "voice_catalog") return { schema_version: 1, default_voice_id: "vi-test", voices: [] };
-  if (command === "compilation_runs") return [past];
+  if (command === "compilation_runs") return listed;
   if (command === "compilation_render") return "preview/output";
-  if (command === "compilation_status") return state;
+  if (command === "compilation_status") return args.outputDir === otherDir ? otherState : state;
   if (command === "compilation_description") return "00:00 Phần 1\nNguồn: Tác giả";
-  if (command === "compilation_cancel") state = { state: "CANCELLED", message: "Đã hủy" };
+  if (command === "compilation_cancel") { if (args.outputDir === otherDir) otherState = { state: "CANCELLED", message: "Đã hủy" }; else state = { state: "CANCELLED", message: "Đã hủy" }; }
   if (command === "edit_status") return { status: null, exports: [{ path: "D:/Videos/Bản cũ (sửa 1).mp4", created: 1_793_600_000, duration: 120 }] };
 }, session, { jobs: () => jobs, outputRoot: () => null, cpuOnly: () => true, roots: () => ["D:/Videos"], edit: video => edited.push(video) });
 const node = name => nodes.get(`#compilation-${name}`);
@@ -176,10 +180,38 @@ assert.equal(node("title").value, "Bản cũ");
 assert.equal(node("layout").value, "toan-man-hinh");
 assert.deepEqual(node("order").children.map(row => row.children[0].textContent), ["Phần 1: C", "Phần 2: Khác"]);
 const reused = calls.length;
+state = { state: "RUNNING", message: "Đang chạy", done: 0, total: 2 };
 node("render").listeners.click(); await flush();
 const again = calls.slice(reused).find(([cmd]) => cmd === "compilation_render")[1].request;
 assert.deepEqual(again.items.map(i => [i.video, i.startMs, i.score]), [[jobs[2].outputPath, 1500, 7], ["D:/Videos/DubFlow Output/khac/final_vi.mp4", null, null]],
   "a part whose video left the queue is still sent; the host checks it");
+// Issue #919: the run's end first seen by choosing its card, before the next poll, still unlocks the page.
+assert.equal(node("fields").disabled, true);
+const statusReads = () => calls.filter(([cmd]) => cmd === "compilation_status").length;
+state = { state: "COMPLETED", message: "Xong", path: "preview/output/compilation.mp4", done: 2, total: 2 };
+let reads = statusReads();
+node("runs").children[0].listeners.click(); await flush(); await flush();
+assert.equal(statusReads(), reads + 1, "choosing a running card reads its status");
+assert.equal(node("fields").disabled, false, "the read that saw the end unlocks the page");
+assert.equal(node("cancel").hidden, true);
+assert.equal(node("cancel").disabled, false);
+assert.equal(timers.size, 0, "nothing is left to poll");
+reads = statusReads();
+node("runs").children[0].listeners.click(); await flush(); await flush();
+assert.equal(statusReads(), reads, "a finished run is not read again when chosen");
+// A running compilation this page did not start: listed by ⟳, cancelled from its own overlay.
+listed = [{ dir: otherDir, created: 1_793_700_000, spec: { ...past.spec, title: "Khác" }, status: otherState }, past];
+await node("refresh").listeners.click(); await flush(); await flush();
+node("runs").children.find((item) => item.children[1].children[0].textContent === "Khác").listeners.click(); await flush(); await flush();
+assert.equal(node("busy").hidden, false);
+assert.equal(node("busy-cancel").hidden, false, "Hủy ghép is offered for a run this page did not start");
+const stateLine = node("state").textContent;
+await node("busy-cancel").listeners.click();
+assert.ok(calls.some(([cmd, args]) => cmd === "compilation_cancel" && args.outputDir === otherDir));
+assert.equal(node("cancel").disabled, false, "the setup's Hủy, for the page's own run, is left as it was");
+assert.equal(node("state").textContent, stateLine, "the setup's state line is not about the other run");
+await [...timers.values()][0]();
+assert.equal(node("failed").hidden, false, "the other run shows cancelled");
 delete globalThis.document; delete globalThis.window; delete globalThis.HTMLInputElement;
 
 const outputDir = await previewInvoke("compilation_render", { request });
