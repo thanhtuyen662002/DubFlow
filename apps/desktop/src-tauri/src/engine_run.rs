@@ -85,7 +85,12 @@ pub(crate) fn engine_alive(work: &Path) -> Option<bool> {
     if fs::symlink_metadata(&path).is_ok_and(|metadata| crate::edit::is_link(&metadata) || !metadata.is_file()) {
         return Some(true); // never probed through a link; treated as busy, so nothing is settled because of it
     }
-    let file = fs::OpenOptions::new().read(true).write(true).open(&path).ok()?;
+    let file = match fs::OpenOptions::new().read(true).write(true).open(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        // held open by something that shares no writing (an antivirus or backup scan): not proof the engine is gone
+        Err(_) => return Some(true),
+    };
     match file.try_lock() {
         Ok(()) => Some(false), // dropping the file releases the probe's lock
         Err(std::fs::TryLockError::WouldBlock) => Some(true),
@@ -93,17 +98,31 @@ pub(crate) fn engine_alive(work: &Path) -> Option<bool> {
     }
 }
 
+/// How a run is named in WAITING: its canonical path, so every form the same folder is reached by matches (rc21:
+/// a run tracked as `C:\…\.dubflow-work` was read back as `\\?\C:\…\.dubflow-work`, missed, and settled as
+/// interrupted while its engine was still starting).
+fn waiting_key(work: &Path) -> std::path::PathBuf {
+    fs::canonicalize(work).unwrap_or_else(|_| work.to_path_buf())
+}
+
 /// This app starts the engine of `work` and will settle it when it exits.
 pub(crate) fn track(work: &Path) {
+    let key = waiting_key(work);
     if let Ok(mut waiting) = WAITING.lock() {
-        waiting.insert(work.to_path_buf());
+        waiting.insert(key);
     }
 }
 
 fn untrack(work: &Path) {
+    let key = waiting_key(work);
     if let Ok(mut waiting) = WAITING.lock() {
-        waiting.remove(work);
+        waiting.remove(&key);
     }
+}
+
+fn tracked(work: &Path) -> bool {
+    let key = waiting_key(work);
+    WAITING.lock().is_ok_and(|waiting| waiting.contains(&key))
 }
 
 /// The engine of `work` has exited (this app waited for it): settle and stop tracking it.
@@ -117,7 +136,7 @@ pub(crate) fn settle_tracked(work: &Path, exited_ok: bool, stopped: &str) {
 /// by an earlier app); otherwise the engine is gone and the run becomes FAILED (or CANCELLED, or the engine's own
 /// last word), never COMPLETED without a successful exit. Its files stay: a new run reuses every finished part.
 pub(crate) fn settle_if_abandoned(work: &Path, stopped: &str) {
-    if WAITING.lock().is_ok_and(|waiting| waiting.contains(work)) {
+    if tracked(work) {
         return;
     }
     if crate::product::read_small_json(&work.join("status.json"), TAIL_BYTES).is_some_and(|value| value["state"] == "RUNNING") {
@@ -222,6 +241,45 @@ mod tests {
         fs::write(work.join("status.json"), br#"{"schema_version":1,"state":"COMPLETED","path":"x"}"#).unwrap();
         settle_if_abandoned(&work, stopped);
         assert_eq!(status(&work)["state"], "COMPLETED");
+        let _ = fs::remove_dir_all(work);
+    }
+
+    #[test]
+    fn a_tracked_run_is_left_to_its_watcher_whatever_form_its_path_is_read_in() {
+        // rc21: tracked in the form the run was made with, read back canonical (`\\?\C:\…` on Windows) while the
+        // engine was still starting and had no lock yet: it was settled as interrupted under a working engine
+        let work = work().join(".dubflow-work");
+        fs::create_dir_all(&work).unwrap();
+        fs::write(work.join("status.json"), br#"{"schema_version":1,"state":"RUNNING"}"#).unwrap();
+        track(&work);
+        let canonical = fs::canonicalize(&work).unwrap();
+        settle_if_abandoned(&canonical, "stopped");
+        assert_eq!(status(&work)["state"], "RUNNING", "no engine.lock yet, and still not settled");
+        // a stale, free lock left by the previous engine of a re-render is no proof either while this app waits
+        fs::write(work.join(ENGINE_LOCK), b"").unwrap();
+        settle_if_abandoned(&canonical, "stopped");
+        assert_eq!(status(&work)["state"], "RUNNING");
+        // its watcher settles it in either form, and then it is no longer tracked
+        settle_tracked(&canonical, false, "Bộ tổng hợp đã dừng.");
+        assert_eq!(status(&work)["state"], "FAILED");
+        assert!(!tracked(&work));
+        let _ = fs::remove_dir_all(work.parent().unwrap());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_lock_file_held_without_write_sharing_is_not_an_engine_gone() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let work = work();
+        fs::write(work.join(ENGINE_LOCK), b"").unwrap();
+        fs::write(work.join("status.json"), br#"{"schema_version":1,"state":"RUNNING"}"#).unwrap();
+        // a scanner's handle that shares reading only (FILE_SHARE_READ = 1): the host cannot open the file to probe
+        let scanner = fs::OpenOptions::new().read(true).share_mode(1).open(work.join(ENGINE_LOCK)).unwrap();
+        assert_eq!(engine_alive(&work), Some(true));
+        settle_if_abandoned(&work, "stopped");
+        assert_eq!(status(&work)["state"], "RUNNING");
+        drop(scanner);
+        assert_eq!(engine_alive(&work), Some(false));
         let _ = fs::remove_dir_all(work);
     }
 
