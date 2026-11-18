@@ -43,7 +43,6 @@ const ATTACHED: usize = 50;
 /// Black and frozen stretches kept in the result, and times named in a detail.
 const MAX_SPANS: usize = 50;
 const NAMED: usize = 5;
-const BUSY_CHECK: &str = "Video này đang được kiểm tra kỹ thuật ở cửa sổ DubFlow khác";
 
 /// Checks running in this window, by check folder: "Dừng kiểm tra" stops them,
 /// and a RUNNING check.json that is not here and whose lease is free was left by a closed app.
@@ -177,6 +176,9 @@ fn burn_ms(ms: u64) -> u64 {
     ((ms as f64 / 1000.0) * 100.0).round() as u64 * 10
 }
 
+/// The lines (burn, line, cue) shown in each layer: each line with its first and past-the-last run.
+type Shown<'a> = Vec<Vec<(usize, usize, &'a Cue)>>;
+
 /// The burned lines on a shortened clock, from the exported video's own frame times (`frames`, in whole ms, sorted):
 /// libass draws a line on the frames whose time is within its [start, end) as `burn_ass` wrote them. Each run of
 /// frames showing the same lines becomes one second, in order, and every line covers the same runs as in the export;
@@ -185,7 +187,7 @@ fn burn_ms(ms: u64) -> u64 {
 /// there (a line keeps the place it took when it appeared). One script line per line: no growth with overlaps.
 /// Returns when each run starts in the export (ms), and for each layer its lines with their first and past-the-last
 /// run, in `burn_ass`'s order.
-fn stretches<'a>(burns: &'a [BurnSubtitles], frames: &[u64]) -> (Vec<u64>, Vec<Vec<(usize, usize, &'a Cue)>>) {
+fn stretches<'a>(burns: &'a [BurnSubtitles], frames: &[u64]) -> (Vec<u64>, Shown<'a>) {
     let range = |line: &Cue| {
         let (start, end) = (burn_ms(line.start_ms), burn_ms(line.end_ms));
         (frames.partition_point(|&at| at < start) as u64, frames.partition_point(|&at| at < end) as u64)
@@ -742,11 +744,10 @@ pub(super) fn run(work: &Path, ffmpeg: &Path, plan: Plan) {
     prune(work);
 }
 
-/// The check folder's lease. `work_lease` opens "lease" without truncating or writing it, and on Windows holds it
-/// with no sharing. Whatever is at that name is removed first (a link, or another name of a file elsewhere, which only
-/// loses this name) and a new empty file made with `create_new`, so the lease is always the check's own file and no
-/// file elsewhere is ever held. A lease another window holds cannot be removed on Windows, and `take` then reports it
-/// busy.
+/// The check folder's lease, held (on Windows with no sharing) while the check runs. Whatever is at that name is
+/// removed first (a link, or another name of a file elsewhere, which only loses this name) and the lease is the new
+/// empty file `create_new` makes, so it is always the check's own file and no file elsewhere is ever held. A lease
+/// another window holds cannot be removed on Windows, so `create_new` fails and None says the check is busy.
 fn own_lease(work: &Path, dir: &Path) -> Option<fs::File> {
     if !(unlinked(work) && plain(dir)) {
         return None;
@@ -758,12 +759,17 @@ fn own_lease(work: &Path, dir: &Path) -> Option<fs::File> {
         }
         let _ = fs::remove_file(&path).or_else(|_| fs::remove_dir(&path));
     }
-    let _ = fs::OpenOptions::new().write(true).create_new(true).open(&path);
-    // Only our own plain file is ever taken.
-    if !fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.is_file() && !is_link(&metadata)) {
-        return None;
+    // The new file is the lease itself (on Windows opened without sharing, as `work_lease::take` does), so no
+    // second open of the name ever follows: when it cannot be made new, the check does not run.
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.share_mode(0);
     }
-    crate::work_lease::take(dir, BUSY_CHECK).ok()
+    let lease = options.open(&path).ok()?;
+    lease.metadata().is_ok_and(|metadata| metadata.is_file() && !is_link(&metadata)).then_some(lease)
 }
 
 /// Put `running` in `checking` under `dir`, unless DubFlow is `closing` (then false).
@@ -926,13 +932,54 @@ pub(super) fn cancel(work: &Path, video: &Path) {
 
 /// A check.json of at most `CHECK_LIMIT` bytes that is an export check.
 fn read_check_file(path: &Path) -> Option<Value> {
-    // Never through a link: only a plain file is read, and only its first bytes.
-    if !fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_file() && !is_link(&metadata) && metadata.len() <= CHECK_LIMIT) {
+    // Never through a link: only the check's own plain file is read, and only its first bytes.
+    let file = open_own(path)?;
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut std::io::Read::take(file, CHECK_LIMIT + 1), &mut bytes).ok()?;
+    if bytes.len() as u64 > CHECK_LIMIT {
         return None;
     }
-    let mut bytes = Vec::new();
-    std::io::Read::read_to_end(&mut std::io::Read::take(fs::File::open(path).ok()?, CHECK_LIMIT), &mut bytes).ok()?;
     serde_json::from_slice::<Value>(&bytes).ok().filter(|value| value["kind"] == "export_check")
+}
+
+/// `path` opened for reading without following a link at its last step, and kept only when the opened handle
+/// itself is a plain file with no other name (a hard link would be a file elsewhere) of at most `CHECK_LIMIT`
+/// bytes. The handle is judged, not the path, so a name swapped after a look is never read through.
+fn open_own(path: &Path) -> Option<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // O_NONBLOCK: a FIFO planted here opens at once (and is then refused) instead of hanging the reader.
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let file = options.open(path).ok()?;
+    let metadata = file.metadata().ok()?;
+    (metadata.is_file() && !is_link(&metadata) && metadata.len() <= CHECK_LIMIT && links(&file, &metadata) == Some(1)).then_some(file)
+}
+
+/// How many names the opened file has.
+#[cfg(unix)]
+fn links(_file: &fs::File, metadata: &fs::Metadata) -> Option<u64> {
+    use std::os::unix::fs::MetadataExt;
+    Some(metadata.nlink())
+}
+
+/// How many names the opened file has.
+#[cfg(windows)]
+fn links(file: &fs::File, _metadata: &fs::Metadata) -> Option<u64> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION};
+    // SAFETY: the handle is open for the call and the structure is plain data the call fills.
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    (unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut info) } != 0).then_some(u64::from(info.nNumberOfLinks))
 }
 
 /// A check of this window runs in `dir`.
@@ -1509,6 +1556,45 @@ mod tests {
             fs::remove_file(folder.join("check.json")).unwrap();
             std::os::unix::fs::symlink(&elsewhere, folder.join("check.json")).unwrap();
             assert_eq!(read_check_file(&folder.join("check.json")), None);
+        }
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// A check.json that is already a hard link (another name of a file elsewhere, here holding a valid RUNNING
+    /// export check) is never read, by `attach` either, and nothing is written through it; a link or a FIFO at the
+    /// name is refused on the opened handle, without hanging.
+    #[test]
+    fn a_planted_check_json_is_never_read() {
+        let dir = temp("hardread");
+        let work = dir.join("work");
+        let video = dir.join("Phim.mp4");
+        let folder = check_dir(&work, &video);
+        fs::create_dir_all(&folder).unwrap();
+        let elsewhere = dir.join("elsewhere.json");
+        let running = br#"{"kind":"export_check","state":"RUNNING","checks":[]}"#;
+        fs::write(&elsewhere, running).unwrap();
+        // the file is valid when it has one name
+        let own = dir.join("own.json");
+        fs::write(&own, running).unwrap();
+        assert_eq!(read_check_file(&own).unwrap()["state"], "RUNNING");
+        fs::hard_link(&elsewhere, folder.join("check.json")).unwrap();
+        assert_eq!(read_check_file(&folder.join("check.json")), None, "a second name is not the check's own file");
+        let mut exports = vec![json!({ "path": display_path(&video) })];
+        attach(&work, &mut exports);
+        assert!(exports[0].get("check").is_none(), "{}", exports[0]);
+        assert_eq!(fs::read(&elsewhere).unwrap(), running, "nothing was written through the link");
+        assert!(!folder.join("lease").exists(), "no lease was taken for a file that was never read");
+        #[cfg(unix)]
+        {
+            fs::remove_file(folder.join("check.json")).unwrap();
+            std::os::unix::fs::symlink(&own, folder.join("check.json")).unwrap();
+            assert_eq!(read_check_file(&folder.join("check.json")), None, "a symlink is never followed");
+            fs::remove_file(folder.join("check.json")).unwrap();
+            let fifo = folder.join("check.json");
+            assert!(Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+            let started = Instant::now();
+            assert_eq!(read_check_file(&fifo), None);
+            assert!(started.elapsed() < Duration::from_secs(5), "a FIFO never holds the reader");
         }
         let _ = fs::remove_dir_all(dir);
     }
