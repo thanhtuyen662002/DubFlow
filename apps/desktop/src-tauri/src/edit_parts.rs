@@ -213,10 +213,11 @@ fn part_script(part: &Edit, source: &Source, quality: &str, from: f64, frames: u
     if source.burn.is_some() {
         // Phụ đề (and the text layer) are timed on the whole export, on its own frames as `export_script` draws
         // Phụ đề (#935): the part's frame n is the export's frame `start + n`.
-        // With overlays the picture is already on those frames (before them, #943).
+        // With overlays the picture is already on those frames (put there before them, #943): it only takes the
+        // frame clock.
         let start = (from * fps_number(&source.frame.fps)).round() as u64;
-        let grid = if part.overlays.is_empty() { format!("fps={},", source.frame.fps) } else { String::new() };
-        steps.push(format!("{grid}setpts=PTS+{start},{},setpts=PTS-{start}", timed.join(",")));
+        let clock = if part.overlays.is_empty() { format!("fps={}", source.frame.fps) } else { frame_clock(&source.frame.fps) };
+        steps.push(format!("{clock},setpts=PTS+{start},{},setpts=PTS-{start}", timed.join(",")));
     } else if !timed.is_empty() {
         // The text layer is timed on the whole export.
         let shift = num(from);
@@ -229,7 +230,9 @@ fn part_script(part: &Edit, source: &Source, quality: &str, from: f64, frames: u
         graph.push_str(&format!(";\n[{label}]{filter}[{out}]"));
         label = out;
     }
-    graph.push_str(&format!(";\n[{label}]fps={},tpad=stop_mode=clone:stop_duration=5,trim=end_frame={frames}[v]", source.frame.fps));
+    // The padding comes before the `fps`: after an overlay (Lớp, or the blurred reframe), an `fps` first would drop the
+    // part's real last frame, and the padding would then repeat the one before it (#943).
+    graph.push_str(&format!(";\n[{label}]tpad=stop_mode=clone:stop_duration=5,fps={},trim=end_frame={frames}[v]", source.frame.fps));
     graph
 }
 
@@ -576,7 +579,7 @@ mod tests {
         assert!(!graph.contains(":a]") && !graph.contains("atrim"), "{graph}");
         assert!(graph.starts_with("[0:v]boxblur=10[mcv]"), "{graph}");
         assert!(graph.contains("[vp]setpts=PTS+600/TB,subtitles=filename=t.ass,setpts=PTS-600/TB[vs0]"), "{graph}");
-        assert!(graph.ends_with("[vs0]fps=30/1,tpad=stop_mode=clone:stop_duration=5,trim=end_frame=18000[v]"), "{graph}");
+        assert!(graph.ends_with("[vs0]tpad=stop_mode=clone:stop_duration=5,fps=30/1,trim=end_frame=18000[v]"), "{graph}");
     }
 
     #[test]
@@ -604,9 +607,11 @@ mod tests {
         layered.overlays.push(Overlay { media: 0, at: 700.0, start: 0.0, end: 10.0, w: 0.3, ..Overlay::default() });
         let layered = window(&layered, 600.0, 1200.0, &[false]);
         let graph = part_script(&layered, &alone, "source", 600.0, 18000);
-        let (grid, overlay) = (graph.find("[vj]fps=30/1[vg]").expect(&graph), graph.find("[vg][ov0]overlay=").expect(&graph));
+        let (grid, overlay) = (graph.find("[vj]fps=30/1,settb=AVTB[vg]").expect(&graph), graph.find("[vg][ov0]overlay=").expect(&graph));
         assert!(grid < overlay, "{graph}");
-        assert!(graph.contains("[vp]setpts=PTS+18000,subtitles=filename=s.ass,setpts=PTS-18000[vs0]"), "{graph}");
+        assert!(graph.contains("[vp]settb=1/30,setpts=PTS+18000,subtitles=filename=s.ass,setpts=PTS-18000[vs0]"), "{graph}");
+        // The padding comes before the last `fps`, so no part loses its real last frame after an overlay.
+        assert!(graph.ends_with("[vs0]tpad=stop_mode=clone:stop_duration=5,fps=30/1,trim=end_frame=18000[v]"), "{graph}");
     }
 
     #[test]
@@ -721,7 +726,8 @@ mod tests {
             Dialogue: 0,0:00:58.00,0:01:00.00,D,,0,0,0,,{\\pos(10,10)\\p1}m 0 0 l 40 0 40 20 0 20{\\p0}\n").unwrap();
         let mut timeline = edit(vec![segment(0, 0.0, 30.0), segment(0, 30.0, 60.0)]);
         // A video overlay in the first part; a picture in the second that ends exactly at the end (a part is at least 20 s).
-        timeline.overlays.push(Overlay { media: 0, at: 2.0, start: 0.0, end: 3.0, x: 0.6, y: 0.6, w: 0.3, ..Overlay::default() });
+        // (The video overlay starts off the frame grid, at 2.01 s: it must show the same frames burned or not.)
+        timeline.overlays.push(Overlay { media: 0, at: 2.01, start: 0.0, end: 3.0, x: 0.6, y: 0.6, w: 0.3, ..Overlay::default() });
         timeline.overlays.push(Overlay { media: 1, at: 57.0, start: 0.0, end: 3.0, x: 0.1, y: 0.6, w: 0.3, ..Overlay::default() });
         let streams = [Input { has_audio: true }, Input { has_audio: false }];
         let frame = Frame { width: 320, height: 240, fps: "25/1".into() };
@@ -729,35 +735,42 @@ mod tests {
         let burn = subtitles_filter(&crate::display_path(&lines));
         let burned = Finish { burn: Some(burn.clone()), ..Finish::default() };
         let (graph, has_audio) = export_script(&timeline, &streams, &frame, "source", &mix, &burned);
-        assert!(has_audio && graph.contains("[vj]fps=25/1[vg]") && graph.contains(&format!("[vt]{burn}[v]")), "{graph}");
+        assert!(has_audio && graph.contains("[vj]fps=25/1,settb=AVTB[vg]") && graph.contains(&format!("[vt]settb=1/25,{burn}[v]")), "{graph}");
         let frames = |file: &Path| {
             let output = Command::new(&ffmpeg).args(["-v", "error", "-i"]).arg(file).args(["-map", "0:v", "-f", "framemd5", "-"]).output().unwrap();
             String::from_utf8_lossy(&output.stdout).lines().filter(|line| !line.starts_with('#')).map(str::to_owned).collect::<Vec<_>>()
         };
         let hash = |line: &String| line.rsplit(',').next().unwrap_or("").trim().to_owned();
-        // One run, with the inputs as the export gives them (the picture repeats as a video).
+        // One run, with the inputs as the export gives them (the picture repeats as a video), kept lossless (FFV1) so
+        // the frames compared are exactly the graph's.
         let run = |graph: &str, name: &str| {
             let out = dir.join(name);
             let ran = Command::new(&ffmpeg).args(["-nostdin", "-v", "error", "-y", "-i"]).arg(&source)
                 .args(["-loop", "1", "-framerate", "30", "-t", &num(STILL_SECONDS), "-i"]).arg(&picture).arg("-filter_complex").arg(graph)
-                .args(["-map", "[v]", "-map", "[a]", "-c:v", "mpeg4", "-q:v", "2", "-c:a", "aac", "-r", "25/1"]).arg(&out).status().unwrap();
+                .args(["-map", "[v]", "-map", "[a]", "-c:v", "ffv1", "-c:a", "aac", "-r", "25/1"]).arg(&out).status().unwrap();
             assert!(ran.success(), "{name}");
             frames(&out)
         };
-        let one = run(&graph, "single.mp4");
+        let one = run(&graph, "single.mkv");
         assert_eq!(one.len(), 1500, "60 s at 25 fps in one run");
         assert_ne!(hash(&one[1499]), hash(&one[1498]), "the last frame is the source's own, not a copy");
         // The graph before #943 (its `fps` after the overlays) gives the same frames but the last one.
-        let before = graph.replacen("[vj]fps=25/1[vg];\n", "", 1).replacen("[vg][ov0]overlay=", "[vj][ov0]overlay=", 1)
-            .replacen(&format!("[vt]{burn}[v]"), &format!("[vt]fps=25/1,{burn}[v]"), 1);
+        let before = graph.replacen("[vj]fps=25/1,settb=AVTB[vg];\n", "", 1).replacen("[vg][ov0]overlay=", "[vj][ov0]overlay=", 1)
+            .replacen(&format!("[vt]settb=1/25,{burn}[v]"), &format!("[vt]fps=25/1,{burn}[v]"), 1);
         assert_ne!(before, graph);
-        let old = run(&before, "before.mp4");
+        let old = run(&before, "before.mkv");
         assert_eq!(old.len(), 1499, "the graph before #943 drops the last frame");
-        assert_eq!(old[..], one[..1499], "overlay timing and placement and the burned lines are unchanged");
+        let changed = old.iter().zip(&one).filter(|(a, b)| a != b).count();
+        assert_eq!(changed, 0, "overlay timing and placement and the burned lines are unchanged (frames differing)");
         // Controls: no overlay, or no burned lines, keep all their frames.
         let bare = Edit { overlays: vec![], ..timeline.clone() };
-        assert_eq!(run(&export_script(&bare, &streams, &frame, "source", &mix, &burned).0, "bare.mp4").len(), 1500, "no overlay");
-        assert_eq!(run(&export_script(&timeline, &streams, &frame, "source", &mix, &Finish::default()).0, "unburned.mp4").len(), 1500, "no burn");
+        assert_eq!(run(&export_script(&bare, &streams, &frame, "source", &mix, &burned).0, "bare.mkv").len(), 1500, "no overlay");
+        let unburned = run(&export_script(&timeline, &streams, &frame, "source", &mix, &Finish::default()).0, "unburned.mkv");
+        assert_eq!(unburned.len(), 1500, "no burn");
+        // Away from the lines (1–2 s and 58–60 s), the burned export's frames are the unburned one's: the overlays show
+        // the same frames at the same places either way.
+        let changed = unburned[50..1450].iter().zip(&one[50..1450]).filter(|(a, b)| a != b).count();
+        assert_eq!(changed, 0, "overlays shown the same with and without burned lines (frames differing)");
         // In parts (the same edit cut in two), the last frame is the source's own too, and the parts are the single run.
         let (sound, _) = export_script(&timeline, &streams, &sound_frame(&frame), "source", &mix, &Finish { audio_only: true, ..Finish::default() });
         let sound_script = dir.join("work/filter-sound.txt");
@@ -774,9 +787,23 @@ mod tests {
         let cuts = cut_points(&timeline, total, "25/1", 2);
         assert_eq!(cuts.len(), 1, "{cuts:?}");
         render_in(&job, &parted, &running, &dir.join("work/parts"), &["mpeg4"], 2, 25.0, &cuts).unwrap();
-        let joined = frames(&partial_of(&job.target));
-        assert_eq!(joined.len(), 1500, "60 s at 25 fps in parts");
-        assert_ne!(hash(&joined[1499]), hash(&joined[1498]), "the parts' last frame is not a copy");
+        let joined = partial_of(&job.target);
+        assert_eq!(frames(&joined).len(), 1500, "60 s at 25 fps in parts");
+        // Each part's last frame (749, at the cut, and 1499, at the end) is that frame of the one run, not the one
+        // before it: nearer to its own frame than to the previous one (the parts are lossy MPEG-4).
+        let gray = |file: &Path, index: usize| {
+            let output = Command::new(&ffmpeg).args(["-v", "error", "-i"]).arg(file)
+                .args(["-vf", &format!("select=eq(n\\,{index}),format=gray"), "-frames:v", "1", "-f", "rawvideo", "-"]).output().unwrap();
+            assert_eq!(output.stdout.len(), 320 * 240, "frame {index}");
+            output.stdout
+        };
+        let apart = |a: &[u8], b: &[u8]| a.iter().zip(b).map(|(x, y)| u64::from(x.abs_diff(*y))).sum::<u64>();
+        let single = dir.join("single.mkv");
+        for last in [749, 1499] {
+            let got = gray(&joined, last);
+            let (own, previous) = (apart(&got, &gray(&single, last)), apart(&got, &gray(&single, last - 1)));
+            assert!(own * 2 < previous, "frame {last} of the parts is a copy of the one before ({own} vs {previous})");
+        }
         println!("overlay-end: ran against real FFmpeg");
     }
 }
