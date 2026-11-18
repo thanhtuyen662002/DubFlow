@@ -1319,14 +1319,18 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     active: () => active,
   });
 
+  // The look panel's own slider preview: its "change" commits it. A slider moved with the keyboard gets no pointerdown
+  // to settle the draft, so a panel that refused to commit over its own preview kept the change unsaved (rc27).
+  let lookPreview: Edit | null = null;
   const lookPanel = mountLook({
     edit: () => current(),
     base: () => session!.history.current,
-    busy: () => !session || !!session.draft,
+    busy: () => !session || (!!session.draft && session.draft !== lookPreview),
     commit: (next, selected) => commit(next, selected),
     preview: (next) => {
       if (!session) return;
       session.draft = next;
+      lookPreview = next;
       renderPanel();
       renderTimeline();
       renderEffects();
