@@ -6862,6 +6862,27 @@ aloop=loop=-1:size=144000,atrim=duration=8,adelay=2000:all=1"), "{script}");
         assert_eq!(inside.len(), 40 * 14);
         assert!(inside.iter().all(|&luma| luma >= 200), "the burned line is not on the frame at 10 s: min {:?}", inside.iter().min());
         assert!(pixels("6").iter().any(|&luma| luma < 200), "the box shows outside its time");
+        // The `fps` before zoompan only fixes the end time: a moving part's frames (picture and timestamps) are the
+        // same with and without it, at a whole and at an NTSC rate.
+        for rate in ["25/1", "30000/1001"] {
+            let frame = Frame { width: 320, height: 240, fps: rate.into() };
+            let fit = format!("scale=320:240:force_original_aspect_ratio=decrease,pad=320:240:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={rate},format=yuv420p,settb=AVTB");
+            let fixed = segment_video(&moving(8.0, 11.3), &fit, &frame, &[]);
+            let zoom_at = fixed.iter().position(|step| step.starts_with("zoompan=")).unwrap();
+            assert_eq!(fixed[zoom_at - 1], format!("fps={rate}"));
+            let mut before = fixed.clone();
+            before.remove(zoom_at - 1);
+            let frames = |steps: &[String]| {
+                let output = Command::new(&ffmpeg).args(["-nostdin", "-v", "error", "-i"]).arg(&source)
+                    .args(["-filter_complex", &format!("[0:v]{}[v]", steps.join(",")), "-map", "[v]", "-f", "framemd5", "-"]).output().unwrap();
+                assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+                String::from_utf8_lossy(&output.stdout).lines().filter(|line| !line.starts_with('#')).map(str::to_owned).collect::<Vec<_>>()
+            };
+            let (now, then) = (frames(&fixed), frames(&before));
+            let expected = (3.3 * fps_number(rate)).round() as usize;
+            assert!(now.len().abs_diff(expected) <= 1, "{rate}: {} frames for 3.3 s", now.len());
+            assert_eq!(now, then, "{rate}: the moving part's frames changed");
+        }
         println!("zoom-end: ran against real FFmpeg");
     }
 }

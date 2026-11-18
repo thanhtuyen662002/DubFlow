@@ -1,7 +1,7 @@
 DUBFLOW_PR_V1
 Issue: #940
 Lease-Owner: Claude/issue-940-zoompan-fps-hang
-Lease-Heartbeat: 2026-11-18T14:52:34Z
+Lease-Heartbeat: 2026-11-18T14:59:33Z
 Tested-Base-SHA: 4cd1f30f8e46ac1e6537fce4fbdac6868d8849e2
 Conflict-Domains: desktop-edit-export
 Expected-Paths:
