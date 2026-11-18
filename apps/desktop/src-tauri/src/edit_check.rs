@@ -142,17 +142,36 @@ fn text_block(style: &SubtitleStyle, text: &str, width: f64, height: f64) -> Rec
     let font = 48.0 * style.size * height / 1080.0;
     let (margin_x, margin_v) = (40.0 * width / 1920.0, 48.0 * height / 1080.0);
     let room = (width - 2.0 * margin_x).max(1.0);
-    let pad = if style.box_color.is_some() { 0.2 * font } else { 0.0 };
+    // Box: libass pads it by the Shadow value (20 % of the size) on every side. No box: the outline
+    // (ScaledBorderAndShadow) sticks out past the first and last letter; above and below, the row's ascent and
+    // descent already leave more room than any outline the editor allows.
+    let (pad_x, pad_y) = match style.box_color {
+        Some(_) => (0.2 * font, 0.2 * font),
+        None => (style.outline_width * height / 1080.0, 0.0),
+    };
+    let space = char_em(' ') * font;
     let (mut rows, mut widest) = (0.0_f64, 0.0_f64);
     for line in text.trim().split('\n') {
-        let wide = line.trim().chars().map(char_em).sum::<f64>() * font;
-        // libass (WrapStyle 0) splits a long line into rows of about even width, each centred.
-        let count = (wide / room).ceil().max(1.0);
+        // libass breaks a row only at a space here: a native .ass file gets no Unicode line breaking, so a run
+        // with no space (a Chinese or Japanese sentence) stays one row however wide it is.
+        let words: Vec<f64> = line.split_whitespace().map(|word| word.chars().map(char_em).sum::<f64>() * font).collect();
+        let (mut count, mut row) = (1.0_f64, 0.0_f64);
+        for &word in &words {
+            if row > 0.0 && row + space + word > room {
+                count += 1.0;
+                row = word;
+            } else {
+                row += if row > 0.0 { space + word } else { word };
+            }
+        }
+        let wide = words.iter().sum::<f64>() + space * words.len().saturating_sub(1) as f64;
+        let longest = words.iter().copied().fold(0.0, f64::max);
+        // WrapStyle 0 evens the rows out, but never below the longest unbroken word.
         rows += count;
-        widest = widest.max(wide / count);
+        widest = widest.max((wide / count).max(longest));
     }
     // A row is about one Fontsize tall in libass (ascent plus descent).
-    let (block_w, block_h) = (widest + 2.0 * pad, rows * font + 2.0 * pad);
+    let (block_w, block_h) = (widest + 2.0 * pad_x, rows * font + 2.0 * pad_y);
     if let (Some(x), Some(y)) = (style.x, style.y) {
         // A dragged layer is one `\an5\pos` for every line (burn_ass), and libass does not keep a positioned line
         // inside the picture: the editor only clamped the line on screen while dragging, so a longer one can stick out.
@@ -896,6 +915,28 @@ mod tests {
         assert_eq!(super::subtitle_fit(&[&chinese], &tall).at_ms, [4_000]);
         let latin = BurnSubtitles { style: size_one, lines: vec![Cue { start_ms: 4_000, end_ms: 6_000, text: "Xin chao cac ban!".into() }] };
         assert_eq!(super::subtitle_fit(&[&latin], &tall).ok, Some(true), "17 Latin letters are about half as wide");
+        // libass breaks only at spaces here, so a long Chinese sentence stays one row: cut by a 1:1 or 4:3 fill,
+        // and too wide for the picture itself when it has no fill at all (recheck 3)
+        let sentence = BurnSubtitles { style: style(json!({})), lines: vec![Cue { start_ms: 5_000, end_ms: 7_000,
+            text: "大家好欢迎来到我们的频道今天我们来聊一聊这座城市里最有名的一家老字号餐厅和它的故事吧".into() }] };
+        for (out, aspect) in [((1080, 1080), "1:1"), ((1440, 1080), "4:3")] {
+            let window = Framing { out, aspect: Some(aspect), ..tall };
+            assert_eq!(super::subtitle_fit(&[&sentence], &window).at_ms, [5_000], "{aspect}");
+        }
+        let plain = super::subtitle_fit(&[&sentence], &wide);
+        assert_eq!(plain.at_ms, [5_000]);
+        assert!(plain.detail.contains("chữ vượt ra ngoài khung hình"), "{}", plain.detail);
+        // the same words with spaces wrap into rows and fit the 4:3 window
+        let spaced = BurnSubtitles { style: style(json!({})), lines: vec![Cue { start_ms: 5_000, end_ms: 7_000,
+            text: "大家好 欢迎来到 我们的频道 今天 我们来聊一聊".into() }] };
+        assert_eq!(super::subtitle_fit(&[&spaced], &Framing { out: (1440, 1080), aspect: Some("4:3"), ..tall }).ok, Some(true));
+        // without a box the outline sticks out past the last letter: a dragged line that just fits is cut by it
+        let mut snug = style(json!({"x": 0.0625, "y": 0.5}));
+        snug.size = 1.0;
+        let cue = vec![Cue { start_ms: 3_000, end_ms: 5_000, text: "ABCDEFGHIJ".into() }];
+        assert_eq!(super::subtitle_fit(&[&BurnSubtitles { style: snug.clone(), lines: cue.clone() }], &wide).at_ms, [3_000]);
+        snug.outline_width = 0.0;
+        assert_eq!(super::subtitle_fit(&[&BurnSubtitles { style: snug, lines: cue }], &wide).ok, Some(true));
         // a dragged layer: libass does not pull a positioned line back in, so a long line placed near the left edge sticks out
         let dragged = burn(style(json!({"x": 0.1, "y": 0.5})), LONG, 7_000);
         let out = super::subtitle_fit(&[&dragged], &wide);
