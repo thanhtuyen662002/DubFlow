@@ -488,8 +488,10 @@ fn measure_subtitles(work: &Path, ffmpeg: &Path, frame: &SubtitleFrame, video: &
     }
     let mut filters = Vec::new();
     for (index, (burn, shown)) in frame.burns.iter().zip(&layers).enumerate() {
-        let file = dir.join(format!("measure-{}.ass", index + 1));
-        if !owned(work, dir) || write_durable(&file, measure_ass(&burn.style, shown).as_bytes()).is_err() {
+        let name = format!("measure-{}.ass", index + 1);
+        let file = dir.join(&name);
+        // Written through the held folder (`write_held`), so a `checks` swapped meanwhile never leads it elsewhere.
+        if !write_held(work, dir, &name, measure_ass(&burn.style, shown).as_bytes(), &|| {}) {
             return unmeasured("không ghi được tệp đo".into());
         }
         filters.push(subtitles_filter(&display_path(&file)));
@@ -517,10 +519,13 @@ fn measure_subtitles(work: &Path, ffmpeg: &Path, frame: &SubtitleFrame, video: &
 /// is made with `create_new`, which refuses anything put there in between, a link included: nothing on disk is ever
 /// opened through this name. None when the folders are not plain any more or the name holds a folder.
 fn fresh_file(work: &Path, dir: &Path, name: &str) -> Option<fs::File> {
-    if !owned(work, dir) {
-        return None;
-    }
-    let path = dir.join(name);
+    fresh_file_with(work, dir, name, &|| {})
+}
+
+/// `fresh_file`, with `between` run after the last look and right before the name is touched (tests race it there).
+/// Everything goes through the held folder (`held_name`).
+fn fresh_file_with(work: &Path, dir: &Path, name: &str, between: &dyn Fn()) -> Option<fs::File> {
+    let (_held, path) = held_name(work, dir, name, between)?;
     if let Ok(metadata) = fs::symlink_metadata(&path) {
         if metadata.is_dir() && !is_link(&metadata) {
             return None;
@@ -889,7 +894,7 @@ fn check_dir(work: &Path, video: &Path) -> PathBuf {
 
 /// Written only while `work`, `checks` and the folder are still plain folders, through `write_held`.
 fn save(work: &Path, dir: &Path, report: &ExportCheck) {
-    write_held(work, dir, "check.json", &serde_json::to_vec(report).unwrap_or_default(), &|| {});
+    let _ = write_held(work, dir, "check.json", &serde_json::to_vec(report).unwrap_or_default(), &|| {});
 }
 
 /// Write `name` in the check folder `dir` while the folder is held (`pin`) for just this write: on Windows the
@@ -897,12 +902,23 @@ fn save(work: &Path, dir: &Path, report: &ExportCheck) {
 /// the write goes through the held handle (/proc/self/fd), so a swap never leads it outside. A check waiting its
 /// turn holds the folder only for these moments (Lead review 4611211117). `between` runs after the last look and
 /// right before the write (tests race it there).
-fn write_held(work: &Path, dir: &Path, name: &str, bytes: &[u8], between: &dyn Fn()) {
-    let Some(pinned) = pin(work, dir) else { return };
-    if owned(work, dir) {
-        between();
-        let _ = write_durable(&held_base(&pinned, dir).join(name), bytes);
+fn write_held(work: &Path, dir: &Path, name: &str, bytes: &[u8], between: &dyn Fn()) -> bool {
+    held_name(work, dir, name, between).is_some_and(|(_held, path)| write_durable(&path, bytes).is_ok())
+}
+
+/// The check folder `dir`, held (`pin`), and the path by which `name` in it is reached through that hold: on Linux
+/// through the handle itself (/proc/self/fd), so a `work/checks` or folder renamed and swapped for a link after the
+/// look never leads a create, remove or rename elsewhere; on Windows by name, which the hold keeps from being swapped.
+/// Every file the check writes or removes in its folder (lease, logs, measure scripts, plan, report) goes through
+/// it (Lead review 4612627870). Keep the hold for as long as the path is used. `between` runs after the last look.
+fn held_name(work: &Path, dir: &Path, name: &str, between: &dyn Fn()) -> Option<(fs::File, PathBuf)> {
+    let pinned = pin(work, dir)?;
+    if !owned(work, dir) {
+        return None;
     }
+    between();
+    let path = held_base(&pinned, dir).join(name);
+    Some((pinned, path))
 }
 
 /// Check the published `plan.video`. Every outcome leaves the video exactly as exported.
@@ -917,7 +933,7 @@ pub(super) fn run(work: &Path, ffmpeg: &Path, plan: Plan) {
     if !register(&CHECKING, &CLOSING, &dir, &running) {
         return; // DubFlow is closing
     }
-    write_held(work, &dir, "plan.json", &serde_json::to_vec(&plan).unwrap_or_default(), &|| {});
+    let _ = write_held(work, &dir, "plan.json", &serde_json::to_vec(&plan).unwrap_or_default(), &|| {});
     let mut held = None;
     let report = match wait_turn(work, &dir, &plan, &running) {
         // The folder is held, then the lease taken, only once the turn is this check's: a check waiting its turn
@@ -953,10 +969,13 @@ pub(super) fn run(work: &Path, ffmpeg: &Path, plan: Plan) {
 /// empty file `create_new` makes, so it is always the check's own file and no file elsewhere is ever held. A lease
 /// another window holds cannot be removed on Windows, so `create_new` fails and None says the check is busy.
 fn own_lease(work: &Path, dir: &Path) -> Option<fs::File> {
-    if !owned(work, dir) {
-        return None;
-    }
-    let path = dir.join("lease");
+    own_lease_with(work, dir, &|| {})
+}
+
+/// `own_lease`, with `between` run after the last look and right before the name is touched (tests race it there).
+/// Everything goes through the held folder (`held_name`).
+fn own_lease_with(work: &Path, dir: &Path, between: &dyn Fn()) -> Option<fs::File> {
+    let (_held, path) = held_name(work, dir, "lease", between)?;
     if let Ok(metadata) = fs::symlink_metadata(&path) {
         if metadata.is_dir() && !is_link(&metadata) {
             return None;
@@ -2779,6 +2798,73 @@ mod tests {
         save(&work, &folder, &ExportCheck { waiting: true, ..ExportCheck::new(&video, "RUNNING") });
         assert_eq!(fs::read(folder.join("plan.json")).unwrap(), b"{}");
         assert_eq!(read_check_file(&folder.join("check.json")).unwrap()["waiting"], true);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// The lease, an FFmpeg log (`fresh_file`) and a subtitle measure script are made with `checks` swapped for a
+    /// link to an outside folder holding the same check folder, with files of those names, between the last look and
+    /// the first touch of the name: nothing outside is removed, replaced or changed. On Windows the held folder's
+    /// `checks` cannot be renamed; on Linux the swap happens and each file is still made in the real folder, through
+    /// the held handle (Lead review 4612627870).
+    #[test]
+    fn lease_logs_and_measure_scripts_never_go_through_checks_swapped_mid_write() {
+        use sha2::{Digest, Sha256};
+        let dir = temp("held-files");
+        let work = dir.join("work");
+        let checks = work.join(CHECKS_DIR);
+        let video = dir.join("Phim.mp4");
+        let folder = check_dir(&work, &video);
+        fs::create_dir_all(&folder).unwrap();
+        let key = folder.file_name().unwrap().to_owned();
+        let elsewhere = dir.join("elsewhere");
+        let outside = elsewhere.join(&key);
+        fs::create_dir_all(&outside).unwrap();
+        const NAMES: [&str; 3] = ["lease", "measure.log", "measure-1.ass"];
+        for name in NAMES {
+            fs::write(outside.join(name), format!("user data in {name}")).unwrap();
+        }
+        let marks = || NAMES.map(|name| {
+            let bytes = fs::read(outside.join(name)).unwrap();
+            (Sha256::digest(&bytes).to_vec(), bytes, fs::metadata(outside.join(name)).unwrap().modified().unwrap())
+        });
+        let before = marks();
+        let moved = dir.join("checks-real");
+        let swapped = std::cell::Cell::new(false);
+        let swap = || {
+            if fs::rename(&checks, &moved).is_ok() {
+                link_dir(&elsewhere, &checks);
+                swapped.set(true);
+            }
+        };
+        // Put `checks` back after a swap and give the real folder's path.
+        let restore = || {
+            if swapped.replace(false) {
+                unlink_dir(&checks);
+                fs::rename(&moved, &checks).unwrap();
+            }
+            folder.clone()
+        };
+        for name in NAMES {
+            let made = match name {
+                "lease" => own_lease_with(&work, &folder, &swap).map(|lease| (Some(lease), Vec::new())),
+                "measure.log" => fresh_file_with(&work, &folder, name, &swap).map(|mut log| {
+                    std::io::Write::write_all(&mut log, b"ffmpeg log").unwrap();
+                    (Some(log), b"ffmpeg log".to_vec())
+                }),
+                _ => write_held(&work, &folder, name, b"[Script Info]", &swap)
+                    .then(|| (None, b"[Script Info]".to_vec())),
+            };
+            #[cfg(windows)]
+            assert!(!swapped.get(), "{name}: the held folder's checks cannot be renamed");
+            #[cfg(target_os = "linux")]
+            assert!(swapped.get(), "{name}: the race really ran (checks was swapped for a link)");
+            assert_eq!(marks(), before, "{name}: the outside files keep their bytes, SHA-256 and modified time");
+            let real = restore();
+            let (file, bytes) = made.unwrap_or_else(|| panic!("{name}: made in the real folder"));
+            assert_eq!(fs::read(real.join(name)).unwrap(), bytes, "{name}: made in the real folder");
+            drop(file);
+            assert_eq!(marks(), before, "{name}: still untouched outside");
+        }
         let _ = fs::remove_dir_all(dir);
     }
 
