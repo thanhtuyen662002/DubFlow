@@ -1068,13 +1068,23 @@ fn is_key(name: &std::ffi::OsStr) -> bool {
 
 /// Keep the newest `EXPORTS_KEPT` check folders of `work` (exports.json keeps as many entries).
 /// The links are looked at again here, after the decode, and before each folder is removed:
-/// only `work/checks/<key>` folders, all plain, are ever deleted.
+/// only `work/checks/<key>` folders, all plain, are ever deleted. `work/checks` is held open for the whole prune
+/// (`hold_checks`): on Windows it, `work` and the folders above cannot be renamed or swapped for a junction meanwhile,
+/// and on Linux each folder is removed through the held handle (/proc/self/fd), so a `checks` swapped after the look
+/// never leads a removal outside (Lead review 4610771246).
 fn prune(work: &Path) {
+    prune_with(work, &|| {});
+}
+
+/// `prune`, with `between` run after each folder is looked at and before it is removed (tests race it there).
+fn prune_with(work: &Path, between: &dyn Fn()) {
     let checks = work.join(CHECKS_DIR);
     let safe = || unlinked(work) && plain(&checks);
     if !safe() {
         return;
     }
+    let Some(held) = hold_checks(work) else { return };
+    let base = held_base(&held, &checks);
     let Ok(entries) = fs::read_dir(&checks) else { return };
     let busy: Vec<PathBuf> = CHECKING.lock().map(|checking| checking.keys().cloned().collect()).unwrap_or_default();
     let mut folders: Vec<(SystemTime, PathBuf)> = entries.flatten().filter(|entry| is_key(&entry.file_name())).filter_map(|entry| {
@@ -1087,9 +1097,34 @@ fn prune(work: &Path) {
     folders.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
     for (_, folder) in folders.into_iter().skip(EXPORTS_KEPT) {
         if !busy.contains(&folder) && safe() && plain(&folder) {
-            let _ = fs::remove_dir_all(folder);
+            between();
+            if let Some(name) = folder.file_name() {
+                let _ = fs::remove_dir_all(base.join(name));
+            }
         }
     }
+    drop(held);
+}
+
+/// `work/checks`, held open as `pin` holds a check folder, when it is `work`'s own plain folder.
+fn hold_checks(work: &Path) -> Option<fs::File> {
+    let checks = work.join(CHECKS_DIR);
+    let place = fs::canonicalize(work).ok().map(|work| work.join(CHECKS_DIR));
+    let held = hold_folder(&checks, place)?;
+    (unlinked(work) && plain(&checks)).then_some(held)
+}
+
+/// Where the folders inside the held `checks` are reached: through the handle itself on Linux, by name elsewhere
+/// (on Windows the handle keeps that name from being swapped).
+#[cfg(target_os = "linux")]
+fn held_base(held: &fs::File, _checks: &Path) -> PathBuf {
+    use std::os::unix::io::AsRawFd;
+    PathBuf::from(format!("/proc/self/fd/{}", held.as_raw_fd()))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn held_base(_held: &fs::File, checks: &Path) -> PathBuf {
+    checks.to_path_buf()
 }
 
 /// "Dừng kiểm tra": stop this window's check of `video`, if one runs.
@@ -1194,6 +1229,14 @@ fn pin(work: &Path, dir: &Path) -> Option<fs::File> {
     if !owned(work, dir) {
         return None;
     }
+    let place = fs::canonicalize(work).ok().zip(dir.file_name()).map(|(work, key)| work.join(CHECKS_DIR).join(key));
+    let pinned = hold_folder(dir, place)?;
+    owned(work, dir).then_some(pinned)
+}
+
+/// The folder at `folder`, opened without letting it be renamed or removed on Windows (no FILE_SHARE_DELETE), never
+/// through a link at its own name, and only when its handle's real path is `place` (where that can be read).
+fn hold_folder(folder: &Path, place: Option<PathBuf>) -> Option<fs::File> {
     let mut options = fs::OpenOptions::new();
     options.read(true);
     #[cfg(windows)]
@@ -1204,19 +1247,18 @@ fn pin(work: &Path, dir: &Path) -> Option<fs::File> {
         const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
         options.share_mode(FILE_SHARE_READ_WRITE).custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
     }
-    let pinned = options.open(dir).ok()?;
-    let metadata = pinned.metadata().ok()?;
+    let held = options.open(folder).ok()?;
+    let metadata = held.metadata().ok()?;
     if !metadata.is_dir() || is_link(&metadata) {
         return None;
     }
     #[cfg(any(windows, target_os = "linux"))]
-    {
-        let place = fs::canonicalize(work).ok().zip(dir.file_name()).map(|(work, key)| work.join(CHECKS_DIR).join(key));
-        if !same_place(real_path(&pinned), place) {
-            return None;
-        }
+    if !same_place(real_path(&held), place) {
+        return None;
     }
-    owned(work, dir).then_some(pinned)
+    #[cfg(not(any(windows, target_os = "linux")))]
+    let _ = place;
+    Some(held)
 }
 
 /// A check.json file at `path` read as `load_check` reads one, without the folder checks (tests).
@@ -2463,6 +2505,73 @@ mod tests {
         fs::write(folder.join("check.json"), serde_json::to_vec(&ExportCheck::new(&video, "RUNNING")).unwrap()).unwrap();
         assert_eq!(settle(&work, &folder, &video).unwrap()["state"], "INTERRUPTED");
         assert_eq!(read_check(&work, &video)["state"], "INTERRUPTED");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// `checks` swapped for a link to an outside folder of check-named folders after prune looked at a folder and
+    /// before it removes it: nothing outside is removed or changed. On Windows the held `checks` cannot be renamed
+    /// at all; on Linux the swap happens and the removal still goes through the held handle, into the real folder
+    /// (Lead review 4610771246).
+    #[test]
+    fn prune_never_removes_through_checks_swapped_mid_prune() {
+        use sha2::{Digest, Sha256};
+        let dir = temp("prune-race");
+        let work = dir.join("work");
+        let checks = work.join(CHECKS_DIR);
+        let elsewhere = dir.join("elsewhere");
+        let names: Vec<String> = (0..EXPORTS_KEPT + 2).map(|index| format!("{index:020x}")).collect();
+        for root in [&checks, &elsewhere] {
+            for (index, name) in names.iter().enumerate() {
+                fs::create_dir_all(root.join(name)).unwrap();
+                fs::write(root.join(name).join("marker.bin"), format!("user data {index}")).unwrap();
+            }
+        }
+        // the oldest folders are the ones prune removes
+        for (index, name) in names.iter().enumerate() {
+            let at = UNIX_EPOCH + Duration::from_secs(1_700_000_000 + index as u64 * 60);
+            #[cfg(unix)]
+            fs::File::open(checks.join(name)).unwrap().set_modified(at).unwrap();
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::OpenOptionsExt;
+                // FILE_WRITE_ATTRIBUTES on the folder itself (FILE_FLAG_BACKUP_SEMANTICS opens a folder)
+                let folder = fs::OpenOptions::new().access_mode(0x0100).custom_flags(0x0200_0000).open(checks.join(name)).unwrap();
+                folder.set_modified(at).unwrap();
+            }
+        }
+        let marks = |root: &Path| names.iter().map(|name| {
+            let file = root.join(name).join("marker.bin");
+            let bytes = fs::read(&file).unwrap();
+            (Sha256::digest(&bytes).to_vec(), bytes, fs::metadata(&file).unwrap().modified().unwrap())
+        }).collect::<Vec<_>>();
+        let outside = marks(&elsewhere);
+        let moved = dir.join("checks-real");
+        let swapped = std::cell::Cell::new(false);
+        let tried = std::cell::Cell::new(false);
+        prune_with(&work, &|| {
+            if tried.replace(true) {
+                return;
+            }
+            // the race: checks renamed aside and a link to the outside folder put at its name
+            if fs::rename(&checks, &moved).is_ok() {
+                link_dir(&elsewhere, &checks);
+                swapped.set(true);
+            }
+        });
+        assert!(tried.get(), "prune came to a removal");
+        assert_eq!(marks(&elsewhere), outside, "every outside folder and its bytes, SHA-256 and modified time");
+        #[cfg(windows)]
+        {
+            assert!(!swapped.get(), "the held checks folder cannot be renamed");
+            assert_eq!(fs::read_dir(&checks).unwrap().count(), EXPORTS_KEPT, "the two oldest went, from the real folder");
+        }
+        if swapped.get() {
+            unlink_dir(&checks);
+            // the removal went through the held handle, into the real folder: the newer of the two oldest (removed
+            // newest first), then the link is seen and nothing more goes
+            assert!(!moved.join(&names[1]).exists() && moved.join(&names[0]).exists());
+            assert_eq!(fs::read_dir(&moved).unwrap().count(), EXPORTS_KEPT + 1);
+        }
         let _ = fs::remove_dir_all(dir);
     }
 
