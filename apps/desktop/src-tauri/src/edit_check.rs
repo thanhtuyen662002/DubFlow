@@ -146,10 +146,13 @@ fn text_block(style: &SubtitleStyle, text: &str, width: f64, height: f64) -> Rec
     let (mut rows, mut widest) = (0.0_f64, 0.0_f64);
     for line in text.trim().split('\n') {
         let wide = line.trim().chars().map(char_em).sum::<f64>() * font;
-        rows += (wide / room).ceil().max(1.0);
-        widest = widest.max(wide.min(room));
+        // libass (WrapStyle 0) splits a long line into rows of about even width, each centred.
+        let count = (wide / room).ceil().max(1.0);
+        rows += count;
+        widest = widest.max(wide / count);
     }
-    let (block_w, block_h) = (widest + 2.0 * pad, rows * 1.2 * font + 2.0 * pad);
+    // A row is about one Fontsize tall in libass (ascent plus descent).
+    let (block_w, block_h) = (widest + 2.0 * pad, rows * font + 2.0 * pad);
     if let (Some(x), Some(y)) = (style.x, style.y) {
         // A dragged layer is one `\an5\pos` for every line (burn_ass), and libass does not keep a positioned line
         // inside the picture: the editor only clamped the line on screen while dragging, so a longer one can stick out.
@@ -899,6 +902,12 @@ mod tests {
         assert_eq!((out.ok, out.at_ms.clone()), (Some(false), vec![7_000]));
         assert!(out.detail.contains("chữ vượt ra ngoài khung hình"), "{}", out.detail);
         assert_eq!(super::subtitle_fit(&[&burn(style(json!({"x": 0.5, "y": 0.5})), "Chào", 7_000)], &wide).ok, Some(true));
+        // no false alarm for a dragged layer whose long line wraps, or one dragged flush to the bottom edge (#930 recheck)
+        let pho = "Hôm nay chúng ta sẽ cùng nhau tìm hiểu cách nấu món phở bò truyền thống của Hà Nội, từ khâu chọn xương, ninh nước dùng cho đến cách thái thịt bò thật mỏng và đẹp";
+        assert_eq!(super::subtitle_fit(&[&burn(style(json!({"x": 0.45, "y": 0.8333})), pho, 7_000)], &wide).ok, Some(true));
+        let mut flush = style(json!({"x": 0.5, "y": 0.9761}));
+        flush.size = 1.0;
+        assert_eq!(super::subtitle_fit(&[&BurnSubtitles { style: flush, lines: vec![Cue { start_ms: 7_000, end_ms: 9_000, text: "Xin chao cac ban".into() }] }], &wide).ok, Some(true));
         // a second layer counts too
         let both = super::subtitle_fit(&[&burn(style(json!({})), "Chào", 2_000), &line], &tall);
         assert_eq!((both.ok, both.at_ms), (Some(false), vec![12_000]));
