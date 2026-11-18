@@ -2125,10 +2125,15 @@ for (const action of ["close", "exit"]) {
     assert.ok(held.includes("queue-content"));
     const used = new Set();
     for (const file of readdirSync(new URL("../src/features/edit/", import.meta.url))) {
-      for (const [, id] of readFileSync(new URL(`../src/features/edit/${file}`, import.meta.url), "utf8").matchAll(/\$(?:<[^>]*>)?\("#([\w-]+)"\)/g)) used.add(id);
+      // every "#id" in a string ($("#id"), querySelector("#id …"), templates), when index.html has that id
+      for (const [, id] of readFileSync(new URL(`../src/features/edit/${file}`, import.meta.url), "utf8").matchAll(/["'`]#([\w-]+)/g)) {
+        if (parents.has(id)) used.add(id);
+      }
     }
-    assert.ok(used.size > 300, `the editor's elements found: ${used.size}`);
-    const outside = [...used].filter((id) => !parents.get(id)?.some((part) => held.includes(part)));
+    assert.ok(used.size > 400, `the editor's elements found: ${used.size}`);
+    for (const id of ["edit-layers-split", "docu-cut", "cover-docu-apply", "edit-modes"]) assert.ok(used.has(id), `found ${id}`);
+    // the Chỉnh sửa library page (no open draft there)
+    const outside = [...used].filter((id) => id !== "edit-view" && !parents.get(id)?.some((part) => held.includes(part)));
     assert.deepEqual(outside, [], "every editor element is held with the editor");
   }
   assert.match(view, /const dialog = \$\("#export-dialog"\);/);
