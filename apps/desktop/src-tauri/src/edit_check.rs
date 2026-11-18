@@ -150,12 +150,15 @@ fn text_block(style: &SubtitleStyle, text: &str, width: f64, height: f64) -> Rec
         widest = widest.max(wide.min(room));
     }
     let (block_w, block_h) = (widest + 2.0 * pad, rows * 1.2 * font + 2.0 * pad);
-    let (centre, top) = match (style.x, style.y) {
-        (Some(x), Some(y)) => (x * width, y * height - block_h / 2.0),
-        _ => (width / 2.0, match style.align.as_str() { "top" => margin_v, "middle" => (height - block_h) / 2.0, _ => height - margin_v - block_h }),
-    };
-    // libass and the editor's dragPosition keep a block inside the picture it is drawn on.
-    let x0 = (centre - block_w / 2.0).clamp(0.0, (width - block_w).max(0.0));
+    if let (Some(x), Some(y)) = (style.x, style.y) {
+        // A dragged layer is one `\an5\pos` for every line (burn_ass), and libass does not keep a positioned line
+        // inside the picture: the editor only clamped the line on screen while dragging, so a longer one can stick out.
+        let (x0, y0) = (x * width - block_w / 2.0, y * height - block_h / 2.0);
+        return Rect { x0, y0, x1: x0 + block_w, y1: y0 + block_h };
+    }
+    let top = match style.align.as_str() { "top" => margin_v, "middle" => (height - block_h) / 2.0, _ => height - margin_v - block_h };
+    // libass keeps an aligned line inside the picture it is drawn on (a block taller than the picture still sticks out).
+    let x0 = (width / 2.0 - block_w / 2.0).clamp(0.0, (width - block_w).max(0.0));
     let y0 = top.clamp(0.0, (height - block_h).max(0.0));
     Rect { x0, y0, x1: x0 + block_w, y1: y0 + block_h }
 }
@@ -189,9 +192,10 @@ fn subtitle_fit(burns: &[&BurnSubtitles], framing: &Framing) -> SubtitleFit {
     if risky == 0 {
         return SubtitleFit { ok: Some(true), detail: "phụ đề nằm trong khung — ước lượng theo cỡ chữ và vị trí".into(), at_ms: Vec::new() };
     }
-    let why = match framing.aspect {
-        Some(aspect) => format!("khung {aspect}, cắt cho đầy"),
-        None => "cắt cho đầy khung".to_owned(),
+    let why = match (filled, framing.aspect) {
+        (true, Some(aspect)) => format!("khung {aspect}, cắt cho đầy"),
+        (true, None) => "cắt cho đầy khung".to_owned(),
+        (false, _) => "chữ vượt ra ngoài khung hình".to_owned(),
     };
     let named: Vec<String> = times.iter().take(NAMED).map(|ms| clock(*ms as f64 / 1000.0)).collect();
     let more = if times.len() > NAMED { "…" } else { "" };
@@ -889,6 +893,12 @@ mod tests {
         assert_eq!(super::subtitle_fit(&[&chinese], &tall).at_ms, [4_000]);
         let latin = BurnSubtitles { style: size_one, lines: vec![Cue { start_ms: 4_000, end_ms: 6_000, text: "Xin chao cac ban!".into() }] };
         assert_eq!(super::subtitle_fit(&[&latin], &tall).ok, Some(true), "17 Latin letters are about half as wide");
+        // a dragged layer: libass does not pull a positioned line back in, so a long line placed near the left edge sticks out
+        let dragged = burn(style(json!({"x": 0.1, "y": 0.5})), LONG, 7_000);
+        let out = super::subtitle_fit(&[&dragged], &wide);
+        assert_eq!((out.ok, out.at_ms.clone()), (Some(false), vec![7_000]));
+        assert!(out.detail.contains("chữ vượt ra ngoài khung hình"), "{}", out.detail);
+        assert_eq!(super::subtitle_fit(&[&burn(style(json!({"x": 0.5, "y": 0.5})), "Chào", 7_000)], &wide).ok, Some(true));
         // a second layer counts too
         let both = super::subtitle_fit(&[&burn(style(json!({})), "Chào", 2_000), &line], &tall);
         assert_eq!((both.ok, both.at_ms), (Some(false), vec![12_000]));
