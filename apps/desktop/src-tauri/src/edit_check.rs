@@ -163,9 +163,18 @@ impl Plan {
     }
 }
 
-/// The stamp of the file at `video` (None when it is not a readable file).
+/// The stamp of the file at `video` (None when it is not a readable file). On Unix it is opened with O_NONBLOCK, so
+/// a FIFO swapped in at the video's (or the .partial's) name opens at once and is refused as no file, instead of
+/// hanging the export, the check's turn (where Dừng kiểm tra cannot end it) or the UI (recheck 19).
 pub(super) fn stamp_of(video: &Path) -> Option<Stamp> {
-    let file = fs::File::open(video).ok()?;
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(NONBLOCK);
+    }
+    let file = options.open(video).ok()?;
     let metadata = file.metadata().ok()?;
     if !metadata.is_file() {
         return None;
@@ -1435,6 +1444,12 @@ const NO_FOLLOW: i32 = 0x20000 | 0x800;
 const NO_FOLLOW: i32 = 0x8000 | 0x800;
 #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd", target_os = "dragonfly"))]
 const NO_FOLLOW: i32 = 0x100 | 0x4;
+
+/// O_NONBLOCK alone (the video may be reached through a link the user made, so it is followed).
+#[cfg(any(target_os = "linux", target_os = "android"))]
+const NONBLOCK: i32 = 0x800;
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd", target_os = "dragonfly"))]
+const NONBLOCK: i32 = 0x4;
 
 /// How many names the opened file has.
 #[cfg(windows)]
@@ -2902,6 +2917,24 @@ mod tests {
             assert_eq!(fs::read(real.join(name)).unwrap(), bytes, "{name}: made in the real folder");
             assert_eq!(marks(), before, "{name}: still untouched outside");
         }
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// A FIFO at the video's name (swapped in after the export) is no file: its stamp is None at once, so the check's
+    /// turn, the export and the UI never hang on it, and the plan is then UNVERIFIED (recheck 19).
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_at_the_video_never_holds_the_stamp() {
+        let dir = temp("fifo-video");
+        fs::create_dir_all(&dir).unwrap();
+        let video = dir.join("Phim.mp4");
+        fs::write(&video, b"video").unwrap();
+        assert!(stamp_of(&video).is_some(), "a plain file has a stamp");
+        fs::remove_file(&video).unwrap();
+        assert!(Command::new("mkfifo").arg(&video).status().unwrap().success());
+        let started = Instant::now();
+        assert_eq!(stamp_of(&video), None);
+        assert!(started.elapsed() < Duration::from_secs(5), "a FIFO never holds the stamp");
         let _ = fs::remove_dir_all(dir);
     }
 
