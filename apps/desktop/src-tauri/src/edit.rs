@@ -90,6 +90,8 @@ struct Running {
 
 #[path = "edit_parts.rs"]
 mod parts;
+#[path = "edit_check.rs"]
+mod check;
 
 static RUNNING: LazyLock<Mutex<HashMap<PathBuf, Arc<Running>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -620,6 +622,9 @@ struct Probe {
     fps: String,
     has_audio: bool,
     size: u64,
+    /// Shown turned a quarter (a phone video's display rotation of 90 or 270 degrees): FFmpeg hands the filters the
+    /// turned picture, height by width.
+    turned: bool,
 }
 
 /// What kind of finished video an edit is of.
@@ -767,8 +772,10 @@ pub(crate) fn record_run(kind: &str, dir: &Path) {
     }
 }
 
-/// Drop the record of the run in `dir` (a project being deleted).
+/// Drop the record of the run in `dir` (a project being deleted), after stopping every Kiểm tra kỹ thuật below it
+/// and waiting for each to end, so no check writes or holds a file in the folder as it is removed.
 pub(crate) fn forget_run(dir: &Path) {
+    check::stop_under(dir);
     if let Some(path) = crate::control_root().ok().and_then(|data| run_record(&data, dir)) {
         let _ = fs::remove_file(path);
     }
@@ -920,6 +927,8 @@ fn parse_probe(text: &str) -> Option<Probe> {
         fps: frame_rate(&video["avg_frame_rate"]).or_else(|| frame_rate(&video["r_frame_rate"])).unwrap_or_else(|| "30/1".into()),
         has_audio: streams.iter().any(|stream| stream["codec_type"] == "audio"),
         size: number(&value["format"]["size"]).map_or(0, |bytes| bytes.max(0.0) as u64),
+        turned: video["side_data_list"].as_array().is_some_and(|list| list.iter()
+            .filter_map(|data| data["rotation"].as_f64()).any(|degrees| (degrees.abs().round() as i64) % 180 == 90)),
     })
 }
 
@@ -935,13 +944,21 @@ fn parse_still(text: &str) -> Option<Probe> {
         fps: "30/1".into(),
         has_audio: false,
         size,
+        turned: false,
     })
 }
 
 fn probe(video: &Path) -> Result<Probe, String> {
-    let mut command = Command::new(media_tool("ffprobe.exe")?);
-    command.args(["-v", "error", "-show_entries", "format=duration,size:stream=codec_type,width,height,avg_frame_rate,r_frame_rate", "-of", "json"])
-        .arg(video)
+    probe_with(&media_tool("ffprobe.exe")?, video)
+}
+
+/// `probe` with a given FFprobe (Kiểm tra kỹ thuật uses the one beside its FFmpeg).
+/// What `probe_with` (and Kiểm tra kỹ thuật's tracked probe) asks ffprobe for.
+const PROBE_ARGS: [&str; 6] = ["-v", "error", "-show_entries", "format=duration,size:stream=codec_type,width,height,avg_frame_rate,r_frame_rate:stream_side_data=rotation", "-of", "json"];
+
+fn probe_with(ffprobe: &Path, video: &Path) -> Result<Probe, String> {
+    let mut command = Command::new(ffprobe);
+    command.args(PROBE_ARGS).arg(video)
         .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
@@ -1737,8 +1754,11 @@ fn duck_filter(start: f64, end: f64, db: f64) -> String {
 /// (Issue #422): with a text layer, `texts` (the `subtitles` filter drawing
 /// it) is the last filter of the picture; without texts nothing changes.
 /// Phụ đề (Issue #930) is drawn just before it, on the finished picture.
+/// Phụ đề is drawn on the export's own frames (`fps` first): frame N is drawn at
+/// N / fps exactly, so Kiểm tra kỹ thuật knows when libass drew each frame (#935).
 fn export_script(edit: &Edit, inputs: &[Input], frame: &Frame, quality: &str, mix: &Mix, finish: &Finish) -> (String, bool) {
-    let steps: Vec<&String> = finish.burn.iter().chain(finish.texts.iter()).chain(finish.reframe.iter()).collect();
+    let burn = finish.burn.as_ref().map(|burn| format!("fps={},{burn}", frame.fps));
+    let steps: Vec<&String> = burn.iter().chain(finish.texts.iter()).chain(finish.reframe.iter()).collect();
     let video_out = if steps.is_empty() { "v" } else { "vt" };
     let audio_out = if finish.normalize { "an" } else { "a" };
     let (mut graph, has_audio) = mixed_script(edit, inputs, frame, quality, mix, video_out, audio_out);
@@ -2297,23 +2317,8 @@ fn burn_ass(burn: &BurnSubtitles) -> Result<String, String> {
         .any(|line| line.end_ms <= line.start_ms || line.text.trim().is_empty() || line.text.chars().count() > MAX_CUE_TEXT) {
         return Err(fail("Phụ đề không hợp lệ"));
     }
-    let font_size = (48.0 * style.size).round().max(1.0);
-    let (back, border, shadow) = match &style.box_color {
-        Some(color) => (ass_color(color, ((1.0 - style.box_opacity) * 255.0).round() as u8), 4, (font_size * 0.2).round().max(2.0)),
-        None => ("&H64000000".to_owned(), 1, 0.0),
-    };
-    let align = match style.align.as_str() { "top" => 8, "middle" => 5, _ => 2 };
-    let prefix = match (style.x, style.y) {
-        (Some(x), Some(y)) => format!("{{\\an5\\pos({},{})}}", (x * 1920.0).round() as i64, (y * 1080.0).round() as i64),
-        _ => String::new(),
-    };
-    let mut script = format!("[Script Info]\n; DubFlow: Phụ đề\nScriptType: v4.00+\nPlayResX: 1920\nPlayResY: 1080\nWrapStyle: 0\n\
-ScaledBorderAndShadow: yes\nYCbCr Matrix: None\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, \
-BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n\
-Style: Default,{},{},{},&H000000FF,{},{back},{},0,0,0,100,100,0,0,{border},{},{},{align},40,40,48,1\n\n[Events]\n\
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n",
-        style.font, num(font_size), ass_color(&style.primary, 0), ass_color(&style.outline, 0), if style.bold { -1 } else { 0 },
-        num(style.outline_width), num(shadow));
+    let mut script = burn_head(style, false);
+    let prefix = burn_prefix(style, (0, 0));
     let mut lines: Vec<&Cue> = burn.lines.iter().collect();
     lines.sort_by_key(|line| (line.start_ms, line.end_ms));
     for line in lines {
@@ -2321,6 +2326,56 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\
             ass_time(line.end_ms as f64 / 1000.0), ass_text(line.text.trim())));
     }
     Ok(script)
+}
+
+/// A burn's .ass head. `measure` (Kiểm tra kỹ thuật, #935) paints every part libass draws (letters, outline, box)
+/// opaque white on the same layout, so the drawn area can be measured on a black frame; a box nobody can see stays
+/// unseen.
+fn burn_head(style: &SubtitleStyle, measure: bool) -> String {
+    let font_size = (48.0 * style.size).round().max(1.0);
+    let (back, border, shadow) = match &style.box_color {
+        Some(color) => {
+            let alpha = ((1.0 - style.box_opacity) * 255.0).round() as u8;
+            (if measure { ass_color("#FFFFFF", alpha) } else { ass_color(color, alpha) }, 4, (font_size * 0.2).round().max(2.0))
+        }
+        None => ("&H64000000".to_owned(), 1, 0.0),
+    };
+    let (primary, outline) = if measure { ("#FFFFFF", "#FFFFFF") } else { (style.primary.as_str(), style.outline.as_str()) };
+    let align = match style.align.as_str() { "top" => 8, "middle" => 5, _ => 2 };
+    // For the measure the script covers a frame twice as wide and tall with the export frame in its middle (#935,
+    // recheck 11), at the same scale: lines running past the export frame are still drawn, so they can be seen.
+    let (pad_x, pad_y) = if measure { MEASURE_PAD } else { (0, 0) };
+    format!("[Script Info]\n; DubFlow: Phụ đề\nScriptType: v4.00+\nPlayResX: {}\nPlayResY: {}\nWrapStyle: 0\n\
+ScaledBorderAndShadow: yes\nYCbCr Matrix: None\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, \
+BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n\
+Style: Default,{},{},{},&H000000FF,{},{back},{},0,0,0,100,100,0,0,{border},{},{},{align},{},{},{},1\n\n[Events]\n\
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n",
+        1920 + 2 * pad_x, 1080 + 2 * pad_y, style.font, num(font_size), ass_color(primary, 0), ass_color(outline, 0), if style.bold { -1 } else { 0 },
+        num(style.outline_width), num(shadow), 40 + pad_x, 40 + pad_x, 48 + pad_y)
+}
+
+/// Script units added on each side for the measure: half the script frame, so the measure frame is twice the export
+/// frame's size and the export frame sits exactly in its middle whatever its pixel size.
+pub(super) const MEASURE_PAD: (i64, i64) = (960, 540);
+
+/// A dragged layer: every line centred on the same point (`pad`: the measure's added script units).
+fn burn_prefix(style: &SubtitleStyle, (pad_x, pad_y): (i64, i64)) -> String {
+    match (style.x, style.y) {
+        (Some(x), Some(y)) => format!("{{\\an5\\pos({},{})}}", (x * 1920.0).round() as i64 + pad_x, (y * 1080.0).round() as i64 + pad_y),
+        _ => String::new(),
+    }
+}
+
+/// The burn of `style` for Kiểm tra kỹ thuật on the check's shortened clock: each line drawn from second `first` to
+/// `last` (its stretches, `edit_check::stretches`), in the order `burn_ass` writes them.
+pub(super) fn measure_ass(style: &SubtitleStyle, lines: &[(usize, usize, &Cue)]) -> String {
+    let mut script = burn_head(style, true);
+    let prefix = burn_prefix(style, MEASURE_PAD);
+    for (first, last, line) in lines {
+        script.push_str(&format!("Dialogue: 0,{},{},Default,,0,0,0,,{prefix}{}\n", ass_time(*first as f64), ass_time(*last as f64),
+            ass_text(line.text.trim())));
+    }
+    script
 }
 
 /// Store a job's subtitle look beside its outputs, where the worker reads it.
@@ -3235,6 +3290,8 @@ struct ExportJob {
     audio_only: bool,
     /// A long export, rendered as parts side by side when it can be (`parts`).
     parts: Option<parts::Source>,
+    /// Kiểm tra kỹ thuật after the export is published (None for Chỉ âm thanh).
+    check: Option<check::Plan>,
 }
 
 fn stop(running: &Running) {
@@ -3282,9 +3339,24 @@ fn run_tracked(ffmpeg: &Path, args: Vec<OsString>, work: &Path, log_path: &Path,
     let log = unlinked(work).then(|| fs::File::create(log_path).ok()).flatten().map_or_else(Stdio::null, Stdio::from);
     let mut command = Command::new(ffmpeg);
     command.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(log);
+    let (stdout, id) = spawn_tracked(command, running).map_err(|_| fail("Không chạy được FFmpeg"))?;
+    let lines = stdout.map(|stdout| BufReader::new(stdout).lines());
+    for text in lines.into_iter().flatten().map_while(Result::ok) {
+        line(&text);
+    }
+    if wait_tracked(running, id) {
+        return Ok(());
+    }
+    let last = fs::read_to_string(log_path).ok()
+        .and_then(|text| text.lines().rev().find(|line| !line.trim().is_empty()).map(|line| line.trim().chars().take(240).collect::<String>()));
+    Err(last.unwrap_or_default())
+}
+
+/// Start `command` with its stdout piped and keep it in `running`, so `stop` ends it: its stdout and its id.
+fn spawn_tracked(mut command: Command, running: &Running) -> std::io::Result<(Option<std::process::ChildStdout>, u32)> {
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
-    let mut child = command.spawn().map_err(|_| fail("Không chạy được FFmpeg"))?;
+    let mut child = command.spawn()?;
     let stdout = child.stdout.take();
     let id = child.id();
     if let Ok(mut children) = running.children.lock() {
@@ -3293,25 +3365,28 @@ fn run_tracked(ffmpeg: &Path, args: Vec<OsString>, work: &Path, log_path: &Path,
     if running.cancelled.load(Ordering::SeqCst) {
         stop(running);
     }
-    let lines = stdout.map(|stdout| BufReader::new(stdout).lines());
-    for text in lines.into_iter().flatten().map_while(Result::ok) {
-        line(&text);
-    }
+    Ok((stdout, id))
+}
+
+/// Wait for the child `spawn_tracked` started as `id`, taking it out of `running`: whether it exited 0.
+fn wait_tracked(running: &Running, id: u32) -> bool {
     let child = running.children.lock().ok()
         .and_then(|mut children| children.iter().position(|child| child.id() == id).map(|at| children.swap_remove(at)));
-    if matches!(child.map(|mut child| child.wait()), Some(Ok(code)) if code.success()) {
-        return Ok(());
-    }
-    let last = fs::read_to_string(log_path).ok()
-        .and_then(|text| text.lines().rev().find(|line| !line.trim().is_empty()).map(|line| line.trim().chars().take(240).collect::<String>()));
-    Err(last.unwrap_or_default())
+    matches!(child.map(|mut child| child.wait()), Some(Ok(code)) if code.success())
 }
 
 /// Render, then publish the video and subtitles under names that are free now.
-fn run_export(job: &ExportJob, running: &Running) {
+/// Some((video, whether its .srt was written)) once an edited video is published.
+/// The published video, whether its .srt was written, the video's stamp taken as it was published, and where it was
+/// cut into parts (s; empty when one FFmpeg run made it).
+fn run_export(job: &ExportJob, running: &Running) -> Option<(PathBuf, bool, Option<check::Stamp>, Vec<f64>)> {
     let partial = partial_of(&job.target);
     let mut failure = String::new();
-    let mut done = job.parts.as_ref().is_some_and(|source| parts::render(job, source, running).is_ok());
+    let mut cuts = Vec::new();
+    let mut done = match job.parts.as_ref().map(|source| parts::render(job, source, running)) {
+        Some(Ok(made)) => { cuts = made; true }
+        _ => false,
+    };
     for (attempt, encoder) in crate::gpu::encoders(&job.ffmpeg).iter().enumerate() {
         if done || running.cancelled.load(Ordering::SeqCst) {
             break;
@@ -3331,41 +3406,45 @@ fn run_export(job: &ExportJob, running: &Running) {
     if running.cancelled.load(Ordering::SeqCst) || job.work.join("cancel").exists() {
         let _ = fs::remove_file(&partial);
         write_status(&job.work, "CANCELLED", 0.0, "Đã hủy xuất video.", None);
-        return;
+        return None;
     }
     if !done {
         let _ = fs::remove_file(&partial);
         let detail = if failure.is_empty() { String::new() } else { format!(" ({failure})") };
         write_status(&job.work, "FAILED", 0.0, &format!("Không xuất được video. Hãy thử lại hoặc chọn chất lượng khác.{detail}"), None);
-        return;
+        return None;
     }
     // Someone may have created the name meanwhile: take the next free one.
     let target = if job.target.exists() || job.target.with_extension("srt").exists() {
         match unique_target(&job.folder, &job.name, if job.audio_only { "m4a" } else { "mp4" }) { Ok(target) => target, Err(error) => {
             let _ = fs::remove_file(&partial);
             write_status(&job.work, "FAILED", 0.0, &error, None);
-            return;
+            return None;
         } }
     } else {
         job.target.clone()
     };
+    // The file's identity is taken here, at publication, before the export is listed or marked COMPLETED: the
+    // check that runs later judges only this file, never one put at the name since (#935, Lead review).
+    let stamp = check::stamp_of(&partial);
     if fs::rename(&partial, &target).is_err() {
         let _ = fs::remove_file(&partial);
         write_status(&job.work, "FAILED", 0.0, "Không lưu được video đã xuất vào thư mục đã chọn.", None);
-        return;
+        return None;
     }
     let srt = job.srt.as_ref().map(|text| (target.with_extension("srt"), text))
         .filter(|(path, text)| !path.exists() && write_atomic(path, text.as_bytes()).is_ok())
         .map(|(path, _)| display_path(&path));
     if job.audio_only {
         write_status(&job.work, "COMPLETED", 100.0, "Đã xuất âm thanh.", Some(&target));
-        return;
+        return None;
     }
     append_export(&job.work, json!({"path": display_path(&target), "srt_path": srt, "created": unix_now(),
         "duration": (job.seconds * 1000.0).round() / 1000.0, "quality": job.quality, "segments": job.edit.segments,
         "media": job.media, "luts": job.edit.luts, "transitions": job.edit.transitions, "overlays": job.edit.overlays, "audio": job.audio, "main_volume": job.main_volume, "main_denoise": job.main_denoise, "main_eq": job.main_eq,
         "stems": job.stems, "texts": job.texts, "aspect": job.aspect, "fill": job.aspect.as_ref().and(job.fill.as_ref())}));
     write_status(&job.work, "COMPLETED", 100.0, "Đã xuất video.", Some(&target));
+    Some((target, srt.is_some(), stamp, cuts))
 }
 
 fn start_export(request: ExportRequest) -> Result<Value, String> {
@@ -3509,24 +3588,38 @@ fn start_export(request: ExportRequest) -> Result<Value, String> {
     inputs.extend(stem_inputs.into_iter().map(|(file, _)| file));
     guarded(&work)?;
     fs::write(&script, text).map_err(|_| fail("Không ghi được bộ lọc xuất video"))?;
+    // Kiểm tra kỹ thuật: what the published video should be, decided now from the edit (pure).
+    let check = (!request.audio_only).then(|| {
+        let stills: Vec<bool> = inputs.iter().map(|input| crate::is_still(input)).collect();
+        let burns: Vec<&BurnSubtitles> = request.burn.iter().chain(request.burn_extra.iter()).collect();
+        let framing = check::Framing { export: (width, height), out: (out_width, out_height),
+            fill: request.fill.as_deref().unwrap_or("black"), aspect: request.aspect.as_deref() };
+        check::plan(&edit, &stills, output_seconds(&edit.segments, &edit.transitions), has_audio, &request.cues, &burns, &framing, &fps)
+            .turned_source(facts.turned)
+    });
     let job = ExportJob {
         work: work.clone(), inputs, media: request.media, script, folder, name, target: target.clone(),
         srt: (!request.cues.is_empty() && !request.audio_only).then(|| format_srt(&request.cues)),
         seconds: output_seconds(&edit.segments, &edit.transitions), has_audio, bitrate, fps, ffmpeg, audio_only: request.audio_only,
         quality: request.quality, edit, audio: request.audio, main_volume: request.main_volume, texts: request.texts,
         main_denoise: request.main_denoise, main_eq: request.main_eq, stems: request.stems, parts,
-        aspect: request.aspect, fill: request.fill,
+        aspect: request.aspect, fill: request.fill, check,
     };
     write_status(&work, "RUNNING", 0.0, "Đang bắt đầu xuất video…", Some(&target));
     let entry = Arc::new(Running { children: Mutex::new(Vec::new()), cancelled: AtomicBool::new(false) });
     running.insert(key.clone(), entry.clone());
     drop(running);
     std::thread::spawn(move || {
-        run_export(&job, &entry);
+        let published = run_export(&job, &entry);
         if let Ok(mut running) = RUNNING.lock() {
             running.remove(&key);
         }
         drop(lease);
+        // Kiểm tra kỹ thuật: only once the video is published and the export's lease is free,
+        // so "Xem", "Mở thư mục" and a new export never wait for it.
+        if let (Some((video, srt, stamp, cuts)), Some(plan)) = (published, job.check) {
+            check::run(&job.work, &job.ffmpeg, plan.for_video(video, srt, stamp).parts_cut_at(&cuts));
+        }
     });
     Ok(json!({"path": display_path(&target)}))
 }
@@ -3556,8 +3649,9 @@ pub fn edit_status(output_path: String, kind: String) -> Result<Value, String> {
             drop(lease);
         }
     }
-    let exports: Vec<Value> = read_exports(&work).into_iter()
+    let mut exports: Vec<Value> = read_exports(&work).into_iter()
         .filter(|entry| entry["path"].as_str().is_some_and(|path| Path::new(path).is_file())).collect();
+    check::attach(&work, &mut exports);
     Ok(json!({"status": status, "exports": exports}))
 }
 
@@ -3570,6 +3664,25 @@ pub fn edit_cancel(output_path: String, kind: String) -> Result<(), String> {
     }
     if let Some(entry) = RUNNING.lock().ok().and_then(|running| running.get(&work).cloned()) {
         stop(&entry);
+    }
+    Ok(())
+}
+
+/// DubFlow is closing: stop every Kiểm tra kỹ thuật of this window, so no check's FFmpeg
+/// outlives the app and keeps the user's video open; none starts after this. The check.json
+/// left RUNNING is reported as INTERRUPTED on the next start.
+pub fn stop_checks() {
+    check::stop_all();
+}
+
+/// "Dừng kiểm tra": stop the Kiểm tra kỹ thuật of the export `path`; the video stays as exported.
+#[tauri::command]
+pub fn edit_check_cancel(output_path: String, kind: String, path: String) -> Result<(), String> {
+    match edit_target(&output_path, &kind) {
+        Ok(target) => check::cancel(&target.work, Path::new(&path)),
+        // The draft's source is gone (moved, drive unplugged) while its check still reads the export: stopped by
+        // the exported video alone, so its FFmpeg never keeps the file open until the decode ends.
+        Err(_) => check::cancel_video(Path::new(&path)),
     }
     Ok(())
 }
@@ -5402,7 +5515,7 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
 
     #[test]
     fn heavy_videos_get_a_light_copy_and_old_copies_go() {
-        let probe = |width, height, size: u64| Probe { duration: 10.0, width, height, fps: "30/1".into(), has_audio: true, size };
+        let probe = |width, height, size: u64| Probe { duration: 10.0, width, height, fps: "30/1".into(), has_audio: true, size, turned: false };
         assert!(!heavy(&probe(1920, 1080, 20_000_000)));
         assert!(!heavy(&probe(1080, 1920, 20_000_000)));
         assert!(heavy(&probe(3840, 2160, 20_000_000)));
@@ -5471,11 +5584,14 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
     fn reads_ffprobe_output() {
         let probe = parse_probe(r#"{"streams":[{"codec_type":"video","width":1024,"height":576,"avg_frame_rate":"25/1","r_frame_rate":"25/1"},
             {"codec_type":"audio","r_frame_rate":"0/0"}],"format":{"duration":"154.200000","size":"48000000"}}"#).unwrap();
-        assert_eq!(probe, Probe { duration: 154.2, width: 1024, height: 576, fps: "25/1".into(), has_audio: true, size: 48_000_000 });
+        assert_eq!(probe, Probe { duration: 154.2, width: 1024, height: 576, fps: "25/1".into(), has_audio: true, size: 48_000_000, turned: false });
         let silent = parse_probe(r#"{"streams":[{"codec_type":"video","width":720,"height":1280,"avg_frame_rate":"0/0","r_frame_rate":"30000/1001"}],
             "format":{"duration":"10"}}"#).unwrap();
         assert_eq!((silent.fps.as_str(), silent.has_audio, silent.size), ("30000/1001", false, 0));
         assert_eq!(parse_probe(r#"{"streams":[{"codec_type":"video","width":2,"height":2,"r_frame_rate":"9000/1"}],"format":{"duration":"1"}}"#).unwrap().fps, "30/1");
+        // a phone video's display rotation (#935): shown turned at 90 and -90 (270), not at 180
+        let rotated = |degrees: i64| parse_probe(&format!(r#"{{"streams":[{{"codec_type":"video","width":640,"height":360,"r_frame_rate":"30/1","side_data_list":[{{"rotation":{degrees}}}]}}],"format":{{"duration":"1"}}}}"#)).unwrap().turned;
+        assert_eq!((rotated(90), rotated(-90), rotated(270), rotated(180), rotated(0)), (true, true, true, false, false));
         assert!(parse_probe(r#"{"streams":[{"codec_type":"audio"}],"format":{"duration":"10"}}"#).is_none());
         assert!(parse_probe(r#"{"streams":[{"codec_type":"video","width":2,"height":2}],"format":{"duration":"N/A"}}"#).is_none());
         assert!(parse_probe("not json").is_none());
@@ -5860,6 +5976,34 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
         assert_eq!(status["exports"].as_array().unwrap().len(), 1);
         assert_eq!(status["status"]["state"], "FAILED");
         assert!(!base.join("Phim (sửa 2).mp4.partial").exists());
+        assert!(status["exports"][0].get("check").is_none(), "an export without a Kiểm tra kỹ thuật has no check key");
+        // Kiểm tra kỹ thuật (Issue #935): each export's check is attached; one a closed app left RUNNING is interrupted.
+        let checked = base.join("Phim (sửa 3).mp4");
+        fs::write(&checked, b"video").unwrap();
+        append_export(&work, json!({"path": crate::display_path(&checked), "duration": 5.0}));
+        let check_file = |video: &Path, state: &str| {
+            let folder = work.join("checks").join(file_key(video));
+            fs::create_dir_all(&folder).unwrap();
+            // tied to the exact file at the name, as every report is (a report without its file's stamp is never shown)
+            fs::write(folder.join("check.json"), json!({"schema_version": 1, "kind": "export_check", "advisory": true, "state": state,
+                "percent": 100, "checks": [{"id": "black", "label": "Hình đen", "ok": false, "detail": "đen 3,0 giây ở 0:04–0:07"}],
+                "stamp": check::stamp_of(video)}).to_string()).unwrap();
+            folder
+        };
+        check_file(&exported, "DONE");
+        let stale = check_file(&checked, "RUNNING");
+        let status = edit_status(path.clone(), "job".into()).unwrap();
+        assert_eq!(status["exports"][0]["check"]["state"], "DONE");
+        assert_eq!(status["exports"][0]["check"]["checks"][0]["detail"], "đen 3,0 giây ở 0:04–0:07");
+        assert_eq!(status["exports"][1]["check"]["state"], "INTERRUPTED");
+        assert_eq!(status["status"]["state"], "FAILED", "a check never changes the export's status");
+        // While another holder has the check's lease (Windows file sharing), RUNNING stays.
+        if cfg!(windows) {
+            check_file(&checked, "RUNNING");
+            let lease = crate::work_lease::take(&stale, BUSY).unwrap();
+            assert_eq!(edit_status(path.clone(), "job".into()).unwrap()["exports"][1]["check"]["state"], "RUNNING");
+            drop(lease);
+        }
         // While another holder has the lease (Windows file sharing), RUNNING stays.
         if cfg!(windows) {
             write_status(&work, "RUNNING", 10.0, "x", None);
@@ -6326,14 +6470,15 @@ Dialogue: 3,0:00:05.00,0:00:07.00,T1,,256,256,0,,{\\an6\\pos(1024,360)}{\\ko10}G
             reframe: Some(reframe_filter(720, 720, "black")), ..Finish::default() };
         let (burned, has_audio) = export_script(&edit, &input, &frame(), "720p", &mix, &finish);
         assert!(has_audio);
-        assert_eq!(burned, format!("{};\n[vt]subtitles=filename=s.ass,subtitles=filename=s2.ass[vf0];\n[vf0]subtitles=filename=t.ass[vf1];\n[vf1]{}[v]",
-            plain.replace("setsar=1[v]", "setsar=1[vt]"), reframe_filter(720, 720, "black")));
+        // on the export's own frames (#935): frame N is drawn at N / fps
+        assert_eq!(burned, format!("{};\n[vt]fps={},subtitles=filename=s.ass,subtitles=filename=s2.ass[vf0];\n[vf0]subtitles=filename=t.ass[vf1];\n[vf1]{}[v]",
+            plain.replace("setsar=1[v]", "setsar=1[vt]"), frame().fps, reframe_filter(720, 720, "black")));
         let at = burned.find("subtitles=filename=s.ass").unwrap();
         assert!(burned[..at].contains("overlay") && burned[..at].contains("setsar=1[vt]"), "after the overlays and the scale: {burned}");
         assert!(!burned[at..].contains("trim") && !burned[at..].contains("concat"), "after the cuts: {burned}");
         // Phụ đề alone ends the picture; a sound-only export keeps its null sink.
         let (alone, _) = export_script(&whole(10.0), &input, &frame(), "source", &mix, &Finish { burn: Some("subtitles=filename=s.ass".into()), ..Finish::default() });
-        assert!(alone.ends_with("[v0][a0]concat=n=1:v=1:a=1[vt][a];\n[vt]subtitles=filename=s.ass[v]"), "{alone}");
+        assert!(alone.ends_with(&format!("[v0][a0]concat=n=1:v=1:a=1[vt][a];\n[vt]fps={},subtitles=filename=s.ass[v]", frame().fps)), "{alone}");
         assert_eq!(alone.matches("[v]").count(), 1, "one picture output");
     }
 

@@ -94,7 +94,10 @@ globalThis.HTMLInputElement = Input;
 const root = new Node(); nodes.set("#compilation-view", root);
 globalThis.document = { querySelector: s => nodes.get(s), createElement: tag => tag === "input" ? new Input() : Object.assign(new Node(), { tag }) };
 const timers = new Map(); let timer = 0;
-globalThis.window = { setInterval: fn => { timers.set(++timer, fn); return timer; }, clearInterval: id => timers.delete(id) };
+// One-shot timers (re-reading the edited versions while their Kiểm tra kỹ thuật runs) are kept apart from the polls.
+const timeouts = new Map(); let timeout = 0;
+globalThis.window = { setInterval: fn => { timers.set(++timer, fn); return timer; }, clearInterval: id => timers.delete(id),
+  setTimeout: fn => { timeouts.set(++timeout, fn); return timeout; }, clearTimeout: id => timeouts.delete(id) };
 const pastDir = "D:/Videos/DubFlow Output/Tong hop - Cũ/run-00000000a1b2";
 const past = { dir: pastDir, created: 1_793_500_000, video: `${pastDir}/compilation.mp4`,
   spec: { schema_version: 1, title: "Bản cũ", layout: "toan-man-hinh", voice_id: "vi-test", speed: 1.2, music: null, music_volume: 0.3, intro: "Chào.", outro: "",
@@ -107,6 +110,9 @@ let listed = [past];
 const otherDir = "D:/Videos/DubFlow Output/Tong hop - Khác/run-00000000c3d4";
 let otherState = { state: "RUNNING", message: "Đang dựng phần 1/2", done: 1, total: 2 };
 const edited = [];
+// Kiểm tra kỹ thuật (Issue #935) of the edited version, as edit_status attaches it.
+const checkBase = { schema_version: 1, kind: "export_check", advisory: true, video: "D:/Videos/Bản cũ (sửa 1).mp4", warnings: [], unmeasured: [], black: [], frozen: [] };
+let editCheck = { ...checkBase, state: "RUNNING", percent: 40, checks: [] };
 const session = createAiSession();
 const view = mountCompilation(async (command, args) => {
   calls.push([command, args]);
@@ -116,7 +122,7 @@ const view = mountCompilation(async (command, args) => {
   if (command === "compilation_status") return args.outputDir === otherDir ? otherState : state;
   if (command === "compilation_description") return "00:00 Phần 1\nNguồn: Tác giả";
   if (command === "compilation_cancel") { if (args.outputDir === otherDir) otherState = { state: "CANCELLED", message: "Đã hủy" }; else state = { state: "CANCELLED", message: "Đã hủy" }; }
-  if (command === "edit_status") return { status: null, exports: [{ path: "D:/Videos/Bản cũ (sửa 1).mp4", created: 1_793_600_000, duration: 120 }] };
+  if (command === "edit_status") return { status: null, exports: [{ path: "D:/Videos/Bản cũ (sửa 1).mp4", created: 1_793_600_000, duration: 120, check: editCheck }] };
 }, session, { jobs: () => jobs, outputRoot: () => null, cpuOnly: () => true, roots: () => ["D:/Videos"], edit: video => edited.push(video) });
 const node = name => nodes.get(`#compilation-${name}`);
 const flush = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -162,6 +168,33 @@ assert.deepEqual(edited, [{ outputPath: "preview/output/compilation.mp4", displa
 await flush();
 assert.ok(calls.some(([cmd, args]) => cmd === "edit_status" && args.outputPath === state.path), "Kết quả lists the edited versions");
 assert.equal(node("export-list").children.length, 1);
+const checkLine = () => node("export-list").children[0].children[0].children[2];
+assert.equal(checkLine().textContent, "Đang kiểm tra kỹ thuật… 40% — video đã lưu và xem được ngay; muốn đổi tên, di chuyển hay xóa tệp thì bấm Dừng kiểm tra trước.", "a running check shows its percent");
+assert.equal(timeouts.size, 1, "and the list is read again while it runs");
+// the check that reads the file can be stopped from its own line (#935, recheck 13)
+const actions = () => node("export-list").children[0].children[1];
+assert.deepEqual(actions().children.map(child => child.textContent), ["Xem", "Mở thư mục", "Dừng kiểm tra"]);
+// a read that misses the running report (rewritten as it was read) keeps the line and the polling
+editCheck = undefined;
+await [...timeouts.values()][0](); await flush();
+assert.match(checkLine().textContent, /Đang kiểm tra kỹ thuật… 40%/);
+assert.equal(timeouts.size, 1, "still read again");
+editCheck = { ...checkBase, state: "RUNNING", percent: 40, checks: [] };
+actions().children[2].listeners.click(); await flush(); await flush();
+assert.ok(calls.some(([cmd, args]) => cmd === "edit_check_cancel" && args.kind === "compilation" && args.path === "D:/Videos/Bản cũ (sửa 1).mp4"
+  && args.outputPath === calls.findLast(([cmd]) => cmd === "edit_status")[1].outputPath), "Dừng kiểm tra stops that export's check, of the video the list is read for");
+editCheck = { ...checkBase, state: "DONE", percent: 100, warnings: ["black"], black: [[4, 7]], checks: [
+  { id: "decode", label: "Giải mã", ok: true, detail: "đọc hết 12,0 giây, không có lỗi" },
+  { id: "black", label: "Hình đen", ok: false, detail: "đen 3,0 giây ở 0:04–0:07" },
+  { id: "subtitle_frame", label: "Phụ đề trong khung", ok: null, detail: "không có phụ đề in vào hình" }] };
+await [...timeouts.values()][0](); await flush();
+// a warning does not hide what was not measured, in the line or its tooltip
+assert.equal(checkLine().textContent, "Kiểm tra kỹ thuật: 1 điểm cần xem. Chưa đo: Phụ đề trong khung.");
+assert.ok(checkLine().className.includes("mqc-warn"));
+assert.match(checkLine().title, /Hình đen: đen 3,0 giây ở 0:04–0:07/);
+assert.match(checkLine().title, /Chưa đo — Phụ đề trong khung: không có phụ đề in vào hình/);
+assert.match(checkLine().title, /Chỉ để tham khảo/);
+assert.equal(timeouts.size, 0, "a finished check is not read again");
 const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
 let copied = "";
 Object.defineProperty(globalThis, "navigator", { configurable: true, value: { clipboard: { writeText: async text => { copied = text; } } } });
