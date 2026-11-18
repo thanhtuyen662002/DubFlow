@@ -2786,6 +2786,8 @@ mod tests {
                 assert!(!swapped.get(), "{name}: the held folder's checks cannot be renamed");
                 assert_eq!(fs::read(folder.join(name)).unwrap(), b"{\"new\":true}", "{name}: written in the real folder");
             }
+            #[cfg(target_os = "linux")]
+            assert!(swapped.get(), "{name}: the race really ran (checks was swapped for a link)");
             if swapped.get() {
                 unlink_dir(&checks);
                 assert_eq!(fs::read(moved.join(folder.file_name().unwrap()).join(name)).unwrap(), b"{\"new\":true}",
@@ -2925,6 +2927,8 @@ mod tests {
             assert!(!swapped.get(), "the held checks folder cannot be renamed");
             assert_eq!(fs::read_dir(&checks).unwrap().count(), EXPORTS_KEPT, "the two oldest went, from the real folder");
         }
+        #[cfg(target_os = "linux")]
+        assert!(swapped.get(), "the race really ran (checks was swapped for a link)");
         if swapped.get() {
             unlink_dir(&checks);
             // the removal went through the held handle, into the real folder: the newer of the two oldest (removed
