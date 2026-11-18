@@ -193,14 +193,15 @@ for (const provider of ["claude", "deepseek"]) {
   assert.equal(prompt.title, "Dịch phụ đề bằng AI theo ngữ cảnh?");
   assert.ok(prompt.message.includes(name), provider);
   assert.ok(prompt.message.includes(`gửi tới ${company}`), provider);
-  assert.match(prompt.message, new RegExp(`tính phí vào tài khoản ${name} của bạn`));
+  assert.match(prompt.message, new RegExp(`có thể tính phí vào tài khoản ${name} của bạn, tùy gói và hạn mức bạn đang dùng`));
+  assert.doesNotMatch(prompt.message, /Mỗi video tốn nhiều lượt gọi AI, tính phí/, "no promise of a charge every provider may not make");
   assert.match(prompt.message, /offline/);
   assert.match(prompt.message, /Cài đặt › Dịch phụ đề/);
   assert.doesNotMatch(prompt.message, /Google có thể dùng/);
   assert.equal(prompt.confirmLabel, "Bật dịch AI");
   assert.equal(prompt.cancelLabel, "Không, dịch offline");
   assert.equal(prompt.initialFocus, "cancel");
-  assert.equal(prompt.backdropCancels, false, "a click beside the question is no answer");
+  assert.equal(prompt.backdropGraceMs, 600, "a click beside the question is \"Không\" except as the second click of a double-click");
   assert.ok(!prompt.danger);
 }
 assert.match(aiContextPrompt("gemini", "start").message, /Khóa miễn phí của Gemini không mất tiền nhưng giới hạn lượt gọi, và Google có thể dùng lời thoại/);
@@ -217,7 +218,14 @@ assert.notEqual(aiContextPrompt("custom", "saved").message.split("\n")[0], aiCon
 // The line after the answer, and the Cài đặt hint for each choice.
 assert.equal(aiContextAnswered("deepseek", "on"), "Đã bật dịch phụ đề bằng DeepSeek. Tắt trong Cài đặt › Dịch phụ đề.");
 assert.equal(aiContextAnswered("deepseek", "off"), "Phụ đề vẫn dịch offline. Bật dịch AI trong Cài đặt › Dịch phụ đề khi cần.");
-assert.equal(aiContextHint("deepseek", "on", "Video mới: …"), "Video mới: … Mỗi video tốn nhiều lượt gọi AI, tính phí vào tài khoản DeepSeek của bạn.");
+assert.equal(aiContextHint("deepseek", "on", "Video mới: …"),
+  "Video mới: … Mỗi video tốn nhiều lượt gọi AI: có thể tính phí vào tài khoản DeepSeek của bạn, tùy gói và hạn mức bạn đang dùng.");
+assert.match(aiContextHint("deepseek", "ask", "x"), /\(có thể tính phí tùy gói và hạn mức của bạn\)/);
+// Providers with a free plan (Groq, Gemini) are never promised a charge either.
+for (const provider of ["groq", "gemini"]) {
+  assert.match(aiContextPrompt(provider, "start").message, /có thể tính phí vào tài khoản .* tùy gói và hạn mức bạn đang dùng/, provider);
+  assert.match(aiContextHint(provider, "on", "x"), /tùy gói và hạn mức/, provider);
+}
 assert.match(aiContextHint("deepseek", "ask", "x"), /^Chưa bật\. Trước video đầu tiên, DubFlow sẽ hỏi bạn có dùng khóa DeepSeek .*phụ đề dịch offline\.$/);
 assert.match(aiContextHint("deepseek", "off", "x"), /^Đang tắt: phụ đề dịch offline \(dịch từng câu\), không dùng khóa DeepSeek\./);
 assert.doesNotMatch(aiContextHint("custom", "on", "x"), /tính phí vào tài khoản .* của bạn\./);

@@ -1,7 +1,7 @@
 DUBFLOW_PR_V1
 Issue: #934
 Lease-Owner: Claude/issue-934-ai-context-ask-once
-Lease-Heartbeat: 2026-11-18T03:58:55Z
+Lease-Heartbeat: 2026-11-18T04:01:48Z
 Tested-Base-SHA: 0e84ab4aa9a972b6fe0f7f948f77915da0980825
 Conflict-Domains: desktop-ai-settings,desktop-edit-subtitles,desktop-shell-confirm
 Expected-Paths:

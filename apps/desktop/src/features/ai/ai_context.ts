@@ -101,7 +101,7 @@ export function aiContextPrompt(provider: Provider, moment: "saved" | "start"): 
       : `Máy này đã lưu khóa ${name}, nhưng DubFlow chưa hỏi bạn có dùng khóa này để dịch phụ đề hay không.`);
   const sent = custom
     ? "• Lời thoại của video được gửi tới máy chủ bạn đã nhập; nếu máy chủ đó tính phí thì phí tính vào tài khoản của bạn."
-    : `• Lời thoại của video được gửi tới ${info.company}.\n• Mỗi video tốn nhiều lượt gọi AI, tính phí vào tài khoản ${name} của bạn.`;
+    : `• Lời thoại của video được gửi tới ${info.company}.\n• Mỗi video tốn nhiều lượt gọi AI: ${MAY_CHARGE(name)}.`;
   const free = provider === "gemini"
     ? "\n• Khóa miễn phí của Gemini không mất tiền nhưng giới hạn lượt gọi, và Google có thể dùng lời thoại để cải thiện sản phẩm."
     : "";
@@ -112,12 +112,18 @@ export function aiContextPrompt(provider: Provider, moment: "saved" | "start"): 
       + "Có thể đổi bất cứ lúc nào trong Cài đặt › Dịch phụ đề.",
     confirmLabel: "Bật dịch AI",
     cancelLabel: "Không, dịch offline",
-    // Enter turns it on only from the "Bật dịch AI" button itself, and a click beside the dialog (the second click of
-    // a double-click on Bắt đầu) is no answer: only a button or Esc answers.
+    // Enter turns it on only from the "Bật dịch AI" button itself. A click beside the dialog means "Không" (#934), except
+    // in its first moment, where it is the second click of a double-click on Bắt đầu and no answer at all.
     initialFocus: "cancel",
-    backdropCancels: false,
+    backdropGraceMs: AI_PROMPT_GRACE_MS,
   };
 }
+
+/** Whether a provider's calls cost money depends on the user's plan and quota (Gemini and Groq have free plans). */
+const MAY_CHARGE = (name: string): string => `có thể tính phí vào tài khoản ${name} của bạn, tùy gói và hạn mức bạn đang dùng`;
+
+/** How long after the AI question opens a click beside it is not taken as "Không". */
+export const AI_PROMPT_GRACE_MS = 600;
 
 /** The line shown after the answer. */
 export function aiContextAnswered(provider: Provider, value: AiContext): string {
@@ -134,10 +140,10 @@ export function aiContextAnswered(provider: Provider, value: AiContext): string 
 export function aiContextHint(provider: Provider, value: AiContext, inUse: string): string {
   const custom = provider === "custom";
   const name = custom ? "máy chủ AI riêng" : PROVIDERS[provider].name;
-  const charged = custom ? "nếu máy chủ đó tính phí thì phí tính vào tài khoản của bạn" : "tính phí vào tài khoản của bạn";
+  const charged = custom ? "nếu máy chủ đó tính phí thì phí tính vào tài khoản của bạn" : "có thể tính phí tùy gói và hạn mức của bạn";
   if (value === "on") {
     return custom ? `${inUse} Nếu máy chủ đó tính phí thì phí tính vào tài khoản của bạn.`
-      : `${inUse} Mỗi video tốn nhiều lượt gọi AI, tính phí vào tài khoản ${name} của bạn.`;
+      : `${inUse} Mỗi video tốn nhiều lượt gọi AI: ${MAY_CHARGE(name)}.`;
   }
   if (value === "ask") {
     return `Chưa bật. Trước video đầu tiên, DubFlow sẽ hỏi bạn có dùng ${custom ? name : `khóa ${name}`} để dịch theo ngữ cảnh không `

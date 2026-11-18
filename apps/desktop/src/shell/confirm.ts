@@ -11,8 +11,11 @@ export type ConfirmOptions = {
    * then confirms only while the confirm button itself has focus, never by default.
    */
   initialFocus?: "confirm" | "cancel";
-  /** A press on the dimmed area outside cancels (default). false: it does nothing, so a stray click is no answer. */
-  backdropCancels?: boolean;
+  /**
+   * A press on the dimmed area outside cancels, except within this many milliseconds of the dialog opening: the second
+   * click of a double-click that opened it is not an answer (default 0).
+   */
+  backdropGraceMs?: number;
 };
 
 /** "stay": the key is taken (nothing underneath sees it) but does nothing. */
@@ -121,8 +124,9 @@ export function confirmDialog(options: ConfirmOptions): Promise<boolean> {
     cancel.addEventListener("click", () => finish(false));
     confirm.addEventListener("click", () => finish(true));
     backdrop.addEventListener("mousedown", (event) => {
-      if (event.target === backdrop && options.backdropCancels !== false) finish(false);
+      if (event.target === backdrop && Date.now() - opened >= (options.backdropGraceMs ?? 0)) finish(false);
     });
+    const opened = Date.now();
     document.body.append(backdrop);
     (initialFocus(options) === "cancel" ? cancel : confirm).focus();
   });

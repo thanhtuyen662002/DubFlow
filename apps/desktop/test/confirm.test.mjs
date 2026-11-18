@@ -96,7 +96,7 @@ assert.equal(cycleFocus(0, 0, false), -1);
     const [cancel, confirm] = backdrop.children[0].children.at(-1).children;
     return { state, backdrop, cancel, confirm, text: backdrop.children[0].children[1] };
   };
-  const optIn = { title: "Dịch phụ đề bằng AI theo ngữ cảnh?", message: "…", confirmLabel: "Bật dịch AI", cancelLabel: "Không, dịch offline", initialFocus: "cancel", backdropCancels: false };
+  const optIn = { title: "Dịch phụ đề bằng AI theo ngữ cảnh?", message: "…", confirmLabel: "Bật dịch AI", cancelLabel: "Không, dịch offline", initialFocus: "cancel", backdropGraceMs: 600 };
   const plain = { title: "Xóa video?", message: "…", danger: true };
   const page = new FakeElement("button");
   document.body.append(page);
@@ -127,15 +127,29 @@ assert.equal(cycleFocus(0, 0, false), -1);
     await settle();
     assert.deepEqual(dialog.state, { done: true, value: true });
   }
-  // A press beside the opt-in (the second click of a double-click) is no answer; Esc is "no".
+  // A press beside the opt-in in its first moment (the second click of a double-click) is no answer; later it is "no",
+  // never "yes"; Esc is "no" too.
   {
-    const dialog = open(optIn);
-    dialog.backdrop.mousedown();
-    await settle();
-    assert.equal(dialog.state.done, false);
-    press("Escape");
-    await settle();
-    assert.deepEqual(dialog.state, { done: true, value: false });
+    const realNow = Date.now;
+    let now = 1_000_000;
+    Date.now = () => now;
+    try {
+      const dialog = open(optIn);
+      now += 599;
+      dialog.backdrop.mousedown();
+      await settle();
+      assert.equal(dialog.state.done, false, "the second click of a double-click is no answer");
+      now += 1;
+      dialog.backdrop.mousedown();
+      await settle();
+      assert.deepEqual(dialog.state, { done: true, value: false }, "a click beside the question is Không");
+      const again = open(optIn);
+      press("Escape");
+      await settle();
+      assert.deepEqual(again.state, { done: true, value: false });
+    } finally {
+      Date.now = realNow;
+    }
   }
   // Two stacked dialogs, one Enter: only the top one acts, and the one below sees nothing of it.
   {
