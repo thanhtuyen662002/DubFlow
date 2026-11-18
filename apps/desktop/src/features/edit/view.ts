@@ -49,7 +49,7 @@ import { packHistory, unpackHistory } from "./undo_store.ts";
 import { DraftSavers, windowTimers } from "./autosave.ts";
 import { askAlone, CLOSE_WAIT_MS, flushWithin, unsavedPrompt } from "./close_guard.ts";
 import { mountThumbnail } from "./thumbnail_view.ts";
-import { CHECK_NOTE, checkBadge, checkLines, checkRunning, checkSummary, checkWarnings, parseExportCheck } from "./export_check.ts";
+import { CHECK_NOTE, checkBadge, checkHolding, checkLines, checkRunning, checkSummary, checkWarnings, keepRunningChecks, parseExportCheck } from "./export_check.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 type Facts = { duration: number; width: number; height: number; fps?: number; size_bytes: number; has_audio: boolean; cues: Cue[] };
@@ -454,6 +454,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   let pollToken = 0;
   /** Until when a finished export's Kiểm tra kỹ thuật is waited for (it starts just after the video is saved). */
   let checkWait = 0;
+  /** Polls in a row each export's running check was missing from (`keepRunningChecks`). */
+  const checkMisses = new Map<string, number>();
   // Export dialog.
   let folder = "";
   let quality: Quality = "source";
@@ -3880,11 +3882,13 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     try {
       response = await invoke<StatusResponse>("edit_status", { outputPath: job.outputPath, kind: job.kind });
     } catch {
-      if (token === pollToken && previous === "RUNNING") schedulePoll(2000);
+      // a failed read while a check runs is tried again too: its result would otherwise never show
+      if (token === pollToken && (previous === "RUNNING" || checkRunning(listStatus?.exports ?? []))) schedulePoll(2000);
       return;
     }
     if (token !== pollToken || subject()?.id !== job.id) return;
     const checking = new Set((listStatus?.exports ?? []).filter((entry) => parseExportCheck(entry.check)?.state === "RUNNING").map((entry) => entry.path));
+    keepRunningChecks(listStatus?.exports ?? [], response.exports, checkMisses);
     listStatus = response;
     const state = response.status?.state;
     // Kiểm tra kỹ thuật starts right after the export is saved: wait a little for its first word.
@@ -3956,6 +3960,14 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       });
       const actions = element("span", "edit-export-actions");
       actions.append(view, reveal);
+      // each check that reads its file can be stopped from its own line (#935, recheck 13)
+      if (checkHolding(entry.check)) {
+        const stop = element("button", "btn", "Dừng kiểm tra");
+        stop.type = "button";
+        stop.title = `Dừng kiểm tra kỹ thuật của ${fileName(entry.path)}`;
+        stop.addEventListener("click", () => void stopCheck(entry.path));
+        actions.append(stop);
+      }
       item.append(text, actions);
       return item;
     }));
@@ -4155,14 +4167,17 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     summary.title = entry.path;
     $("#export-check-lines").replaceChildren(...checkLines(check).map((line) => element("li", "", line)));
     $("#export-check-note").textContent = CHECK_NOTE;
+    // Dừng kiểm tra frees the file a check reads: this export's, or, while this one waits its turn, the export whose
+    // check runs now (an earlier export's, which this dialog does not show otherwise).
+    const holder = checkHolding(entry.check) ? entry : exports.find((item) => checkHolding(item.check));
     const stop = $<HTMLButtonElement>("#export-check-stop");
-    stop.hidden = check.state !== "RUNNING";
-    stop.dataset.path = entry.path;
+    stop.hidden = check.state !== "RUNNING" && !holder;
+    stop.dataset.path = holder?.path ?? entry.path;
+    stop.textContent = holder && holder !== entry ? `Dừng kiểm tra «${fileName(holder.path)}»` : "Dừng kiểm tra";
   }
 
-  async function stopCheck(): Promise<void> {
+  async function stopCheck(path = $<HTMLButtonElement>("#export-check-stop").dataset.path): Promise<void> {
     const job = subject();
-    const path = $<HTMLButtonElement>("#export-check-stop").dataset.path;
     if (!job?.outputPath || !path) return;
     try {
       await invoke("edit_check_cancel", { outputPath: job.outputPath, kind: job.kind, path });

@@ -1,6 +1,6 @@
 // Kiểm tra kỹ thuật (Issue #935): the advisory check after each editor export, read strictly and never worded like Final QC.
 import assert from "node:assert/strict";
-import { CHECK_NOTE, checkBadge, checkLines, checkRunning, checkSummary, checkWarnings, parseExportCheck } from "../src/features/edit/export_check.ts";
+import { CHECK_NOTE, checkBadge, checkHolding, checkLines, checkRunning, checkSummary, checkWarnings, keepRunningChecks, parseExportCheck } from "../src/features/edit/export_check.ts";
 import { previewInvoke } from "../src/shell/preview_invoke.ts";
 
 const base = { schema_version: 1, kind: "export_check", advisory: true, video: "D:/Videos/Phim (sửa 1).mp4", warnings: [], unmeasured: [], black: [], frozen: [],
@@ -89,6 +89,27 @@ assert.equal(checkRunning([{ path: "a", check: done }, { path: "b", check: runni
 assert.equal(checkRunning([{ path: "a", check: running }, { path: "b", check: done }]), true, "an older one still running is followed too");
 assert.equal(checkRunning([{ path: "a", check: { ...running, kind: "final_qc" } }]), false);
 assert.equal(checkRunning([{ path: "a", check: { ...running, state: "INTERRUPTED" } }]), false);
+
+// Only a check that reads its file now is the one Dừng kiểm tra frees.
+assert.equal(checkHolding(running), true);
+assert.equal(checkHolding({ ...running, waiting: true }), false, "a check waiting its turn holds nothing");
+assert.equal(checkHolding(done), false);
+assert.equal(checkHolding(undefined), false);
+// A read that comes back without a running check's report keeps the last one, at most three reads in a row.
+const misses = new Map();
+for (let read = 1; read <= 3; read += 1) {
+  const next = [{ path: "a" }, { path: "b" }];
+  keepRunningChecks([{ path: "a", check: running }, { path: "b", check: done }], next, misses);
+  assert.equal(next[0].check, running, `read ${read}`);
+  assert.equal(next[1].check, undefined, "a finished check is not carried");
+}
+const fourth = [{ path: "a" }];
+keepRunningChecks([{ path: "a", check: running }], fourth, misses);
+assert.equal(fourth[0].check, undefined, "then it is let go");
+const back = [{ path: "a", check: done }];
+keepRunningChecks([{ path: "a", check: running }], back, misses);
+assert.equal(back[0].check, done, "a report that comes back is taken as it is");
+assert.equal(misses.size, 0);
 
 // The browser preview: after the export, its check runs, then reports one point; Dừng kiểm tra stops it.
 const now = Date.now;

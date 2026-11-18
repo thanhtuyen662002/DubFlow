@@ -134,6 +134,19 @@ impl Plan {
         self
     }
 
+    /// The export was rendered in parts cut at `cuts` (s, `parts::render`). Each part burns Phụ đề with a libass of its
+    /// own, so lines that shared the screen before a cut and are still on screen across it are stacked anew there,
+    /// while the measure runs one libass over the whole export: it would judge another layout than the video's, so the
+    /// burned lines are not measured then (recheck 13).
+    pub(super) fn parts_cut_at(mut self, cuts: &[f64]) -> Self {
+        if let Some(frame) = self.subtitles.as_mut().filter(|frame| frame.unmeasurable.is_none()) {
+            if frame.burns.iter().any(|burn| restacked(&burn.lines, cuts)) {
+                frame.unmeasurable = Some(PARTS.into());
+            }
+        }
+        self
+    }
+
     /// The published file is still the one this plan is for (or no stamp was taken).
     fn same_file(&self) -> bool {
         self.stamp.is_none() || stamp_of(&self.video) == self.stamp
@@ -176,6 +189,19 @@ fn stamp_in(report: &Value) -> Option<Stamp> {
     let stamp = report["stamp"].as_array().filter(|stamp| stamp.len() == 4)?;
     Some([stamp[0].as_u64()?, stamp[1].as_u64()?, stamp[2].as_u64()?, stamp[3].as_u64()?])
 }
+
+/// Some line of one layer is on screen across a cut and shared the screen with another line of that layer before it:
+/// the part after the cut places it afresh, where one libass for the whole export keeps the place it took.
+fn restacked(lines: &[Cue], cuts: &[f64]) -> bool {
+    cuts.iter().map(|cut| (cut * 1000.0).round() as u64).any(|at| {
+        lines.iter().enumerate().any(|(index, line)| line.start_ms < at && at < line.end_ms
+            && lines.iter().enumerate().any(|(other_index, other)| other_index != index
+                && other.start_ms.max(line.start_ms) < other.end_ms.min(line.end_ms).min(at)))
+    })
+}
+
+/// Said when the export was rendered in parts and lines on screen together cross a cut (`Plan::parts_cut_at`).
+const PARTS: &str = "video dài được xuất song song theo từng phần và có dòng phụ đề chồng nhau ngay chỗ nối hai phần, vị trí dòng ở đó có thể khác bản đo";
 
 /// Said when the main video is shown turned (`Plan::turned_source`).
 const TURNED: &str = "video gốc quay dọc bằng điện thoại (được xoay khi phát), khung vẽ phụ đề có thể khác khung xuất";
@@ -1076,8 +1102,28 @@ pub(super) fn cancel(work: &Path, video: &Path) {
 /// The check.json of the check folder `dir` (`work/checks/<key>`). Read only while `work`, `checks` and `dir` are
 /// plain folders, looked at before and after the read, through a handle `open_own` judged, and only when that handle
 /// is the file at exactly `work`'s own `checks/<key>/check.json` (`at_place`): a linked `checks` swapped in between
-/// the look and the open never leads the read elsewhere (Lead review 4609721830).
+/// the look and the open never leads the read elsewhere (Lead review 4609721830). A running check replaces its
+/// check.json about once a second: a handle opened just before the new one took the name has no name any more, so it
+/// is refused; the read is then tried again (`LOAD_TRIES` in all), on the file now at the name (recheck 13).
 fn load_check(work: &Path, dir: &Path) -> Option<Value> {
+    for try_ in 0..LOAD_TRIES {
+        if try_ > 0 {
+            // nothing at the name (no check made yet): nothing to try again
+            fs::symlink_metadata(dir.join("check.json")).ok()?;
+            // a moment for the rename that replaced the file to finish (Windows may refuse an open meanwhile)
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        if let Some(value) = load_check_once(work, dir) {
+            return Some(value);
+        }
+    }
+    None
+}
+
+/// Reads of check.json one `load_check` tries.
+const LOAD_TRIES: usize = 3;
+
+fn load_check_once(work: &Path, dir: &Path) -> Option<Value> {
     if !owned(work, dir) {
         return None;
     }
@@ -1682,6 +1728,42 @@ mod tests {
         let _ = fs::remove_dir_all(dir);
     }
 
+    /// An export rendered in parts burns each part with its own libass: lines that shared the screen before a cut
+    /// and are still on screen across it are stacked anew there, so the burned lines are said unmeasured instead of
+    /// judged on the one-libass layout (recheck 13); lines that never shared the screen across a cut are measured.
+    #[test]
+    fn lines_stacked_across_a_part_cut_are_not_measured() {
+        let wide = Framing { export: (1920, 1080), out: (1920, 1080), fill: "black", aspect: None };
+        let edit = Edit { segments: vec![segment(0, 0.0, 600.0)], ..Edit::default() };
+        let planned = |lines: Vec<Cue>, cuts: &[f64]| {
+            let layer = BurnSubtitles { style: style(json!({})), lines };
+            plan(&edit, &[false], 600.0, true, &[], &[&layer], &wide, "30/1").parts_cut_at(cuts).subtitles.unwrap().unmeasurable
+        };
+        // A 0-4 s under B 2-11 s, cut at 5 s: B is placed afresh after the cut
+        assert_eq!(planned(vec![cue(0, 4_000, "A"), cue(2_000, 11_000, "B")], &[5.0]).as_deref(), Some(PARTS));
+        // the same lines in one FFmpeg run (no cut), or a cut after they are gone, or before they meet: measured
+        assert_eq!(planned(vec![cue(0, 4_000, "A"), cue(2_000, 11_000, "B")], &[]), None);
+        assert_eq!(planned(vec![cue(0, 4_000, "A"), cue(2_000, 11_000, "B")], &[12.0]), None);
+        assert_eq!(planned(vec![cue(0, 4_000, "A"), cue(6_000, 11_000, "B")], &[5.0]), None, "A ends before the cut, B is alone across it");
+        assert_eq!(planned(vec![cue(0, 9_000, "A"), cue(6_000, 11_000, "B")], &[5.0]), None, "A is alone up to the cut: placed the same");
+        // a line ending exactly at the cut is not on screen across it
+        assert_eq!(planned(vec![cue(0, 5_000, "A"), cue(2_000, 5_000, "B")], &[5.0]), None);
+        // lines on two layers never push each other (one libass per layer)
+        let first = BurnSubtitles { style: style(json!({})), lines: vec![cue(0, 4_000, "A")] };
+        let second = BurnSubtitles { style: style(json!({})), lines: vec![cue(2_000, 11_000, "B")] };
+        assert_eq!(plan(&edit, &[false], 600.0, true, &[], &[&first, &second], &wide, "30/1").parts_cut_at(&[5.0]).subtitles.unwrap().unmeasurable, None);
+        // a turned source keeps its own reason
+        let layer = BurnSubtitles { style: style(json!({})), lines: vec![cue(0, 4_000, "A"), cue(2_000, 11_000, "B")] };
+        let turned = plan(&edit, &[false], 600.0, true, &[], &[&layer], &wide, "30/1").turned_source(true).parts_cut_at(&[5.0]);
+        assert_eq!(turned.subtitles.unwrap().unmeasurable.as_deref(), Some(TURNED));
+        let running = Running { children: Mutex::new(Vec::new()), cancelled: AtomicBool::new(false) };
+        let dir = temp("parts-cut");
+        let cut = plan(&edit, &[false], 600.0, true, &[], &[&layer], &wide, "30/1").parts_cut_at(&[5.0]);
+        let fit = measure_subtitles(&dir.join("work"), &dir.join("ffmpeg"), cut.subtitles.as_ref().unwrap(), &dir.join("v.mp4"), &dir, &running);
+        assert_eq!((fit.ok, fit.detail), (None, format!("chưa đo được phụ đề: {PARTS}")));
+        let _ = fs::remove_dir_all(dir);
+    }
+
     /// With DUBFLOW_TEST_FFMPEG: libass itself says where the lines land.
     #[test]
     fn real_subtitle_measure() {
@@ -1912,6 +1994,43 @@ mod tests {
             std::os::unix::fs::symlink(&elsewhere, folder.join("check.json")).unwrap();
             assert_eq!(read_check_file(&folder.join("check.json")), None);
         }
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// A read that opens check.json just before a progress save takes the name is refused on that handle (it has no
+    /// name any more) and tried again on the new file, so a poll never loses a running check (recheck 13).
+    #[test]
+    fn a_read_racing_a_progress_save_still_reads_the_report() {
+        let dir = temp("racing-save");
+        let work = dir.join("work");
+        let video = dir.join("Phim.mp4");
+        let folder = check_dir(&work, &video);
+        fs::create_dir_all(&folder).unwrap();
+        save(&work, &folder, &ExportCheck::new(&video, "RUNNING"));
+        #[cfg(target_os = "linux")]
+        {
+            let stale = open_own(&folder.join("check.json")).unwrap();
+            save(&work, &folder, &ExportCheck { percent: 50.0, ..ExportCheck::new(&video, "RUNNING") });
+            assert!(!at_place(&stale, &work, &folder), "the handle opened before the save is not the file at the name");
+            assert_eq!(load_check(&work, &folder).unwrap()["percent"], 50.0, "the new report is read");
+        }
+        // a save every moment while polls read: every read gets a report
+        let stop = Arc::new(AtomicBool::new(false));
+        let writer = {
+            let (work, folder, video, stop) = (work.clone(), folder.clone(), video.clone(), stop.clone());
+            std::thread::spawn(move || {
+                let mut percent = 0.0;
+                while !stop.load(Ordering::SeqCst) {
+                    percent = (percent + 1.0) % 100.0;
+                    save(&work, &folder, &ExportCheck { percent, ..ExportCheck::new(&video, "RUNNING") });
+                }
+            })
+        };
+        for _ in 0..2_000 {
+            assert_eq!(load_check(&work, &folder).map(|report| report["state"].clone()), Some(json!("RUNNING")));
+        }
+        stop.store(true, Ordering::SeqCst);
+        writer.join().unwrap();
         let _ = fs::remove_dir_all(dir);
     }
 

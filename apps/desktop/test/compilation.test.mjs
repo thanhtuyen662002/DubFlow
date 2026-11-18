@@ -171,6 +171,18 @@ assert.equal(node("export-list").children.length, 1);
 const checkLine = () => node("export-list").children[0].children[0].children[2];
 assert.equal(checkLine().textContent, "Đang kiểm tra kỹ thuật… 40% — video đã lưu và xem được ngay; muốn đổi tên, di chuyển hay xóa tệp thì bấm Dừng kiểm tra trước.", "a running check shows its percent");
 assert.equal(timeouts.size, 1, "and the list is read again while it runs");
+// the check that reads the file can be stopped from its own line (#935, recheck 13)
+const actions = () => node("export-list").children[0].children[1];
+assert.deepEqual(actions().children.map(child => child.textContent), ["Xem", "Mở thư mục", "Dừng kiểm tra"]);
+// a read that misses the running report (rewritten as it was read) keeps the line and the polling
+editCheck = undefined;
+await [...timeouts.values()][0](); await flush();
+assert.match(checkLine().textContent, /Đang kiểm tra kỹ thuật… 40%/);
+assert.equal(timeouts.size, 1, "still read again");
+editCheck = { ...checkBase, state: "RUNNING", percent: 40, checks: [] };
+actions().children[2].listeners.click(); await flush(); await flush();
+assert.ok(calls.some(([cmd, args]) => cmd === "edit_check_cancel" && args.kind === "compilation" && args.path === "D:/Videos/Bản cũ (sửa 1).mp4"
+  && args.outputPath === calls.findLast(([cmd]) => cmd === "edit_status")[1].outputPath), "Dừng kiểm tra stops that export's check, of the video the list is read for");
 editCheck = { ...checkBase, state: "DONE", percent: 100, warnings: ["black"], black: [[4, 7]], checks: [
   { id: "decode", label: "Giải mã", ok: true, detail: "đọc hết 12,0 giây, không có lỗi" },
   { id: "black", label: "Hình đen", ok: false, detail: "đen 3,0 giây ở 0:04–0:07" },

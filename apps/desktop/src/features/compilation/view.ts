@@ -10,7 +10,7 @@ import { confirmDialog } from "../../shell/confirm.ts";
 import { confirmDeleteProject, deleteProjectButton } from "../../shell/project_delete.ts";
 import { fileName, parseRecentRuns, rememberRun, shortDate } from "../product/model.ts";
 import { mountRawCompilation } from "./raw_view.ts";
-import { checkBadge, checkRunning } from "../edit/export_check.ts";
+import { checkBadge, checkHolding, checkRunning, keepRunningChecks } from "../edit/export_check.ts";
 
 /** Folders of the compilations started here, so a run saved beside its source videos (no saving folder chosen)
  * is listed again after the app reopens (rc4 Windows check). */
@@ -194,6 +194,10 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
   let exportsToken = 0;
   /** Reads the edited versions again while a Kiểm tra kỹ thuật of one runs. */
   let exportsTimer = 0;
+  /** The last edited versions read, of `exportsOf`, and polls in a row a running check was missing (`keepRunningChecks`). */
+  let lastExports: ExportEntry[] = [];
+  let exportsOf = "";
+  const checkMisses = new Map<string, number>();
   let playing = "";
   let playingRequest = 0;
   const durations = new Map<string, number>();
@@ -754,7 +758,17 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
       response = null;
     }
     if (ticket !== exportsToken) return;
-    const exports = response?.exports ?? [];
+    const before = exportsOf === path ? lastExports : [];
+    if (!response) {
+      // a failed read while a check runs keeps the list and tries again: the check's result would otherwise never show
+      if (checkRunning(before)) exportsTimer = window.setTimeout(() => void loadExports(path), 2000);
+      else section.hidden = true;
+      return;
+    }
+    const exports = response.exports ?? [];
+    keepRunningChecks(before, exports, checkMisses);
+    lastExports = exports;
+    exportsOf = path;
     const running = response?.status?.state === "RUNNING";
     section.hidden = !exports.length && !running;
     $("export-progress").hidden = !running;
@@ -783,6 +797,14 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
       const reveal = button("Mở thư mục", () => void invoke("reveal_download", { path: entry.path }).catch((error) => { $("state").textContent = message(error); }),
         `Mở thư mục của ${fileName(entry.path)}`);
       actions.append(view, reveal);
+      // a check that reads its file can be stopped here: its line says to stop it before moving the file (#935)
+      if (checkHolding(entry.check)) {
+        actions.append(button("Dừng kiểm tra", () => {
+          void invoke("edit_check_cancel", { outputPath: path, kind: "compilation", path: entry.path })
+            .catch((error) => { $("state").textContent = message(error); })
+            .then(() => loadExports(path));
+        }, `Dừng kiểm tra kỹ thuật của ${fileName(entry.path)}`));
+      }
       item.append(text, actions);
       return item;
     }));

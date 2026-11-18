@@ -76,6 +76,30 @@ export function checkLines(check: ExportCheck): string[] {
   return [...warnings, ...unmeasured];
 }
 
+/** The check reads the file now (RUNNING, not waiting its turn): the one whose Dừng kiểm tra frees the file. */
+export function checkHolding(raw: unknown): boolean {
+  const check = parseExportCheck(raw);
+  return check?.state === "RUNNING" && !check.waiting;
+}
+
+/** Polls in a row a running check may be missing from before it is let go. */
+const MISSED_POLLS = 3;
+
+/**
+ * A poll can come back without a running check's report (it was being rewritten as it was read): `next` keeps the
+ * check `previous` had for that export, for at most MISSED_POLLS polls in a row, so its line and the polling stay.
+ */
+export function keepRunningChecks<T extends { path: string; check?: unknown }>(previous: ReadonlyArray<T>, next: T[], misses: Map<string, number>): void {
+  const running = new Map(previous.filter((entry) => parseExportCheck(entry.check)?.state === "RUNNING").map((entry) => [entry.path, entry.check]));
+  for (const entry of next) {
+    if (entry.check !== undefined || !running.has(entry.path)) { misses.delete(entry.path); continue; }
+    const missed = (misses.get(entry.path) ?? 0) + 1;
+    if (missed > MISSED_POLLS) { misses.delete(entry.path); continue; }
+    misses.set(entry.path, missed);
+    entry.check = running.get(entry.path);
+  }
+}
+
 /** Whether some export's check still runs, so its result is worth polling for. */
 export function checkRunning(exports: ReadonlyArray<{ check?: unknown }>): boolean {
   return exports.some((entry) => parseExportCheck(entry.check)?.state === "RUNNING");

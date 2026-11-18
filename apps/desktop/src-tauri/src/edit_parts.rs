@@ -402,9 +402,9 @@ fn write_guarded(work: &Path, path: &Path, text: &str) -> Result<(), String> {
     fs::write(path, text).map_err(|_| fail("Không ghi được bộ lọc xuất video"))
 }
 
-/// Render `job` as parts side by side into its partial file. Err means the
+/// Render `job` as parts side by side into its partial file, and say where the parts were cut (s). Err means the
 /// single FFmpeg run should render it instead (or the user cancelled).
-pub(super) fn render(job: &ExportJob, source: &Source, running: &Running) -> Result<(), String> {
+pub(super) fn render(job: &ExportJob, source: &Source, running: &Running) -> Result<Vec<f64>, String> {
     let encoders = crate::gpu::encoders(&job.ffmpeg);
     let workers = crate::gpu::parallel_renders(encoders.first() == Some(&crate::gpu::NVENC));
     let fps = fps_number(&job.fps);
@@ -427,7 +427,7 @@ pub(super) fn render(job: &ExportJob, source: &Source, running: &Running) -> Res
     if result.is_err() && !running.cancelled.load(Ordering::SeqCst) {
         write_status(&job.work, "RUNNING", 0.0, "Đang xuất lại trong một lượt…", Some(&job.target));
     }
-    result
+    result.map(|()| cuts)
 }
 
 #[allow(clippy::too_many_arguments)]

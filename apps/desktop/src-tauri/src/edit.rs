@@ -3375,11 +3375,16 @@ fn wait_tracked(running: &Running, id: u32) -> bool {
 
 /// Render, then publish the video and subtitles under names that are free now.
 /// Some((video, whether its .srt was written)) once an edited video is published.
-/// The published video, whether its .srt was written, and the video's stamp taken as it was published.
-fn run_export(job: &ExportJob, running: &Running) -> Option<(PathBuf, bool, Option<check::Stamp>)> {
+/// The published video, whether its .srt was written, the video's stamp taken as it was published, and where it was
+/// cut into parts (s; empty when one FFmpeg run made it).
+fn run_export(job: &ExportJob, running: &Running) -> Option<(PathBuf, bool, Option<check::Stamp>, Vec<f64>)> {
     let partial = partial_of(&job.target);
     let mut failure = String::new();
-    let mut done = job.parts.as_ref().is_some_and(|source| parts::render(job, source, running).is_ok());
+    let mut cuts = Vec::new();
+    let mut done = match job.parts.as_ref().map(|source| parts::render(job, source, running)) {
+        Some(Ok(made)) => { cuts = made; true }
+        _ => false,
+    };
     for (attempt, encoder) in crate::gpu::encoders(&job.ffmpeg).iter().enumerate() {
         if done || running.cancelled.load(Ordering::SeqCst) {
             break;
@@ -3437,7 +3442,7 @@ fn run_export(job: &ExportJob, running: &Running) -> Option<(PathBuf, bool, Opti
         "media": job.media, "luts": job.edit.luts, "transitions": job.edit.transitions, "overlays": job.edit.overlays, "audio": job.audio, "main_volume": job.main_volume, "main_denoise": job.main_denoise, "main_eq": job.main_eq,
         "stems": job.stems, "texts": job.texts, "aspect": job.aspect, "fill": job.aspect.as_ref().and(job.fill.as_ref())}));
     write_status(&job.work, "COMPLETED", 100.0, "Đã xuất video.", Some(&target));
-    Some((target, srt.is_some(), stamp))
+    Some((target, srt.is_some(), stamp, cuts))
 }
 
 fn start_export(request: ExportRequest) -> Result<Value, String> {
@@ -3610,8 +3615,8 @@ fn start_export(request: ExportRequest) -> Result<Value, String> {
         drop(lease);
         // Kiểm tra kỹ thuật: only once the video is published and the export's lease is free,
         // so "Xem", "Mở thư mục" and a new export never wait for it.
-        if let (Some((video, srt, stamp)), Some(plan)) = (published, job.check) {
-            check::run(&job.work, &job.ffmpeg, plan.for_video(video, srt, stamp));
+        if let (Some((video, srt, stamp, cuts)), Some(plan)) = (published, job.check) {
+            check::run(&job.work, &job.ffmpeg, plan.for_video(video, srt, stamp).parts_cut_at(&cuts));
         }
     });
     Ok(json!({"path": display_path(&target)}))
