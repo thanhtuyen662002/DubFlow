@@ -205,11 +205,15 @@ export class DraftSavers<T extends { outputPath: string }> {
 
   /**
    * Write every video's draft now, each on its own: one whose write fails or hangs holds up no other. True when every
-   * one reached the disk.
+   * one reached the disk, a change made meanwhile (while another video's write ran) included, a few rounds at most.
    */
   async flushAll(): Promise<boolean> {
-    const saved = await Promise.all([...this.savers.values()].map((saver) => saver.flush()));
-    return saved.every(Boolean);
+    for (let round = 0; round < 3; round += 1) {
+      const saved = await Promise.all([...this.savers.values()].map((saver) => saver.flush()));
+      if (!saved.every(Boolean)) return false;
+      if (!this.unsaved().length) return true;
+    }
+    return false;
   }
 
   /**

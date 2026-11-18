@@ -600,6 +600,7 @@ function renderPlayButton(): void {
 // Whether every window close goes through the editing draft check now (set where the window's close is wired, below);
 // without a window (the browser preview) there is nothing to guard.
 let windowCloseReady: () => Promise<boolean> = async () => true;
+let windowCloseNow: () => boolean = () => true;
 /** Whether DubFlow may quit now (the window close guard's answer); without a window there is nothing to guard. */
 let mayQuit: () => Promise<boolean> = async () => true;
 /**
@@ -688,6 +689,7 @@ const editor = mountEditor(invoke, {
   openReview: () => void openReview(),
   cpuOnly: () => cpuOnly(),
   closeGuarded: () => windowCloseReady(),
+  closeGuardedNow: () => windowCloseNow(),
   outputRoot: () => outputRoot(),
   // Back to the page the video was opened from: the Chỉnh sửa list, the queue or another page.
   left: () => {
@@ -3043,14 +3045,16 @@ if (appWindow) {
   };
   const closable = { close: () => appWindow.close(), onCloseRequested: closeRequests(appWindow.label, events, storageIds(() => window.sessionStorage)) };
   // a close that failed and could not put the guard back: Alt+F4 and the taskbar would close at once, so editing ends
-  // here (its draft written first, or asked about) and does not open again (windowCloseReady is false)
-  const wiring = wireWindowClose(closable, $("#window-close"), mayClose, () => {
+  // here (its draft written first, or asked about) and does not open again until the guard is back (tried again)
+  const wiring = wireWindowClose(closable, $("#window-close"), mayClose, { timers: windowTimers, unguarded: () => {
     if (!editor.target && !editor.reopening) return;
     void editor.close(false).then((left) => {
-      if (left) showError("DubFlow không còn chặn được việc đóng cửa sổ (Alt+F4) nên đã thoát chế độ chỉnh sửa. Hãy khởi động lại DubFlow để chỉnh sửa tiếp.");
+      showError(left ? "DubFlow không còn chặn được việc đóng cửa sổ bằng Alt+F4 nên đã thoát chế độ chỉnh sửa. Nếu Chỉnh sửa không mở lại được, hãy khởi động lại DubFlow."
+        : "DubFlow không còn chặn được việc đóng cửa sổ bằng Alt+F4 và đang thử chặn lại. Trong lúc đó hãy đóng bằng nút × để được hỏi trước khi mất thay đổi chưa lưu.");
     }, () => undefined);
-  });
+  } });
   windowCloseReady = () => wiring.ready();
+  windowCloseNow = () => wiring.now();
 }
 $("#app-header").addEventListener("mousedown", (event) => {
   if (!appWindow || event.button !== 0) return;

@@ -68,6 +68,9 @@ export type LibraryJob = { id: string; title: string; outputPath: string; kind: 
  * A video the editor opens: a queue job's `final_vi.mp4`, a Bán hàng video,
  * a compilation (Issue #426), a documentary or any video file (Issue #497).
  */
+/** The editor does not open while a system close could lose a change without asking (Issue #929). */
+const UNGUARDED = "Không mở được chế độ chỉnh sửa: DubFlow chưa bảo vệ được việc đóng cửa sổ, nên đóng lúc này có thể mất thay đổi chưa lưu. Hãy khởi động lại DubFlow.";
+
 /** A change a reload could not save, carried for its video's reopened editor (Issue #929). */
 type CarriedDraft = { outputPath: string; kind: EditTarget["kind"]; name: string; project: Record<string, unknown>; keepOld: boolean; oldKept: boolean };
 
@@ -131,6 +134,8 @@ export type EditorHost = {
    * system close the check cannot see would lose a change without asking. Absent: nothing to guard (no window).
    */
   closeGuarded?: () => Promise<boolean>;
+  /** The same, now, without waiting: checked again once a video has loaded (the guard can go meanwhile). */
+  closeGuardedNow?: () => boolean;
   /** Cài đặt › Thư mục lưu kết quả, or null to save beside each video. */
   outputRoot?: () => string | null;
   /** Edit mode ended for `target` (to go back to the page it came from). */
@@ -3543,7 +3548,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     const carry = drafts.get(outputPath) ?? null;
     try {
       if (host.closeGuarded && !(await host.closeGuarded())) {
-        host.showError("Không mở được chế độ chỉnh sửa: DubFlow chưa bảo vệ được việc đóng cửa sổ, nên đóng lúc này có thể mất thay đổi chưa lưu. Hãy khởi động lại DubFlow.");
+        host.showError(UNGUARDED);
         return false;
       }
       const [loaded, status] = await Promise.all([
@@ -3552,6 +3557,11 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       ]);
       // The queue selection moved on while a queue video was opening; or the user left while it was opened again.
       if (ticket !== openTicket || (target.kind === "job" && listJob?.id !== target.id) || !wanted()) return false;
+      // the window close guard can go while the video loads (a close that failed and could not put it back)
+      if (host.closeGuardedNow && !host.closeGuardedNow()) {
+        host.showError(UNGUARDED);
+        return false;
+      }
       const opened = resolveTarget(target, loaded.kind);
       const info = { path: outputPath, title: opened.displayName, width: loaded.width, height: loaded.height, fps: loaded.fps ?? 30, hasAudio: loaded.has_audio };
       if (carry) loaded.project = carry.project;
