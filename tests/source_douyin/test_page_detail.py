@@ -10,11 +10,16 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import socket
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
+from engine.dubflow.download import materializer as materializer_module
 from engine.dubflow.download.douyin.adapter import DouyinSourceAdapter
+from engine.dubflow.download.materializer import MediaMaterializer
+from engine.dubflow.download.provider_transport import PublicProviderHttpTransport
 from engine.dubflow.download.source_adapter import SourceError, SourceErrorCode
 
 VIDEO = "7699053575086918966"
@@ -69,6 +74,35 @@ class PageDetailTests(unittest.TestCase):
                 with self.assertRaises(SourceError):
                     self.adapter.inspect(VIDEO)
                 self.assertEqual(self.transport.calls, calls + 1)
+
+    def test_page_details_behind_a_proxy_never_send_media_through_it(self):
+        # #884 interim: fresh page details skip the helper (and its exit 9), so the media transport itself must refuse
+        # a proxied request. The download fails with the typed, non-retryable code and the proxy sees nothing.
+        self.write(DETAIL)
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.addCleanup(listener.close)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(8)
+        proxy = f"http://127.0.0.1:{listener.getsockname()[1]}"
+        environment = {key: value for key, value in os.environ.items() if "proxy" not in key.lower()}
+        environment.update({"HTTP_PROXY": proxy, "HTTPS_PROXY": proxy, "http_proxy": proxy, "https_proxy": proxy})
+        headers = {"User-Agent": "Mozilla/5.0 recorded", "Accept": "*/*", "Accept-Language": "vi"}
+        with patch.dict(os.environ, environment, clear=True):
+            adapter = DouyinSourceAdapter(self.transport, page_details=self.folder,
+                                          materializer=MediaMaterializer(PublicProviderHttpTransport("douyin", headers)))
+        item = adapter.inspect(VIDEO)
+        with tempfile.TemporaryDirectory() as temp, \
+                patch.object(materializer_module.socket, "create_connection") as create, \
+                self.assertRaises(SourceError) as context:
+            adapter.download(item, Path(temp) / "final.mp4", root=temp)
+        self.assertIs(context.exception.code, SourceErrorCode.PROXY_UNSUPPORTED)
+        self.assertFalse(context.exception.retryable)
+        self.assertEqual(context.exception.action, "disable_proxy")
+        self.assertEqual(self.transport.calls, 0)
+        create.assert_not_called()
+        listener.settimeout(0.5)
+        with self.assertRaises((socket.timeout, TimeoutError)):
+            listener.accept()[0].close()
 
     def test_without_a_details_folder_nothing_changes(self):
         adapter = DouyinSourceAdapter(self.transport)

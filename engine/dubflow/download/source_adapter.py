@@ -37,6 +37,8 @@ class SourceErrorCode(str, Enum):
     UNSUPPORTED = "UNSUPPORTED"
     INVALID_INPUT = "INVALID_INPUT"
     CHECKPOINT_INVALID = "CHECKPOINT_INVALID"
+    # #884 interim: a configured network proxy is in use and the address it reaches cannot be validated.
+    PROXY_UNSUPPORTED = "PROXY_UNSUPPORTED"
 
 
 def _text(value: object, name: str, *, limit: int = MAX_TEXT) -> str:

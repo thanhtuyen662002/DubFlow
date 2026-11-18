@@ -2369,6 +2369,9 @@ impl Server {
                     "UNSUPPORTED",
                     "INVALID_INPUT",
                     "CHECKPOINT_INVALID",
+                    // #884 interim: a configured proxy is in use. Deliberately absent from the explicit
+                    // retry lists: the user has to turn the proxy off, and a single-link re-fetch already works.
+                    "PROXY_UNSUPPORTED",
                     "SOURCE_WORKER_FAILED",
                     "SOURCE_WORKER_REQUEST_INVALID",
                 ]
@@ -2628,6 +2631,9 @@ while True:
    prefix=partial.read_bytes();assert prefix==b'abcd'
    (work/'recorded-resume-prefix.json').write_text(json.dumps({**binding,'size_bytes':len(prefix),'sha256':hashlib.sha256(prefix).hexdigest()}))
   else:partial.write_bytes(b'abcd')
+  if mode=='proxy':
+   emit('failure',{'code':'PROXY_UNSUPPORTED','retryable':False,'attempt':1,'condition':'source worker stopped (PROXY_UNSUPPORTED)'})
+   emit('shutdown',{'status':'failed'});sys.exit(2)
   packet({'schema_version':1,'kind':'source-download-progress',**binding,'downloaded_bytes':4,'total_bytes':8})
   if mode=='pause':
    sys.stdin.buffer.readline();sys.exit(0)
@@ -3529,6 +3535,42 @@ while True:
                 if cancel { 0 } else { 1 }
             );
         }
+    }
+
+    #[test]
+    fn native_proxy_refusal_is_typed_not_retryable_and_leaves_siblings_executable() {
+        // #884 interim: the worker reports PROXY_UNSUPPORTED when a configured proxy is in use. It must come out as
+        // a typed failure, not as a protocol violation, and stay out of the explicit retry path.
+        let temp = Temporary::new();
+        let mut server = download_server(&temp);
+        begin_download(&mut server, "generic:one", "proxy", false);
+        let wire = server
+            .active
+            .as_ref()
+            .unwrap()
+            .events
+            .recv_timeout(TEST_WAIT)
+            .unwrap();
+        let value = server.event(wire).unwrap().unwrap();
+        assert_eq!(value["event"], "source_download_failed");
+        assert_eq!(value["code"], "PROXY_UNSUPPORTED");
+        assert_eq!(value["retryable"], false);
+        assert_eq!(value["automatic_retry"], false);
+        assert!(server.active.is_none());
+        let item = server.queue.item("scan", "generic:one").unwrap();
+        assert_eq!(item.status, ItemStatus::Failed);
+        assert_eq!(item.error_code.as_deref(), Some("PROXY_UNSUPPORTED"));
+        assert!(server
+            .request(Request::RetryDownload {
+                scan_id: "scan".into(),
+                identity_key: "generic:one".into(),
+            })
+            .is_err());
+        assert!(server.active.is_none());
+        assert_eq!(server.queue.item("scan", "generic:one").unwrap(), item);
+        begin_download(&mut server, "generic:two", "complete", false);
+        assert_eq!(finish_download(&mut server)["event"], "source_downloaded");
+        assert_eq!(server.queue.scan("scan").unwrap().failed_count, 1);
     }
 
     #[test]

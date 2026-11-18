@@ -58,7 +58,7 @@
       "required": ["source_id", "code", "condition", "retryable"],
       "properties": {
         "source_id": {"type": "string", "minLength": 1, "maxLength": 512},
-        "code": {"enum": ["AUTH_REQUIRED", "RATE_LIMITED", "SOURCE_CHANGED", "NOT_FOUND", "PRIVATE", "NETWORK", "UNSUPPORTED", "INVALID_INPUT", "CHECKPOINT_INVALID"]},
+        "code": {"enum": ["AUTH_REQUIRED", "RATE_LIMITED", "SOURCE_CHANGED", "NOT_FOUND", "PRIVATE", "NETWORK", "UNSUPPORTED", "INVALID_INPUT", "CHECKPOINT_INVALID", "PROXY_UNSUPPORTED"]},
         "condition": {"type": "string", "minLength": 1, "maxLength": 4096},
         "retryable": {"type": "boolean"}
       }

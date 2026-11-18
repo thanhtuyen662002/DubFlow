@@ -241,6 +241,7 @@ class DirectUrlTransport:
                 DownloadErrorCode.SOURCE_CHANGED: SourceErrorCode.SOURCE_CHANGED,
                 DownloadErrorCode.NETWORK: SourceErrorCode.NETWORK,
                 DownloadErrorCode.INVALID_SOURCE: SourceErrorCode.INVALID_INPUT,
+                DownloadErrorCode.PROXY_UNSUPPORTED: SourceErrorCode.PROXY_UNSUPPORTED,
             }
             raise SourceError(code_map.get(error.code, SourceErrorCode.NETWORK), "generic URL inspection failed", retryable=error.retryable, action=error.action) from error
         try:
@@ -472,6 +473,7 @@ class GenericUrlAdapter:
                 DownloadErrorCode.SOURCE_CHANGED: SourceErrorCode.SOURCE_CHANGED,
                 DownloadErrorCode.NETWORK: SourceErrorCode.NETWORK,
                 DownloadErrorCode.UNSUPPORTED: SourceErrorCode.UNSUPPORTED,
+                DownloadErrorCode.PROXY_UNSUPPORTED: SourceErrorCode.PROXY_UNSUPPORTED,
             }
             raise SourceError(mapping.get(error.code, SourceErrorCode.SOURCE_CHANGED), "generic media download failed", provider_id=self.provider_id, source_id=item.identity.source_id, retryable=error.retryable, action=error.action) from error
 

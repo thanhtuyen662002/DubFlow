@@ -9,6 +9,7 @@ from engine.dubflow.download.bilibili import BilibiliSourceAdapter, BilibiliTran
 from engine.dubflow.download.source_adapter import SourceError, SourceErrorCode
 from engine.dubflow.download.bilibili.adapter import BilibiliDownloadChoice
 from engine.dubflow.download.provider_transport import _map_payload
+from engine.dubflow.download.materializer import DownloadError, DownloadErrorCode
 
 
 PAYLOAD = {
@@ -96,6 +97,19 @@ class BilibiliAdapterTests(unittest.TestCase):
             adapter.download(adapter.inspect("BV1AbC2345"), Path("/unused/final.mp4"))
         self.assertEqual(context.exception.code, SourceErrorCode.UNSUPPORTED)
         materializer.download.assert_not_called()
+
+    def test_proxy_refusal_of_the_media_request_keeps_its_typed_code(self) -> None:
+        # #884 interim: the media transport refuses a proxied request; the user must see the proxy message, not
+        # "the source changed", and the failure is not retried.
+        muxer = Mock()
+        muxer.download.side_effect = DownloadError(DownloadErrorCode.PROXY_UNSUPPORTED, "a configured network proxy is in use",
+                                                   action="disable_proxy")
+        adapter = BilibiliSourceAdapter(RecordedTransport(), stream_materializer=muxer)
+        with self.assertRaises(SourceError) as context:
+            adapter.download(adapter.inspect("BV1AbC2345"), Path("/unused/final.mp4"))
+        self.assertIs(context.exception.code, SourceErrorCode.PROXY_UNSUPPORTED)
+        self.assertFalse(context.exception.retryable)
+        self.assertEqual(context.exception.action, "disable_proxy")
 
     def test_combined_choice_does_not_replace_its_audio_with_a_companion(self) -> None:
         payload = deepcopy(PAYLOAD)

@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 from hashlib import sha256
+import os
 from pathlib import Path
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from engine.dubflow.download.authenticated_native import enumerate_page, provider_request
 from engine.dubflow.download.materializer import EgressPolicy
@@ -44,6 +45,14 @@ class RecordedSDK:
 
 
 class GenericSdkTests(unittest.TestCase):
+    def setUp(self):
+        # A configured proxy refuses every generic link (#884 interim); a developer's own *_proxy variables must not
+        # decide these no-proxy cases.
+        environment = patch.dict(os.environ, {key: value for key, value in os.environ.items() if "proxy" not in key.lower()},
+                                 clear=True)
+        environment.start()
+        self.addCleanup(environment.stop)
+
     def adapter(self, sdk, **kwargs):
         return GenericUrlAdapter(GenericSdkTransport(sdk, egress=PUBLIC_TEST_EGRESS), **kwargs)
 
@@ -78,6 +87,26 @@ class GenericSdkTests(unittest.TestCase):
         self.assertEqual([item.identity for item in page.items], [sdk_identity(entry(2))])
         self.assertEqual((page.failures[0].code, page.failures[0].retryable), (SourceErrorCode.NETWORK, True))
         self.assertTrue(page.completed)
+
+    def test_a_proxy_refusal_stops_the_page_instead_of_failing_items(self):
+        # #884 interim: the proxy, not the item, is the cause. The scan stops with the typed code (keeping the last
+        # committed page) rather than marking every remaining item failed for good; other item errors still record.
+        sdk = RecordedSDK([entry(1, id=None), entry(2, id=None), entry(3, id=None)])
+        original = sdk.inspect_url
+        def inspect(url, **kwargs):
+            if url == entry(1)["url"]:
+                raise SourceError(SourceErrorCode.NETWORK, "public source unavailable", retryable=True)
+            if url == entry(2)["url"]:
+                raise SourceError(SourceErrorCode.PROXY_UNSUPPORTED, "a configured network proxy is in use",
+                                  provider_id="generic", action="disable_proxy")
+            return original(url, **kwargs)
+        sdk.inspect_url = inspect
+        with self.assertRaises(SourceError) as context:
+            self.adapter(sdk).enumerate_channel("https://video.example.test/list/1")
+        self.assertIs(context.exception.code, SourceErrorCode.PROXY_UNSUPPORTED)
+        self.assertIs(context.exception.retryable, False)
+        self.assertEqual(context.exception.action, "disable_proxy")
+        self.assertNotIn(entry(3)["url"], [call[0] for call in sdk.calls if len(call) == 2])
 
     def test_missing_identity_private_and_credential_urls_are_never_inspected(self):
         sdk = RecordedSDK([entry(1, id=None, availability="private"),

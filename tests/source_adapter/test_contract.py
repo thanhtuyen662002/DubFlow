@@ -71,6 +71,17 @@ class SourceContractTests(unittest.TestCase):
         self.assertEqual(payload["duration_ticks"], "90000")
         self.assertEqual(payload["identity"]["identity_key"], "fixture:one")
 
+    def test_error_codes_match_the_contract_schema(self) -> None:
+        # The schema, the engine enum and the supervisor allowlist move together; a code missing from the schema
+        # (PROXY_UNSUPPORTED, #884) would be a protocol violation downstream.
+        import json
+        from pathlib import Path
+
+        schema = json.loads((Path(__file__).resolve().parents[2] / "contracts" / "source" / "schema-v1.json")
+                            .read_text(encoding="utf-8"))
+        self.assertEqual({code.value for code in SourceErrorCode},
+                         set(schema["$defs"]["page_failure"]["properties"]["code"]["enum"]))
+
 
 if __name__ == "__main__":
     unittest.main()

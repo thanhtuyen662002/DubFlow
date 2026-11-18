@@ -7,13 +7,16 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import os
 from pathlib import Path
+import socket
 import tempfile
 import threading
 import unittest
 from unittest.mock import Mock, patch
 from urllib.request import Request
 
+from engine.dubflow.download import authenticated_native
 from engine.dubflow.download import materializer as materializer_module
 from engine.dubflow.download.generic import GenericUrlAdapter, YtDlpTransport
 from engine.dubflow.download.generic.adapter import DirectUrlTransport
@@ -21,6 +24,7 @@ from engine.dubflow.download.generic.sdk import GenericSdkTransport
 from engine.dubflow.download.materializer import (
     DownloadError, DownloadErrorCode, EgressPolicy, MediaMaterializer, UrllibHttpTransport, is_public_address,
 )
+from engine.dubflow.download.provider_transport import PublicProviderHttpTransport
 from engine.dubflow.download.source_adapter import MediaCandidate, SourceError, SourceErrorCode
 
 
@@ -66,6 +70,39 @@ def server(handle):
         httpd.shutdown()
         httpd.server_close()
         thread.join(timeout=5)
+
+
+PUBLIC_HEADERS = {"User-Agent": "Mozilla/5.0 recorded", "Accept": "*/*", "Accept-Language": "vi"}
+
+
+@contextmanager
+def proxy_listener():
+    """A loopback 'proxy' that only records whether anything ever connected to it."""
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(8)
+        yield f"http://user:synthetic-secret@127.0.0.1:{listener.getsockname()[1]}", listener
+    finally:
+        listener.close()
+
+
+def never_connected(listener) -> bool:
+    listener.settimeout(0.5)
+    try:
+        listener.accept()[0].close()
+    except (socket.timeout, TimeoutError):
+        return True
+    return False
+
+
+def proxy_env(proxy: str | None, **extra: str) -> dict[str, str]:
+    """The test's own proxy settings only: inherited *_proxy variables are dropped (a developer's shell may set them)."""
+    env = {key: value for key, value in os.environ.items() if "proxy" not in key.lower()}
+    if proxy is not None:
+        env.update({"HTTP_PROXY": proxy, "HTTPS_PROXY": proxy, "http_proxy": proxy, "https_proxy": proxy})
+    env.update(extra)
+    return env
 
 
 def ok(request):
@@ -138,29 +175,99 @@ class EgressPolicyTests(unittest.TestCase):
 
 
 class HttpTransportEgressTests(unittest.TestCase):
-    def test_proxied_request_fails_closed_when_the_name_does_not_resolve_locally(self):
-        def broken(host, port):
-            raise OSError("no local DNS")
+    def test_proxied_request_is_refused_before_any_lookup_or_connection(self):
+        # #884 interim: behind a user-configured proxy the proxy resolves and reaches the target itself, so a name
+        # check here proves nothing. Every proxied request is refused with the typed, non-retryable code; the target
+        # is never looked up and no connection is opened, whatever the name would have resolved to.
+        lookups = []
 
-        for policy, url in ((EgressPolicy(resolver=broken), "http://cdn.example.test/x"),
-                            (EgressPolicy(resolver=lambda host, port: ["198.18.0.9"]), "http://fake-ip.example.test/x"),
-                            (EgressPolicy(), "http://10.0.0.8/x")):
-            handler = materializer_module._EgressHTTPHandler(policy)
-            with patch.object(handler, "do_open", return_value="opened") as do_open:
+        def recorded(answer):
+            def resolver(host, port):
+                lookups.append(host)
+                if answer is None:
+                    raise OSError("no local DNS")
+                return [answer]
+            return resolver
+
+        for answer in (None, "93.184.216.34", "198.18.0.9", "192.168.0.10"):
+            policy = EgressPolicy(resolver=recorded(answer))
+            for handler, url in ((materializer_module._EgressHTTPHandler(policy), "http://cdn.example.test/x"),
+                                 (materializer_module._EgressHTTPSHandler(policy), "https://cdn.example.test/x")):
                 request = Request(url)
-                request.set_proxy("127.0.0.1:9", "http")
-                with self.subTest(url=url), self.assertRaises(DownloadError):
-                    handler.http_open(request)
-                do_open.assert_not_called()
+                request.set_proxy("user:synthetic-secret@127.0.0.1:9", request.type)
+                with self.subTest(answer=answer, url=url), patch.object(handler, "do_open", return_value="opened") as do_open:
+                    with self.assertRaises(DownloadError) as context:
+                        getattr(handler, request.type + "_open")(request)
+                    self.assertEqual(context.exception.code, DownloadErrorCode.PROXY_UNSUPPORTED)
+                    self.assertFalse(context.exception.retryable)
+                    self.assertEqual(context.exception.action, "disable_proxy")
+                    self.assertNotIn("synthetic-secret", str(context.exception))
+                    self.assertNotIn("127.0.0.1", str(context.exception))
+                    do_open.assert_not_called()
+        self.assertEqual(lookups, [])
+
+    def test_media_requests_never_reach_a_configured_proxy(self):
+        # #884: the Douyin page-details path skips the helper and fetches media through this transport. With a proxy
+        # configured (as Clash "System Proxy" or HTTPS_PROXY does), nothing may reach the proxy: not the request,
+        # not even a TCP handshake, and the target name is not looked up either.
+        with proxy_listener() as (proxy, listener):
+            with patch.dict(os.environ, proxy_env(proxy), clear=True):
+                transport = PublicProviderHttpTransport("douyin", PUBLIC_HEADERS)
+                materializer = MediaMaterializer(PublicProviderHttpTransport("douyin", PUBLIC_HEADERS))
+            with patch.object(materializer_module.socket, "create_connection") as create, \
+                    patch.object(materializer_module.socket, "getaddrinfo") as lookup:
+                for url in ("http://93.184.216.34/aweme/v1/play/?video_id=1", "https://v3-web.douyinvod.com/720.mp4"):
+                    with self.subTest(url=url), self.assertRaises(DownloadError) as context:
+                        transport.open(url)
+                    self.assertEqual(context.exception.code, DownloadErrorCode.PROXY_UNSUPPORTED)
+                    self.assertFalse(context.exception.retryable)
+                    self.assertNotIn("synthetic-secret", str(context.exception))
+                with tempfile.TemporaryDirectory() as temp, self.assertRaises(DownloadError) as downloaded:
+                    materializer.download(MediaCandidate("video", "https://v3-web.douyinvod.com/720.mp4", "progressive",
+                                                         "video/mp4"), Path(temp) / "final.mp4", root=temp)
+                self.assertEqual(downloaded.exception.code, DownloadErrorCode.PROXY_UNSUPPORTED)
+                with self.assertRaises(SourceError) as probed:
+                    materializer.probe_access(MediaCandidate("video", "https://v3-web.douyinvod.com/720.mp4",
+                                                             "progressive", "video/mp4"))
+                self.assertEqual(probed.exception.code, SourceErrorCode.PROXY_UNSUPPORTED)
+                self.assertFalse(probed.exception.retryable)
+                self.assertEqual(probed.exception.action, "disable_proxy")
+            create.assert_not_called()
+            lookup.assert_not_called()
+            self.assertTrue(never_connected(listener))
+
+    def test_no_proxy_cannot_turn_a_proxied_media_request_into_an_unchecked_one(self):
+        # A host on NO_PROXY is fetched directly, which is the peer-bound path: the target is resolved here and only
+        # a validated public address is connected. NO_PROXY never sends traffic through the proxy, so nothing reaches
+        # it, and a private target is still refused.
+        with proxy_listener() as (proxy, listener):
+            with server(ok) as (port, hits):
+                for no_proxy in ("*", "media.example.test,127.0.0.1,localhost"):
+                    with patch.dict(os.environ, proxy_env(proxy, NO_PROXY=no_proxy, no_proxy=no_proxy), clear=True):
+                        transport = UrllibHttpTransport(egress=OnlyLoopback127(resolver=lambda host, port: ["127.0.0.1"]))
+                        private = UrllibHttpTransport()
+                        with self.subTest(no_proxy=no_proxy):
+                            response = transport.open(f"http://media.example.test:{port}/media.mp4")
+                            try:
+                                self.assertEqual(response.body.read(), b"ok")
+                            finally:
+                                response.close()
+                            with self.assertRaises(DownloadError) as refused:
+                                private.open(f"http://127.0.0.1:{port}/media.mp4")
+                            self.assertEqual(refused.exception.code, DownloadErrorCode.INVALID_SOURCE)
+            self.assertEqual(hits, ["/media.mp4", "/media.mp4"])
+            self.assertTrue(never_connected(listener))
 
     def test_fake_ip_answer_is_refused_with_an_actionable_reason(self):
         # #884, Owner directive 2026-11-16: a proxy fake-IP address is never trusted by default; the refusal says why
-        # and what the user can change (real-IP DNS, system-proxy mode, or excluding DubFlow from TUN)
+        # and what the user can change (real-IP DNS, or excluding DubFlow from TUN). System-proxy mode is no longer
+        # suggested: proxied source access is refused until an app-owned validating proxy exists (#884 interim).
         with self.assertRaises(DownloadError) as context:
             EgressPolicy(resolver=lambda host, port: ["198.18.0.9"]).resolve("www.youtube.com", 443)
         self.assertEqual(context.exception.code, DownloadErrorCode.INVALID_SOURCE)
         self.assertIn("fake-IP", str(context.exception))
         self.assertIn("real-IP DNS", str(context.exception))
+        self.assertNotIn("system-proxy", str(context.exception))
         with self.assertRaises(DownloadError) as private:
             EgressPolicy(resolver=lambda host, port: ["10.0.0.1"]).resolve("intranet.example.test", 443)
         self.assertNotIn("fake-IP", str(private.exception))
@@ -201,20 +308,71 @@ class HttpTransportEgressTests(unittest.TestCase):
         self.assertEqual(hits, ["/start"])
         self.assertTrue(all(call.args[0][0] == "127.0.0.1" for call in create.call_args_list))
 
-    def test_proxied_request_still_checks_the_target_name(self):
-        policy = EgressPolicy(resolver=lambda host, port: ["192.168.0.10"])
-        for handler, url in ((materializer_module._EgressHTTPHandler(policy), "http://nas.example.test/x"),
-                             (materializer_module._EgressHTTPSHandler(policy), "https://nas.example.test/x")):
-            request = Request(url)
-            request.set_proxy("127.0.0.1:9", request.type)
-            with self.subTest(url=url), self.assertRaises(DownloadError) as context:
-                getattr(handler, request.type + "_open")(request)
-            self.assertEqual(context.exception.code, DownloadErrorCode.INVALID_SOURCE)
-
 
 class GenericSourceEgressTests(unittest.TestCase):
     PRIVATE_URLS = ("http://127.0.0.1/watch", "http://[::1]/watch", "http://169.254.169.254/latest/meta-data",
                     "http://192.168.1.1/admin", "http://[fd00::1]/x")
+
+    def setUp(self):
+        # These cases are about the no-proxy path; a developer's own *_proxy variables must not decide them.
+        environment = patch.dict(os.environ, proxy_env(None), clear=True)
+        environment.start()
+        self.addCleanup(environment.stop)
+
+    def test_generic_link_behind_a_proxy_is_refused_before_any_local_lookup(self):
+        # #884 interim: the helper would exit 9 on a configured proxy. The parent checks the same predicate first, so
+        # a name that does not resolve here cannot turn the refusal into a retryable NETWORK error, and the target is
+        # never looked up outside the proxy. NO_PROXY (even "*" or the target host itself) does not lift it.
+        lookups = []
+
+        def broken(host, port):
+            lookups.append(host)
+            raise OSError("no local DNS behind a proxy-only network")
+
+        proxy = "http://user:synthetic-secret@127.0.0.1:9"
+        environments = {
+            "https": proxy_env(None, HTTPS_PROXY=proxy),
+            "http": proxy_env(None, http_proxy=proxy),
+            "all": proxy_env(None, ALL_PROXY="socks5://127.0.0.1:9"),
+            "ftp": proxy_env(None, FTP_PROXY=proxy),
+            "no_proxy *": proxy_env(proxy, NO_PROXY="*", no_proxy="*"),
+            "no_proxy host": proxy_env(proxy, NO_PROXY="video.example.test,93.184.216.34",
+                                       no_proxy="video.example.test,93.184.216.34"),
+        }
+        for name, environment in environments.items():
+            sdk = Mock()
+            sdk.pins = {"sdk": "fixture"}
+            transport = GenericSdkTransport(sdk, egress=EgressPolicy(resolver=broken))
+            with self.subTest(name), patch.dict(os.environ, environment, clear=True):
+                self.assertTrue(authenticated_native.proxy_configured())
+                for call in (lambda: transport.inspect_url("https://video.example.test/watch/1"),
+                             lambda: transport.enumerate_playlist("https://video.example.test/list/1", cursor=None, page_size=5)):
+                    with self.assertRaises(SourceError) as context:
+                        call()
+                    self.assertIs(context.exception.code, SourceErrorCode.PROXY_UNSUPPORTED)
+                    self.assertFalse(context.exception.retryable)
+                    self.assertEqual(context.exception.action, "disable_proxy")
+                    self.assertNotIn("synthetic-secret", str(context.exception))
+            sdk.inspect_url.assert_not_called()
+            sdk.enumerate_url.assert_not_called()
+        self.assertEqual(lookups, [])
+
+    def test_the_parent_refuses_exactly_what_the_helper_refuses(self):
+        # One predicate on both sides: stray *_proxy variables and a bare NO_PROXY are not proxies, so without a real
+        # proxy the old resolve-time check still runs (and a failed lookup is still the retryable NETWORK error).
+        def broken(host, port):
+            raise OSError("no such host")
+
+        for environment in (proxy_env(None), proxy_env(None, NO_PROXY="*"), proxy_env(None, SOCKS_PROXY="socks5://127.0.0.1:9")):
+            sdk = Mock()
+            with self.subTest(environment=sorted(set(environment) - set(proxy_env(None)))), \
+                    patch.dict(os.environ, environment, clear=True):
+                self.assertFalse(authenticated_native.proxy_configured())
+                with self.assertRaises(SourceError) as context:
+                    GenericSdkTransport(sdk, egress=EgressPolicy(resolver=broken)).inspect_url("https://gone.example.test/x")
+                self.assertIs(context.exception.code, SourceErrorCode.NETWORK)
+                self.assertTrue(context.exception.retryable)
+            sdk.inspect_url.assert_not_called()
 
     def test_generic_sdk_is_never_invoked_for_a_private_target(self):
         for url in self.PRIVATE_URLS:
