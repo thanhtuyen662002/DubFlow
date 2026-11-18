@@ -131,6 +131,13 @@ impl Rect {
 /// Where libass draws one line on the main video (`burn_ass`: PlayRes 1920×1080,
 /// Fontsize 48×size, MarginL/R 40, MarginV 48), sized like the editor's
 /// `previewMetrics`. The width is an estimate (half an em per character).
+/// A character's width in ems: Chinese, Japanese, Korean and full-width forms take a whole em, the rest about half.
+fn char_em(c: char) -> f64 {
+    let wide = matches!(u32::from(c), 0x1100..=0x115F | 0x2E80..=0xA4CF | 0xAC00..=0xD7A3 | 0xF900..=0xFAFF | 0xFE30..=0xFE4F
+        | 0xFF00..=0xFF60 | 0xFFE0..=0xFFE6 | 0x20000..=0x3FFFD);
+    if wide { 1.0 } else { 0.5 }
+}
+
 fn text_block(style: &SubtitleStyle, text: &str, width: f64, height: f64) -> Rect {
     let font = 48.0 * style.size * height / 1080.0;
     let (margin_x, margin_v) = (40.0 * width / 1920.0, 48.0 * height / 1080.0);
@@ -138,7 +145,7 @@ fn text_block(style: &SubtitleStyle, text: &str, width: f64, height: f64) -> Rec
     let pad = if style.box_color.is_some() { 0.2 * font } else { 0.0 };
     let (mut rows, mut widest) = (0.0_f64, 0.0_f64);
     for line in text.trim().split('\n') {
-        let wide = line.trim().chars().count() as f64 * 0.5 * font;
+        let wide = line.trim().chars().map(char_em).sum::<f64>() * font;
         rows += (wide / room).ceil().max(1.0);
         widest = widest.max(wide.min(room));
     }
@@ -875,6 +882,13 @@ mod tests {
         }
         // a short line in the middle stays inside the 9:16 window
         assert_eq!(super::subtitle_fit(&[&burn(style(json!({})), "Chào", 12_000)], &tall).ok, Some(true));
+        // Chinese characters are a whole em wide: 17 of them at size 1 (about 816 px) do not fit the 9:16 window (607 px)
+        let mut size_one = style(json!({}));
+        size_one.size = 1.0;
+        let chinese = BurnSubtitles { style: size_one.clone(), lines: vec![Cue { start_ms: 4_000, end_ms: 6_000, text: "大家好欢迎来到我们的频道今天我们来".into() }] };
+        assert_eq!(super::subtitle_fit(&[&chinese], &tall).at_ms, [4_000]);
+        let latin = BurnSubtitles { style: size_one, lines: vec![Cue { start_ms: 4_000, end_ms: 6_000, text: "Xin chao cac ban!".into() }] };
+        assert_eq!(super::subtitle_fit(&[&latin], &tall).ok, Some(true), "17 Latin letters are about half as wide");
         // a second layer counts too
         let both = super::subtitle_fit(&[&burn(style(json!({})), "Chào", 2_000), &line], &tall);
         assert_eq!((both.ok, both.at_ms), (Some(false), vec![12_000]));
