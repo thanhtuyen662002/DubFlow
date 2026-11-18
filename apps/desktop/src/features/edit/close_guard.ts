@@ -309,6 +309,8 @@ export function wireWindowClose(window: ClosableWindow, button: { addEventListen
   let armed = false;
   /** How many tries to put the listener in place failed in a row. */
   let failures = 0;
+  /** The pending retry (0: none yet): a later failure replaces it, on its own backoff (clearing one that fired is a no-op). */
+  let retry = 0;
   const release = (): Promise<void> => {
     if (releasing) return releasing;
     const current = (async () => {
@@ -356,7 +358,11 @@ export function wireWindowClose(window: ClosableWindow, button: { addEventListen
       failures = ready ? 0 : failures + 1;
       if (stop) options.guarded?.();
       // none in place: tried again (not while a close is under way: it puts one back itself if the window stays open)
-      else if (options.timers) options.timers.set(() => { if (!stop && !arming && !releasing) void arm(); }, retryDelay(failures));
+      else if (options.timers) {
+        const timers = options.timers;
+        if (retry) timers.clear(retry);
+        retry = timers.set(() => { if (!stop && !arming && !releasing) void arm(); }, retryDelay(failures));
+      }
       return ready;
     });
     arming = current;
@@ -378,8 +384,6 @@ export type HeldEditor = {
   hold(on: boolean): void;
   /** Say something to the user ("" clears it). */
   tell(message: string): void;
-  /** Whether the window close is guarded now. */
-  guardedNow(): boolean;
 };
 
 /**
@@ -392,7 +396,10 @@ export type HeldEditor = {
 export function editorGuard(editor: HeldEditor): Required<Pick<WireOptions, "unguarded" | "guarded">> {
   let holding = false;
   let closing = false;
+  /** No listener is in place since the last `unguarded` (a `guarded` since, even with a leftover listener: one is). */
+  let lost = false;
   const letGo = (): void => {
+    lost = false;
     if (!holding) return;
     holding = false;
     editor.hold(false);
@@ -400,10 +407,11 @@ export function editorGuard(editor: HeldEditor): Required<Pick<WireOptions, "ung
   };
   return {
     unguarded: () => {
+      lost = true;
       if (closing || !editor.open()) return;
       closing = true;
       const stayed = (): void => {
-        if (editor.guardedNow() || !editor.open()) return;
+        if (!lost || !editor.open()) return;
         holding = true;
         editor.hold(true);
         editor.tell(EDITOR_HELD);

@@ -1678,7 +1678,6 @@ for (const action of ["close", "exit"]) {
       close: async () => { editor.closes += 1; return false; },
       hold: (on) => { editor.holds.push(on); },
       tell: (message) => { editor.told.push(message); },
-      guardedNow: () => wiring.now(),
     });
     wiring = wireWindowClose({ close: async () => { if (closeFails) throw new Error("close refused"); return tauri.close(); },
       onCloseRequested: (handler) => (listenFails ? Promise.reject(new Error("ipc")) : inner(handler)) }, button,
@@ -1717,17 +1716,79 @@ for (const action of ["close", "exit"]) {
     await settle();
     assert.equal(tauri.state.closed, 1, "Vẫn đóng closes it");
   }
+  // round 10: a retry that puts a listener back with a leftover one it cannot remove (not ready, but every close reaches
+  // the guard) while the editor's close is still asking: the user stays, and the editor is not held (nothing else
+  // would let it go: no retry follows a listener in place)
+  {
+    const failing = new Set();
+    const tauri = fakeTauri({ failUnlisten: (id) => failing.has(id) });
+    let listenFails = false, closeFails = true, answer;
+    const inner = closeRequests("main", tauri.bridge, memoryStore());
+    const { timers, advance, nextDue } = clock();
+    const editor = { open: true, holds: [], told: [] };
+    const held = editorGuard({ open: () => editor.open, close: () => new Promise((resolve) => { answer = resolve; }),
+      hold: (on) => { editor.holds.push(on); }, tell: (message) => { editor.told.push(message); } });
+    const wiring = wireWindowClose({ close: async () => { if (closeFails) throw new Error("close refused"); return tauri.close(); },
+      onCloseRequested: (handler) => (listenFails ? Promise.reject(new Error("ipc")) : inner(handler)) }, fakeButton(),
+    closeGuard({ flush: async () => true, ask: async () => true, timers }), { timers, ...held });
+    assert.equal(await wiring.ready(), true);  // 0
+    tauri.other(CLOSE_EVENT);  // 1: a close listener that cannot be removed
+    failing.add(1);
+    listenFails = true;
+    void tauri.close();  // Alt+F4: 0 goes, window.close() fails, none can be put back: the editor's close asks
+    await settle();
+    assert.equal(typeof answer, "function", "the editor's close is asking");
+    listenFails = false;
+    await advance(RETRY_FIRST_MS);  // 2 is put in place, 1 stays: not ready
+    await settle();
+    assert.deepEqual(closeListeners(tauri), [1, 2]);
+    assert.equal(wiring.now(), false);
+    answer(false);  // Ở lại
+    await settle();
+    assert.deepEqual(editor.holds, [], "not held: every close reaches the guard");
+    assert.deepEqual(editor.told, []);
+    assert.equal(nextDue(), Infinity, "no retry: the next close removes the leftover first");
+    failing.clear();
+    closeFails = false;
+    void tauri.close();
+    await settle();
+    assert.equal(tauri.state.closed, 1);
+  }
+  // round 10: one retry at a time: a close whose re-arm fails too replaces the pending retry (its own backoff), it does
+  // not add a second one
+  {
+    let listens = 0;
+    const { timers, advance, nextDue } = clock();
+    const button = fakeButton();
+    const wiring = wireWindowClose({ close: async () => { throw new Error("close refused"); },
+      onCloseRequested: () => { listens += 1; return Promise.reject(new Error("ipc")); } }, button,
+    closeGuard({ flush: async () => true, ask: async () => true, timers }), { timers, unguarded: () => {} });
+    assert.equal(await wiring.ready(), false);  // the first try fails: next at 1 s
+    button.click();  // no listener to remove, window.close() fails, the re-arm fails: next 2 s from now
+    await settle();
+    assert.equal(listens, 2);
+    assert.equal(nextDue(), timers.now() + 2 * RETRY_FIRST_MS, "one retry, on the later backoff");
+    await advance(RETRY_FIRST_MS);
+    await settle();
+    assert.equal(listens, 2, "the first retry was replaced");
+    await advance(RETRY_FIRST_MS);
+    await settle();
+    assert.equal(listens, 3);
+    assert.equal(nextDue(), timers.now() + 4 * RETRY_FIRST_MS);
+  }
   // editorGuard on its own: the editor that left is told so and not held; the guard back while the question is open
   // holds nothing; no editor, nothing; one close at a time; a close that throws counts as staying
   {
     const run = async ({ open = true, left = false, back = false, throws = false } = {}) => {
       const editor = { holds: [], told: [], closes: 0 };
-      let guarded = false, release;
+      let release;
       const held = editorGuard({ open: () => open, close: () => { editor.closes += 1; return new Promise((resolve, reject) => { release = () => (throws ? reject(new Error("x")) : resolve(left)); }); },
-        hold: (on) => editor.holds.push(on), tell: (message) => editor.told.push(message), guardedNow: () => guarded });
+        hold: (on) => editor.holds.push(on), tell: (message) => editor.told.push(message) });
       held.unguarded();
       held.unguarded();  // a second while the first closes: one close
-      if (back) { guarded = true; held.guarded(); }
+      // a listener in place again while asking (also one with a leftover listener, which the wiring does not call
+      // ready): every close reaches the guard, so the editor is not held
+      if (back) held.guarded();
       release?.();
       await settle();
       return { editor, held };
@@ -1756,7 +1817,7 @@ for (const action of ["close", "exit"]) {
       let open = true, release;
       const editor = { holds: [], told: [] };
       const held = editorGuard({ open: () => open, close: () => new Promise((resolve, reject) => { release = () => reject(new Error("x")); }),
-        hold: (on) => editor.holds.push(on), tell: (message) => editor.told.push(message), guardedNow: () => false });
+        hold: (on) => editor.holds.push(on), tell: (message) => editor.told.push(message) });
       held.unguarded();
       open = false;
       release();
@@ -1769,7 +1830,7 @@ for (const action of ["close", "exit"]) {
       let closes = 0;
       const editor = { holds: [], told: [] };
       const held = editorGuard({ open: () => true, close: async () => { closes += 1; return true; },
-        hold: (on) => editor.holds.push(on), tell: (message) => editor.told.push(message), guardedNow: () => false });
+        hold: (on) => editor.holds.push(on), tell: (message) => editor.told.push(message) });
       held.unguarded();
       await settle();
       held.unguarded();
@@ -1981,10 +2042,11 @@ for (const action of ["close", "exit"]) {
   const open = view.slice(view.indexOf("async function open(target: EditTarget"), view.indexOf("edit_project_load"));
   assert.match(open, /if \(host\.closeGuarded && !\(await host\.closeGuarded\(\)\)\) \{[^}]*return false;\s*\}/);
   const main = code("../src/main.ts");
-  assert.match(main, /const closable = \{ close: \(\) => appWindow\.close\(\), onCloseRequested: closeRequests\(appWindow\.label, events, storageIds\(\(\) => window\.sessionStorage\)\) \};\s*const held = editorGuard\(\{ open: \(\) => editor\.target !== null \|\| editor\.reopening, close: \(\) => editor\.close\(false\),\s*hold: \(on\) => editor\.hold\(on\), tell: showError, guardedNow: \(\) => wiring\.now\(\) \}\);\s*const wiring = wireWindowClose\(closable, \$\("#window-close"\), mayClose, \{ timers: windowTimers, \.\.\.held \}\);\s*windowCloseReady = \(\) => wiring\.ready\(\);\s*windowCloseNow = \(\) => wiring\.now\(\);/,
+  assert.match(main, /const closable = \{ close: \(\) => appWindow\.close\(\), onCloseRequested: closeRequests\(appWindow\.label, events, storageIds\(\(\) => window\.sessionStorage\)\) \};\s*const held = editorGuard\(\{ open: \(\) => editor\.target !== null \|\| editor\.reopening, close: \(\) => editor\.close\(false\),\s*hold: \(on\) => editor\.hold\(on\), tell: showError \}\);\s*const wiring = wireWindowClose\(closable, \$\("#window-close"\), mayClose, \{ timers: windowTimers, \.\.\.held \}\);\s*windowCloseReady = \(\) => wiring\.ready\(\);\s*windowCloseNow = \(\) => wiring\.now\(\);/,
     "the editor asks whether the guard is ready now, each time it opens (and again once the video loaded); a guard that could not be put back closes or holds the open editor and is tried again");
   // a held editor takes no input: no key, no drop; a closed one is let go
-  assert.match(view, /function hold\(on: boolean\): void \{\s*holding = on && session !== null;\s*screen\.inert = holding;\s*\}/);
+  assert.match(view, /function hold\(on: boolean\): void \{\s*holding = on && session !== null;\s*for \(const part of \[screen, dialog, \$\("#snap-dialog"\)\]\) part\.inert = holding;\s*if \(holding\) closePopover\(\);\s*\}/);
+  assert.match(view, /const dialog = \$\("#export-dialog"\);/);
   assert.match(view, /document\.addEventListener\("keydown", \(event\) => \{\s*if \(!session \|\| holding \|\| screen\.hidden/);
   assert.match(view, /drop: \(paths, point\) => \{ if \(!holding\) void dropFiles\(paths, point\); \},\s*hold,/);
   assert.match(view, /session = null;\s*hold\(false\);/);

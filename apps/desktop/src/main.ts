@@ -3048,7 +3048,7 @@ if (appWindow) {
   // editor closes (its draft written first, or asked about) or, when the user stays, takes no input until the guard
   // is back (tried again); no editor opens meanwhile
   const held = editorGuard({ open: () => editor.target !== null || editor.reopening, close: () => editor.close(false),
-    hold: (on) => editor.hold(on), tell: showError, guardedNow: () => wiring.now() });
+    hold: (on) => editor.hold(on), tell: showError });
   const wiring = wireWindowClose(closable, $("#window-close"), mayClose, { timers: windowTimers, ...held });
   windowCloseReady = () => wiring.ready();
   windowCloseNow = () => wiring.now();

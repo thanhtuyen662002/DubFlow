@@ -3718,7 +3718,9 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   /** Hold the open editor, or let it go (Editor.hold). */
   function hold(on: boolean): void {
     holding = on && session !== null;
-    screen.inert = holding;
+    // the editor's own dialogs too (Phiên bản và mẫu, Xuất video): they sit outside the editor's screen
+    for (const part of [screen, dialog, $("#snap-dialog")]) part.inert = holding;
+    if (holding) closePopover();
   }
 
   /**
