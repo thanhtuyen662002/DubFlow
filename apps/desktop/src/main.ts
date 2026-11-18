@@ -5,7 +5,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { connectDesktopShell, type DesktopShellModel } from "./shell/desktop_shell.ts";
 import { confirmDialog } from "./shell/confirm.ts";
-import { askAlone, closeGuard, closeRequests, storageIds, unsavedPrompt, wireWindowClose, type EventBridge } from "./features/edit/close_guard.ts";
+import { askAlone, closeGuard, closeRequests, editorGuard, storageIds, unsavedPrompt, wireWindowClose, type EventBridge } from "./features/edit/close_guard.ts";
 import { windowTimers } from "./features/edit/autosave.ts";
 import { mountLayoutPanels, refitPanels, resetPanels } from "./shell/layout_panels.ts";
 import { mountListTools } from "./shell/list_tools.ts";
@@ -3044,15 +3044,12 @@ if (appWindow) {
     },
   };
   const closable = { close: () => appWindow.close(), onCloseRequested: closeRequests(appWindow.label, events, storageIds(() => window.sessionStorage)) };
-  // a close that failed and could not put the guard back: Alt+F4 and the taskbar would close at once, so editing ends
-  // here (its draft written first, or asked about) and does not open again until the guard is back (tried again)
-  const wiring = wireWindowClose(closable, $("#window-close"), mayClose, { timers: windowTimers, unguarded: () => {
-    if (!editor.target && !editor.reopening) return;
-    void editor.close(false).then((left) => {
-      showError(left ? "DubFlow không còn chặn được việc đóng cửa sổ bằng Alt+F4 nên đã thoát chế độ chỉnh sửa. Nếu Chỉnh sửa không mở lại được, hãy khởi động lại DubFlow."
-        : "DubFlow không còn chặn được việc đóng cửa sổ bằng Alt+F4 và đang thử chặn lại. Trong lúc đó hãy đóng bằng nút × để được hỏi trước khi mất thay đổi chưa lưu.");
-    }, () => undefined);
-  } });
+  // a close that failed and could not put the guard back: Alt+F4 and the taskbar would close at once, so the open
+  // editor closes (its draft written first, or asked about) or, when the user stays, takes no input until the guard
+  // is back (tried again); no editor opens meanwhile
+  const held = editorGuard({ open: () => editor.target !== null || editor.reopening, close: () => editor.close(false),
+    hold: (on) => editor.hold(on), tell: showError, guardedNow: () => wiring.now() });
+  const wiring = wireWindowClose(closable, $("#window-close"), mayClose, { timers: windowTimers, ...held });
   windowCloseReady = () => wiring.ready();
   windowCloseNow = () => wiring.now();
 }

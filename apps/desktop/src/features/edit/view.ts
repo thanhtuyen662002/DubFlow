@@ -172,6 +172,11 @@ export type Editor = {
   show(mode: "subs" | "more"): boolean;
   /** Files dropped on the window while editing, at a point in client pixels (null when unknown). */
   drop(paths: string[], point: { x: number; y: number } | null): void;
+  /**
+   * Hold the open editor (Issue #929): while the window close is not guarded it takes no input, so no change is made
+   * that a system close could lose; its pending change is still retried. Let go once the guard is back.
+   */
+  hold(on: boolean): void;
 };
 
 type Session = {
@@ -387,6 +392,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   const peaksLoading = new Set<string>();
 
   let session: Session | null = null;
+  /** The open editor takes no input: the window close is not guarded (Issue #929, see Editor.hold). */
+  let holding = false;
   // Lưu nháp: at most MAX_WAIT_MS behind the user, even during a burst of edits (Phase 9A, PC baseline); one saver per
   // video (Issue #929): the open editor's draft, else a copy a reload carried
   const drafts = new DraftSavers<CarriedDraft>(async (outputPath, copy) => {
@@ -3377,7 +3384,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   document.addEventListener("pointerdown", () => { if (!screen.hidden) settleDraft(); }, true);
 
   document.addEventListener("keydown", (event) => {
-    if (!session || screen.hidden || !dialog.hidden || document.querySelector(".confirm-backdrop, .review:not([hidden])")) return;
+    if (!session || holding || screen.hidden || !dialog.hidden || document.querySelector(".confirm-backdrop, .review:not([hidden])")) return;
     const target = event.target;
     if (target instanceof Element && target.closest("input, textarea, select, [contenteditable='true'], [contenteditable='plaintext-only']")) return;
     settleDraft();
@@ -3708,6 +3715,12 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   /** The video a quiet close left (a reload about to reopen it). */
   let quietlyLeft: EditTarget | null = null;
 
+  /** Hold the open editor, or let it go (Editor.hold). */
+  function hold(on: boolean): void {
+    holding = on && session !== null;
+    screen.inert = holding;
+  }
+
   /**
    * Keep the change the video's saver could not write for the reopened editor. It stays pending, with the backoff of
    * the write that failed: tried again from the copy if no editor takes it up (the user left meanwhile), and asked
@@ -3796,6 +3809,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     lightReset();
     timeline.style.height = "";
     session = null;
+    hold(false);
     drag = null;
     boxDrag = null;
     closePopover();
@@ -4191,6 +4205,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       setMode(next);
       return true;
     },
-    drop: (paths, point) => void dropFiles(paths, point),
+    drop: (paths, point) => { if (!holding) void dropFiles(paths, point); },
+    hold,
   };
 }

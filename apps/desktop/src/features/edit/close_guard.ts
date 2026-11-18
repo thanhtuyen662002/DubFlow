@@ -224,9 +224,8 @@ export function closeRequests(label: string, bridge: EventBridge, store: IdStore
         left.add(id);  // kept: tried again by stop and before the next listener
       }
     }
+    // the store keeps its mark until this page's sweep is done: a reload before then sweeps from the same place
     const from = before.from;
-    // a reload before the id comes back sweeps from the same place
-    ids.write({ ids: [...left], from });
     const id = await bridge.listen(CLOSE_EVENT, label, () => {
       void handler({ preventDefault: () => undefined }).catch(() => undefined);
     });
@@ -234,7 +233,6 @@ export function closeRequests(label: string, bridge: EventBridge, store: IdStore
     /** Where the ids not swept yet start (null once every id below this page's own was tried). */
     let unswept: number | null = from;
     const record = (): void => ids.write({ ids: [...left, ...(own ? [id] : [])], from: unswept ?? id + 1 });
-    record();
     const sweep = async (start: number, end: number): Promise<void> => {
       for (let lost = start; lost < end; lost += 1) {
         try {
@@ -254,12 +252,10 @@ export function closeRequests(label: string, bridge: EventBridge, store: IdStore
       if (unswept !== null) {
         await sweep(unswept, swept);
         unswept = null;
-        record();
       }
       for (const stale of [...left]) {
         await bridge.unlisten(CLOSE_EVENT, stale);
         left.delete(stale);
-        record();
       }
       await bridge.unlisten(CLOSE_EVENT, id);
       own = false;
@@ -284,6 +280,8 @@ export type WireOptions = {
    * the taskbar) is not held any more, and nothing in the page can hold it.
    */
   unguarded?: () => void;
+  /** Told whenever a listener is in place again (every close reaches the guard). */
+  guarded?: () => void;
   /** With timers, a listener that could not be put in place is tried again: 1 s later, then twice as long, up to 30 s. */
   timers?: Timers;
 };
@@ -309,15 +307,12 @@ export function wireWindowClose(window: ClosableWindow, button: { addEventListen
   let releasing: Promise<void> | null = null;
   /** The guard is in place with no leftover listener (not while a close removes it). */
   let armed = false;
-  /** The next try to put the listener in place, and how many failed in a row. */
-  let retry = 0;
+  /** How many tries to put the listener in place failed in a row. */
   let failures = 0;
   const release = (): Promise<void> => {
     if (releasing) return releasing;
     const current = (async () => {
       if (arming) await arming;
-      if (retry) options.timers?.clear(retry);
-      retry = 0;
       const unlisten = stop;
       const wasArmed = armed;
       stop = null;
@@ -334,7 +329,7 @@ export function wireWindowClose(window: ClosableWindow, button: { addEventListen
           stop = unlisten;
           armed = wasArmed;
         } else {
-          void arm().then((ready) => { if (!ready && !stop) options.unguarded?.(); }).catch(() => undefined);
+          void arm().then(() => { if (!stop) options.unguarded?.(); }).catch(() => undefined);
         }
       }
     })();
@@ -359,14 +354,9 @@ export function wireWindowClose(window: ClosableWindow, button: { addEventListen
     }).then((ready) => {
       armed = ready;
       failures = ready ? 0 : failures + 1;
-      const timers = options.timers;
+      if (stop) options.guarded?.();
       // none in place: tried again (not while a close is under way: it puts one back itself if the window stays open)
-      if (!ready && !stop && timers) {
-        retry = timers.set(() => {
-          retry = 0;
-          if (!stop && !arming && !releasing) void arm();
-        }, retryDelay(failures));
-      }
+      else if (options.timers) options.timers.set(() => { if (!stop && !arming && !releasing) void arm(); }, retryDelay(failures));
       return ready;
     });
     arming = current;
@@ -375,8 +365,62 @@ export function wireWindowClose(window: ClosableWindow, button: { addEventListen
   };
   button.addEventListener("click", () => { void request().catch(() => undefined); });
   void arm();
-  return { ready: () => arming ?? Promise.resolve(armed), now: () => armed && !arming };
+  return { ready: () => arming ?? Promise.resolve(armed), now: () => armed };
 }
+
+/** What `editorGuard` needs of the open editor and the page. */
+export type HeldEditor = {
+  /** An editor is open (or a video is being opened again). */
+  open(): boolean;
+  /** Close it as the user would (its draft written first, or asked about); true when it closed. */
+  close(): Promise<boolean>;
+  /** Hold it (no input) or let it go. */
+  hold(on: boolean): void;
+  /** Say something to the user ("" clears it). */
+  tell(message: string): void;
+  /** Whether the window close is guarded now. */
+  guardedNow(): boolean;
+};
+
+/**
+ * What the open editor does when the window close is not guarded any more (Issue #929, Lead 4607806191 and
+ * 4608236916): a system close would close the window at once, and nothing in the page can hold it. The editor closes
+ * as the user would. When the user stays instead (its change could not be saved), it is held: it takes no input, so
+ * no change is added that the system close could lose, while its pending change is retried; it is let go once a
+ * listener is in place again (`guarded`). The × button still asks.
+ */
+export function editorGuard(editor: HeldEditor): Required<Pick<WireOptions, "unguarded" | "guarded">> {
+  let holding = false;
+  let closing = false;
+  const letGo = (): void => {
+    if (!holding) return;
+    holding = false;
+    editor.hold(false);
+    editor.tell("");
+  };
+  return {
+    unguarded: () => {
+      if (closing || !editor.open()) return;
+      closing = true;
+      const stayed = (): void => {
+        if (editor.guardedNow() || !editor.open()) return;
+        holding = true;
+        editor.hold(true);
+        editor.tell(EDITOR_HELD);
+      };
+      void editor.close().then((left) => {
+        if (left) editor.tell(EDITOR_LEFT);
+        else stayed();
+      }, stayed).finally(() => { closing = false; });
+    },
+    guarded: letGo,
+  };
+}
+
+/** The open editor closed because the window close is not guarded. */
+export const EDITOR_LEFT = "DubFlow không còn chặn được việc đóng cửa sổ bằng Alt+F4 nên đã thoát chế độ chỉnh sửa. Nếu Chỉnh sửa không mở lại được, hãy khởi động lại DubFlow.";
+/** The open editor is held because the window close is not guarded and its change is not saved. */
+export const EDITOR_HELD = "DubFlow không còn chặn được việc đóng cửa sổ bằng Alt+F4 và chưa lưu được thay đổi, nên tạm khoá Chỉnh sửa trong lúc tự thử lại. Muốn đóng, hãy bấm nút × để được hỏi trước khi mất thay đổi.";
 
 /** Where a question shows: whether one is open now, and the "stay" button of the newest one. */
 export type QuestionPlace = { open(): boolean; focusStay(): void };
