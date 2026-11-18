@@ -204,7 +204,7 @@ fn seeks(part: &Edit, count: usize) -> Vec<Option<f64>> {
 /// the export's clock, then exactly `frames` frames as `[v]`.
 fn part_script(part: &Edit, source: &Source, quality: &str, from: f64, frames: u64) -> String {
     let silent = vec![Input { has_audio: false }; source.media_count];
-    let (mut graph, _) = video_graph(part, &silent, &source.frame, quality, "vp", "ap");
+    let (mut graph, _) = video_graph(part, &silent, &source.frame, quality, "vp", "ap", source.burn.is_some());
     if let Some(filter) = &source.prefilter {
         graph = with_cover(&graph, filter);
     }
@@ -213,8 +213,10 @@ fn part_script(part: &Edit, source: &Source, quality: &str, from: f64, frames: u
     if source.burn.is_some() {
         // Phụ đề (and the text layer) are timed on the whole export, on its own frames as `export_script` draws
         // Phụ đề (#935): the part's frame n is the export's frame `start + n`.
+        // With overlays the picture is already on those frames (before them, #943).
         let start = (from * fps_number(&source.frame.fps)).round() as u64;
-        steps.push(format!("fps={},setpts=PTS+{start},{},setpts=PTS-{start}", source.frame.fps, timed.join(",")));
+        let grid = if part.overlays.is_empty() { format!("fps={},", source.frame.fps) } else { String::new() };
+        steps.push(format!("{grid}setpts=PTS+{start},{},setpts=PTS-{start}", timed.join(",")));
     } else if !timed.is_empty() {
         // The text layer is timed on the whole export.
         let shift = num(from);
@@ -596,6 +598,15 @@ mod tests {
         assert!(part_script(&part, &alone, "source", 600.0, 18000).contains("[vp]fps=30/1,setpts=PTS+18000,subtitles=filename=s.ass,setpts=PTS-18000[vs0]"));
         let none = Source { media_count: 1, frame, burn: None, texts: None, reframe: None, prefilter: None, sound_script: None };
         assert!(!part_script(&part, &none, "source", 600.0, 18000).contains("setpts=PTS+"));
+        // With an overlay the part is put on the export's frames before it, never after (#943: an `fps` after an
+        // overlay drops its last frame).
+        let mut layered = edit(vec![segment(0, 0.0, 1200.0)]);
+        layered.overlays.push(Overlay { media: 0, at: 700.0, start: 0.0, end: 10.0, w: 0.3, ..Overlay::default() });
+        let layered = window(&layered, 600.0, 1200.0, &[false]);
+        let graph = part_script(&layered, &alone, "source", 600.0, 18000);
+        let (grid, overlay) = (graph.find("[vj]fps=30/1[vg]").expect(&graph), graph.find("[vg][ov0]overlay=").expect(&graph));
+        assert!(grid < overlay, "{graph}");
+        assert!(graph.contains("[vp]setpts=PTS+18000,subtitles=filename=s.ass,setpts=PTS-18000[vs0]"), "{graph}");
     }
 
     #[test]
@@ -674,5 +685,98 @@ mod tests {
         let off: Vec<usize> = scores.iter().enumerate().filter(|(_, &score)| score < 30.0).map(|(index, _)| index).collect();
         assert!(scores.len() > 8000 && off.len() <= 4, "frames under 30 dB: {off:?}");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// With DUBFLOW_TEST_FFMPEG: an export with overlays (a video and a picture, the picture ending exactly at the
+    /// end) and burned Phụ đề keeps its last frame (#943), in one run and in parts. An overlay ends its stream at its
+    /// last frame's start; the `fps` before the burned lines used to drop that frame (one short), and the parts
+    /// refilled it with a copy of the frame before. Every other frame stays exactly as before.
+    #[test]
+    fn real_overlay_with_burned_lines_keeps_the_last_frame() {
+        let Ok(ffmpeg) = std::env::var("DUBFLOW_TEST_FFMPEG") else { return };
+        let ffmpeg = PathBuf::from(ffmpeg);
+        let dir = std::env::temp_dir().join(format!("dubflow-overlay-end-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("work/parts")).unwrap();
+        struct Gone(PathBuf);
+        impl Drop for Gone {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let _gone = Gone(dir.clone());
+        let source = dir.join("source.mp4");
+        let made = Command::new(&ffmpeg).args(["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=320x240:r=25:d=60", "-f", "lavfi", "-i",
+            "sine=f=330:d=60", "-c:v", "mpeg4", "-q:v", "2", "-c:a", "aac", "-shortest"]).arg(&source).status().unwrap();
+        assert!(made.success());
+        let picture = dir.join("picture.png");
+        let made = Command::new(&ffmpeg).args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=64x48", "-frames:v", "1"]).arg(&picture).status().unwrap();
+        assert!(made.success());
+        let lines = dir.join("lines.ass");
+        fs::write(&lines, "[Script Info]\nScriptType: v4.00+\nPlayResX: 320\nPlayResY: 240\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, \
+            PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, \
+            BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: D,Arial,20,&H00FFFFFF,&H00FFFFFF,&H00FFFFFF,\
+            &H00000000,0,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, \
+            Effect, Text\nDialogue: 0,0:00:01.00,0:00:02.00,D,,0,0,0,,{\\pos(10,10)\\p1}m 0 0 l 40 0 40 20 0 20{\\p0}\n\
+            Dialogue: 0,0:00:58.00,0:01:00.00,D,,0,0,0,,{\\pos(10,10)\\p1}m 0 0 l 40 0 40 20 0 20{\\p0}\n").unwrap();
+        let mut timeline = edit(vec![segment(0, 0.0, 30.0), segment(0, 30.0, 60.0)]);
+        // A video overlay in the first part; a picture in the second that ends exactly at the end (a part is at least 20 s).
+        timeline.overlays.push(Overlay { media: 0, at: 2.0, start: 0.0, end: 3.0, x: 0.6, y: 0.6, w: 0.3, ..Overlay::default() });
+        timeline.overlays.push(Overlay { media: 1, at: 57.0, start: 0.0, end: 3.0, x: 0.1, y: 0.6, w: 0.3, ..Overlay::default() });
+        let streams = [Input { has_audio: true }, Input { has_audio: false }];
+        let frame = Frame { width: 320, height: 240, fps: "25/1".into() };
+        let mix = Mix { main_volume: 1.0, ..Mix::default() };
+        let burn = subtitles_filter(&crate::display_path(&lines));
+        let burned = Finish { burn: Some(burn.clone()), ..Finish::default() };
+        let (graph, has_audio) = export_script(&timeline, &streams, &frame, "source", &mix, &burned);
+        assert!(has_audio && graph.contains("[vj]fps=25/1[vg]") && graph.contains(&format!("[vt]{burn}[v]")), "{graph}");
+        let frames = |file: &Path| {
+            let output = Command::new(&ffmpeg).args(["-v", "error", "-i"]).arg(file).args(["-map", "0:v", "-f", "framemd5", "-"]).output().unwrap();
+            String::from_utf8_lossy(&output.stdout).lines().filter(|line| !line.starts_with('#')).map(str::to_owned).collect::<Vec<_>>()
+        };
+        let hash = |line: &String| line.rsplit(',').next().unwrap_or("").trim().to_owned();
+        // One run, with the inputs as the export gives them (the picture repeats as a video).
+        let run = |graph: &str, name: &str| {
+            let out = dir.join(name);
+            let ran = Command::new(&ffmpeg).args(["-nostdin", "-v", "error", "-y", "-i"]).arg(&source)
+                .args(["-loop", "1", "-framerate", "30", "-t", &num(STILL_SECONDS), "-i"]).arg(&picture).arg("-filter_complex").arg(graph)
+                .args(["-map", "[v]", "-map", "[a]", "-c:v", "mpeg4", "-q:v", "2", "-c:a", "aac", "-r", "25/1"]).arg(&out).status().unwrap();
+            assert!(ran.success(), "{name}");
+            frames(&out)
+        };
+        let one = run(&graph, "single.mp4");
+        assert_eq!(one.len(), 1500, "60 s at 25 fps in one run");
+        assert_ne!(hash(&one[1499]), hash(&one[1498]), "the last frame is the source's own, not a copy");
+        // The graph before #943 (its `fps` after the overlays) gives the same frames but the last one.
+        let before = graph.replacen("[vj]fps=25/1[vg];\n", "", 1).replacen("[vg][ov0]overlay=", "[vj][ov0]overlay=", 1)
+            .replacen(&format!("[vt]{burn}[v]"), &format!("[vt]fps=25/1,{burn}[v]"), 1);
+        assert_ne!(before, graph);
+        let old = run(&before, "before.mp4");
+        assert_eq!(old.len(), 1499, "the graph before #943 drops the last frame");
+        assert_eq!(old[..], one[..1499], "overlay timing and placement and the burned lines are unchanged");
+        // Controls: no overlay, or no burned lines, keep all their frames.
+        let bare = Edit { overlays: vec![], ..timeline.clone() };
+        assert_eq!(run(&export_script(&bare, &streams, &frame, "source", &mix, &burned).0, "bare.mp4").len(), 1500, "no overlay");
+        assert_eq!(run(&export_script(&timeline, &streams, &frame, "source", &mix, &Finish::default()).0, "unburned.mp4").len(), 1500, "no burn");
+        // In parts (the same edit cut in two), the last frame is the source's own too, and the parts are the single run.
+        let (sound, _) = export_script(&timeline, &streams, &sound_frame(&frame), "source", &mix, &Finish { audio_only: true, ..Finish::default() });
+        let sound_script = dir.join("work/filter-sound.txt");
+        fs::write(&sound_script, sound).unwrap();
+        let script = dir.join("work/filter.txt");
+        fs::write(&script, &graph).unwrap();
+        let total = output_seconds(&timeline.segments, &timeline.transitions);
+        let job = ExportJob { work: dir.join("work"), inputs: vec![source.clone(), picture.clone()], media: vec![], script, folder: dir.clone(),
+            name: "out".into(), target: dir.join("parts.mp4"), srt: None, seconds: total, has_audio, bitrate: 1_500_000, fps: "25/1".into(),
+            ffmpeg: ffmpeg.clone(), quality: "source".into(), edit: timeline.clone(), audio: vec![], main_volume: 1.0, main_denoise: false,
+            main_eq: None, stems: None, texts: vec![], aspect: None, fill: None, audio_only: false, parts: None, check: None };
+        let parted = Source { media_count: 2, frame, burn: Some(burn), texts: None, reframe: None, prefilter: None, sound_script: Some(sound_script) };
+        let running = Running { children: Mutex::new(Vec::new()), cancelled: AtomicBool::new(false) };
+        let cuts = cut_points(&timeline, total, "25/1", 2);
+        assert_eq!(cuts.len(), 1, "{cuts:?}");
+        render_in(&job, &parted, &running, &dir.join("work/parts"), &["mpeg4"], 2, 25.0, &cuts).unwrap();
+        let joined = frames(&partial_of(&job.target));
+        assert_eq!(joined.len(), 1500, "60 s at 25 fps in parts");
+        assert_ne!(hash(&joined[1499]), hash(&joined[1498]), "the parts' last frame is not a copy");
+        println!("overlay-end: ran against real FFmpeg");
     }
 }
