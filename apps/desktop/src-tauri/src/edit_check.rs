@@ -217,6 +217,8 @@ const PARTS: &str = "video dài được xuất song song theo từng phần và
 const TURNED: &str = "video gốc quay dọc bằng điện thoại (được xoay khi phát), khung vẽ phụ đề có thể khác khung xuất";
 
 /// Said when the published file changed before its check could judge it.
+/// Said when a check's turn came but its folder could not be held or its lease taken (`run`).
+const NOT_HELD: &str = "không giữ được thư mục kiểm tra (thư mục dự án vừa bị đổi tên, di chuyển hoặc đang bị chương trình khác mở)";
 const UNVERIFIED: &str = "không xác định được đúng tệp video vừa xuất, nên không kiểm tra theo bản xuất này";
 const CHANGED: &str = "video đã bị thay đổi hoặc thay bằng tệp khác sau khi xuất, nên không kiểm tra theo bản xuất này";
 
@@ -909,21 +911,24 @@ pub(super) fn run(work: &Path, ffmpeg: &Path, plan: Plan) {
         // The folder is held, then the lease taken, only once the turn is this check's: a check waiting its turn
         // reads nothing and holds nothing, so on Windows the project around it can still be renamed, moved or
         // deleted (recheck 14). A folder gone or swapped meanwhile is not checked.
+        // When the folder cannot be held then, the waiting report is ended as UNAVAILABLE (where it can still be
+        // written), never left RUNNING for a later look to call interrupted (recheck 15).
         Turn::Taken(turn) => {
             held = pin(work, &dir).and_then(|pinned| Some((pinned, own_lease(work, &dir)?)));
-            let report = held.as_ref().map(|_| check_once(work, ffmpeg, &plan, &dir, &running));
+            let report = match held {
+                Some(_) => check_once(work, ffmpeg, &plan, &dir, &running),
+                None => ExportCheck { error: Some(NOT_HELD.into()), ..ExportCheck::of(&plan, "UNAVAILABLE") },
+            };
             drop(turn);
             report
         }
-        Turn::Stopped => Some(ExportCheck::of(&plan, "STOPPED")),
-        Turn::Full => Some(ExportCheck { error: Some(format!("bỏ qua vì đã có {MAX_WAITING} video khác đang chờ kiểm tra")),
-            ..ExportCheck::of(&plan, "UNAVAILABLE") }),
+        Turn::Stopped => ExportCheck::of(&plan, "STOPPED"),
+        Turn::Full => ExportCheck { error: Some(format!("bỏ qua vì đã có {MAX_WAITING} video khác đang chờ kiểm tra")),
+            ..ExportCheck::of(&plan, "UNAVAILABLE") },
     };
-    if let Some(report) = report {
-        // Stopped because DubFlow is closing, not by Dừng kiểm tra: said as such.
-        let report = if report.state == "STOPPED" && CLOSING.load(Ordering::SeqCst) { ExportCheck::of(&plan, "INTERRUPTED") } else { report };
-        save(work, &dir, &report);
-    }
+    // Stopped because DubFlow is closing, not by Dừng kiểm tra: said as such.
+    let report = if report.state == "STOPPED" && CLOSING.load(Ordering::SeqCst) { ExportCheck::of(&plan, "INTERRUPTED") } else { report };
+    save(work, &dir, &report);
     if let Ok(mut checking) = CHECKING.lock() {
         checking.remove(&dir);
     }
@@ -2010,12 +2015,13 @@ mod tests {
         let before = || (fs::read(&marker).unwrap(), fs::metadata(&marker).unwrap().modified().unwrap());
         let start = before();
         std::thread::sleep(Duration::from_millis(20));
-        let mut planted = vec!["plan.json", "check.json", "ffmpeg.log"];
+        // hard links need no admin on Windows: the lease too is planted on every platform (recheck 15)
+        let mut planted = vec!["plan.json", "check.json", "ffmpeg.log", "lease"];
         for name in &planted {
             fs::hard_link(&marker, folder.join(name)).unwrap();
         }
         #[cfg(unix)]
-        for name in ["measure.log", "measure-1.ass", "lease", "check.json.partial", "plan.json.partial"] {
+        for name in ["measure.log", "measure-1.ass", "check.json.partial", "plan.json.partial"] {
             std::os::unix::fs::symlink(&marker, folder.join(name)).unwrap();
             planted.push(name);
         }
@@ -2515,6 +2521,29 @@ mod tests {
         assert_eq!(checking.lock().unwrap().len(), 2);
     }
 
+    /// A check whose turn comes but whose folder cannot be held or lease taken (here a folder planted at the lease
+    /// name; for the user, a project moved while the check waited) ends its waiting report as UNAVAILABLE, never
+    /// leaving it RUNNING for a later look to call interrupted (recheck 15).
+    #[test]
+    fn a_turn_that_cannot_hold_its_folder_ends_the_check() {
+        let dir = temp("not-held");
+        let work = dir.join("work");
+        let video = dir.join("Phim.mp4");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(&video, b"video").unwrap();
+        let folder = check_dir(&work, &video);
+        fs::create_dir_all(folder.join("lease")).unwrap();
+        let fake = dir.join("ffmpeg");
+        fs::write(&fake, b"").unwrap();
+        run(&work, &fake, plain_plan(1.0, true, None).for_video(video.clone(), false, stamp_of(&video)));
+        let report = read_check(&work, &video);
+        assert_eq!((report["state"].as_str(), report["error"].as_str()), (Some("UNAVAILABLE"), Some(NOT_HELD)), "{report}");
+        let mut exports = vec![json!({ "path": display_path(&video) })];
+        attach(&work, &mut exports);
+        assert_eq!(exports[0]["check"]["state"], "UNAVAILABLE", "shown as it ended, never as interrupted");
+        let _ = fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn checks_take_turns() {
         let dir = temp("turns");
@@ -2543,8 +2572,13 @@ mod tests {
         // a check waiting its turn holds nothing: on Windows too, the project's folders can be renamed (so moved or
         // deleted) meanwhile (recheck 14)
         assert!(!check_dir(&work, &first).join("lease").exists(), "no lease is taken before the turn");
+        // (a waiting report's own write holds the folder for that moment: the rename is tried for up to a second)
         let aside = dir.join("work-aside");
-        fs::rename(&work, &aside).expect("a waiting check holds no folder");
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while fs::rename(&work, &aside).is_err() {
+            assert!(Instant::now() < deadline, "a waiting check holds no folder");
+            std::thread::sleep(Duration::from_millis(10));
+        }
         fs::rename(&aside, &work).unwrap();
         cancel(&work, &first);
         a.join().unwrap();

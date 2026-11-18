@@ -48,7 +48,7 @@ export function checkSummary(check: ExportCheck): { text: string; tone: CheckTon
     case "STOPPED":
       return { text: "Đã dừng kiểm tra kỹ thuật. Video vẫn được giữ nguyên.", tone: "info" };
     case "INTERRUPTED":
-      return { text: "Kiểm tra kỹ thuật chưa xong vì DubFlow đã đóng. Video vẫn được giữ nguyên.", tone: "info" };
+      return { text: "Kiểm tra kỹ thuật chưa xong (DubFlow đã đóng, hoặc thư mục dự án bị di chuyển khi kiểm tra đang chờ). Video vẫn được giữ nguyên.", tone: "info" };
     case "UNAVAILABLE":
       return { text: `Không chạy được kiểm tra kỹ thuật (${check.error || "không rõ lỗi"}). Video vẫn được giữ nguyên.`, tone: "info" };
     case "DONE": {

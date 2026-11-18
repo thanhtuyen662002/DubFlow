@@ -60,7 +60,7 @@ assert.equal(checkWarnings(parseExportCheck({ ...mixed, state: "RUNNING" })), 0,
 assert.deepEqual(summary({ ...base, state: "STOPPED", percent: 0, checks: [] }),
   { text: "Đã dừng kiểm tra kỹ thuật. Video vẫn được giữ nguyên.", tone: "info" });
 assert.deepEqual(summary({ ...base, state: "INTERRUPTED", percent: 0, checks: [] }),
-  { text: "Kiểm tra kỹ thuật chưa xong vì DubFlow đã đóng. Video vẫn được giữ nguyên.", tone: "info" });
+  { text: "Kiểm tra kỹ thuật chưa xong (DubFlow đã đóng, hoặc thư mục dự án bị di chuyển khi kiểm tra đang chờ). Video vẫn được giữ nguyên.", tone: "info" });
 assert.deepEqual(summary({ ...base, state: "UNAVAILABLE", percent: 0, checks: [], error: "không tìm thấy FFmpeg" }),
   { text: "Không chạy được kiểm tra kỹ thuật (không tìm thấy FFmpeg). Video vẫn được giữ nguyên.", tone: "info" });
 assert.equal(CHECK_NOTE, "Chỉ để tham khảo: kiểm tra này không chặn, không xóa và không thay đổi video.");
