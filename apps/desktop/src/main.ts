@@ -51,7 +51,7 @@ import { pickFromMedia } from "./features/media/picker.ts";
 import { COVER_STORAGE_KEY, describeCoverStyle, normalizeCoverStyle, storedCoverStyle, type CoverMode, type CoverStyle } from "./features/edit/cover.ts";
 import { configureHostAi, createAiSession, isKeyError, PROVIDERS } from "./features/ai/provider.ts";
 import { loadPrefs, translationJobArgs } from "./features/ai/translation_prefs.ts";
-import { decideAiContext, setKeysClosed } from "./features/ai/ai_context.ts";
+import { decideAiContext, setKeysClosed, type AiContext } from "./features/ai/ai_context.ts";
 import { glossaryArgs } from "./features/ai/glossary.ts";
 import { mountGlossaryBooks, mountJobGlossary } from "./features/ai/glossary_view.ts";
 import { rewriteAsNarration, type NarrationStyle } from "./features/narration/ai.ts";
@@ -164,6 +164,11 @@ const blurModeSelect = $<HTMLSelectElement>("#blur-mode");
 const coverStyleSelect = $<HTMLSelectElement>("#cover-style");
 const runAllButton = $<HTMLButtonElement>("#run-all");
 let batchRunning = false;
+/**
+ * A start waiting on the one-time AI translation question (#934). Until it is answered the job is not marked as running
+ * (closing DubFlow then leaves it as it was, ready to start), and no other start begins.
+ */
+let awaitingAnswer = false;
 let blurJobId: string | null = null;
 const voiceList = $("#voice-list");
 const genderFilter = $<HTMLSelectElement>("#voice-gender");
@@ -1231,7 +1236,7 @@ function renderRunAll(): void {
 }
 
 function pumpBatch(): void {
-  if (!batchRunning) return;
+  if (!batchRunning || awaitingAnswer) return;
   if (queue.getSnapshot().jobs.some((job) => isActive(job))) return;
   const next = runnableJobs()[0];
   if (!next) {
@@ -1385,40 +1390,51 @@ function rememberedCoverStyle(): CoverStyle {
 }
 
 async function startJob(job: QueueJob): Promise<void> {
-  if (!canStart(job)) return;
+  if (awaitingAnswer || !canStart(job)) return;
   startButton.disabled = true;
-  queue.updateStatus(job.id, { ...job.status, state: "RUNNING", reason: "starting", message: "Đang khởi động xử lý" });
+  // Asked once, before a saved key is first used for translation. "Không", Esc, a click beside it or nothing ready:
+  // no AI.
+  let aiContext: AiContext = "off";
+  awaitingAnswer = true;
   try {
     await aiRestored;
-    // Asked once, before a saved key is first used for translation; meanwhile the job waits (it is already RUNNING,
-    // so no other start can begin). "Không", Esc or nothing ready: no AI.
-    const aiContext = await decideAiContext(claudeKey, "start");
-    // From here the host may receive the job: "launching" is never put back in the queue on the next launch (the
-    // supervisor can run before it writes its first status), only a job still "starting" (restoreStartingJob).
-    const waiting = queue.getSnapshot().jobs.find((candidate) => candidate.id === job.id);
-    if (!waiting || waiting.status.state !== "RUNNING" || waiting.status.reason !== "starting") return;
-    queue.updateStatus(job.id, { ...waiting.status, reason: "launching" });
-    const request = startJobRequest(job, outputRoot(), cpuOnly(), rememberedSubtitleStyle(), rememberedCoverStyle());
+    aiContext = await decideAiContext(claudeKey, "start");
+  } catch {
+    // no answer: no AI
+  } finally {
+    awaitingAnswer = false;
+  }
+  // The job as it is now: removed, edited or started some other way while the question was open.
+  const current = queue.getSnapshot().jobs.find((candidate) => candidate.id === job.id);
+  if (!current || !canStart(current)) {
+    const selected = selectedJob();
+    startButton.disabled = !selected || !canStart(selected);
+    if (batchRunning) window.setTimeout(pumpBatch, 0);
+    return;
+  }
+  queue.updateStatus(current.id, { ...current.status, state: "RUNNING", reason: "starting", message: "Đang khởi động xử lý" });
+  try {
+    const request = startJobRequest(current, outputRoot(), cpuOnly(), rememberedSubtitleStyle(), rememberedCoverStyle());
     const started = await invoke<{ output_dir: string } | null>("start_job", {
       ...request,
       // The Vibi.pro voice when "Giọng Vibi.pro" is on; the host adds the saved key.
       cloudVoice: dubbingVoice(loadVibiChoice(), request.enableDubbing === true),
       // "Dịch phụ đề bằng AI theo ngữ cảnh" and "Từ nhạy cảm" (Cài đặt › Tài khoản); the host adds the saved key.
-      ...translationJobArgs(loadPrefs(), claudeKey, job.displayName, aiContext),
+      ...translationJobArgs(loadPrefs(), claudeKey, current.displayName, aiContext),
       // Thuật ngữ & ngữ cảnh (Issue #903): read only by the translation step.
-      glossary: glossaryArgs(job.glossary, glossaryBooks.books()),
+      glossary: glossaryArgs(current.glossary, glossaryBooks.books()),
     });
     // Resumes must reuse the folder the first start chose, even if the
     // results-folder setting changes later.
-    if (started?.output_dir) queue.pinOutputDir(job.id, started.output_dir);
-    beginPolling(job.id);
+    if (started?.output_dir) queue.pinOutputDir(current.id, started.output_dir);
+    beginPolling(current.id);
   } catch (error) {
-    queue.updateStatus(job.id, {
-      ...job.status,
+    queue.updateStatus(current.id, {
+      ...current.status,
       state: "FAILED",
       reason: "supervisor_start_failed",
       message: String(error).slice(0, 400),
-      resource: { ...job.status.resource, held: false },
+      resource: { ...current.status.resource, held: false },
     });
   }
 }
@@ -2545,26 +2561,8 @@ queue.subscribe((snapshot) => {
   const selected = snapshot.jobs.find((job) => job.id === snapshot.selected_job_id);
   if (selected && ["RUNNING", "RECOVERED", "WORKER_LOST"].includes(selected.status.state)) beginPolling(selected.id);
 });
-/**
- * A job the page marked RUNNING ("starting") but never handed to the host: DubFlow closed or reloaded while it waited,
- * for example on the one-time AI translation question (#934). The host has no status for it, so it goes back to
- * QUEUED and can be started again; one the host did receive is polled as usual.
- */
-async function restoreStartingJob(jobId: string): Promise<void> {
-  try {
-    if (await invoke<StatusResponse | null>("job_status", { jobId })) return beginPolling(jobId);
-  } catch {
-    return beginPolling(jobId);
-  }
-  const job = queue.getSnapshot().jobs.find((candidate) => candidate.id === jobId);
-  if (!job || job.status.state !== "RUNNING" || job.status.reason !== "starting") return;
-  queue.updateStatus(jobId, { ...job.status, state: "QUEUED", reason: "not_started",
-    message: "Chưa bắt đầu xử lý: DubFlow đã đóng trước khi bắt đầu. Bấm Bắt đầu để chạy lại." });
-  stopPolling(jobId);
-}
 for (const job of queue.getSnapshot().jobs) {
-  if (job.status.state === "RUNNING" && job.status.reason === "starting") void restoreStartingJob(job.id);
-  else if (!["QUEUED", "COMPLETED", "FAILED"].includes(job.status.state)) beginPolling(job.id);
+  if (!["QUEUED", "COMPLETED", "FAILED"].includes(job.status.state)) beginPolling(job.id);
 }
 
 sourceLanguageSelect.addEventListener("change", () => {

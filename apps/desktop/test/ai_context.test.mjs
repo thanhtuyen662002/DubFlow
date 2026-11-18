@@ -277,12 +277,13 @@ const none = { saved: () => null, options: () => ({}) };
   // A dubbing job: the saved keys (and whether they are closed) are loaded, the answer awaited, then start_job with it.
   const startJob = between(main, "async function startJob(job: QueueJob): Promise<void> {", "\n}\n");
   inOrder(startJob, [
+    "let aiContext: AiContext = \"off\";",
     "await aiRestored;",
-    "const aiContext = await decideAiContext(claudeKey, \"start\");",
+    "aiContext = await decideAiContext(claudeKey, \"start\");",
     "await invoke<{ output_dir: string } | null>(\"start_job\", {",
-    "...translationJobArgs(loadPrefs(), claudeKey, job.displayName, aiContext),",
+    "...translationJobArgs(loadPrefs(), claudeKey, current.displayName, aiContext),",
   ], "startJob");
-  assert.equal(startJob.match(/\baiContext\b/g).length, 2, "startJob: the answer is only declared and passed on");
+  assert.equal(startJob.match(/\baiContext\b/g).length, 3, "startJob: the answer is only declared (off), set from the question and passed on");
   has(main, /const aiRestored = Promise\.all\(\[\s*claudeKey\.restore\(\)\.catch\(\(\) => undefined\),\s*invoke<Record<string, unknown> \| null>\("ai_key_status"\)\.then\(\(status\) => setKeysClosed\(status\?\.keysClosed === true\)/, "aiRestored");
   // Tách phụ đề: the editor host asks the same way, after the same load.
   has(main, /decideAi: async \(\) => \{\s*await aiRestored;\s*return decideAiContext\(claudeKey, "start"\);\s*\},/, "editor host");
@@ -318,24 +319,36 @@ const none = { saved: () => null, options: () => ({}) };
   });
 }
 
-// 9. A job left RUNNING ("starting") while the question waited, then DubFlow closed: on the next launch it goes back to
-// QUEUED unless the host did receive it (then it is polled), so it is never stuck. And the media picker, the other
-// dialog on .confirm-backdrop, takes Esc only when it is on top, so one Esc never also answers the question.
+// 9. While the one-time question is open the job is not marked running, so closing DubFlow then leaves it ready to
+// start (nothing to recover), and no other start begins. Once answered, the job as it is now starts, or nothing does if
+// it was removed or started meanwhile. And the media picker, the other dialog on .confirm-backdrop, takes Esc only when
+// it is on top, so one Esc never also answers the question.
 {
   const strip = (path) => readFileSync(new URL(`../src/${path}`, import.meta.url), "utf8").replace(/\r\n/g, "\n")
     .replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
   const main = strip("main.ts");
-  assert.match(main, /if \(job\.status\.state === "RUNNING" && job\.status\.reason === "starting"\) void restoreStartingJob\(job\.id\);\s*else if/);
-  const restore = main.slice(main.indexOf("async function restoreStartingJob"), main.indexOf("for (const job of queue.getSnapshot().jobs) {\n  if (job.status.state === \"RUNNING\""));
-  assert.match(restore, /if \(await invoke<StatusResponse \| null>\("job_status", \{ jobId \}\)\) return beginPolling\(jobId\);/);
-  assert.match(restore, /catch \{\s*return beginPolling\(jobId\);/, "a failed status read keeps the job polled, never re-queued");
-  assert.match(restore, /job\.status\.state !== "RUNNING" \|\| job\.status\.reason !== "starting"\) return;/);
-  assert.match(restore, /state: "QUEUED", reason: "not_started"/);
-  assert.ok(main.indexOf('reason: "starting"') < main.indexOf("await decideAiContext(claudeKey, \"start\")"), "the job is RUNNING while it waits, so no second start");
-  // once answered, the job is "launching" before start_job: a job the host may have received is never re-queued
-  const start = main.slice(main.indexOf("async function startJob"));
-  const launching = start.indexOf('reason: "launching"');
-  assert.ok(start.indexOf("await decideAiContext(claudeKey, \"start\")") < launching && launching < start.indexOf('invoke<{ output_dir: string } | null>("start_job"'));
+  const start = main.slice(main.indexOf("async function startJob(job: QueueJob)"), main.indexOf("startButton.addEventListener(\"click\""));
+  const order = (parts, what) => {
+    let at = -1;
+    for (const part of parts) {
+      const next = start.indexOf(part, at + 1);
+      assert.ok(next > at, `${what}: "${part}" missing or out of order`);
+      at = next;
+    }
+  };
+  order([
+    "if (awaitingAnswer || !canStart(job)) return;",
+    "awaitingAnswer = true;",
+    "aiContext = await decideAiContext(claudeKey, \"start\");",
+    "} finally {\n    awaitingAnswer = false;\n  }",
+    "const current = queue.getSnapshot().jobs.find((candidate) => candidate.id === job.id);",
+    "if (!current || !canStart(current)) {",
+    "queue.updateStatus(current.id, { ...current.status, state: \"RUNNING\", reason: \"starting\"",
+    "invoke<{ output_dir: string } | null>(\"start_job\"",
+  ], "startJob");
+  assert.equal((start.match(/state: "RUNNING"/g) ?? []).length, 1, "the job is marked running only after the answer");
+  assert.match(main, /function pumpBatch\(\): void \{\s*if \(!batchRunning \|\| awaitingAnswer\) return;/, "no batch start while the question is open");
+  assert.doesNotMatch(main, /restoreStartingJob|reason: "launching"/, "nothing to recover after a close during the question");
   const picker = strip("features/media/picker.ts");
   assert.match(picker, /if \(event\.key !== "Escape" \|\| !isTopmostDialog\(backdrop, document\.body\.children\)\) return;\s*event\.preventDefault\(\);\s*event\.stopImmediatePropagation\(\);/);
 }
