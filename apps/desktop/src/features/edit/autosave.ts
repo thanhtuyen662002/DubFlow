@@ -101,17 +101,13 @@ export class Autosaver {
   }
 
   /**
-   * Keep what is pending, but stop waiting for a write still in progress: a close gave up on it after CLOSE_WAIT_MS,
-   * and the change goes on into a reopened editor (Issue #929). The change stays pending and a backoff still holds;
-   * the next write no longer queues behind that one, whose end changes nothing here.
+   * A change `from` could not write moves here (Issue #929: a reload carries it on, or a reopened editor takes it up):
+   * it waits out the backoff `from` has, so the held file is not tried sooner than `from` would have tried it.
    */
-  restart(): void {
-    this.cancel();
-    this.waiting = 0;
-    this.forced = false;
-    this.epoch += 1;
-    this.writing = Promise.resolve();
-    this.changed();
+  inherit(from: Autosaver): void {
+    if (from.failures === 0) return;
+    this.retryAt = this.failures > 0 ? Math.max(this.retryAt, from.retryAt) : from.retryAt;
+    this.failures = Math.max(this.failures, from.failures);
   }
 
   /** Forget a pending change: the session ended without it mattering, or the user chose to lose it. */
@@ -181,6 +177,86 @@ export class Autosaver {
       // a change made during the write is still pending: its own timer (or a flush) writes it
       if (this.version === version) this.since = null;
     });
+  }
+}
+
+/**
+ * The changes a reload carried that no editor took up yet (Issue #929), one per video, each written from its copy by a
+ * saver of its own: a copy whose file is held is tried again on its own backoff, which never slows the open editor's
+ * saves (nor another copy's), and letting one video's change go leaves every other one as it is.
+ */
+export class CarriedDrafts<T extends { outputPath: string }> {
+  private readonly copies = new Map<string, { copy: T; saver: Autosaver }>();
+  private readonly write: (copy: T) => Promise<void>;
+  private readonly timers: Timers;
+
+  constructor(write: (copy: T) => Promise<void>, timers: Timers) {
+    this.write = write;
+    this.timers = timers;
+  }
+
+  get size(): number {
+    return this.copies.size;
+  }
+
+  /** The copy pending for the video at `outputPath`. */
+  get(outputPath: string): T | undefined {
+    return this.copies.get(outputPath)?.copy;
+  }
+
+  /**
+   * Keep `copy`, the change `from` (the editor's saver) could not write, for its video's reopened editor. One per
+   * video: another video's copy is never replaced. The change is the copy's now: `from` lets it go, and a write of it
+   * a close gave up on (still running) holds up no later one; the copy waits out the backoff `from` had.
+   */
+  carry(copy: T, from: Autosaver): void {
+    let carried = this.copies.get(copy.outputPath);
+    if (!carried) {
+      carried = { copy, saver: new Autosaver(() => this.writeCopy(copy.outputPath), this.timers) };
+      this.copies.set(copy.outputPath, carried);
+    }
+    carried.copy = copy;
+    carried.saver.inherit(from);
+    from.drop();
+    carried.saver.changed();
+  }
+
+  /**
+   * An editor of its video opened `copy` and goes on with it (its saver `into` writes it from now on, after the
+   * copy's backoff). False when it is not pending any more.
+   */
+  take(copy: T, into: Autosaver): boolean {
+    const carried = this.copies.get(copy.outputPath);
+    if (carried?.copy !== copy) return false;
+    this.copies.delete(copy.outputPath);
+    into.inherit(carried.saver);
+    carried.saver.drop();
+    return true;
+  }
+
+  /**
+   * Let the copy of `outputPath` go: the user chose to lose that change ("Vẫn thoát"), or the disk has a newer draft
+   * of it. Every other video's copy goes on as it was: its backoff, and a write of it under way.
+   */
+  forget(outputPath: string): void {
+    this.copies.get(outputPath)?.saver.drop();
+    this.copies.delete(outputPath);
+  }
+
+  /** Write every copy now; true when none is left (each one on disk). */
+  async flush(): Promise<boolean> {
+    for (const { saver } of [...this.copies.values()]) await saver.flush();
+    return this.copies.size === 0;
+  }
+
+  private async writeCopy(outputPath: string): Promise<void> {
+    const carried = this.copies.get(outputPath);
+    // taken up or let go meanwhile (its saver was let go too)
+    if (!carried) return;
+    const { copy } = carried;
+    await this.write(copy);
+    // written, unless a newer change replaced it meanwhile (its own write follows)
+    if (this.copies.get(outputPath) === carried && carried.copy === copy) this.copies.delete(outputPath);
   }
 }
 

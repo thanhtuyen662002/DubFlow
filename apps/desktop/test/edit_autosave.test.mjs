@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { Autosaver, MAX_WAIT_MS, QUIET_MS, RETRY_FIRST_MS, RETRY_MAX_MS, retryDelay, saveDelay } from "../src/features/edit/autosave.ts";
+import { Autosaver, CarriedDrafts, MAX_WAIT_MS, QUIET_MS, RETRY_FIRST_MS, RETRY_MAX_MS, retryDelay, saveDelay } from "../src/features/edit/autosave.ts";
 import { askAlone, CLOSE_EVENT, CLOSE_LISTENERS_KEY, CLOSE_WAIT_MS, closeGuard, closeRequests, flushWithin, pageQuestions, StaleCloseListeners,
   storageIds, unsavedPrompt, wireWindowClose } from "../src/features/edit/close_guard.ts";
 
@@ -513,52 +513,339 @@ for (const [name, fire, edit] of [["truncated", (ms) => Math.trunc(ms), true], [
   assert.equal(saver.pending, false, `${name}: on disk`);
 }
 
-// restart() (a reload carries the change on, Issue #929): the change stays pending, the backoff still holds, and a
-// write the close gave up on holds up nothing; when it ends after all, it changes nothing.
+// inherit() (a change moves to another saver, Issue #929: a reload carries it, a reopened editor takes it up): it
+// waits out the backoff the other saver had, never tried sooner
 {
-  const { timers, advance } = clock();
-  let calls = 0, endHung;
+  const { timers, advance, nextDue } = clock();
   const writes = [];
-  const saver = new Autosaver(() => {
-    calls += 1;
-    if (calls === 1) return Promise.reject(new Error("held"));
-    if (calls === 2) return new Promise((_, reject) => { endHung = () => reject(new Error("late")); });
-    writes.push(timers.now());
-    return Promise.resolve();
-  }, timers);
-  saver.changed();
-  await advance(QUIET_MS);  // the first write fails: tried again at QUIET_MS + RETRY_FIRST_MS
-  await advance(RETRY_FIRST_MS);  // the second one never ends (a close gives up on it)
-  assert.equal(calls, 2);
-  saver.restart();
-  assert.equal(saver.pending, true);
+  const failing = new Autosaver(async () => { throw new Error("held"); }, timers);
+  failing.changed();
+  await advance(QUIET_MS);  // 300: fails, due again at 1300
+  await advance(RETRY_FIRST_MS);  // 1300: fails, due again at 3300
+  const next = new Autosaver(async () => { writes.push(timers.now()); }, timers);
+  next.inherit(failing);
+  failing.drop();
+  assert.equal(next.failing, true, "the backoff came along");
+  next.changed();
+  assert.equal(nextDue(), 3300, "not before the other's retry is due");
+  await advance(2000);
+  assert.deepEqual(writes, [3300]);
+  assert.equal(next.failing, false);
+  next.inherit(new Autosaver(async () => {}, timers));  // a saver with no backoff changes nothing
+  next.changed();
+  assert.equal(nextDue(), timers.now() + QUIET_MS);
   await advance(QUIET_MS);
-  assert.equal(writes.length, 1, "written, not queued behind the write that never ended");
-  assert.equal(saver.pending, false);
-  endHung();
-  await advance(0);
-  assert.equal(saver.failing, false, "its late failure is not this change's");
+  assert.equal(writes.length, 2);
+  // nor does one whose backoff was let go (drop)
+  const dropped = new Autosaver(async () => { throw new Error("held"); }, timers);
+  dropped.changed();
+  for (let i = 0; i < 5; i += 1) await advance(RETRY_MAX_MS);  // a long backoff
+  await advance(10_000);  // 160000: due again at 181300
+  dropped.drop();
+  const failingNow = new Autosaver(async () => { throw new Error("held"); }, timers);
+  failingNow.changed();
+  await advance(QUIET_MS);  // its first failure: due 1 s later
+  const due = timers.now() + RETRY_FIRST_MS;
+  failingNow.inherit(dropped);
+  failingNow.changed();
+  assert.equal(nextDue(), due, "a backoff let go is not inherited");
+  failingNow.drop();
+}
+// a saver whose own backoff was let go takes the other's retry, not its own old one (an editor after Vẫn thoát takes
+// up a copy that fails on a shorter backoff)
+{
+  const { timers, advance, nextDue } = clock();
+  const editor = new Autosaver(async () => { throw new Error("held"); }, timers);
+  editor.changed();
+  for (let i = 0; i < 5; i += 1) await advance(RETRY_MAX_MS);
+  await advance(10_000);  // 160000: due again at 181300
+  editor.drop();
+  const copy = new Autosaver(async () => { throw new Error("held"); }, timers);
+  copy.changed();
+  await advance(QUIET_MS);
+  const due = timers.now() + RETRY_FIRST_MS;
+  editor.inherit(copy);
+  copy.drop();
+  editor.changed();
+  assert.equal(nextDue(), due);
+  editor.drop();
+}
+// the later retry and the longer backoff of the two
+{
+  const { timers, advance, nextDue } = clock();
+  let fail = true;
+  const writes = [];
+  const a = new Autosaver(async () => { throw new Error("held"); }, timers);
+  const b = new Autosaver(async () => { writes.push(timers.now()); if (fail) throw new Error("held"); }, timers);
+  b.changed();
+  await advance(QUIET_MS);  // b: 300 fails, due at 1300
+  await advance(RETRY_FIRST_MS);  // b: 1300 fails, due at 3300
+  await advance(RETRY_FIRST_MS * 2);  // b: 3300 fails, due at 7300 (third failure)
+  a.changed();
+  await advance(QUIET_MS);  // a: 3600 fails, due at 4600 (first failure)
+  b.inherit(a);
+  a.drop();
+  b.changed();
+  assert.equal(nextDue(), 7300, "b keeps its later retry");
+  await advance(7300 - 3600);  // b: 7300 fails, the fourth: due 8 s later
+  assert.equal(nextDue(), 7300 + 8 * RETRY_FIRST_MS, "and its longer backoff");
+  const c = new Autosaver(async () => {}, timers);
+  c.inherit(b);
+  b.drop();
+  c.changed();
+  assert.equal(nextDue(), 7300 + 8 * RETRY_FIRST_MS, "a saver with none takes the other's retry as it is");
+  fail = false;
+}
+
+// CarriedDrafts (Issue #929): changes reloads carried, one per video, each written from its copy by a saver of its
+// own. In the model, as in the editor (view.ts), the open editor's saver writes only its own draft.
+function drafts() {
+  const { timers, advance, nextDue } = clock();
+  const held = new Set();  // drafts another program holds: writing them fails
+  const hangs = new Map();  // a write of that draft does not end until the promise does (once)
+  const disk = new Map();
+  const tries = [];  // `${time} ${video}` for every write of a draft
+  const running = new Map();
+  const state = { open: null, during: null, most: 0 };
+  const writeOne = async (outputPath, project) => {
+    tries.push(`${timers.now()} ${outputPath}`);
+    running.set(outputPath, (running.get(outputPath) ?? 0) + 1);
+    state.most = Math.max(state.most, running.get(outputPath));
+    try {
+      const during = state.during;
+      state.during = null;
+      during?.();
+      const hang = hangs.get(outputPath);
+      hangs.delete(outputPath);
+      if (hang) await hang;
+      if (held.has(outputPath)) throw new Error(`${outputPath} held`);
+      disk.set(outputPath, project);
+    } finally {
+      running.set(outputPath, running.get(outputPath) - 1);
+    }
+  };
+  const saver = new Autosaver(async () => { if (state.open) await writeOne(state.open.outputPath, state.open.project); }, timers);
+  const carried = new CarriedDrafts((copy) => writeOne(copy.outputPath, copy.project), timers);
+  return { timers, advance, nextDue, held, hangs, disk, tries, state, saver, carried };
+}
+// The Lead's case: video A's change, carried by a reload, has failed through the 1 s and 2 s backoffs; the user opens
+// B, edits it, and chooses "Vẫn thoát" while B cannot be saved either. B's change goes; A's stays pending and is not
+// tried before its retry is due.
+{
+  const { advance, nextDue, held, disk, tries, state, saver, carried } = drafts();
+  held.add("A").add("B");
+  state.open = { outputPath: "A", project: "A1" };
+  saver.changed();
+  await advance(QUIET_MS);  // 300: fails, due again at 1300
+  carried.carry({ outputPath: "A", project: "A1" }, saver);  // a reload of A; nothing reopens it
+  state.open = null;
+  await advance(1000);  // 1300: fails again, due at 3300
+  await advance(200);
+  state.open = { outputPath: "B", project: "B1" };  // 1500: B opened and edited
+  saver.changed();
+  await advance(QUIET_MS);  // 1800: B fails
+  await advance(100);
+  assert.equal(await saver.flush(), false, "the close writes B now: it fails");  // 1900
+  assert.deepEqual(tries, ["300 A", "1300 A", "1800 B", "1900 B"]);
+  saver.drop();  // Vẫn thoát (view.ts discard)
+  carried.forget("B");
+  state.open = null;
+  assert.equal(carried.size, 1, "A's change is still pending");
+  assert.equal(nextDue(), 3300, "and is not tried before its retry is due");
+  await advance(3300 - 1900 - 1);
+  assert.equal(tries.length, 4);
+  await advance(1);
+  assert.deepEqual(tries.slice(4), ["3300 A"], "tried again when due, and B's change is not written");
+  held.delete("A");  // the other program lets A go: due again at 3300 + 4000
+  await advance(4000);
+  assert.deepEqual(tries.slice(5), ["7300 A"]);
+  assert.equal(disk.get("A"), "A1");
+  assert.equal(disk.has("B"), false, "B's change went, as the user chose");
+  assert.equal(carried.size, 0);
+  assert.equal(nextDue(), Infinity);
+  assert.equal(state.most, 1, "writes of one draft never overlap");
+}
+// round 6: a held copy of A does not slow the open video's saves: B's edits reach the disk within MAX_WAIT_MS
+{
+  const { timers, advance, held, disk, tries, state, saver, carried } = drafts();
+  held.add("A");
+  state.open = { outputPath: "A", project: "A1" };
   saver.changed();
   await advance(QUIET_MS);
-  assert.equal(writes.length, 2, "and puts no backoff on the next change");
+  carried.carry({ outputPath: "A", project: "A1" }, saver);
+  state.open = null;
+  await advance(120_000);  // A has backed off to RETRY_MAX_MS
+  state.open = { outputPath: "B", project: "B0" };
+  for (let i = 1; i <= 20; i += 1) {
+    state.open.project = `B${i}`;
+    saver.changed();
+    const at = timers.now();
+    await advance(MAX_WAIT_MS);
+    assert.equal(disk.get("B"), `B${i}`, `B's edit ${i} on disk within MAX_WAIT_MS of ${at}`);
+  }
+  assert.equal(carried.size, 1, "A still pending");
+  assert.ok(tries.filter((entry) => entry.endsWith(" A")).length < 12, "A on its own backoff");
+}
+// a write of A under way when B's change goes (the close gave up waiting) is still waited for by A's saver: nothing of
+// A starts beside it, and when it fails A is tried again after its backoff
+{
+  const { advance, nextDue, held, hangs, tries, state, saver, carried } = drafts();
+  held.add("A").add("B");
+  state.open = { outputPath: "A", project: "A1" };
+  saver.changed();
+  await advance(QUIET_MS);  // 300: A fails
+  carried.carry({ outputPath: "A", project: "A1" }, saver);  // due at 1300
+  state.open = { outputPath: "B", project: "B1" };
+  saver.changed();
+  let release;
+  hangs.set("A", new Promise((resolve) => { release = resolve; }));
+  await advance(1000);  // 600: B fails; 1300: the retry of A starts and does not end
+  assert.deepEqual(tries, ["300 A", "600 B", "1300 A"]);
+  saver.drop();  // Vẫn thoát on B
+  carried.forget("B");
+  state.open = null;
   await advance(RETRY_MAX_MS);
-  assert.equal(calls, 4, "nor schedules a write of its own");
+  assert.deepEqual(tries, ["300 A", "600 B", "1300 A"], "nothing of A starts beside the write under way, nothing of B at all");
+  release();
+  await advance(0);  // 31300: it fails, the second failure: due 2 s later
+  assert.equal(nextDue(), 31300 + 2 * RETRY_FIRST_MS);
+  held.delete("A");
+  await advance(2 * RETRY_FIRST_MS);
+  assert.deepEqual(tries.slice(3), ["33300 A"]);
+  assert.equal(carried.size, 0);
+  assert.equal(state.most, 1);
+}
+// with no other video's change left, Vẫn thoát leaves nothing to try again
+{
+  const { advance, nextDue, held, tries, state, saver, carried } = drafts();
+  held.add("B");
+  state.open = { outputPath: "B", project: "B1" };
+  saver.changed();
+  await advance(QUIET_MS);
+  saver.drop();
+  carried.forget("B");
+  state.open = null;
+  assert.equal(saver.pending, false);
+  assert.equal(nextDue(), Infinity);
+  await advance(RETRY_MAX_MS);
+  assert.deepEqual(tries, ["300 B"]);
+}
+// letting a video's change go lets its copy and that copy's saver go
+{
+  const { advance, nextDue, held, tries, saver, carried } = drafts();
+  held.add("B");
+  carried.carry({ outputPath: "B", project: "B1" }, saver);
+  await advance(QUIET_MS);
+  carried.forget("B");
+  assert.equal(carried.size, 0);
+  assert.equal(nextDue(), Infinity, "nothing left to try");
+  await advance(RETRY_MAX_MS);
+  assert.deepEqual(tries, ["300 B"]);
+}
+// a newer change of a video whose copy is pending replaces it, with the backoff that copy had
+{
+  const { advance, nextDue, held, disk, tries, saver, carried } = drafts();
+  held.add("A");
+  const a1 = { outputPath: "A", project: "A1" }, a2 = { outputPath: "A", project: "A2" };
+  carried.carry(a1, saver);
+  await advance(QUIET_MS);  // 300: fails, due at 1300
+  carried.carry(a2, saver);
+  assert.equal(nextDue(), 1300, "not tried sooner for being newer");
+  assert.equal(carried.take(a1, saver), false, "the older copy is not pending any more");
+  held.delete("A");
+  await advance(1000);
+  assert.deepEqual(tries, ["300 A", "1300 A"]);
+  assert.equal(disk.get("A"), "A2");
+}
+// letting a video's change go lets its own copy go too, and no other
+{
+  const { advance, nextDue, held, tries, saver, carried } = drafts();
+  held.add("B").add("C");
+  carried.carry({ outputPath: "B", project: "B1" }, saver);
+  carried.carry({ outputPath: "C", project: "C1" }, saver);
+  await advance(QUIET_MS);  // both fail: due at 1300
+  carried.forget("B");
+  assert.equal(carried.get("B"), undefined);
+  assert.equal(carried.get("C")?.project, "C1");
+  assert.equal(nextDue(), 1300);
+  await advance(1000);
+  assert.deepEqual(tries, ["300 B", "300 C", "1300 C"]);
+}
+// a reopened editor takes its copy up: the copy is not written from here any more, and the editor writes it on, after
+// the copy's backoff; another video's copy is written on its own meanwhile
+{
+  const { advance, nextDue, held, disk, tries, state, saver, carried } = drafts();
+  held.add("A");
+  state.open = { outputPath: "A", project: "A1" };
+  saver.changed();
+  await advance(QUIET_MS);  // 300: fails
+  const a1 = { outputPath: "A", project: "A1" };
+  carried.carry(a1, saver);
+  carried.carry({ outputPath: "C", project: "C1" }, saver);
+  state.open = null;
+  await advance(1000);  // 600: C written; 1300: A fails, due at 3300
+  assert.equal(disk.get("C"), "C1");
+  assert.equal(carried.get("C"), undefined);
+  await advance(200);
+  state.open = { outputPath: "A", project: "A1" };  // 1500: the editor of A opens with the copy
+  assert.equal(carried.take(a1, saver), true);
+  assert.equal(carried.take(a1, saver), false, "taken once");
+  assert.equal(carried.size, 0);
+  assert.equal(nextDue(), Infinity, "the copy's own saver is let go");
+  saver.changed();
+  assert.equal(nextDue(), 3300, "the editor waits out the copy's backoff");
+  held.delete("A");
+  await advance(1800);
+  assert.deepEqual(tries, ["300 A", "600 C", "1300 A", "3300 A"], "written once, by the editor");
+  assert.equal(disk.get("A"), "A1");
   assert.equal(saver.pending, false);
 }
+// one written is let go, unless a newer one replaced it meanwhile; one let go is never written
 {
-  const { timers, advance } = clock();
-  let fails = 1;
-  const writes = [];
-  const saver = new Autosaver(async () => { writes.push(timers.now()); if (fails-- > 0) throw new Error("held"); }, timers);
+  const { advance, disk, state, saver, carried } = drafts();
+  const a2 = { outputPath: "A", project: "A2" }, a3 = { outputPath: "A", project: "A3" };
+  carried.carry(a2, saver);
+  state.during = () => carried.carry(a3, saver);  // a reload carries a newer change while A2 is written
+  await advance(QUIET_MS);
+  assert.equal(disk.get("A"), "A2");
+  assert.equal(carried.get("A"), a3, "the newer copy stays");
+  await advance(QUIET_MS);
+  assert.equal(disk.get("A"), "A3");
+  assert.equal(carried.size, 0);
+  carried.carry(a2, saver);
+  carried.forget("A");  // the disk has a newer draft of A: the copy is never written over it
+  await advance(RETRY_MAX_MS);
+  assert.equal(disk.get("A"), "A3");
+}
+// a reload's copy does not wait behind a write the close gave up on (still running): it is written meanwhile
+{
+  const { advance, disk, hangs, tries, state, carried, saver } = drafts();
+  let release;
+  state.open = { outputPath: "A", project: "A1" };
+  hangs.set("A", new Promise((resolve) => { release = resolve; }));
   saver.changed();
-  await advance(QUIET_MS);  // fails: due again at QUIET_MS + RETRY_FIRST_MS
-  await advance(100);
-  saver.restart();
-  await advance(RETRY_FIRST_MS - 101);
-  assert.equal(writes.length, 1, "restart keeps the backoff");
-  await advance(1);
-  assert.equal(writes.length, 2);
-  assert.equal(saver.pending, false);
+  await advance(QUIET_MS);  // 300: the write of A1 does not end
+  carried.carry({ outputPath: "A", project: "A1" }, saver);  // the close gave up on it and carried the change
+  state.open = null;
+  await advance(QUIET_MS);
+  assert.deepEqual(tries, ["300 A", "600 A"]);
+  assert.equal(disk.get("A"), "A1");
+  assert.equal(carried.size, 0);
+  release();
+  await advance(0);
+  assert.equal(saver.pending, false, "the late end changes nothing");
+}
+// flush writes every copy now and says whether one is left
+{
+  const { held, disk, saver, carried } = drafts();
+  held.add("X");
+  carried.carry({ outputPath: "X", project: "X1" }, saver);
+  carried.carry({ outputPath: "Y", project: "Y1" }, saver);
+  assert.equal(await carried.flush(), false, "X is held");
+  assert.equal(disk.get("Y"), "Y1");
+  held.delete("X");
+  assert.equal(await carried.flush(), true);
+  assert.equal(disk.get("X"), "X1");
 }
 
 // A system clock step back cannot push the next try past RETRY_MAX_MS (windowTimers uses a steady clock too).
@@ -1002,8 +1289,8 @@ for (const action of ["close", "exit"]) {
   const capabilitiesHaveEvents = () => capabilities.permissions.includes("core:default") || capabilities.permissions.includes("core:event:default");
   const view = code("../src/features/edit/view.ts");
   const save = view.slice(view.indexOf("async function save(): Promise<void>"), view.indexOf("function scheduleSave(): void"));
-  assert.match(save, /\} catch \(error\) \{\s*if \(session\?\.outputPath === outputPath\) \{[\s\S]*?\}\s*throw error;\s*\}\s*if \(leftFailed\) \{[\s\S]*?throw leftFailed;\s*\}\s*\}\s*$/,
-    "save() tells the saver that the write failed, its own or the carried change's");
+  assert.match(save, /\} catch \(error\) \{\s*if \(session\?\.outputPath === outputPath\) \{[\s\S]*?\}\s*throw error;\s*\}\s*\}\s*$/,
+    "save() tells the saver that the write failed");
   assert.match(view, /new Autosaver\(\(\) => save\(\), windowTimers\)/, "the saver gets save() as it is, failures included");
   const closeNow = view.slice(view.indexOf("async function closeNow("), view.indexOf("function leave(leaving: EditTarget)"));
   assert.match(closeNow, /const saved = await flushWithin\(\(\) => saver\.flush\(\), CLOSE_WAIT_MS, windowTimers\) \|\| ownOnDisk\(\);/,
@@ -1014,35 +1301,38 @@ for (const action of ["close", "exit"]) {
   assert.match(closeNow, /if \(!ownOnDisk\(\) && !\(await flushWithin\(\(\) => saver\.flush\(\), CLOSE_WAIT_MS, windowTimers\)\) && session && !ownOnDisk\(\)\) \{\s*if \(carrying\) carry\(session\);\s*else \{\s*if \(!\(await askAlone\(\(\) => host\.confirm\(unsavedPrompt\("exit"\)\)\)\)\) return false;\s*discard\(session\);/,
     "a change made while the question was open is written too, and dropped only on Vẫn thoát");
   assert.equal((closeNow.match(/discard\(session\)/g) ?? []).length, 2);
-  assert.match(closeNow, /if \(ownOnDisk\(\)\) carried\.delete\(session\.outputPath\);\s*const leaving = session\.target;/,
+  assert.match(closeNow, /if \(ownOnDisk\(\)\) carried\.forget\(session\.outputPath\);\s*const leaving = session\.target;/,
     "a later write that has every change makes the reload's older copy go (it would be written over the newer draft)");
-  // Vẫn thoát lets this editor's change go, and only it: another video's carried change stays pending and retried
-  assert.match(view, /function discard\(current: Session\): void \{\s*saver\.drop\(\);\s*carried\.delete\(current\.outputPath\);\s*edits = savedEdits;\s*if \(carried\.size\) saver\.changed\(\);\s*\}/);
-  assert.equal((view.match(/saver\.drop\(\)/g) ?? []).length, 1, "nothing else drops a change");
+  // Vẫn thoát lets this editor's change go, and only it: another video's carried change has a saver of its own and
+  // stays pending with its backoff (tested above with videos A and B)
+  assert.match(view, /function discard\(current: Session\): void \{\s*saver\.drop\(\);\s*carried\.forget\(current\.outputPath\);\s*edits = savedEdits;\s*\}/);
+  assert.equal((view.match(/saver\.drop\(\)/g) ?? []).length, 1, "nothing else drops a change (a carry hands it to its copy)");
   // the open editor's own changes are counted, and counted as on disk only by its own write that worked
   assert.match(view, /function changed\(\): void \{\s*edits \+= 1;\s*saver\.changed\(\);\s*\}/);
-  assert.equal((view.match(/saver\.changed\(\)/g) ?? []).length, 2, "every change goes through changed() (and discard keeps others retried)");
+  assert.equal((view.match(/saver\.changed\(\)/g) ?? []).length, 1, "every change goes through changed()");
   assert.match(view, /function ownOnDisk\(\): boolean \{\s*return savedEdits === edits;\s*\}/);
   assert.equal((view.match(/savedEdits = /g) ?? []).length, 3, "set when an editor opens, by its own write, and by Vẫn thoát");
   // a carried change stays pending, with its backoff: written from its copy when no editor takes it up, and a window
   // close is not told the disk has it before then
   // one carried copy per video: a reload of one never replaces another's
-  assert.match(view, /function carry\(current: Session\): void \{\s*carried\.set\(current\.outputPath, \{ outputPath: current\.outputPath, kind: current\.target\.kind, project: draftDocument\(current\),[^}]*\}\);\s*saver\.restart\(\);\s*\}/);
-  assert.match(view, /const carried = new Map<string, /);
+  assert.match(view, /function carry\(current: Session\): void \{\s*carried\.carry\(\{ outputPath: current\.outputPath, kind: current\.target\.kind, project: draftDocument\(current\), keepOld: current\.keepOld, oldKept: current\.oldKept \}, saver\);\s*\}/);
+  assert.match(view, /const carried = new CarriedDrafts<[^\n]*>\(async \(left\) => \{\s*try \{\s*await invoke\("edit_project_save", \{ outputPath: left\.outputPath, kind: left\.kind, project: left\.project, keepOld: left\.keepOld \}\);\s*\} catch \(error\) \{\s*if \(session && session\.outputPath !== left\.outputPath\) \{[\s\S]{0,200}?\}\s*throw error;\s*\}\s*left\.keepOld = false;\s*if \(session\?\.outputPath === left\.outputPath\) session\.keepOld = false;\s*\}, windowTimers\);/,
+    "each copy written from itself, on its own backoff; once on disk its unreadable draft is kept aside (keepOld) for any editor of it");
   // ... written first, from its copy; once on disk its unreadable draft is kept aside (keepOld) for any editor of it;
   // a failure there does not hold up the open video's own draft
-  assert.match(save, /^async function save\(\): Promise<void> \{\s*let leftFailed: unknown = null;\s*for \(const left of \[\.\.\.carried\.values\(\)\]\) \{\s*if \(left\.outputPath === session\?\.outputPath\) continue;\s*try \{\s*await invoke\("edit_project_save", \{ outputPath: left\.outputPath, kind: left\.kind, project: left\.project, keepOld: left\.keepOld \}\);\s*left\.keepOld = false;\s*if \(session\?\.outputPath === left\.outputPath\) session\.keepOld = false;\s*if \(carried\.get\(left\.outputPath\) === left\) carried\.delete\(left\.outputPath\);\s*\} catch \(error\) \{\s*leftFailed \?\?= error;\s*\}\s*\}\s*if \(!session\) \{\s*if \(leftFailed\) throw leftFailed;\s*return;\s*\}\s*const mine = session;\s*const at = edits;/);
+  assert.match(save, /^async function save\(\): Promise<void> \{\s*if \(!session\) return;\s*const mine = session;\s*const at = edits;/,
+    "the open editor's saver writes only its own draft: a held copy of another video never slows it");
   assert.match(save, /await invoke\("edit_project_save", \{ outputPath, kind, project, keepOld \}\);\s*if \(session === mine\) savedEdits = Math\.max\(savedEdits, at\);\s*const copy = carried\.get\(outputPath\);\s*if \(keepOld && copy\) copy\.keepOld = false;/,
     "its own write counts its changes as on disk, and a reload's copy does not keep aside again a draft it kept aside");
-  assert.equal((save.match(/edit_project_save/g) ?? []).length, 2);
-  assert.match(view, /async function flush\(\): Promise<boolean> \{\s*return \(await saver\.flush\(\)\) && carried\.size === 0;\s*\}/);
+  assert.equal((save.match(/edit_project_save/g) ?? []).length, 1);
+  assert.match(view, /async function flush\(\): Promise<boolean> \{\s*const own = await saver\.flush\(\);\s*const left = await carried\.flush\(\);\s*return own && left;\s*\}/);
   const opening = view.slice(view.indexOf("async function open(target: EditTarget"), view.indexOf("function close(ask: boolean"));
   assert.ok(opening.indexOf("const carry = carried.get(outputPath) ?? null;") > 0
     && opening.indexOf("const carry = carried.get(outputPath) ?? null;") < opening.indexOf("edit_project_load"),
   "the carried change is taken before the load (a retry may write it after the load read the older draft)");
   assert.equal((opening.match(/const carry\b/g) ?? []).length, 1, "taken once, before the load (no later copy shadows it)");
   assert.match(opening, /if \(carry\) loaded\.project = carry\.project;/);
-  assert.match(opening, /if \(carry && carried\.get\(outputPath\) === carry\) \{\s*carried\.delete\(outputPath\);\s*scheduleSave\(\);\s*\}/, "the reopened editor writes it on");
+  assert.match(opening, /if \(carry && carried\.take\(carry, saver\)\) scheduleSave\(\);/, "the reopened editor writes it on, after its backoff");
   assert.match(opening, /edits = 0;\s*savedEdits = 0;\s*session = \{/, "a new editor's own draft starts as on disk, counted before anything can change it");
   // a draft on disk that could not be read now (held) is kept aside by the first save that can, never written over
   assert.match(opening, /keepOld: carry \? carry\.keepOld : !!loaded\.draft_problem \|\| \(!!loaded\.project && !project\),/);
@@ -1103,10 +1393,10 @@ for (const action of ["close", "exit"]) {
   assert.equal((view.match(/\bsave\(\)/g) ?? []).length, 2, "save() is defined once and called only by the Autosaver");
   // a reload of the same video carries an unsaved change instead of asking, and does not undo a later exit
   const reopen = view.slice(view.indexOf("async function reopenSame("), view.indexOf("async function applyLayers("));
-  assert.match(reopen, /const exit = exits;[\s\S]*if \(!\(await close\(false, true, true\)\)\) return;\s*if \(exits !== exit\) return;\s*if \(!\(await open\(target, \(\) => exits === exit\)\)\) \{\s*if \(exits === exit\) leave\(target\);\s*return;\s*\}\s*await then\(\);/,
-    "a user who left before or while it reopened is not taken back; one that could not be reopened is left");
+  assert.match(reopen, /const exit = exits;[\s\S]*if \(!\(await close\(false, true, true\)\)\) return;\s*if \(exits !== exit\) return;\s*if \(!\(await open\(target, \(\) => exits === exit\)\)\) \{\s*if \(exits === exit && !session && !opening\) leave\(target\);\s*return;\s*\}\s*await then\(\);/,
+    "a user who left before or while it reopened is not taken back; one that could not be reopened is left, unless another video's open took the editor");
   assert.match(view, /function leave\(leaving: EditTarget\): void \{\s*if \(session\) return;\s*quietlyLeft = null;/, "leaving ends a pending reopen");
-  assert.match(view, /const exit = exits;\s*if \(!\(await close\(false, true\)\)\) return;\s*if \(exits !== exit\) return;[\s\S]{0,300}displayName: next\.displayName \},\s*\(\) => exits === exit\);\s*if \(!opened && exits === exit\) leave\(from\);/,
+  assert.match(view, /const exit = exits;\s*if \(!\(await close\(false, true\)\)\) return;\s*if \(exits !== exit\) return;[\s\S]{0,300}displayName: next\.displayName \},\s*\(\) => exits === exit\);\s*if \(!opened && exits === exit && !session && !opening\) leave\(from\);/,
     "the template's reopen, likewise, and it does not leave a second time");
   assert.equal((view.match(/reopenSame\(/g) ?? []).length, 4, "the three documentary reloads use it");
   assert.doesNotMatch(view, /reload: async/, "no reload of its own");
