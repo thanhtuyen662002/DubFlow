@@ -34,6 +34,8 @@ on:
       - engine/dubflow/compilation/program.py
       - engine/dubflow/package/job.py
       - tests/product/test_source_rule.py
+      - engine/dubflow/mastering/final_qc.py
+      - engine/dubflow/mastering/measure.py
   pull_request:
     paths:
       - .github/workflows/pr-desktop-editor-windows.yml
@@ -61,6 +63,8 @@ on:
       - engine/dubflow/compilation/program.py
       - engine/dubflow/package/job.py
       - tests/product/test_source_rule.py
+      - engine/dubflow/mastering/final_qc.py
+      - engine/dubflow/mastering/measure.py
 
 permissions:
   contents: read
@@ -147,6 +151,21 @@ jobs:
           $ffmpeg = Get-ChildItem -LiteralPath $extract -Filter 'ffmpeg.exe' -Recurse | Select-Object -First 1
           if ($null -eq $ffmpeg) { throw 'FFmpeg archive did not contain ffmpeg.exe' }
           "DUBFLOW_TEST_FFMPEG=$($ffmpeg.FullName)" >> $env:GITHUB_ENV
+
+      - name: Run the editor's Kiểm tra kỹ thuật test against the pinned FFmpeg (#935)
+        shell: pwsh
+        run: |
+          # The host tests above ran before DUBFLOW_TEST_FFMPEG was set, so this test returned at
+          # once there. It reuses their build. It must really run: its marker and exactly one pass.
+          if (-not $env:DUBFLOW_TEST_FFMPEG -or -not (Test-Path -LiteralPath $env:DUBFLOW_TEST_FFMPEG)) { throw 'DUBFLOW_TEST_FFMPEG is not set to the pinned ffmpeg.exe' }
+          $log = Join-Path $env:RUNNER_TEMP 'export-check-tests.log'
+          cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --locked real_export_check -- --nocapture 2>&1 | Tee-Object -FilePath $log
+          if ($LASTEXITCODE -ne 0) { throw 'Export check test against real FFmpeg failed' }
+          $text = Get-Content -LiteralPath $log -Raw
+          if ($text -notmatch '(?m)^export-check: ran against real FFmpeg\s*$') { throw 'Export check test did not run against real FFmpeg (marker missing)' }
+          $passed = [regex]::Matches($text, '(?m)^test result: ok\. 1 passed; 0 failed;').Count
+          if ($passed -ne 1) { throw "Expected exactly one export check test to pass, saw $passed" }
+          Write-Host 'Export check test passed against the pinned FFmpeg (blackdetect, freezedetect, loudnorm, decode errors, Dừng kiểm tra)'
 
       - name: Run the media adapter tests against real FFmpeg
         shell: pwsh

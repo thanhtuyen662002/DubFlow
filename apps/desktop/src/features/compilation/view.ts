@@ -10,13 +10,14 @@ import { confirmDialog } from "../../shell/confirm.ts";
 import { confirmDeleteProject, deleteProjectButton } from "../../shell/project_delete.ts";
 import { fileName, parseRecentRuns, rememberRun, shortDate } from "../product/model.ts";
 import { mountRawCompilation } from "./raw_view.ts";
+import { checkBadge, checkRunning } from "../edit/export_check.ts";
 
 /** Folders of the compilations started here, so a run saved beside its source videos (no saving folder chosen)
  * is listed again after the app reopens (rc4 Windows check). */
 export const RECENT_COMPILATIONS_KEY = "dubflow.compilation.runs.v1";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
-type ExportEntry = { path: string; created: number; duration: number };
+type ExportEntry = { path: string; created: number; duration: number; check?: unknown };
 /** A finished compilation the editor can open. */
 export type CompilationVideo = { outputPath: string; displayName: string };
 
@@ -191,6 +192,8 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
   let previewIndex = 0;
   let runsToken = 0;
   let exportsToken = 0;
+  /** Reads the edited versions again while a Kiểm tra kỹ thuật of one runs. */
+  let exportsTimer = 0;
   let playing = "";
   let playingRequest = 0;
   const durations = new Map<string, number>();
@@ -741,6 +744,7 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
 
   async function loadExports(path: string | null): Promise<void> {
     const ticket = ++exportsToken;
+    if (exportsTimer) { window.clearTimeout(exportsTimer); exportsTimer = 0; }
     const section = $("exports");
     if (!path) { section.hidden = true; return; }
     let response: { status: { state: string; percent: number } | null; exports: ExportEntry[] } | null = null;
@@ -765,6 +769,14 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
       meta.textContent = [clock(entry.duration), shortDate(entry.created)].filter(Boolean).join(" · ");
       text.append(name, meta);
       text.title = entry.path;
+      const badge = checkBadge(entry.check);
+      if (badge) {
+        const line = document.createElement("small");
+        line.className = badge.className;
+        line.textContent = badge.text;
+        line.title = badge.title;
+        text.append(line);
+      }
       const actions = document.createElement("span");
       actions.className = "edit-export-actions";
       const view = button("Xem", () => { void play(entry.path); }, `Xem ${fileName(entry.path)}`);
@@ -774,6 +786,7 @@ export function mountCompilation(invoke: Invoke, session: AiSession, settings: {
       item.append(text, actions);
       return item;
     }));
+    if (checkRunning(exports)) exportsTimer = window.setTimeout(() => void loadExports(path), 1500);
   }
 
   // ---------- Making a compilation ----------

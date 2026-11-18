@@ -1282,6 +1282,14 @@ button.job.selected { background: var(--select); }
 .edit-export-text small { color: var(--text-3); font-size: 12px; font-variant-numeric: tabular-nums; }
 .edit-export-actions { display: flex; flex: none; gap: 6px; }
 .edit-export-actions .btn { height: 28px; padding: 0 10px; font-size: 12.5px; }
+/* Kiểm tra kỹ thuật (Issue #935): advisory, under the export it is about */
+.edit-export-text .edit-export-check { white-space: normal; line-height: 1.4; }
+.edit-export-text .edit-export-check.mqc-ok { color: var(--ok); }
+.edit-export-text .edit-export-check.mqc-warn { color: var(--warn); font-weight: 500; }
+.export-tech-check { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
+.export-tech-check ul { margin: 0; padding-left: 18px; color: var(--text-2); }
+.export-tech-check ul:empty { display: none; }
+.export-tech-check .link { font-size: 13px; }
 
 /* "Xuất video" dialog */
 .export-panel { width: min(520px, 100%); height: auto; max-height: 100%; }

@@ -53,7 +53,7 @@ pub(super) fn sound_frame(frame: &Frame) -> Frame {
 }
 
 /// Output time each segment starts at: dissolves overlap their neighbours.
-fn positions(edit: &Edit) -> Vec<f64> {
+pub(super) fn positions(edit: &Edit) -> Vec<f64> {
     let mut at = 0.0;
     edit.segments.iter().enumerate().map(|(index, segment)| {
         let start = at;
@@ -639,7 +639,7 @@ mod tests {
         let job = ExportJob { work: work.clone(), inputs: vec![source_file], media: vec![], script, folder: dir.clone(), name: "out".into(),
             target: dir.join("parts.mp4"), srt: None, seconds: total, has_audio, bitrate: 1_500_000, fps: "30/1".into(), ffmpeg: ffmpeg.clone(),
             quality: "source".into(), edit: timeline.clone(), audio: vec![], main_volume: 1.0, main_denoise: false, main_eq: None, stems: None,
-            texts: vec![], aspect: None, fill: None, audio_only: false, parts: None };
+            texts: vec![], aspect: None, fill: None, audio_only: false, parts: None, check: None };
         let source = Source { media_count: 1, frame, burn: None, texts: None, reframe: None, prefilter: None, sound_script: Some(sound_script) };
         let running = Running { children: Mutex::new(Vec::new()), cancelled: AtomicBool::new(false) };
         let single = dir.join("single.mp4");

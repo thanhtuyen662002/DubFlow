@@ -2191,11 +2191,15 @@
               </label>
             </details>
           </fieldset>
-          <p class="export-note">Video gốc vẫn được giữ nguyên. Phụ đề SRT được lưu kèm, khớp với video mới.</p>
+          <p class="export-note">Video gốc vẫn được giữ nguyên. Phụ đề SRT được lưu kèm, khớp với video mới. Sau khi xuất, DubFlow tự kiểm tra kỹ thuật video (chỉ để tham khảo).</p>
           <div id="export-progress" class="export-progress" role="status" hidden>
             <div class="export-progress-line"><span id="export-progress-text"></span><span id="export-progress-pct"></span></div>
             <div class="bar"><span id="export-progress-bar"></span></div>
           </div>
+          <div id="export-check" class="export-tech-check" role="status" aria-live="polite" hidden>
+            <p id="export-check-summary"></p><ul id="export-check-lines"></ul>
+            <small id="export-check-note" class="export-hint"></small>
+            <button id="export-check-stop" class="link" type="button" hidden>Dừng kiểm tra</button></div>
           <p id="export-error" class="export-error" role="alert" hidden></p>
         </div>
         <footer class="review-foot export-foot">

@@ -90,6 +90,8 @@ struct Running {
 
 #[path = "edit_parts.rs"]
 mod parts;
+#[path = "edit_check.rs"]
+mod check;
 
 static RUNNING: LazyLock<Mutex<HashMap<PathBuf, Arc<Running>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -939,7 +941,12 @@ fn parse_still(text: &str) -> Option<Probe> {
 }
 
 fn probe(video: &Path) -> Result<Probe, String> {
-    let mut command = Command::new(media_tool("ffprobe.exe")?);
+    probe_with(&media_tool("ffprobe.exe")?, video)
+}
+
+/// `probe` with a given FFprobe (Kiểm tra kỹ thuật uses the one beside its FFmpeg).
+fn probe_with(ffprobe: &Path, video: &Path) -> Result<Probe, String> {
+    let mut command = Command::new(ffprobe);
     command.args(["-v", "error", "-show_entries", "format=duration,size:stream=codec_type,width,height,avg_frame_rate,r_frame_rate", "-of", "json"])
         .arg(video)
         .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
@@ -3235,6 +3242,8 @@ struct ExportJob {
     audio_only: bool,
     /// A long export, rendered as parts side by side when it can be (`parts`).
     parts: Option<parts::Source>,
+    /// Kiểm tra kỹ thuật after the export is published (None for Chỉ âm thanh).
+    check: Option<check::Plan>,
 }
 
 fn stop(running: &Running) {
@@ -3308,7 +3317,8 @@ fn run_tracked(ffmpeg: &Path, args: Vec<OsString>, work: &Path, log_path: &Path,
 }
 
 /// Render, then publish the video and subtitles under names that are free now.
-fn run_export(job: &ExportJob, running: &Running) {
+/// Some((video, whether its .srt was written)) once an edited video is published.
+fn run_export(job: &ExportJob, running: &Running) -> Option<(PathBuf, bool)> {
     let partial = partial_of(&job.target);
     let mut failure = String::new();
     let mut done = job.parts.as_ref().is_some_and(|source| parts::render(job, source, running).is_ok());
@@ -3331,20 +3341,20 @@ fn run_export(job: &ExportJob, running: &Running) {
     if running.cancelled.load(Ordering::SeqCst) || job.work.join("cancel").exists() {
         let _ = fs::remove_file(&partial);
         write_status(&job.work, "CANCELLED", 0.0, "Đã hủy xuất video.", None);
-        return;
+        return None;
     }
     if !done {
         let _ = fs::remove_file(&partial);
         let detail = if failure.is_empty() { String::new() } else { format!(" ({failure})") };
         write_status(&job.work, "FAILED", 0.0, &format!("Không xuất được video. Hãy thử lại hoặc chọn chất lượng khác.{detail}"), None);
-        return;
+        return None;
     }
     // Someone may have created the name meanwhile: take the next free one.
     let target = if job.target.exists() || job.target.with_extension("srt").exists() {
         match unique_target(&job.folder, &job.name, if job.audio_only { "m4a" } else { "mp4" }) { Ok(target) => target, Err(error) => {
             let _ = fs::remove_file(&partial);
             write_status(&job.work, "FAILED", 0.0, &error, None);
-            return;
+            return None;
         } }
     } else {
         job.target.clone()
@@ -3352,20 +3362,21 @@ fn run_export(job: &ExportJob, running: &Running) {
     if fs::rename(&partial, &target).is_err() {
         let _ = fs::remove_file(&partial);
         write_status(&job.work, "FAILED", 0.0, "Không lưu được video đã xuất vào thư mục đã chọn.", None);
-        return;
+        return None;
     }
     let srt = job.srt.as_ref().map(|text| (target.with_extension("srt"), text))
         .filter(|(path, text)| !path.exists() && write_atomic(path, text.as_bytes()).is_ok())
         .map(|(path, _)| display_path(&path));
     if job.audio_only {
         write_status(&job.work, "COMPLETED", 100.0, "Đã xuất âm thanh.", Some(&target));
-        return;
+        return None;
     }
     append_export(&job.work, json!({"path": display_path(&target), "srt_path": srt, "created": unix_now(),
         "duration": (job.seconds * 1000.0).round() / 1000.0, "quality": job.quality, "segments": job.edit.segments,
         "media": job.media, "luts": job.edit.luts, "transitions": job.edit.transitions, "overlays": job.edit.overlays, "audio": job.audio, "main_volume": job.main_volume, "main_denoise": job.main_denoise, "main_eq": job.main_eq,
         "stems": job.stems, "texts": job.texts, "aspect": job.aspect, "fill": job.aspect.as_ref().and(job.fill.as_ref())}));
     write_status(&job.work, "COMPLETED", 100.0, "Đã xuất video.", Some(&target));
+    Some((target, srt.is_some()))
 }
 
 fn start_export(request: ExportRequest) -> Result<Value, String> {
@@ -3509,24 +3520,37 @@ fn start_export(request: ExportRequest) -> Result<Value, String> {
     inputs.extend(stem_inputs.into_iter().map(|(file, _)| file));
     guarded(&work)?;
     fs::write(&script, text).map_err(|_| fail("Không ghi được bộ lọc xuất video"))?;
+    // Kiểm tra kỹ thuật: what the published video should be, decided now from the edit (pure).
+    let check = (!request.audio_only).then(|| {
+        let stills: Vec<bool> = inputs.iter().map(|input| crate::is_still(input)).collect();
+        let burns: Vec<&BurnSubtitles> = request.burn.iter().chain(request.burn_extra.iter()).collect();
+        let framing = check::Framing { export: (width, height), out: (out_width, out_height),
+            fill: request.fill.as_deref().unwrap_or("black"), aspect: request.aspect.as_deref() };
+        check::plan(&edit, &stills, output_seconds(&edit.segments, &edit.transitions), has_audio, &request.cues, &burns, &framing)
+    });
     let job = ExportJob {
         work: work.clone(), inputs, media: request.media, script, folder, name, target: target.clone(),
         srt: (!request.cues.is_empty() && !request.audio_only).then(|| format_srt(&request.cues)),
         seconds: output_seconds(&edit.segments, &edit.transitions), has_audio, bitrate, fps, ffmpeg, audio_only: request.audio_only,
         quality: request.quality, edit, audio: request.audio, main_volume: request.main_volume, texts: request.texts,
         main_denoise: request.main_denoise, main_eq: request.main_eq, stems: request.stems, parts,
-        aspect: request.aspect, fill: request.fill,
+        aspect: request.aspect, fill: request.fill, check,
     };
     write_status(&work, "RUNNING", 0.0, "Đang bắt đầu xuất video…", Some(&target));
     let entry = Arc::new(Running { children: Mutex::new(Vec::new()), cancelled: AtomicBool::new(false) });
     running.insert(key.clone(), entry.clone());
     drop(running);
     std::thread::spawn(move || {
-        run_export(&job, &entry);
+        let published = run_export(&job, &entry);
         if let Ok(mut running) = RUNNING.lock() {
             running.remove(&key);
         }
         drop(lease);
+        // Kiểm tra kỹ thuật: only once the video is published and the export's lease is free,
+        // so "Xem", "Mở thư mục" and a new export never wait for it.
+        if let (Some((video, srt)), Some(plan)) = (published, job.check) {
+            check::run(&job.work, &job.ffmpeg, plan.for_video(video, srt));
+        }
     });
     Ok(json!({"path": display_path(&target)}))
 }
@@ -3556,8 +3580,9 @@ pub fn edit_status(output_path: String, kind: String) -> Result<Value, String> {
             drop(lease);
         }
     }
-    let exports: Vec<Value> = read_exports(&work).into_iter()
+    let mut exports: Vec<Value> = read_exports(&work).into_iter()
         .filter(|entry| entry["path"].as_str().is_some_and(|path| Path::new(path).is_file())).collect();
+    check::attach(&work, &mut exports);
     Ok(json!({"status": status, "exports": exports}))
 }
 
@@ -3571,6 +3596,21 @@ pub fn edit_cancel(output_path: String, kind: String) -> Result<(), String> {
     if let Some(entry) = RUNNING.lock().ok().and_then(|running| running.get(&work).cloned()) {
         stop(&entry);
     }
+    Ok(())
+}
+
+/// DubFlow is closing: stop every Kiểm tra kỹ thuật of this window, so no check's FFmpeg
+/// outlives the app and keeps the user's video open; none starts after this. The check.json
+/// left RUNNING is reported as INTERRUPTED on the next start.
+pub fn stop_checks() {
+    check::stop_all();
+}
+
+/// "Dừng kiểm tra": stop the Kiểm tra kỹ thuật of the export `path`; the video stays as exported.
+#[tauri::command]
+pub fn edit_check_cancel(output_path: String, kind: String, path: String) -> Result<(), String> {
+    let target = edit_target(&output_path, &kind)?;
+    check::cancel(&target.work, Path::new(&path));
     Ok(())
 }
 
@@ -5860,6 +5900,32 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
         assert_eq!(status["exports"].as_array().unwrap().len(), 1);
         assert_eq!(status["status"]["state"], "FAILED");
         assert!(!base.join("Phim (sửa 2).mp4.partial").exists());
+        assert!(status["exports"][0].get("check").is_none(), "an export without a Kiểm tra kỹ thuật has no check key");
+        // Kiểm tra kỹ thuật (Issue #935): each export's check is attached; one a closed app left RUNNING is interrupted.
+        let checked = base.join("Phim (sửa 3).mp4");
+        fs::write(&checked, b"video").unwrap();
+        append_export(&work, json!({"path": crate::display_path(&checked), "duration": 5.0}));
+        let check_file = |video: &Path, state: &str| {
+            let folder = work.join("checks").join(file_key(video));
+            fs::create_dir_all(&folder).unwrap();
+            fs::write(folder.join("check.json"), json!({"schema_version": 1, "kind": "export_check", "advisory": true, "state": state,
+                "percent": 100, "checks": [{"id": "black", "label": "Hình đen", "ok": false, "detail": "đen 3,0 giây ở 0:04–0:07"}]}).to_string()).unwrap();
+            folder
+        };
+        check_file(&exported, "DONE");
+        let stale = check_file(&checked, "RUNNING");
+        let status = edit_status(path.clone(), "job".into()).unwrap();
+        assert_eq!(status["exports"][0]["check"]["state"], "DONE");
+        assert_eq!(status["exports"][0]["check"]["checks"][0]["detail"], "đen 3,0 giây ở 0:04–0:07");
+        assert_eq!(status["exports"][1]["check"]["state"], "INTERRUPTED");
+        assert_eq!(status["status"]["state"], "FAILED", "a check never changes the export's status");
+        // While another holder has the check's lease (Windows file sharing), RUNNING stays.
+        if cfg!(windows) {
+            check_file(&checked, "RUNNING");
+            let lease = crate::work_lease::take(&stale, BUSY).unwrap();
+            assert_eq!(edit_status(path.clone(), "job".into()).unwrap()["exports"][1]["check"]["state"], "RUNNING");
+            drop(lease);
+        }
         // While another holder has the lease (Windows file sharing), RUNNING stays.
         if cfg!(windows) {
             write_status(&work, "RUNNING", 10.0, "x", None);

@@ -371,8 +371,25 @@ function previewAudioSeconds(path: string): number {
   for (const char of path) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
   return 1.5 + (hash % 900) / 10;
 }
-const editRuns = new Map<string, { started: number; cancelled: boolean; entry: PreviewExport; recorded: boolean }>();
+const editRuns = new Map<string, { started: number; cancelled: boolean; entry: PreviewExport; recorded: boolean; checkStopped?: boolean }>();
 const EDIT_EXPORT_MS = 5000;
+/** Kiểm tra kỹ thuật after a preview export: RUNNING this long, then DONE with one point to look at. */
+const EDIT_CHECK_MS = 2000;
+
+function previewExportCheck(run: { started: number; entry: PreviewExport; checkStopped?: boolean }) {
+  const elapsed = Date.now() - run.started - EDIT_EXPORT_MS;
+  const base = { schema_version: 1, kind: "export_check", advisory: true, video: run.entry.path, warnings: [] as string[], unmeasured: [] as string[],
+    black: [] as number[][], frozen: [] as number[][], checked_at: Math.floor(Date.now() / 1000) };
+  if (run.checkStopped) return { ...base, state: "STOPPED", percent: 0, checks: [] };
+  if (elapsed < EDIT_CHECK_MS) return { ...base, state: "RUNNING", percent: Math.floor(elapsed / EDIT_CHECK_MS * 100), checks: [] };
+  return { ...base, state: "DONE", percent: 100, warnings: ["black"], unmeasured: ["subtitle_frame"], black: [[4, 7]], checks: [
+    { id: "decode", label: "Giải mã", ok: true, detail: "đọc hết 12,0 giây, không có lỗi" },
+    { id: "duration", label: "Thời lượng", ok: true, detail: "video 12000 ms, bản sửa 12000 ms" },
+    { id: "audio", label: "Âm thanh", ok: true, detail: "đỉnh -12.7 dBTP" },
+    { id: "black", label: "Hình đen", ok: false, detail: "đen 3,0 giây ở 0:04–0:07" },
+    { id: "subtitle_frame", label: "Phụ đề trong khung", ok: null, detail: "không có phụ đề in vào hình" },
+  ] };
+}
 
 function previewEditStatus(outputPath: string) {
   const run = editRuns.get(outputPath);
@@ -389,7 +406,8 @@ function previewEditStatus(outputPath: string) {
     exports.push(run.entry);
     editExports.set(outputPath, exports);
   }
-  return { status: { schema_version: 1, state: "COMPLETED", percent: 100, message: "Đã xuất video.", output_path: run.entry.path }, exports };
+  const checked = exports.map((entry) => entry === run.entry ? { ...entry, check: previewExportCheck(run) } : entry);
+  return { status: { schema_version: 1, state: "COMPLETED", percent: 100, message: "Đã xuất video.", output_path: run.entry.path }, exports: checked };
 }
 /** Phiên bản và mẫu saved in the browser preview (kept for the page's life). */
 let previewVersions: Array<{ id: string; name: string; saved_at: number; summary: string | null; project: unknown }> = [];
@@ -655,6 +673,11 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
     case "edit_cancel": {
       const run = editRuns.get(String(args.outputPath));
       if (run && Date.now() - run.started < EDIT_EXPORT_MS) run.cancelled = true;
+      return null as T;
+    }
+    case "edit_check_cancel": {
+      const run = editRuns.get(String(args.outputPath));
+      if (run && run.entry.path === args.path && previewExportCheck(run).state === "RUNNING") run.checkStopped = true;
       return null as T;
     }
     case "reframe_info": return { width: 1080, height: 1920, vertical: true } as T;

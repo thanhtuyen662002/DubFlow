@@ -49,6 +49,7 @@ import { packHistory, unpackHistory } from "./undo_store.ts";
 import { DraftSavers, windowTimers } from "./autosave.ts";
 import { askAlone, CLOSE_WAIT_MS, flushWithin, unsavedPrompt } from "./close_guard.ts";
 import { mountThumbnail } from "./thumbnail_view.ts";
+import { CHECK_NOTE, checkBadge, checkLines, checkRunning, checkSummary, parseExportCheck } from "./export_check.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 type Facts = { duration: number; width: number; height: number; fps?: number; size_bytes: number; has_audio: boolean; cues: Cue[] };
@@ -56,6 +57,8 @@ type LoadResponse = Facts & { project: unknown; kind?: string; reviewable?: bool
 type ExportEntry = {
   path: string; srt_path?: string | null; created: number; duration: number; quality?: string;
   media?: unknown; segments?: unknown; transitions?: unknown; overlays?: unknown;
+  /** Kiểm tra kỹ thuật (Issue #935), attached by edit_status; read with parseExportCheck. */
+  check?: unknown;
 };
 type ExportState = "RUNNING" | "COMPLETED" | "FAILED" | "CANCELLED";
 type ExportStatus = { state: ExportState; percent: number; message: string; output_path: string | null };
@@ -268,6 +271,8 @@ const WHERE_LABEL: Record<Where, { button: string; action: string; note: string 
 };
 /** Chuẩn hóa độ to on the export dialog, remembered (Issue #521). */
 const LOUDNESS_KEY = "dubflow.edit.loudness";
+/** How long the status keeps being read after an export for its Kiểm tra kỹ thuật to start. */
+const CHECK_WAIT_MS = 15_000;
 
 const TRANSITION_NAMES: Record<TransitionType, string> = {
   fade: "Mờ qua đen", dissolve: "Hòa trộn", fadewhite: "Lóe trắng", wipeleft: "Quét sang trái", wiperight: "Quét sang phải",
@@ -447,6 +452,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   let listStatus: StatusResponse | null = null;
   let pollTimer = 0;
   let pollToken = 0;
+  /** Until when a finished export's Kiểm tra kỹ thuật is waited for (it starts just after the video is saved). */
+  let checkWait = 0;
   // Export dialog.
   let folder = "";
   let quality: Quality = "source";
@@ -3877,8 +3884,16 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       return;
     }
     if (token !== pollToken || subject()?.id !== job.id) return;
+    const checking = new Set((listStatus?.exports ?? []).filter((entry) => parseExportCheck(entry.check)?.state === "RUNNING").map((entry) => entry.path));
     listStatus = response;
     const state = response.status?.state;
+    // Kiểm tra kỹ thuật starts right after the export is saved: wait a little for its first word.
+    if (previous === "RUNNING" && state === "COMPLETED") checkWait = Date.now() + CHECK_WAIT_MS;
+    for (const entry of response.exports) {
+      const check = parseExportCheck(entry.check);
+      const warnings = check?.state === "DONE" ? checkLines(check).length : 0;
+      if (session && checking.has(entry.path) && warnings) note(`«${fileName(entry.path)}»: ${warnings} điểm cần xem — mở Xuất video để xem.`);
+    }
     if (previous === "RUNNING" && state === "COMPLETED" && session?.target.id === job.id && session.exporting) {
       session.history.markExported(session.exporting);
       session.exporting = null;
@@ -3894,7 +3909,10 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     if (state !== "RUNNING") dialogWaiting = false;
     renderList();
     renderDialog();
+    const newest = response.exports[response.exports.length - 1];
+    const awaiting = state === "COMPLETED" && Date.now() < checkWait && !!newest && newest.check === undefined;
     if (state === "RUNNING") schedulePoll(700);
+    else if (checkRunning(response.exports) || awaiting) schedulePoll(1500);
   }
 
   function renderList(): void {
@@ -3926,6 +3944,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
         ? `${two(when.getDate())}/${two(when.getMonth() + 1)} ${two(when.getHours())}:${two(when.getMinutes())}` : "";
       text.append(element("strong", "", fileName(entry.path)), element("small", "", [formatClock(entry.duration), stamp].filter(Boolean).join(" · ")));
       text.title = entry.path;
+      const badge = checkBadge(entry.check);
+      if (badge) text.append(Object.assign(element("small", badge.className, badge.text), { title: badge.title }));
       const view = element("button", "btn", "Xem");
       view.type = "button";
       view.addEventListener("click", () => { if (job) host.playExport(job.id, entry.path); });
@@ -4111,10 +4131,47 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     start.hidden = running || done;
     cancel.hidden = !running;
     reveal.hidden = !done;
+    renderCheck(running);
     later.textContent = running ? "Chạy nền" : done ? "Đóng" : "Để sau";
     later.title = running ? "Đóng hộp thoại; video vẫn tiếp tục xuất, tiến độ hiện ở thẻ Kết quả" : "";
     start.disabled = !nameInput.value.trim() || !folder;
   }
+
+  /**
+   * Kiểm tra kỹ thuật in the dialog: the check of the export just made, or, with
+   * nothing running, of the latest one. It is the only place for Bán hàng and file videos.
+   */
+  function renderCheck(running: boolean): void {
+    const box = $("#export-check");
+    const exports = listStatus?.exports ?? [];
+    const entry = dialogDone !== null ? exports.find((item) => samePath(item.path, dialogDone!)) : running ? undefined : exports[exports.length - 1];
+    const check = entry ? parseExportCheck(entry.check) : null;
+    box.hidden = !check;
+    if (!entry || !check) return;
+    const { text, tone } = checkSummary(check);
+    const summary = $("#export-check-summary");
+    summary.textContent = dialogDone !== null ? text : `Bản xuất gần nhất: ${text}`;
+    summary.className = tone === "warn" ? "mqc-warn" : tone === "ok" ? "mqc-ok" : "";
+    summary.title = entry.path;
+    $("#export-check-lines").replaceChildren(...checkLines(check).map((line) => element("li", "", line)));
+    $("#export-check-note").textContent = CHECK_NOTE;
+    const stop = $<HTMLButtonElement>("#export-check-stop");
+    stop.hidden = check.state !== "RUNNING";
+    stop.dataset.path = entry.path;
+  }
+
+  async function stopCheck(): Promise<void> {
+    const job = subject();
+    const path = $<HTMLButtonElement>("#export-check-stop").dataset.path;
+    if (!job?.outputPath || !path) return;
+    try {
+      await invoke("edit_check_cancel", { outputPath: job.outputPath, kind: job.kind, path });
+    } catch (error) {
+      host.showError(`Không dừng được kiểm tra kỹ thuật: ${String(error).slice(0, 160)}`);
+    }
+    schedulePoll(300);
+  }
+  $("#export-check-stop").addEventListener("click", () => void stopCheck());
 
   async function startExport(): Promise<void> {
     if (!session) return;
