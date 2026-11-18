@@ -30,7 +30,7 @@ assert.equal(parseExportCheck({ ...base, state: "RUNNING", percent: "x", checks:
 // Text and tone of every state.
 const summary = (value) => checkSummary(parseExportCheck(value));
 assert.deepEqual(summary({ ...base, state: "RUNNING", percent: 42.7, checks: [] }),
-  { text: "Đang kiểm tra kỹ thuật… 42% — video đã lưu và dùng được ngay.", tone: "info" });
+  { text: "Đang kiểm tra kỹ thuật… 42% — video đã lưu và xem được ngay; muốn đổi tên, di chuyển hay xóa tệp thì bấm Dừng kiểm tra trước.", tone: "info" });
 // queued behind another check: the host checks one video at a time
 assert.deepEqual(summary({ ...base, state: "RUNNING", percent: 0, checks: [], waiting: true }),
   { text: "Đang chờ kiểm tra kỹ thuật (mỗi lần kiểm tra một video) — video đã lưu và dùng được ngay.", tone: "info" });

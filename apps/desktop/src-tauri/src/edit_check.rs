@@ -9,11 +9,14 @@
 //! out. Whether burned subtitles stay inside the frame is measured apart from
 //! the video, because burned text cannot be told apart from the picture: the
 //! export's own subtitle layers are drawn by libass, in white, on a black frame
-//! of the export's size, and FFmpeg's `bbox` reports where they landed.
+//! twice the export's size with the export frame in its middle, and FFmpeg's
+//! `bbox` reports where they landed, past the export frame too.
 //!
 //! The result is never a gate: it has no "passed" or READY state, nothing
-//! reads it to allow or refuse anything, and the check never deletes, renames,
-//! re-encodes or blocks the video. It only reads the video and writes in its
+//! reads it to allow or refuse anything, and the check never deletes, renames
+//! or re-encodes the video. While FFmpeg reads it (the running check, not a
+//! waiting one) Windows refuses to rename, move or delete the file; the UI says
+//! so and Dừng kiểm tra frees it. It only reads the video and writes in its
 //! own app-owned folder, `work/checks/<file_key(video)>/`, never beside the
 //! user's file, and it never touches `status.json` or `exports.json`.
 use super::*;
@@ -335,16 +338,22 @@ fn read_boxes(text: &str) -> HashMap<usize, (i64, i64, i64, i64)> {
 /// The measured result: a stretch's drawing must stay off the frame's outermost pixels (ink there runs on past the
 /// edge) and inside the kept window. A stretch where libass drew nothing is not measured, never called fine.
 fn fit_of(frame: &SubtitleFrame, starts: &[u64], boxes: &HashMap<usize, (i64, i64, i64, i64)>) -> SubtitleFit {
-    let (width, height) = (i64::from(frame.export.0), i64::from(frame.export.1));
+    let (width, height) = (f64::from(frame.export.0), f64::from(frame.export.1));
     let (wx0, wy0, wx1, wy1) = frame.window;
     let (mut cut, mut edge, mut cropped, mut blank) = (Vec::new(), false, false, 0);
     for (index, &start) in starts.iter().enumerate() {
-        let Some(&(x0, y0, x1, y1)) = boxes.get(&index) else {
+        let Some(&(cx0, cy0, cx1, cy1)) = boxes.get(&index) else {
             blank += 1;
             continue;
         };
-        let on_frame = x0 > 0 && y0 > 0 && x1 < width - 1 && y1 < height - 1;
-        let in_window = x0 as f64 >= wx0 - 0.5 && y0 as f64 >= wy0 - 0.5 && (x1 + 1) as f64 <= wx1 + 0.5 && (y1 + 1) as f64 <= wy1 + 0.5;
+        // The boxes are on the measure frame, twice the export frame with it in the middle: ink on that frame's own
+        // edge may run on further, and is outside the export frame anyway.
+        let at_edge = cx0 <= 0 || cy0 <= 0 || cx1 >= 2 * i64::from(frame.export.0) - 1 || cy1 >= 2 * i64::from(frame.export.1) - 1;
+        let (x0, y0) = (cx0 as f64 - width / 2.0, cy0 as f64 - height / 2.0);
+        let (x1, y1) = (cx1 as f64 + 1.0 - width / 2.0, cy1 as f64 + 1.0 - height / 2.0);
+        // half a pixel either way: an odd-sized export frame sits half a pixel off the measure frame's grid
+        let on_frame = !at_edge && x0 >= -0.5 && y0 >= -0.5 && x1 <= width + 0.5 && y1 <= height + 0.5;
+        let in_window = x0 >= wx0 - 0.5 && y0 >= wy0 - 0.5 && x1 <= wx1 + 0.5 && y1 <= wy1 + 0.5;
         if !on_frame {
             edge = true;
         } else if !in_window {
@@ -379,9 +388,9 @@ fn fit_of(frame: &SubtitleFrame, starts: &[u64], boxes: &HashMap<usize, (i64, i6
 
 const EDGE: &str = "chữ vượt ra ngoài khung hình";
 
-/// Where libass draws the burned lines: the export's own layers painted white (`measure_ass`) on a black frame of
-/// the export's size, one frame per stretch (`stretches`, on the video's own frame times), and FFmpeg's `bbox`
-/// around what was drawn. Never decodes or changes the video.
+/// Where libass draws the burned lines: the export's own layers painted white (`measure_ass`) on a black frame
+/// twice the export's size around it, one frame per stretch (`stretches`, on the video's own frame times), and
+/// FFmpeg's `bbox` around what was drawn. Never decodes or changes the video.
 fn measure_subtitles(work: &Path, ffmpeg: &Path, frame: &SubtitleFrame, video: &Path, dir: &Path, running: &Running) -> SubtitleFit {
     let unmeasured = |why: String| SubtitleFit { ok: None, detail: format!("chưa đo được phụ đề: {why}"), at_ms: Vec::new() };
     if let Some(why) = &frame.unmeasurable {
@@ -405,10 +414,10 @@ fn measure_subtitles(work: &Path, ffmpeg: &Path, frame: &SubtitleFrame, video: &
     let (width, height) = frame.export;
     let mut args: Vec<OsString> = ["-nostdin", "-hide_banner", "-nostats", "-loglevel", "level+info", "-f", "lavfi", "-i"]
         .into_iter().map(OsString::from).collect();
-    // `color` makes only even sizes: one a pixel larger is cut down to the export's own size first.
-    args.push(format!("color=c=black:s={}x{}:r=1:d={}", width + width % 2, height + height % 2, starts.len()).into());
+    // Twice the export frame's size, the export frame in the middle (`measure_ass`): what runs past it is drawn too.
+    args.push(format!("color=c=black:s={}x{}:r=1:d={}", 2 * width, 2 * height, starts.len()).into());
     args.extend(crate::gpu::thread_args(false));
-    args.extend(["-vf".into(), format!("format=rgb24,crop={width}:{height}:0:0,{},format=gray,bbox", filters.join(",")).into()]);
+    args.extend(["-vf".into(), format!("format=rgb24,{},format=gray,bbox", filters.join(",")).into()]);
     args.extend(["-f", "null", "-"].map(OsString::from));
     // About 150 bytes of log per stretch.
     let (result, text) = run_logged(ffmpeg, args, work, dir, "measure.log", LOG_LIMIT + 512 * starts.len() as u64, running, |_| {});
@@ -1467,7 +1476,11 @@ mod tests {
         let mut dragged = style(json!({"x": 0.25, "y": 0.5, "box": "#101010", "box_opacity": 0.5}));
         dragged.primary = "#FFFF00".into();
         let script = measure_ass(&dragged, &layers[0]);
-        assert!(script.contains("Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\\an5\\pos(480,540)}A\n"), "{script}");
+        // on the measure frame: twice the script frame, the export's in the middle, margins and the spot moved with it
+        assert!(script.contains("Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\\an5\\pos(1440,1080)}A\n"), "{script}");
+        assert!(script.contains("PlayResX: 3840\nPlayResY: 2160\n") && script.contains(",2,1000,1000,588,1\n"), "{script}");
+        let plain_burn = burn_ass(&BurnSubtitles { style: dragged.clone(), lines: vec![cue(0, 1_000, "A")] }).unwrap();
+        assert!(plain_burn.contains("PlayResX: 1920\nPlayResY: 1080\n") && plain_burn.contains(",2,40,40,48,1\n") && plain_burn.contains("\\pos(480,540)"), "{plain_burn}");
         assert_eq!(script.matches("Dialogue:").count(), 3);
         assert!(script.contains(",&H00FFFFFF,&H000000FF,&H00FFFFFF,&H80FFFFFF,-1,"), "{script}");
         assert!(!script.contains("&H0000FFFF") && !script.contains("101010"), "no real colour left");
@@ -1553,7 +1566,7 @@ mod tests {
         let tall = subtitle_frame(&[&line], &Framing { export: (1920, 1080), out: (608, 1080), fill: "fill", aspect: Some("9:16") }).unwrap();
         let top_edge = fit_of(&tall, &[1_000], &HashMap::from([(0, (700, 0, 1200, 60))]));
         assert!(top_edge.detail.starts_with("phụ đề bị cắt mép ở 1 đoạn (chữ vượt ra ngoài khung hình), từ: 0:01"), "{}", top_edge.detail);
-        let both = fit_of(&tall, &[1_000, 2_000], &HashMap::from([(0, (700, 0, 1200, 60)), (1, (300, 900, 1500, 1000))]));
+        let both = fit_of(&tall, &[1_000, 2_000], &HashMap::from([(0, (700, 0, 1200, 60)), (1, (300 + 960, 900 + 540, 1500 + 960, 1000 + 540))]));
         assert!(both.detail.contains("(chữ vượt ra ngoài khung hình; khung 9:16, cắt cho đầy)"), "{}", both.detail);
     }
 
@@ -1574,7 +1587,9 @@ mod tests {
         let line = burn(style(json!({})), LONG, 12_000);
         let wide = subtitle_frame(&[&line], &Framing { export: (1920, 1080), out: (1920, 1080), fill: "black", aspect: None }).unwrap();
         let tall = subtitle_frame(&[&line], &Framing { export: (1920, 1080), out: (608, 1080), fill: "fill", aspect: Some("9:16") }).unwrap();
-        let boxes = |list: &[(usize, (i64, i64, i64, i64))]| list.iter().copied().collect::<HashMap<_, _>>();
+        // boxes in export pixels, put on the measure frame (twice the size, the export frame in the middle)
+        let boxes = |list: &[(usize, (i64, i64, i64, i64))]| list.iter().map(|&(n, (x0, y0, x1, y1))| (n, (x0 + 960, y0 + 540, x1 + 960, y1 + 540)))
+            .collect::<HashMap<_, _>>();
         let short = (894, 979, 1025, 1024);
         let long = (358, 976, 1560, 1034);
         let fine = fit_of(&wide, &[2_000, 12_000], &boxes(&[(0, short), (1, long)]));
@@ -1582,10 +1597,12 @@ mod tests {
         let cut = fit_of(&tall, &[2_000, 12_000], &boxes(&[(0, short), (1, long)]));
         assert_eq!((cut.ok, cut.at_ms.clone()), (Some(false), vec![12_000]));
         assert_eq!(cut.detail, "phụ đề bị cắt mép ở 1 đoạn (khung 9:16, cắt cho đầy), từ: 0:12 — đo trên chữ libass vẽ.");
-        // ink on the outermost column or row runs on past the frame
-        let edge = fit_of(&wide, &[3_000, 4_000, 5_000], &boxes(&[(0, (0, 975, 1919, 1028)), (1, (10, 1000, 300, 1079)), (2, (1, 1, 1918, 1078))]));
-        assert_eq!((edge.ok, edge.at_ms), (Some(false), vec![3_000, 4_000]));
-        assert!(edge.detail.starts_with("phụ đề bị cắt mép ở 2 đoạn (chữ vượt ra ngoài khung hình), từ: 0:03, 0:04"), "{}", edge.detail);
+        // ink past the frame (drawn on the measure frame around it) is cut; ink up to the outermost pixel is not;
+        // ink on the measure frame's own edge may run on further and is cut (recheck 11)
+        let edge = fit_of(&wide, &[3_000, 4_000, 5_000, 6_000, 7_000], &boxes(&[(0, (-3, 975, 1919, 1028)), (1, (10, 1000, 300, 1180)),
+            (2, (0, 0, 1919, 1079)), (3, (100, -540, 300, 10)), (4, (1, 1, 1918, 1078))]));
+        assert_eq!((edge.ok, edge.at_ms), (Some(false), vec![3_000, 4_000, 6_000]));
+        assert!(edge.detail.starts_with("phụ đề bị cắt mép ở 3 đoạn (chữ vượt ra ngoài khung hình), từ: 0:03, 0:04, 0:06"), "{}", edge.detail);
         // nothing drawn for a moment: not measured, never called fine
         let blank = fit_of(&wide, &[2_000, 12_000], &boxes(&[(0, short)]));
         assert_eq!(blank.ok, None);
@@ -1595,7 +1612,7 @@ mod tests {
         assert!(both.detail.ends_with("1 đoạn chưa đo được (libass không vẽ ra chữ)."), "{}", both.detail);
         // at most NAMED times in words, MAX_SPANS kept
         let many: Vec<u64> = (0..60).map(|index| index * 1_000).collect();
-        let all = fit_of(&wide, &many, &HashMap::from_iter((0..60).map(|index| (index, (0, 0, 10, 10)))));
+        let all = fit_of(&wide, &many, &HashMap::from_iter((0..60).map(|index| (index, (0, 0, 970, 550)))));
         assert_eq!(all.at_ms.len(), MAX_SPANS);
         assert!(all.detail.starts_with("phụ đề bị cắt mép ở 60 đoạn (chữ vượt ra ngoài khung hình), từ: 0:00, 0:01, 0:02, 0:03, 0:04… "), "{}", all.detail);
     }
@@ -1642,7 +1659,7 @@ mod tests {
         assert!(made.success());
         let measure = |lines: Vec<Cue>, style: SubtitleStyle, framing: &Framing| {
             let burn = BurnSubtitles { style, lines };
-            measure_subtitles(&work, &ffmpeg, &subtitle_frame(&[&burn], framing).unwrap(), &clip, &folder, &running)
+            measure_subtitles(&work, &ffmpeg, &SubtitleFrame { rate: (25, 1), ..subtitle_frame(&[&burn], framing).unwrap() }, &clip, &folder, &running)
         };
         let frames = frame_times(&ffprobe_beside(&ffmpeg), &clip, &running, (25, 1)).unwrap();
         assert_eq!((frames.len(), frames[0], frames[1], frames[299]), (300, 0, 40, 11_960), "the clip's own frame times, as libass gets them on the 1/25 clock");
@@ -1718,6 +1735,15 @@ mod tests {
         // two lines at once stack: both are measured together
         let stacked = measure(vec![cue(1_000, 5_000, "Dòng một"), cue(2_000, 4_000, "Dòng hai")], style(json!({})), &wide);
         assert_eq!(stacked.ok, Some(true), "{}", stacked.detail);
+        // a wrapped block dragged so low that its last row is wholly below the frame, while the row above stops a
+        // few pixels short of the edge: the hidden row is drawn on the measure frame around it, so it is seen cut
+        // (recheck 11); higher up the same block fits
+        let low = measure(vec![cue(1_000, 3_000, pho)], style(json!({"size": 2.0, "x": 0.5, "y": 0.951})), &wide);
+        assert_eq!((low.ok, low.at_ms.clone()), (Some(false), vec![1_000]), "{}", low.detail);
+        assert_eq!(measure(vec![cue(1_000, 3_000, pho)], style(json!({"size": 2.0, "x": 0.5, "y": 0.5})), &wide).ok, Some(true));
+        // eleven lines at once pile up past the top: cut, though libass leaves the visible rows inside
+        let pile: Vec<Cue> = (0..12).map(|n| cue(1_000 + n, 3_000, "anh ơi")).collect();
+        assert_eq!(measure(pile, style(json!({"size": 2.0})), &wide).ok, Some(false));
         let _ = fs::remove_dir_all(dir);
         println!("subtitle-measure: ran against real FFmpeg");
     }

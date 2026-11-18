@@ -169,7 +169,7 @@ await flush();
 assert.ok(calls.some(([cmd, args]) => cmd === "edit_status" && args.outputPath === state.path), "Kết quả lists the edited versions");
 assert.equal(node("export-list").children.length, 1);
 const checkLine = () => node("export-list").children[0].children[0].children[2];
-assert.equal(checkLine().textContent, "Đang kiểm tra kỹ thuật… 40% — video đã lưu và dùng được ngay.", "a running check shows its percent");
+assert.equal(checkLine().textContent, "Đang kiểm tra kỹ thuật… 40% — video đã lưu và xem được ngay; muốn đổi tên, di chuyển hay xóa tệp thì bấm Dừng kiểm tra trước.", "a running check shows its percent");
 assert.equal(timeouts.size, 1, "and the list is read again while it runs");
 editCheck = { ...checkBase, state: "DONE", percent: 100, warnings: ["black"], black: [[4, 7]], checks: [
   { id: "decode", label: "Giải mã", ok: true, detail: "đọc hết 12,0 giây, không có lỗi" },

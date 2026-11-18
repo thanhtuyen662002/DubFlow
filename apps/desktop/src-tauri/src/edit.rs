@@ -2316,7 +2316,7 @@ fn burn_ass(burn: &BurnSubtitles) -> Result<String, String> {
         return Err(fail("Phụ đề không hợp lệ"));
     }
     let mut script = burn_head(style, false);
-    let prefix = burn_prefix(style);
+    let prefix = burn_prefix(style, (0, 0));
     let mut lines: Vec<&Cue> = burn.lines.iter().collect();
     lines.sort_by_key(|line| (line.start_ms, line.end_ms));
     for line in lines {
@@ -2340,19 +2340,26 @@ fn burn_head(style: &SubtitleStyle, measure: bool) -> String {
     };
     let (primary, outline) = if measure { ("#FFFFFF", "#FFFFFF") } else { (style.primary.as_str(), style.outline.as_str()) };
     let align = match style.align.as_str() { "top" => 8, "middle" => 5, _ => 2 };
-    format!("[Script Info]\n; DubFlow: Phụ đề\nScriptType: v4.00+\nPlayResX: 1920\nPlayResY: 1080\nWrapStyle: 0\n\
+    // For the measure the script covers a frame twice as wide and tall with the export frame in its middle (#935,
+    // recheck 11), at the same scale: lines running past the export frame are still drawn, so they can be seen.
+    let (pad_x, pad_y) = if measure { MEASURE_PAD } else { (0, 0) };
+    format!("[Script Info]\n; DubFlow: Phụ đề\nScriptType: v4.00+\nPlayResX: {}\nPlayResY: {}\nWrapStyle: 0\n\
 ScaledBorderAndShadow: yes\nYCbCr Matrix: None\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, \
 BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n\
-Style: Default,{},{},{},&H000000FF,{},{back},{},0,0,0,100,100,0,0,{border},{},{},{align},40,40,48,1\n\n[Events]\n\
+Style: Default,{},{},{},&H000000FF,{},{back},{},0,0,0,100,100,0,0,{border},{},{},{align},{},{},{},1\n\n[Events]\n\
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n",
-        style.font, num(font_size), ass_color(primary, 0), ass_color(outline, 0), if style.bold { -1 } else { 0 },
-        num(style.outline_width), num(shadow))
+        1920 + 2 * pad_x, 1080 + 2 * pad_y, style.font, num(font_size), ass_color(primary, 0), ass_color(outline, 0), if style.bold { -1 } else { 0 },
+        num(style.outline_width), num(shadow), 40 + pad_x, 40 + pad_x, 48 + pad_y)
 }
 
-/// A dragged layer: every line centred on the same point.
-fn burn_prefix(style: &SubtitleStyle) -> String {
+/// Script units added on each side for the measure: half the script frame, so the measure frame is twice the export
+/// frame's size and the export frame sits exactly in its middle whatever its pixel size.
+pub(super) const MEASURE_PAD: (i64, i64) = (960, 540);
+
+/// A dragged layer: every line centred on the same point (`pad`: the measure's added script units).
+fn burn_prefix(style: &SubtitleStyle, (pad_x, pad_y): (i64, i64)) -> String {
     match (style.x, style.y) {
-        (Some(x), Some(y)) => format!("{{\\an5\\pos({},{})}}", (x * 1920.0).round() as i64, (y * 1080.0).round() as i64),
+        (Some(x), Some(y)) => format!("{{\\an5\\pos({},{})}}", (x * 1920.0).round() as i64 + pad_x, (y * 1080.0).round() as i64 + pad_y),
         _ => String::new(),
     }
 }
@@ -2361,7 +2368,7 @@ fn burn_prefix(style: &SubtitleStyle) -> String {
 /// `last` (its stretches, `edit_check::stretches`), in the order `burn_ass` writes them.
 pub(super) fn measure_ass(style: &SubtitleStyle, lines: &[(usize, usize, &Cue)]) -> String {
     let mut script = burn_head(style, true);
-    let prefix = burn_prefix(style);
+    let prefix = burn_prefix(style, MEASURE_PAD);
     for (first, last, line) in lines {
         script.push_str(&format!("Dialogue: 0,{},{},Default,,0,0,0,,{prefix}{}\n", ass_time(*first as f64), ass_time(*last as f64),
             ass_text(line.text.trim())));

@@ -43,7 +43,8 @@ export function checkSummary(check: ExportCheck): { text: string; tone: CheckTon
   switch (check.state) {
     case "RUNNING":
       if (check.waiting) return { text: "Đang chờ kiểm tra kỹ thuật (mỗi lần kiểm tra một video) — video đã lưu và dùng được ngay.", tone: "info" };
-      return { text: `Đang kiểm tra kỹ thuật… ${Math.floor(check.percent)}% — video đã lưu và dùng được ngay.`, tone: "info" };
+      // While it runs FFmpeg reads the file, and Windows then refuses to rename, move or delete it (#935, recheck 11).
+      return { text: `Đang kiểm tra kỹ thuật… ${Math.floor(check.percent)}% — video đã lưu và xem được ngay; muốn đổi tên, di chuyển hay xóa tệp thì bấm Dừng kiểm tra trước.`, tone: "info" };
     case "STOPPED":
       return { text: "Đã dừng kiểm tra kỹ thuật. Video vẫn được giữ nguyên.", tone: "info" };
     case "INTERRUPTED":
