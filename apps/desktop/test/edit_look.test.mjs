@@ -62,6 +62,69 @@ assert.deepEqual(twoHolds.segments.slice(1, 3).map((s) => s.look.freeze), [1, 2]
 assert.equal(split(frozen, 30.1), frozen, "too close to the edge");
 assert.equal(remapCues([{ start_ms: 29000, end_ms: 31000, text: "x" }], frozen).length, 2, "the cue on both sides of the hold, not on it");
 
+// Issue #930: the burned lines are the lines the preview shows. They are drawn on the finished picture, so a part's
+// look never moves them; on the edited timeline, a reversed part shows its lines mirrored, a held frame the line on it.
+{
+  const cues = [{ start_ms: 25000, end_ms: 27000, text: "x" }];
+  // reversed 20–50: source 25–27 is shown at output 20 + (50-27) … 20 + (50-25)
+  assert.deepEqual(remapCues(cues, reversed, { shown: true }), [{ start_ms: 43000, end_ms: 45000, text: "x" }]);
+  // a reversed part split in two shows the line as one
+  assert.deepEqual(remapCues([{ start_ms: 28000, end_ms: 32000, text: "y" }], halves, { shown: true }), [{ start_ms: 38000, end_ms: 42000, text: "y" }]);
+  // the held frame at 30 shows the line on it for the whole 3 s hold, between its two sides
+  assert.deepEqual(remapCues([{ start_ms: 29000, end_ms: 31000, text: "x" }], frozen, { shown: true }),
+    [{ start_ms: 29000, end_ms: 34000, text: "x" }]);
+  // the .srt is unchanged
+  assert.equal(remapCues(cues, reversed).length, 0);
+}
+
+// The shown lines match the preview's line at every instant (subtitles_view: cueAt at outputToSource's source time on
+// main-video parts), for every kind of edit.
+{
+  const { cueAt } = await import("../src/features/edit/subtitles.ts");
+  const { setTransition, outputDuration: length, MAIN, insertAt } = await import("../src/features/edit/model.ts");
+  const video = createEdit(64, { path: "D:\\a.mp4", width: 1280, height: 720 });
+  const three = split(split(video, 16), 32);
+  const lines = [{ start_ms: 5000, end_ms: 7000, text: "SUB A" }, { start_ms: 15000, end_ms: 18000, text: "CROSS" },
+    { start_ms: 20000, end_ms: 22000, text: "SUB B" }, { start_ms: 22500, end_ms: 24000, text: "R" }, { start_ms: 40000, end_ms: 42000, text: "SUB C" }];
+  const [p1, p2, p3] = three.segments.map((segment) => segment.id);
+  const edits = {
+    plain: three,
+    dissolve: setTransition(three, p1, "dissolve", 1),
+    fade: setTransition(three, p1, "fade", 1),
+    fast: setSpeed(three, p2, 2),
+    slow: setSpeed(three, p1, 0.5),
+    reverse: setLook(three, p2, { reverse: true }),
+    "reverse split": split(setLook(three, p2, { reverse: true }), 23),
+    freeze: freezeFrame(three, 21, 3),
+    reorder: { ...three, segments: [three.segments[2], three.segments[0], three.segments[1]] },
+    deleted: { ...three, segments: [three.segments[0], three.segments[2]] },
+    looks: setLook(setLook(three, p1, { zoom: 1.08, tilt: 1.5 }), p3, { flipH: true, rotate: 90 }),
+  };
+  // a 10 s clip of another video at 16 s: its source times overlap the lines, which must not show on it
+  edits.inserted = insertAt(three, 16, { path: "D:\\b.mp4", title: "b", duration: 10, width: 1280, height: 720, fps: 30, hasAudio: true, kind: "video" });
+  assert.equal(edits.inserted.segments.length, 4);
+  // a line split 0.05 s before its end, the rest played at a quarter speed: the preview shows it 0.2 s longer
+  const short = split(video, 6.95);
+  edits["short piece"] = setSpeed(short, short.segments[1].id, 0.25);
+  for (const [name, edit] of Object.entries(edits)) {
+    const burned = remapCues(lines, edit, { shown: true });
+    const sorted = [...lines].sort((a, b) => a.start_ms - b.start_ms);
+    let bad = 0, first = null;
+    for (let t = 0.005; t < length(edit); t += 0.01) {
+      const point = outputToSource(edit, t);
+      const want = point && point.segment.mediaId === MAIN ? cueAt(sorted, point.sourceTime)?.text ?? null : null;
+      const got = burned.filter((cue) => cue.start_ms <= t * 1000 && t * 1000 < cue.end_ms).map((cue) => cue.text);
+      if (want === null ? got.length !== 0 : got.length !== 1 || got[0] !== want) {
+        bad += 1;
+        first ??= { t: t.toFixed(3), want, got };
+      }
+    }
+    // only millisecond rounding at a line's ends may differ
+    assert.ok(bad <= 2, `${name}: ${bad} instants differ from the preview, first ${JSON.stringify(first)}`);
+    for (let i = 1; i < burned.length; i += 1) assert.ok(burned[i].start_ms >= burned[i - 1].end_ms, `${name}: never two lines at once`);
+  }
+}
+
 // Draft round trip and copy/paste carry the look.
 const back = parseProject(serializeProject(frozen, 1, null), 100, { path: "D:\\a.mp4" });
 assert.deepEqual(back.edit.segments, frozen.segments);

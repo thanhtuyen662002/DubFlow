@@ -4,7 +4,7 @@
  * so they follow cuts and speed, seeded from the video's captions. The export
  * burns them in when "In phụ đề vào video khi xuất" is on.
  */
-import { MAIN, outputToSource, type Cue, type Edit } from "./model.ts";
+import { MAIN, outputToSource, remapCues, type Cue, type Edit } from "./model.ts";
 import { cleanText, DEFAULT_STYLE, normalizeStyle, parseStyle, withoutPosition, type SubtitleCue, type SubtitleStyle } from "./subtitles.ts";
 
 export type PlainLine = { id: string; start_ms: number; end_ms: number; text: string };
@@ -213,9 +213,14 @@ export function srtLines(layers: PlainLayers): Cue[] {
   return track ? exportLines(track) : [];
 }
 
-/** What edit_export burns: `burn` (the first) and `burnExtra` (drawn over it), from the shown layers that burn. */
-export function burnRequests(layers: PlainLayers): { burn?: { style: SubtitleStyle; lines: Cue[] }; burnExtra?: Array<{ style: SubtitleStyle; lines: Cue[] }> } {
-  const all = shownTracks(layers).flatMap((track) => burnRequest(track) ?? []);
+/**
+ * What edit_export burns: `burn` (the first) and `burnExtra` (drawn over it), from the shown layers that burn, on the
+ * timeline of `edit` as the preview shows them (Issue #930: drawn on the finished picture, on the export's clock).
+ */
+export function burnRequests(layers: PlainLayers, edit: Edit): { burn?: { style: SubtitleStyle; lines: Cue[] }; burnExtra?: Array<{ style: SubtitleStyle; lines: Cue[] }> } {
+  const all = shownTracks(layers).flatMap((track) => burnRequest(track) ?? [])
+    .map((burn) => ({ ...burn, lines: remapCues(burn.lines, edit, { shown: true }) }))
+    .filter((burn) => burn.lines.length > 0);
   if (!all.length) return {};
   return { burn: all[0], ...(all.length > 1 ? { burnExtra: all.slice(1) } : {}) };
 }

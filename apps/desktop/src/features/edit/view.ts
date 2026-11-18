@@ -4118,7 +4118,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     const { outputPath, target: { kind } } = session;
     // A plain video's lines from Phụ đề, else its own captions, go in the .srt.
     const cues = remapCues(session.plainSubs ? srtLines(session.plainSubs) : session.facts.cues, edit).filter((cue) => cue.end_ms > cue.start_ms);
-    const burns = session.plainSubs ? burnRequests(session.plainSubs) : {};
+    const burns = session.plainSubs ? burnRequests(session.plainSubs, edit) : {};
     const start = $<HTMLButtonElement>("#export-start");
     const error = $("#export-error");
     start.disabled = true;
