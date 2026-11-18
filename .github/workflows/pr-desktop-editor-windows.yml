@@ -159,7 +159,7 @@ jobs:
         shell: pwsh
         run: |
           # The host tests above ran before DUBFLOW_TEST_FFMPEG was set, so these tests returned at
-          # once there. They reuse that build. Both must really run: each marker, and exactly two passes.
+          # once there. They reuse that build. All three must really run: each marker, and exactly three passes.
           if (-not $env:DUBFLOW_TEST_FFMPEG -or -not (Test-Path -LiteralPath $env:DUBFLOW_TEST_FFMPEG)) { throw 'DUBFLOW_TEST_FFMPEG is not set to the pinned ffmpeg.exe' }
           $log = Join-Path $env:RUNNER_TEMP 'export-check-tests.log'
           cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --locked check::tests::real_ -- --nocapture 2>&1 | Tee-Object -FilePath $log
@@ -167,9 +167,10 @@ jobs:
           $text = Get-Content -LiteralPath $log -Raw
           if ($text -notmatch '(?m)export-check: ran against real FFmpeg\s*$') { throw 'Export check test did not run against real FFmpeg (marker missing)' }
           if ($text -notmatch '(?m)subtitle-measure: ran against real FFmpeg\s*$') { throw 'Subtitle measure test did not run against real FFmpeg (marker missing)' }
-          $passed = [regex]::Matches($text, '(?m)^test result: ok\. 2 passed; 0 failed;').Count
-          if ($passed -ne 1) { throw "Expected one test run with the two export check tests passing, saw $passed" }
-          Write-Host 'Export check tests passed against the pinned FFmpeg (blackdetect, freezedetect, loudnorm, decode errors, Dừng kiểm tra, Phụ đề measured with libass)'
+          if ($text -notmatch '(?m)boxed-check: ran against real FFmpeg\s*$') { throw 'Boxed-part check test (#949) did not run against real FFmpeg (marker missing)' }
+          $passed = [regex]::Matches($text, '(?m)^test result: ok\. 3 passed; 0 failed;').Count
+          if ($passed -ne 1) { throw "Expected one test run with the three export check tests passing, saw $passed" }
+          Write-Host 'Export check tests passed against the pinned FFmpeg (blackdetect, freezedetect, loudnorm, decode errors, Dừng kiểm tra, Phụ đề measured with libass, turned parts measured on their picture)'
 
       - name: Run the editor's zoomed-parts export end test against the pinned FFmpeg (#940)
         shell: pwsh
