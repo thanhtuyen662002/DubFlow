@@ -1393,6 +1393,11 @@ async function startJob(job: QueueJob): Promise<void> {
     // Asked once, before a saved key is first used for translation; meanwhile the job waits (it is already RUNNING,
     // so no other start can begin). "Không", Esc or nothing ready: no AI.
     const aiContext = await decideAiContext(claudeKey, "start");
+    // From here the host may receive the job: "launching" is never put back in the queue on the next launch (the
+    // supervisor can run before it writes its first status), only a job still "starting" (restoreStartingJob).
+    const waiting = queue.getSnapshot().jobs.find((candidate) => candidate.id === job.id);
+    if (!waiting || waiting.status.state !== "RUNNING" || waiting.status.reason !== "starting") return;
+    queue.updateStatus(job.id, { ...waiting.status, reason: "launching" });
     const request = startJobRequest(job, outputRoot(), cpuOnly(), rememberedSubtitleStyle(), rememberedCoverStyle());
     const started = await invoke<{ output_dir: string } | null>("start_job", {
       ...request,

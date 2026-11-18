@@ -324,6 +324,10 @@ const none = { saved: () => null, options: () => ({}) };
   assert.match(restore, /job\.status\.state !== "RUNNING" \|\| job\.status\.reason !== "starting"\) return;/);
   assert.match(restore, /state: "QUEUED", reason: "not_started"/);
   assert.ok(main.indexOf('reason: "starting"') < main.indexOf("await decideAiContext(claudeKey, \"start\")"), "the job is RUNNING while it waits, so no second start");
+  // once answered, the job is "launching" before start_job: a job the host may have received is never re-queued
+  const start = main.slice(main.indexOf("async function startJob"));
+  const launching = start.indexOf('reason: "launching"');
+  assert.ok(start.indexOf("await decideAiContext(claudeKey, \"start\")") < launching && launching < start.indexOf('invoke<{ output_dir: string } | null>("start_job"'));
   const picker = strip("features/media/picker.ts");
   assert.match(picker, /if \(event\.key !== "Escape" \|\| !isTopmostDialog\(backdrop, document\.body\.children\)\) return;\s*event\.preventDefault\(\);\s*event\.stopImmediatePropagation\(\);/);
 }
