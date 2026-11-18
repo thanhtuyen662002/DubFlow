@@ -147,9 +147,19 @@ impl Plan {
         self
     }
 
-    /// The published file is still the one this plan is for (or no stamp was taken).
+    /// Why the file at `video` cannot be checked by this plan: no stamp was taken as it was published (it cannot be
+    /// proved to be that file), or the file there now is another (Lead review 4611197492: fail closed).
+    fn unverified(&self) -> Option<&'static str> {
+        match self.stamp {
+            None => Some(UNVERIFIED),
+            Some(stamp) if stamp_of(&self.video) != Some(stamp) => Some(CHANGED),
+            Some(_) => None,
+        }
+    }
+
+    #[cfg(test)]
     fn same_file(&self) -> bool {
-        self.stamp.is_none() || stamp_of(&self.video) == self.stamp
+        self.unverified().is_none()
     }
 }
 
@@ -207,6 +217,7 @@ const PARTS: &str = "video dài được xuất song song theo từng phần và
 const TURNED: &str = "video gốc quay dọc bằng điện thoại (được xoay khi phát), khung vẽ phụ đề có thể khác khung xuất";
 
 /// Said when the published file changed before its check could judge it.
+const UNVERIFIED: &str = "không xác định được đúng tệp video vừa xuất, nên không kiểm tra theo bản xuất này";
 const CHANGED: &str = "video đã bị thay đổi hoặc thay bằng tệp khác sau khi xuất, nên không kiểm tra theo bản xuất này";
 
 /// How the main video's picture reaches the exported frame.
@@ -1016,8 +1027,8 @@ fn check_once(work: &Path, ffmpeg: &Path, plan: &Plan, dir: &Path, running: &Run
     if !ffmpeg.is_file() {
         return unavailable("không tìm thấy FFmpeg".into());
     }
-    if !plan.same_file() {
-        return unavailable(CHANGED.into());
+    if let Some(why) = plan.unverified() {
+        return unavailable(why.into());
     }
     save(work, dir, &ExportCheck::of(plan, "RUNNING"));
     let probe = probe_tracked(&ffprobe_beside(ffmpeg), &plan.video, running);
@@ -1060,8 +1071,8 @@ fn check_once(work: &Path, ffmpeg: &Path, plan: &Plan, dir: &Path, running: &Run
     if running.cancelled.load(Ordering::SeqCst) {
         return ExportCheck::of(plan, "STOPPED");
     }
-    if !plan.same_file() {
-        return unavailable(CHANGED.into());
+    if let Some(why) = plan.unverified() {
+        return unavailable(why.into());
     }
     let (checks, black, frozen) = checks_of(plan, probe.as_ref(), &pass, &log, &subtitles);
     ExportCheck::of(plan, "DONE").with_checks(checks, &black, &frozen)
@@ -1386,8 +1397,10 @@ pub(super) fn attach(work: &Path, exports: &mut [Value]) {
         let Some(video) = entry["path"].as_str().map(PathBuf::from) else { continue };
         let dir = check_dir(work, &video);
         let Some(mut value) = load_check(work, &dir) else { continue };
-        // A report on an earlier file written to the same name is not this export's.
-        if stamp_in(&value).is_some_and(|stamp| stamp_of(&video).is_some_and(|now| now != stamp)) {
+        // Only a report on exactly the file now at the name is this export's: one on an earlier file written to the
+        // same name, one whose stamp is missing or malformed, or a file that cannot be stamped now, is never shown
+        // (Lead review 4611197492: fail closed).
+        if stamp_in(&value).is_none_or(|stamp| stamp_of(&video) != Some(stamp)) {
             continue;
         }
         // The lease file is only made in `work/checks/<key>` while all three are plain folders.
@@ -2252,6 +2265,15 @@ mod tests {
         assert!(kept.same_file());
         // a report written before the identity was in the stamp is not read as one
         assert_eq!(stamp_in(&json!({ "stamp": [1, 2] })), None);
+        // no stamp taken at publication (the file could not be read then): never checked, fail closed
+        let unstamped = plain_plan(1.0, true, None).for_video(video.clone(), false, None);
+        assert!(!unstamped.same_file());
+        run(&work, &fake, unstamped);
+        let report = read_check(&work, &video);
+        assert_eq!((report["state"].as_str(), report["error"].as_str()), (Some("UNAVAILABLE"), Some(UNVERIFIED)), "{report}");
+        assert!(report.get("stamp").is_none());
+        attach(&work, &mut exports);
+        assert!(exports[0].get("check").is_none(), "nor shown: {}", exports[0]);
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -2403,15 +2425,33 @@ mod tests {
         let dir = temp("attach");
         let work = dir.join("work");
         let (done, stale, ours, unchecked) = (dir.join("a.mp4"), dir.join("b.mp4"), dir.join("c.mp4"), dir.join("d.mp4"));
+        let (unstamped, malformed, short) = (dir.join("e.mp4"), dir.join("f.mp4"), dir.join("g.mp4"));
+        fs::create_dir_all(&dir).unwrap();
+        for video in [&done, &stale, &ours, &unchecked, &unstamped, &malformed, &short] {
+            fs::write(video, video.to_string_lossy().as_bytes()).unwrap();
+        }
         for (video, state) in [(&done, "DONE"), (&stale, "RUNNING"), (&ours, "RUNNING")] {
             let folder = check_dir(&work, video);
             fs::create_dir_all(&folder).unwrap();
-            fs::write(folder.join("check.json"), serde_json::to_vec(&ExportCheck::new(video, state)).unwrap()).unwrap();
+            let report = ExportCheck { stamp: stamp_of(video), ..ExportCheck::new(video, state) };
+            fs::write(folder.join("check.json"), serde_json::to_vec(&report).unwrap()).unwrap();
+        }
+        // reports whose stamp is missing, malformed or short are never shown (fail closed, Lead review 4611197492)
+        for (video, stamp) in [(&unstamped, Value::Null), (&malformed, json!("x")), (&short, json!([1, 2]))] {
+            let folder = check_dir(&work, video);
+            fs::create_dir_all(&folder).unwrap();
+            let mut report = serde_json::to_value(ExportCheck::new(video, "DONE")).unwrap();
+            report["stamp"] = stamp;
+            fs::write(folder.join("check.json"), serde_json::to_vec(&report).unwrap()).unwrap();
         }
         let running = Arc::new(Running { children: Mutex::new(Vec::new()), cancelled: AtomicBool::new(false) });
         CHECKING.lock().unwrap().insert(check_dir(&work, &ours), running.clone());
-        let mut exports: Vec<Value> = [&done, &stale, &ours, &unchecked].iter().map(|video| json!({"path": display_path(video)})).collect();
+        let mut exports: Vec<Value> = [&done, &stale, &ours, &unchecked, &unstamped, &malformed, &short].iter()
+            .map(|video| json!({"path": display_path(video)})).collect();
         attach(&work, &mut exports);
+        for entry in &exports[4..] {
+            assert!(entry.get("check").is_none(), "a report not tied to this exact file is never shown: {entry}");
+        }
         assert_eq!(exports[0]["check"]["state"], "DONE");
         assert_eq!(exports[1]["check"]["state"], "INTERRUPTED", "a RUNNING check no window runs, its lease free");
         assert_eq!(read_check(&work, &stale)["state"], "INTERRUPTED", "and saved so");
@@ -2472,6 +2512,9 @@ mod tests {
         let work = dir.join("work");
         let missing = dir.join("missing").join("ffmpeg");
         let (first, second) = (dir.join("first.mp4"), dir.join("second.mp4"));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(&first, b"first").unwrap();
+        fs::write(&second, b"second").unwrap();
         let turn = TURN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let start = |video: &PathBuf| {
             let (work, missing, plan) = (work.clone(), missing.clone(), plain_plan(1.0, false, None).for_video(video.clone(), false, stamp_of(video)));
