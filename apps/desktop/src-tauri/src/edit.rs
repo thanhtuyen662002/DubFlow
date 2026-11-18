@@ -1746,8 +1746,11 @@ fn duck_filter(start: f64, end: f64, db: f64) -> String {
 /// (Issue #422): with a text layer, `texts` (the `subtitles` filter drawing
 /// it) is the last filter of the picture; without texts nothing changes.
 /// Phụ đề (Issue #930) is drawn just before it, on the finished picture.
+/// Phụ đề is drawn on the export's own frames (`fps` first): frame N is drawn at
+/// N / fps exactly, so Kiểm tra kỹ thuật knows when libass drew each frame (#935).
 fn export_script(edit: &Edit, inputs: &[Input], frame: &Frame, quality: &str, mix: &Mix, finish: &Finish) -> (String, bool) {
-    let steps: Vec<&String> = finish.burn.iter().chain(finish.texts.iter()).chain(finish.reframe.iter()).collect();
+    let burn = finish.burn.as_ref().map(|burn| format!("fps={},{burn}", frame.fps));
+    let steps: Vec<&String> = burn.iter().chain(finish.texts.iter()).chain(finish.reframe.iter()).collect();
     let video_out = if steps.is_empty() { "v" } else { "vt" };
     let audio_out = if finish.normalize { "an" } else { "a" };
     let (mut graph, has_audio) = mixed_script(edit, inputs, frame, quality, mix, video_out, audio_out);
@@ -3567,7 +3570,7 @@ fn start_export(request: ExportRequest) -> Result<Value, String> {
         let burns: Vec<&BurnSubtitles> = request.burn.iter().chain(request.burn_extra.iter()).collect();
         let framing = check::Framing { export: (width, height), out: (out_width, out_height),
             fill: request.fill.as_deref().unwrap_or("black"), aspect: request.aspect.as_deref() };
-        check::plan(&edit, &stills, output_seconds(&edit.segments, &edit.transitions), has_audio, &request.cues, &burns, &framing)
+        check::plan(&edit, &stills, output_seconds(&edit.segments, &edit.transitions), has_audio, &request.cues, &burns, &framing, &fps)
     });
     let job = ExportJob {
         work: work.clone(), inputs, media: request.media, script, folder, name, target: target.clone(),
@@ -6433,14 +6436,15 @@ Dialogue: 3,0:00:05.00,0:00:07.00,T1,,256,256,0,,{\\an6\\pos(1024,360)}{\\ko10}G
             reframe: Some(reframe_filter(720, 720, "black")), ..Finish::default() };
         let (burned, has_audio) = export_script(&edit, &input, &frame(), "720p", &mix, &finish);
         assert!(has_audio);
-        assert_eq!(burned, format!("{};\n[vt]subtitles=filename=s.ass,subtitles=filename=s2.ass[vf0];\n[vf0]subtitles=filename=t.ass[vf1];\n[vf1]{}[v]",
-            plain.replace("setsar=1[v]", "setsar=1[vt]"), reframe_filter(720, 720, "black")));
+        // on the export's own frames (#935): frame N is drawn at N / fps
+        assert_eq!(burned, format!("{};\n[vt]fps={},subtitles=filename=s.ass,subtitles=filename=s2.ass[vf0];\n[vf0]subtitles=filename=t.ass[vf1];\n[vf1]{}[v]",
+            plain.replace("setsar=1[v]", "setsar=1[vt]"), frame().fps, reframe_filter(720, 720, "black")));
         let at = burned.find("subtitles=filename=s.ass").unwrap();
         assert!(burned[..at].contains("overlay") && burned[..at].contains("setsar=1[vt]"), "after the overlays and the scale: {burned}");
         assert!(!burned[at..].contains("trim") && !burned[at..].contains("concat"), "after the cuts: {burned}");
         // Phụ đề alone ends the picture; a sound-only export keeps its null sink.
         let (alone, _) = export_script(&whole(10.0), &input, &frame(), "source", &mix, &Finish { burn: Some("subtitles=filename=s.ass".into()), ..Finish::default() });
-        assert!(alone.ends_with("[v0][a0]concat=n=1:v=1:a=1[vt][a];\n[vt]subtitles=filename=s.ass[v]"), "{alone}");
+        assert!(alone.ends_with(&format!("[v0][a0]concat=n=1:v=1:a=1[vt][a];\n[vt]fps={},subtitles=filename=s.ass[v]", frame().fps)), "{alone}");
         assert_eq!(alone.matches("[v]").count(), 1, "one picture output");
     }
 

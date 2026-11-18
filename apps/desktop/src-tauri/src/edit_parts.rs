@@ -210,8 +210,13 @@ fn part_script(part: &Edit, source: &Source, quality: &str, from: f64, frames: u
     }
     let mut steps: Vec<String> = Vec::new();
     let timed: Vec<&str> = source.burn.iter().chain(source.texts.iter()).map(String::as_str).collect();
-    if !timed.is_empty() {
-        // Phụ đề and the text layer are timed on the whole export.
+    if source.burn.is_some() {
+        // Phụ đề (and the text layer) are timed on the whole export, on its own frames as `export_script` draws
+        // Phụ đề (#935): the part's frame n is the export's frame `start + n`.
+        let start = (from * fps_number(&source.frame.fps)).round() as u64;
+        steps.push(format!("fps={},setpts=PTS+{start},{},setpts=PTS-{start}", source.frame.fps, timed.join(",")));
+    } else if !timed.is_empty() {
+        // The text layer is timed on the whole export.
         let shift = num(from);
         steps.push(format!("setpts=PTS+{shift}/TB,{},setpts=PTS-{shift}/TB", timed.join(",")));
     }
@@ -582,15 +587,15 @@ mod tests {
         let part = window(&edit(vec![segment(0, 0.0, 1200.0)]), 600.0, 1200.0, &[false]);
         let graph = part_script(&part, &source, "source", 600.0, 18000);
         assert!(graph.starts_with("[0:v]boxblur=10[mcv]"), "{graph}");
-        assert!(graph.contains("[vp]setpts=PTS+600/TB,subtitles=filename=s.ass,subtitles=filename=t.ass,setpts=PTS-600/TB[vs0]"), "{graph}");
+        assert!(graph.contains("[vp]fps=30/1,setpts=PTS+18000,subtitles=filename=s.ass,subtitles=filename=t.ass,setpts=PTS-18000[vs0]"), "{graph}");
         assert!(graph.contains("[vs0]pad=1920:1920[vs1]"), "the reframe after both: {graph}");
         let burn_at = graph.find("subtitles=filename=s.ass").unwrap();
         assert!(!graph[burn_at..].contains("trim=start"), "never inside a trim chain: {graph}");
         // Phụ đề alone is timed the same way; nothing burned leaves the graph as before.
         let alone = Source { burn: Some("subtitles=filename=s.ass".into()), texts: None, reframe: None, prefilter: None, ..source };
-        assert!(part_script(&part, &alone, "source", 600.0, 18000).contains("[vp]setpts=PTS+600/TB,subtitles=filename=s.ass,setpts=PTS-600/TB[vs0]"));
+        assert!(part_script(&part, &alone, "source", 600.0, 18000).contains("[vp]fps=30/1,setpts=PTS+18000,subtitles=filename=s.ass,setpts=PTS-18000[vs0]"));
         let none = Source { media_count: 1, frame, burn: None, texts: None, reframe: None, prefilter: None, sound_script: None };
-        assert!(!part_script(&part, &none, "source", 600.0, 18000).contains("setpts=PTS+600"));
+        assert!(!part_script(&part, &none, "source", 600.0, 18000).contains("setpts=PTS+"));
     }
 
     #[test]

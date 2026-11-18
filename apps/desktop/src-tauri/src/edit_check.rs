@@ -96,6 +96,9 @@ pub(super) struct SubtitleFrame {
     window: (f64, f64, f64, f64),
     /// Why a line outside the window is cut.
     why: String,
+    /// The export's frame rate (num, den), the clock Phụ đề is drawn on; (0, 0) when unknown.
+    #[serde(default)]
+    rate: (u64, u64),
 }
 
 impl Plan {
@@ -122,6 +125,11 @@ fn stamp_of(video: &Path) -> Option<(u64, u64)> {
     Some((metadata.len(), u64::try_from(modified.as_nanos()).ok()?))
 }
 
+/// The stamp a saved report carries, if any.
+fn stamp_in(report: &Value) -> Option<(u64, u64)> {
+    Some((report["stamp"][0].as_u64()?, report["stamp"][1].as_u64()?))
+}
+
 /// Said when the published file changed before its check could judge it.
 const CHANGED: &str = "video đã bị thay đổi hoặc thay bằng tệp khác sau khi xuất, nên không kiểm tra theo bản xuất này";
 
@@ -136,14 +144,14 @@ pub(super) struct Framing<'a> {
 
 /// The check's plan, from the validated edit and the request (`stills[i]`: media i is a picture).
 pub(super) fn plan(edit: &Edit, stills: &[bool], expected_seconds: f64, has_audio: bool, cues: &[Cue], burns: &[&BurnSubtitles],
-                   framing: &Framing) -> Plan {
+                   framing: &Framing, fps: &str) -> Plan {
     Plan {
         video: PathBuf::new(),
         expected_seconds,
         has_audio,
         srt_end_ms: cues.iter().map(|cue| cue.end_ms).max(),
         intended_holds: intended_holds(edit, stills),
-        subtitles: subtitle_frame(burns, framing),
+        subtitles: subtitle_frame(burns, framing).map(|frame| SubtitleFrame { rate: rate_of(fps), ..frame }),
         stamp: None,
     }
 }
@@ -174,7 +182,7 @@ fn subtitle_frame(burns: &[&BurnSubtitles], framing: &Framing) -> Option<Subtitl
         (true, None) => "cắt cho đầy khung".to_owned(),
         (false, _) => EDGE.to_owned(),
     };
-    Some(SubtitleFrame { burns, export: framing.export, window, why })
+    Some(SubtitleFrame { burns, export: framing.export, window, why, rate: (0, 0) })
 }
 
 /// The part of the export frame `reframe_filter`'s "fill" keeps, in export pixels, as FFmpeg computes it: `scale`
@@ -243,10 +251,12 @@ fn stretches<'a>(burns: &'a [BurnSubtitles], frames: &[u64]) -> (Vec<u64>, Shown
 }
 
 /// The exported video's frame times in whole ms, sorted, read by ffprobe from its packets (no decoding), tracked by
-/// `running`, as FFmpeg's subtitles filter handed them to libass: the export's frames are on the AV_TIME_BASE clock
-/// (`settb=AVTB`), and the filter computes `pts * (1/1000000) * 1000` in double and truncates, so a frame at 0.2 s is
-/// drawn at 199 ms (recheck 8).
-fn frame_times(ffprobe: &Path, video: &Path, running: &Running) -> Option<Vec<u64>> {
+/// `running`, as FFmpeg's subtitles filter handed them to libass. Phụ đề is drawn on the export's own frames
+/// (`export_script`: `fps` first), so the filter saw frame N with pts N on the 1/fps clock and computed
+/// `N * (den/num) * 1000` in double, truncated: at 30 fps frame 111 is drawn at 3699 ms, not 3700 (rechecks 8 and 9).
+/// `rate` is the export's frame rate (num, den); without one (a plan made before it was kept) the packet time is
+/// taken on the AV_TIME_BASE clock.
+fn frame_times(ffprobe: &Path, video: &Path, running: &Running, rate: (u64, u64)) -> Option<Vec<u64>> {
     use std::io::Read;
     let mut command = Command::new(ffprobe);
     command.args(["-v", "error", "-select_streams", "v:0", "-show_entries", "packet=pts_time", "-of", "csv=p=0"]).arg(video)
@@ -260,15 +270,36 @@ fn frame_times(ffprobe: &Path, video: &Path, running: &Running) -> Option<Vec<u6
     if !wait_tracked(running, id) {
         return None;
     }
-    let mut times: Vec<u64> = text.lines().filter_map(|line| line.trim().trim_end_matches(',').parse::<f64>().ok())
-        .filter(|seconds| seconds.is_finite() && *seconds >= 0.0).map(|seconds| libass_ms((seconds * 1e6).round())).collect();
+    let seconds = text.lines().filter_map(|line| line.trim().trim_end_matches(',').parse::<f64>().ok())
+        .filter(|seconds| seconds.is_finite() && *seconds >= 0.0);
+    let mut times: Vec<u64> = seconds.map(|seconds| drawn_ms(seconds, rate)).collect();
     times.sort_unstable();
+    times.dedup();
     (!times.is_empty()).then_some(times)
+}
+
+/// The ms libass was given for the frame shown at `seconds` in an export at `rate` (num, den), as vf_subtitles
+/// computes it from that frame's pts on the 1/fps clock.
+fn drawn_ms(seconds: f64, (num, den): (u64, u64)) -> u64 {
+    if num == 0 || den == 0 {
+        return libass_ms((seconds * 1e6).round());
+    }
+    let frame = (seconds * num as f64 / den as f64).round();
+    (frame * (den as f64 / num as f64) * 1000.0) as u64
 }
 
 /// The ms libass is given for a frame at `micros` on the AV_TIME_BASE clock, computed as vf_subtitles does.
 fn libass_ms(micros: f64) -> u64 {
     (micros * (1.0 / 1_000_000.0) * 1000.0) as u64
+}
+
+/// An FFmpeg frame rate ("30/1", "30000/1001", "25") as (num, den); (0, 0) when it is not one.
+fn rate_of(fps: &str) -> (u64, u64) {
+    let (num, den) = fps.split_once('/').unwrap_or((fps, "1"));
+    match (num.trim().parse::<u64>(), den.trim().parse::<u64>()) {
+        (Ok(num), Ok(den)) if num > 0 && den > 0 => (num, den),
+        _ => (0, 0),
+    }
 }
 
 /// `bbox`'s log: for each frame where something was drawn, its frame number and the drawn area (x0, y0, x1, y1,
@@ -338,7 +369,7 @@ const EDGE: &str = "chữ vượt ra ngoài khung hình";
 /// around what was drawn. Never decodes or changes the video.
 fn measure_subtitles(work: &Path, ffmpeg: &Path, frame: &SubtitleFrame, video: &Path, dir: &Path, running: &Running) -> SubtitleFit {
     let unmeasured = |why: String| SubtitleFit { ok: None, detail: format!("chưa đo được phụ đề: {why}"), at_ms: Vec::new() };
-    let Some(frames) = frame_times(&ffprobe_beside(ffmpeg), video, running) else {
+    let Some(frames) = frame_times(&ffprobe_beside(ffmpeg), video, running, frame.rate) else {
         return unmeasured("không đọc được thời điểm các khung hình".into());
     };
     let (starts, layers) = stretches(&frame.burns, &frames);
@@ -574,13 +605,22 @@ pub(super) struct ExportCheck {
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     waiting: bool,
     checked_at: u64,
+    /// The checked file's size and modified time (ns) when it was published: `attach` shows the report only on the
+    /// export whose file this still is, never on a later export written to the same name (recheck 9).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stamp: Option<(u64, u64)>,
 }
 
 impl ExportCheck {
     fn new(video: &Path, state: &'static str) -> Self {
         Self { schema_version: 1, kind: "export_check", advisory: true, state, percent: 0.0, video: display_path(video), checks: Vec::new(),
             warnings: Vec::new(), unmeasured: Vec::new(), black: Vec::new(), frozen: Vec::new(), error: None, waiting: false,
-            checked_at: unix_now() }
+            checked_at: unix_now(), stamp: None }
+    }
+
+    /// A report on `plan`'s published file, carrying its stamp.
+    fn of(plan: &Plan, state: &'static str) -> Self {
+        Self { stamp: plan.stamp, ..Self::new(&plan.video, state) }
     }
 
     fn with_checks(mut self, checks: Vec<Check>, black: &[(f64, f64)], frozen: &[(f64, f64)]) -> Self {
@@ -759,18 +799,18 @@ pub(super) fn run(work: &Path, ffmpeg: &Path, plan: Plan) {
     if owned(work, &dir) {
         let _ = write_durable(&dir.join("plan.json"), &serde_json::to_vec(&plan).unwrap_or_default());
     }
-    let report = match wait_turn(work, &dir, &plan.video, &running) {
+    let report = match wait_turn(work, &dir, &plan, &running) {
         Turn::Taken(turn) => {
             let report = check_once(work, ffmpeg, &plan, &dir, &running);
             drop(turn);
             report
         }
-        Turn::Stopped => ExportCheck::new(&plan.video, "STOPPED"),
+        Turn::Stopped => ExportCheck::of(&plan, "STOPPED"),
         Turn::Full => ExportCheck { error: Some(format!("bỏ qua vì đã có {MAX_WAITING} video khác đang chờ kiểm tra")),
-            ..ExportCheck::new(&plan.video, "UNAVAILABLE") },
+            ..ExportCheck::of(&plan, "UNAVAILABLE") },
     };
     // Stopped because DubFlow is closing, not by Dừng kiểm tra: said as such.
-    let report = if report.state == "STOPPED" && CLOSING.load(Ordering::SeqCst) { ExportCheck::new(&plan.video, "INTERRUPTED") } else { report };
+    let report = if report.state == "STOPPED" && CLOSING.load(Ordering::SeqCst) { ExportCheck::of(&plan, "INTERRUPTED") } else { report };
     save(work, &dir, &report);
     if let Ok(mut checking) = CHECKING.lock() {
         checking.remove(&dir);
@@ -837,8 +877,8 @@ pub(super) fn stop_all() {
 
 /// This window's turn to check (`TURN`), or None when "Dừng kiểm tra" or closing stopped it while it waited.
 /// While it waits its check.json says RUNNING and `waiting`, so the UI keeps polling and can stop it.
-fn wait_turn(work: &Path, dir: &Path, video: &Path, running: &Running) -> Turn<'static> {
-    wait_turn_in(&TURN, &WAITING, MAX_WAITING, running, || save(work, dir, &ExportCheck { waiting: true, ..ExportCheck::new(video, "RUNNING") }))
+fn wait_turn(work: &Path, dir: &Path, plan: &Plan, running: &Running) -> Turn<'static> {
+    wait_turn_in(&TURN, &WAITING, MAX_WAITING, running, || save(work, dir, &ExportCheck { waiting: true, ..ExportCheck::of(plan, "RUNNING") }))
 }
 
 /// Taking the one check turn.
@@ -878,17 +918,17 @@ fn wait_turn_in<'a>(turn: &'a Mutex<()>, waiting: &AtomicUsize, max: usize, runn
 }
 
 fn check_once(work: &Path, ffmpeg: &Path, plan: &Plan, dir: &Path, running: &Running) -> ExportCheck {
-    let unavailable = |error: String| ExportCheck { error: Some(error), ..ExportCheck::new(&plan.video, "UNAVAILABLE") };
+    let unavailable = |error: String| ExportCheck { error: Some(error), ..ExportCheck::of(plan, "UNAVAILABLE") };
     if !ffmpeg.is_file() {
         return unavailable("không tìm thấy FFmpeg".into());
     }
     if !plan.same_file() {
         return unavailable(CHANGED.into());
     }
-    save(work, dir, &ExportCheck::new(&plan.video, "RUNNING"));
+    save(work, dir, &ExportCheck::of(plan, "RUNNING"));
     let probe = probe_tracked(&ffprobe_beside(ffmpeg), &plan.video, running);
     if running.cancelled.load(Ordering::SeqCst) {
-        return ExportCheck::new(&plan.video, "STOPPED");
+        return ExportCheck::of(plan, "STOPPED");
     }
     let fps = probe.as_ref().map_or(30.0, |probe| fps_number(&probe.fps));
     let total = probe.as_ref().map_or(plan.expected_seconds, |probe| probe.duration);
@@ -903,12 +943,12 @@ fn check_once(work: &Path, ffmpeg: &Path, plan: &Plan, dir: &Path, running: &Run
             }
         } else if line.starts_with("progress=") && written.elapsed() >= Duration::from_secs(1) {
             let percent = last_us.map_or(0.0, |us| progress_percent(us, total)).floor();
-            save(work, dir, &ExportCheck { percent, ..ExportCheck::new(&plan.video, "RUNNING") });
+            save(work, dir, &ExportCheck { percent, ..ExportCheck::of(plan, "RUNNING") });
             written = Instant::now();
         }
     });
     if running.cancelled.load(Ordering::SeqCst) {
-        return ExportCheck::new(&plan.video, "STOPPED");
+        return ExportCheck::of(plan, "STOPPED");
     }
     if let Err(error) = &result {
         if last_us.is_none() && text.trim().is_empty() {
@@ -924,13 +964,13 @@ fn check_once(work: &Path, ffmpeg: &Path, plan: &Plan, dir: &Path, running: &Run
         None => SubtitleFit { ok: None, detail: "không có phụ đề in vào hình".into(), at_ms: Vec::new() },
     };
     if running.cancelled.load(Ordering::SeqCst) {
-        return ExportCheck::new(&plan.video, "STOPPED");
+        return ExportCheck::of(plan, "STOPPED");
     }
     if !plan.same_file() {
         return unavailable(CHANGED.into());
     }
     let (checks, black, frozen) = checks_of(plan, probe.as_ref(), &pass, &log, &subtitles);
-    ExportCheck::new(&plan.video, "DONE").with_checks(checks, &black, &frozen)
+    ExportCheck::of(plan, "DONE").with_checks(checks, &black, &frozen)
 }
 
 /// A check folder's name: `file_key`'s 20 hex digits.
@@ -1125,7 +1165,7 @@ fn settle(work: &Path, dir: &Path, video: &Path) -> Option<Value> {
     if ours(dir) {
         return None;
     }
-    let stale = ExportCheck::new(video, "INTERRUPTED");
+    let stale = ExportCheck { stamp: stamp_in(&load_check(work, dir).unwrap_or_default()), ..ExportCheck::new(video, "INTERRUPTED") };
     save(work, dir, &stale);
     serde_json::to_value(&stale).ok()
 }
@@ -1137,6 +1177,10 @@ pub(super) fn attach(work: &Path, exports: &mut [Value]) {
         let Some(video) = entry["path"].as_str().map(PathBuf::from) else { continue };
         let dir = check_dir(work, &video);
         let Some(mut value) = load_check(work, &dir) else { continue };
+        // A report on an earlier file written to the same name is not this export's.
+        if stamp_in(&value).is_some_and(|stamp| stamp_of(&video).is_some_and(|now| now != stamp)) {
+            continue;
+        }
         // The lease file is only made in `work/checks/<key>` while all three are plain folders.
         if value["state"] == "RUNNING" && !ours(&dir) && unlinked(work) && plain(&work.join(CHECKS_DIR)) {
             // A free lease means no window is checking: the app closed mid-check.
@@ -1374,7 +1418,7 @@ mod tests {
 
     /// Frame times of a constant-rate video, as FFmpeg's subtitles filter sees them (whole ms, rounded down).
     fn grid(fps: f64, seconds: f64) -> Vec<u64> {
-        (0..(fps * seconds) as u64).map(|frame| libass_ms((frame as f64 * 1_000_000.0 / fps).round())).collect()
+        (0..(fps * seconds) as u64).map(|frame| drawn_ms(frame as f64 / fps, (fps as u64, 1))).collect()
     }
 
     /// Only what a frame of the export shows is measured together (rechecks 6 and 7): times as `burn_ass` writes
@@ -1405,17 +1449,20 @@ mod tests {
         let burns = [lines(vec![cue(0, 300, "A"), cue(240, 1_000, "B")])];
         let (starts, layers) = stretches(&burns, &frames);
         assert_eq!((starts, pairs(&layers[0])), (vec![0, 240, 320], vec![(0, 2), (1, 3)]));
-        // vf_subtitles gives libass the frame at 0.28 s as 279 ms (pts × 1e-6 × 1000, truncated; recheck 8), so B
-        // written 0:00:00.28 first shows at 320 ms, after A: measured apart, as the export draws them
-        assert_eq!((libass_ms(200_000.0), libass_ms(280_000.0), libass_ms(240_000.0)), (199, 279, 240));
-        assert_eq!((frames[5], frames[7]), (199, 279));
-        let burns = [lines(vec![cue(0, 300, "A"), cue(280, 1_000, "B")])];
-        let (starts, layers) = stretches(&burns, &frames);
-        assert_eq!((starts, pairs(&layers[0])), (vec![0, 320], vec![(0, 1), (1, 2)]));
-        // and A ending at 400 still shows on the frame at 0.40 s (399 ms), so B from 390 stacks over it
-        let burns = [lines(vec![cue(0, 400, "A"), cue(390, 3_000, "B")])];
-        let (starts, layers) = stretches(&burns, &frames);
-        assert_eq!((starts, pairs(&layers[0])), (vec![0, 399, 440], vec![(0, 2), (1, 3)]));
+        // Phụ đề is drawn on the 1/fps clock and vf_subtitles truncates N × (den/num) × 1000 (rechecks 8 and 9): at
+        // 30 fps frame 111 is drawn at 3699 ms, so A ending at 3700 still shows with B from 3690: measured together
+        assert_eq!((drawn_ms(111.0 / 30.0, (30, 1)), drawn_ms(110.0 / 30.0, (30, 1)), drawn_ms(5.0 / 25.0, (25, 1))), (3699, 3666, 200));
+        assert_eq!(drawn_ms(1001.0 / 30_000.0 * 3.0, (30_000, 1001)), 100, "29.97: frame 3 at 100.1 ms");
+        assert_eq!(libass_ms(200_000.0), 199, "without a rate, the AV_TIME_BASE clock");
+        let thirty = grid(30.0, 10.0);
+        assert_eq!(thirty[111], 3699);
+        let burns = [lines(vec![cue(3_000, 3_700, "A"), cue(3_690, 5_000, "B")])];
+        let (starts, layers) = stretches(&burns, &thirty);
+        assert_eq!((starts, pairs(&layers[0])), (vec![3_000, 3_699, 3_733], vec![(0, 2), (1, 3)]));
+        // and the frame a rounded ms would put after A shows B alone
+        let burns = [lines(vec![cue(3_000, 3_700, "A"), cue(3_700, 5_000, "B")])];
+        let (starts, layers) = stretches(&burns, &thirty);
+        assert_eq!((starts, pairs(&layers[0])), (vec![3_000, 3_733], vec![(0, 1), (1, 2)]));
         // a line shorter than a frame is never drawn, so never measured
         let burns = [lines(vec![cue(1_010, 1_030, "flash"), cue(2_000, 3_000, "C")])];
         let (starts, layers) = stretches(&burns, &frames);
@@ -1497,9 +1544,10 @@ mod tests {
         edit.segments[0].tilt = 3.0;
         edit.segments[1].rotate = 90;
         let line = burn(style(json!({})), LONG, 12_000);
-        let planned = plan(&edit, &[false], 20.0, true, &[], &[&line], &wide);
-        assert_eq!(planned.subtitles, subtitle_frame(&[&line], &wide));
+        let planned = plan(&edit, &[false], 20.0, true, &[], &[&line], &wide, "30/1");
+        assert_eq!(planned.subtitles, subtitle_frame(&[&line], &wide).map(|frame| SubtitleFrame { rate: (30, 1), ..frame }));
         assert_eq!(planned.subtitles.unwrap().window, (0.0, 0.0, 1920.0, 1080.0));
+        assert_eq!((rate_of("30000/1001"), rate_of("25"), rate_of("x"), rate_of("30/0")), ((30_000, 1001), (25, 1), (0, 0), (0, 0)));
     }
 
     /// With DUBFLOW_TEST_FFMPEG: libass itself says where the lines land.
@@ -1521,8 +1569,39 @@ mod tests {
             let burn = BurnSubtitles { style, lines };
             measure_subtitles(&work, &ffmpeg, &subtitle_frame(&[&burn], framing).unwrap(), &clip, &folder, &running)
         };
-        let frames = frame_times(&ffprobe_beside(&ffmpeg), &clip, &running).unwrap();
-        assert_eq!((frames.len(), frames[0], frames[1], frames[299]), (300, 0, 40, 11_959), "the clip's own frame times, as libass gets them");
+        let frames = frame_times(&ffprobe_beside(&ffmpeg), &clip, &running, (25, 1)).unwrap();
+        assert_eq!((frames.len(), frames[0], frames[1], frames[299]), (300, 0, 40, 11_960), "the clip's own frame times, as libass gets them on the 1/25 clock");
+        // The export's own graph draws Phụ đề on its frames (#935, recheck 9): after a cut at 30 fps (concat on the
+        // AV_TIME_BASE clock), a line written 0:00:03.69–0:00:03.70 shows on exactly the frames whose libass time
+        // `frame_times` gives as inside it (frame 111, drawn at 3699 ms).
+        let source = dir.join("source30.mp4");
+        let made = Command::new(&ffmpeg).args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=c=black:s=320x180:r=30,format=yuv420p", "-t", "8",
+            "-c:v", "mpeg4", "-q:v", "2", "-video_track_timescale", "15360"]).arg(&source).status().unwrap();
+        assert!(made.success());
+        let tick = dir.join("tick.ass");
+        fs::write(&tick, "[Script Info]\nScriptType: v4.00+\nPlayResX: 320\nPlayResY: 180\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, \
+            PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, \
+            BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: D,Arial,40,&H00FFFFFF,&H00FFFFFF,&H00FFFFFF,\
+            &H00000000,0,0,0,0,100,100,0,0,1,0,0,2,10,10,10,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, \
+            Effect, Text\nDialogue: 0,0:00:03.69,0:00:03.70,D,,0,0,0,,X\n").unwrap();
+        let cut = Edit { segments: vec![segment(0, 0.0, 1.04), segment(0, 1.5, 5.5)], ..Edit::default() };
+        let frame30 = Frame { width: 320, height: 180, fps: "30/1".into() };
+        let finish = Finish { burn: Some(subtitles_filter(&display_path(&tick))), ..Finish::default() };
+        let (graph, _) = export_script(&cut, &[Input { has_audio: false }], &frame30, "source", &Mix { main_volume: 1.0, ..Mix::default() }, &finish);
+        let burned = dir.join("burned30.mp4");
+        let mut command = Command::new(&ffmpeg);
+        command.args(["-v", "error", "-y", "-i"]).arg(&source).args(["-filter_complex", &graph, "-map", "[v]"]);
+        if graph.contains("[a]") {
+            command.args(["-map", "[a]"]);
+        }
+        let made = command.args(["-r", "30/1", "-c:v", "mpeg4", "-q:v", "2"]).arg(&burned).status().unwrap();
+        assert!(made.success(), "{graph}");
+        let drawn = Command::new(&ffmpeg).args(["-v", "info", "-i"]).arg(&burned).args(["-vf", "format=gray,bbox=min_val=128", "-f", "null", "-"])
+            .output().unwrap();
+        let shown: Vec<usize> = read_boxes(&String::from_utf8_lossy(&drawn.stderr)).into_keys().collect();
+        let times = frame_times(&ffprobe_beside(&ffmpeg), &burned, &running, (30, 1)).unwrap();
+        let expected: Vec<usize> = times.iter().enumerate().filter(|(_, ms)| (3_690..3_700).contains(*ms)).map(|(n, _)| n).collect();
+        assert_eq!((shown, expected), (vec![111], vec![111]), "{times:?}");
         let wide = Framing { export: (1920, 1080), out: (1920, 1080), fill: "black", aspect: None };
         let four_three = Framing { export: (1920, 1080), out: (1440, 1080), fill: "fill", aspect: Some("4:3") };
         // short lines at the bottom, one with a box: inside
@@ -1795,6 +1874,16 @@ mod tests {
         let report = read_check(&work, &video);
         assert_eq!((report["state"].as_str(), report["error"].as_str()), (Some("UNAVAILABLE"), Some(CHANGED)), "{report}");
         assert_eq!(fs::read(&video).unwrap(), b"export two, longer");
+        // that report is about export one's file: a later export at the same name never shows it
+        assert!(stamp_in(&report).is_some());
+        let mut exports = vec![json!({ "path": display_path(&video) })];
+        attach(&work, &mut exports);
+        assert!(exports[0].get("check").is_none(), "{}", exports[0]);
+        // a report on the file as it is now is shown
+        let now = ExportCheck::of(&plain_plan(1.0, true, None).for_video(video.clone(), false), "DONE");
+        save(&work, &check_dir(&work, &video), &now);
+        attach(&work, &mut exports);
+        assert_eq!(exports[0]["check"]["state"], "DONE");
         // a plan saved before stamps existed still reads
         let old: Plan = serde_json::from_value(json!({"video": "x.mp4", "expected_seconds": 1.0, "has_audio": false,
             "srt_end_ms": null, "intended_holds": [], "subtitles": null})).unwrap();
