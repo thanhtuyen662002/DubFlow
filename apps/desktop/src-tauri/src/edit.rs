@@ -2304,23 +2304,8 @@ fn burn_ass(burn: &BurnSubtitles) -> Result<String, String> {
         .any(|line| line.end_ms <= line.start_ms || line.text.trim().is_empty() || line.text.chars().count() > MAX_CUE_TEXT) {
         return Err(fail("Phụ đề không hợp lệ"));
     }
-    let font_size = (48.0 * style.size).round().max(1.0);
-    let (back, border, shadow) = match &style.box_color {
-        Some(color) => (ass_color(color, ((1.0 - style.box_opacity) * 255.0).round() as u8), 4, (font_size * 0.2).round().max(2.0)),
-        None => ("&H64000000".to_owned(), 1, 0.0),
-    };
-    let align = match style.align.as_str() { "top" => 8, "middle" => 5, _ => 2 };
-    let prefix = match (style.x, style.y) {
-        (Some(x), Some(y)) => format!("{{\\an5\\pos({},{})}}", (x * 1920.0).round() as i64, (y * 1080.0).round() as i64),
-        _ => String::new(),
-    };
-    let mut script = format!("[Script Info]\n; DubFlow: Phụ đề\nScriptType: v4.00+\nPlayResX: 1920\nPlayResY: 1080\nWrapStyle: 0\n\
-ScaledBorderAndShadow: yes\nYCbCr Matrix: None\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, \
-BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n\
-Style: Default,{},{},{},&H000000FF,{},{back},{},0,0,0,100,100,0,0,{border},{},{},{align},40,40,48,1\n\n[Events]\n\
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n",
-        style.font, num(font_size), ass_color(&style.primary, 0), ass_color(&style.outline, 0), if style.bold { -1 } else { 0 },
-        num(style.outline_width), num(shadow));
+    let mut script = burn_head(style, false);
+    let prefix = burn_prefix(style);
     let mut lines: Vec<&Cue> = burn.lines.iter().collect();
     lines.sort_by_key(|line| (line.start_ms, line.end_ms));
     for line in lines {
@@ -2328,6 +2313,51 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\
             ass_time(line.end_ms as f64 / 1000.0), ass_text(line.text.trim())));
     }
     Ok(script)
+}
+
+/// A burn's .ass head. `measure` (Kiểm tra kỹ thuật, #935) paints every part libass draws (letters, outline, box)
+/// opaque white on the same layout, so the drawn area can be measured on a black frame; a box nobody can see stays
+/// unseen.
+fn burn_head(style: &SubtitleStyle, measure: bool) -> String {
+    let font_size = (48.0 * style.size).round().max(1.0);
+    let (back, border, shadow) = match &style.box_color {
+        Some(color) => {
+            let alpha = ((1.0 - style.box_opacity) * 255.0).round() as u8;
+            (if measure { ass_color("#FFFFFF", alpha) } else { ass_color(color, alpha) }, 4, (font_size * 0.2).round().max(2.0))
+        }
+        None => ("&H64000000".to_owned(), 1, 0.0),
+    };
+    let (primary, outline) = if measure { ("#FFFFFF", "#FFFFFF") } else { (style.primary.as_str(), style.outline.as_str()) };
+    let align = match style.align.as_str() { "top" => 8, "middle" => 5, _ => 2 };
+    format!("[Script Info]\n; DubFlow: Phụ đề\nScriptType: v4.00+\nPlayResX: 1920\nPlayResY: 1080\nWrapStyle: 0\n\
+ScaledBorderAndShadow: yes\nYCbCr Matrix: None\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, \
+BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n\
+Style: Default,{},{},{},&H000000FF,{},{back},{},0,0,0,100,100,0,0,{border},{},{},{align},40,40,48,1\n\n[Events]\n\
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n",
+        style.font, num(font_size), ass_color(primary, 0), ass_color(outline, 0), if style.bold { -1 } else { 0 },
+        num(style.outline_width), num(shadow))
+}
+
+/// A dragged layer: every line centred on the same point.
+fn burn_prefix(style: &SubtitleStyle) -> String {
+    match (style.x, style.y) {
+        (Some(x), Some(y)) => format!("{{\\an5\\pos({},{})}}", (x * 1920.0).round() as i64, (y * 1080.0).round() as i64),
+        _ => String::new(),
+    }
+}
+
+/// The burn of `style` for Kiểm tra kỹ thuật: `slots[i]` are the lines shown together at one moment of the export,
+/// drawn from second i to i + 1, in the order `burn_ass` writes them, so they stack as they do there.
+pub(super) fn measure_ass(style: &SubtitleStyle, slots: &[Vec<&Cue>]) -> String {
+    let mut script = burn_head(style, true);
+    let prefix = burn_prefix(style);
+    for (at, lines) in slots.iter().enumerate() {
+        for line in lines {
+            script.push_str(&format!("Dialogue: 0,{},{},Default,,0,0,0,,{prefix}{}\n", ass_time(at as f64), ass_time(at as f64 + 1.0),
+                ass_text(line.text.trim())));
+        }
+    }
+    script
 }
 
 /// Store a job's subtitle look beside its outputs, where the worker reads it.

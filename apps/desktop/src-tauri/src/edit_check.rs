@@ -6,8 +6,10 @@
 //! streams. The length, caption and peak rules and their thresholds are Final
 //! QC's (`check_output` in engine/dubflow/mastering/final_qc.py; a test keeps
 //! them in step). Black and frozen use FFmpeg's own filter defaults, written
-//! out. Whether burned subtitles stay inside the frame is estimated from the
-//! export's geometry, because burned text cannot be told apart from the picture.
+//! out. Whether burned subtitles stay inside the frame is measured apart from
+//! the video, because burned text cannot be told apart from the picture: the
+//! export's own subtitle layers are drawn by libass, in white, on a black frame
+//! of the export's size, and FFmpeg's `bbox` reports where they landed.
 //!
 //! The result is never a gate: it has no "passed" or READY state, nothing
 //! reads it to allow or refuse anything, and the check never deletes, renames,
@@ -68,7 +70,20 @@ pub(super) struct Plan {
     srt_end_ms: Option<u64>,
     /// Output-time spans of freeze segments and still-image segments: held on purpose.
     intended_holds: Vec<(f64, f64)>,
-    subtitles: SubtitleFit,
+    /// The burned Phụ đề to measure; None when nothing is burned.
+    subtitles: Option<SubtitleFrame>,
+}
+
+/// Phụ đề to measure (#935): the burned layers as the export drew them, the export frame they were drawn on, and
+/// the part of that frame the finished picture keeps.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(super) struct SubtitleFrame {
+    burns: Vec<BurnSubtitles>,
+    export: (u32, u32),
+    /// In export pixels: x0, y0, x1, y1. The whole frame unless "fill" crops it.
+    window: (f64, f64, f64, f64),
+    /// Why a line outside the window is cut.
+    why: String,
 }
 
 impl Plan {
@@ -100,7 +115,7 @@ pub(super) fn plan(edit: &Edit, stills: &[bool], expected_seconds: f64, has_audi
         has_audio,
         srt_end_ms: cues.iter().map(|cue| cue.end_ms).max(),
         intended_holds: intended_holds(edit, stills),
-        subtitles: subtitle_fit(burns, framing),
+        subtitles: subtitle_frame(burns, framing),
     }
 }
 
@@ -113,116 +128,133 @@ fn intended_holds(edit: &Edit, stills: &[bool]) -> Vec<(f64, f64)> {
         .collect()
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct Rect {
-    x0: f64,
-    y0: f64,
-    x1: f64,
-    y1: f64,
-}
-
-impl Rect {
-    fn holds(self, inner: Rect) -> bool {
-        const EPSILON: f64 = 1e-6;
-        inner.x0 >= self.x0 - EPSILON && inner.y0 >= self.y0 - EPSILON && inner.x1 <= self.x1 + EPSILON && inner.y1 <= self.y1 + EPSILON
-    }
-}
-
-/// Where libass draws one line on the main video (`burn_ass`: PlayRes 1920×1080,
-/// Fontsize 48×size, MarginL/R 40, MarginV 48), sized like the editor's
-/// `previewMetrics`. The width is an estimate (half an em per character).
-/// A character's width in ems: Chinese, Japanese, Korean and full-width forms take a whole em, the rest about half.
-fn char_em(c: char) -> f64 {
-    let wide = matches!(u32::from(c), 0x1100..=0x115F | 0x2E80..=0xA4CF | 0xAC00..=0xD7A3 | 0xF900..=0xFAFF | 0xFE30..=0xFE4F
-        | 0xFF00..=0xFF60 | 0xFFE0..=0xFFE6 | 0x20000..=0x3FFFD);
-    if wide { 1.0 } else { 0.5 }
-}
-
-fn text_block(style: &SubtitleStyle, text: &str, width: f64, height: f64) -> Rect {
-    let font = 48.0 * style.size * height / 1080.0;
-    let (margin_x, margin_v) = (40.0 * width / 1920.0, 48.0 * height / 1080.0);
-    let room = (width - 2.0 * margin_x).max(1.0);
-    // Box: libass pads it by the Shadow value (20 % of the size) on every side. No box: the outline
-    // (ScaledBorderAndShadow) sticks out past the first and last letter; above and below, the row's ascent and
-    // descent already leave more room than any outline the editor allows.
-    let (pad_x, pad_y) = match style.box_color {
-        Some(_) => (0.2 * font, 0.2 * font),
-        None => (style.outline_width * height / 1080.0, 0.0),
-    };
-    let space = char_em(' ') * font;
-    let (mut rows, mut widest) = (0.0_f64, 0.0_f64);
-    for line in text.trim().split('\n') {
-        // libass breaks a row only at a space here: a native .ass file gets no Unicode line breaking, so a run
-        // with no space (a Chinese or Japanese sentence) stays one row however wide it is.
-        let words: Vec<f64> = line.split_whitespace().map(|word| word.chars().map(char_em).sum::<f64>() * font).collect();
-        let (mut count, mut row) = (1.0_f64, 0.0_f64);
-        for &word in &words {
-            if row > 0.0 && row + space + word > room {
-                count += 1.0;
-                row = word;
-            } else {
-                row += if row > 0.0 { space + word } else { word };
-            }
-        }
-        let wide = words.iter().sum::<f64>() + space * words.len().saturating_sub(1) as f64;
-        let longest = words.iter().copied().fold(0.0, f64::max);
-        // WrapStyle 0 evens the rows out, but never below the longest unbroken word.
-        rows += count;
-        widest = widest.max((wide / count).max(longest));
-    }
-    // A row is about one Fontsize tall in libass (ascent plus descent).
-    let (block_w, block_h) = (widest + 2.0 * pad_x, rows * font + 2.0 * pad_y);
-    if let (Some(x), Some(y)) = (style.x, style.y) {
-        // A dragged layer is one `\an5\pos` for every line (burn_ass), and libass does not keep a positioned line
-        // inside the picture: the editor only clamped the line on screen while dragging, so a longer one can stick out.
-        let (x0, y0) = (x * width - block_w / 2.0, y * height - block_h / 2.0);
-        return Rect { x0, y0, x1: x0 + block_w, y1: y0 + block_h };
-    }
-    let top = match style.align.as_str() { "top" => margin_v, "middle" => (height - block_h) / 2.0, _ => height - margin_v - block_h };
-    // libass keeps an aligned line inside the picture it is drawn on (a block taller than the picture still sticks out).
-    let x0 = (width / 2.0 - block_w / 2.0).clamp(0.0, (width - block_w).max(0.0));
-    let y0 = top.clamp(0.0, (height - block_h).max(0.0));
-    Rect { x0, y0, x1: x0 + block_w, y1: y0 + block_h }
-}
-
-/// Whether the burned lines stay inside the finished picture. Phụ đề is drawn on the export frame after the part
-/// looks and the overlays, before the reframe (#930), so no crop, zoom, tilt or turn of a part can cut it: only
-/// "fill"'s centred crop can. The lines are already on the export's clock.
-fn subtitle_fit(burns: &[&BurnSubtitles], framing: &Framing) -> SubtitleFit {
-    if burns.iter().all(|burn| burn.lines.is_empty()) {
-        return SubtitleFit { ok: None, detail: "không có phụ đề in vào hình".into(), at_ms: Vec::new() };
+/// What to measure: the layers that burn lines, and the window "fill" keeps. Phụ đề is drawn on the export frame
+/// after the part looks and the overlays, before the reframe (#930), so no crop, zoom, tilt or turn of a part can
+/// cut it: only the frame's own edges and "fill"'s centred crop can.
+fn subtitle_frame(burns: &[&BurnSubtitles], framing: &Framing) -> Option<SubtitleFrame> {
+    let burns: Vec<BurnSubtitles> = burns.iter().filter(|burn| !burn.lines.is_empty()).map(|burn| (*burn).clone()).collect();
+    if burns.is_empty() {
+        return None;
     }
     let (ew, eh) = (f64::from(framing.export.0.max(1)), f64::from(framing.export.1.max(1)));
     let (ow, oh) = (f64::from(framing.out.0.max(1)), f64::from(framing.out.1.max(1)));
     // `reframe_filter` "fill": the frame scaled up and its middle kept along the long axis.
     let filled = framing.fill == "fill" && framing.out != framing.export;
     let (kx, ky) = if !filled { (1.0, 1.0) } else if ow / oh < ew / eh { ((ow / oh) / (ew / eh), 1.0) } else { (1.0, (ew / eh) / (ow / oh)) };
-    let window = Rect { x0: (1.0 - kx) / 2.0 * ew, y0: (1.0 - ky) / 2.0 * eh, x1: (1.0 + kx) / 2.0 * ew, y1: (1.0 + ky) / 2.0 * eh };
-    let mut risky = 0;
-    let mut times = Vec::new();
-    for burn in burns {
-        for cue in &burn.lines {
-            if !window.holds(text_block(&burn.style, &cue.text, ew, eh)) {
-                risky += 1;
-                times.push(cue.start_ms);
-            }
-        }
-    }
-    times.sort_unstable();
-    times.dedup();
-    times.truncate(MAX_SPANS);
-    if risky == 0 {
-        return SubtitleFit { ok: Some(true), detail: "phụ đề nằm trong khung — ước lượng theo cỡ chữ và vị trí".into(), at_ms: Vec::new() };
-    }
+    let window = ((1.0 - kx) / 2.0 * ew, (1.0 - ky) / 2.0 * eh, (1.0 + kx) / 2.0 * ew, (1.0 + ky) / 2.0 * eh);
     let why = match (filled, framing.aspect) {
         (true, Some(aspect)) => format!("khung {aspect}, cắt cho đầy"),
         (true, None) => "cắt cho đầy khung".to_owned(),
         (false, _) => "chữ vượt ra ngoài khung hình".to_owned(),
     };
-    let named: Vec<String> = times.iter().take(NAMED).map(|ms| clock(*ms as f64 / 1000.0)).collect();
-    let more = if times.len() > NAMED { "…" } else { "" };
-    SubtitleFit { ok: Some(false), detail: format!("{risky} câu có thể bị cắt mép ({why}): {}{more} — ước lượng theo cỡ chữ và vị trí", named.join(", ")),
-        at_ms: times }
+    Some(SubtitleFrame { burns, export: framing.export, window, why })
+}
+
+/// One moment per line (its middle), each with the lines of every layer shown at that moment, so lines shown
+/// together stack as in the export. Returns the start of the line each moment is for, and for each layer the lines
+/// it shows at each moment, in `burn_ass`'s order.
+fn moments(burns: &[BurnSubtitles]) -> (Vec<u64>, Vec<Vec<Vec<&Cue>>>) {
+    let mut at: Vec<(u64, u64)> = burns.iter().flat_map(|burn| burn.lines.iter())
+        .map(|cue| (cue.start_ms + cue.end_ms.saturating_sub(cue.start_ms) / 2, cue.start_ms)).collect();
+    at.sort_unstable();
+    at.dedup_by_key(|(middle, _)| *middle);
+    let layers = burns.iter().map(|burn| {
+        let mut lines: Vec<&Cue> = burn.lines.iter().collect();
+        lines.sort_by_key(|line| (line.start_ms, line.end_ms));
+        let (mut next, mut shown) = (0, Vec::<&Cue>::new());
+        at.iter().map(|&(middle, _)| {
+            while next < lines.len() && lines[next].start_ms <= middle {
+                shown.push(lines[next]);
+                next += 1;
+            }
+            shown.retain(|line| line.end_ms > middle);
+            shown.clone()
+        }).collect()
+    }).collect();
+    (at.into_iter().map(|(_, start)| start).collect(), layers)
+}
+
+/// `bbox`'s log: for each frame where something was drawn, its frame number and the drawn area (x0, y0, x1, y1,
+/// inclusive pixels).
+fn read_boxes(text: &str) -> HashMap<usize, (i64, i64, i64, i64)> {
+    let mut boxes = HashMap::new();
+    for line in text.lines().filter(|line| line.contains("Parsed_bbox")) {
+        let value = |name: &str| line.split_whitespace().find_map(|word| word.strip_prefix(name)).and_then(|value| value.parse::<i64>().ok());
+        if let (Some(frame), Some(x0), Some(x1), Some(y0), Some(y1)) = (value("n:"), value("x1:"), value("x2:"), value("y1:"), value("y2:")) {
+            if let Ok(frame) = usize::try_from(frame) {
+                boxes.insert(frame, (x0, y0, x1, y1));
+            }
+        }
+    }
+    boxes
+}
+
+/// The measured result: a moment's drawing must stay off the frame's outermost pixels (ink there runs on past the
+/// edge) and inside the kept window. A moment where libass drew nothing is not measured, never called fine.
+fn fit_of(frame: &SubtitleFrame, starts: &[u64], boxes: &HashMap<usize, (i64, i64, i64, i64)>) -> SubtitleFit {
+    let (width, height) = (i64::from(frame.export.0), i64::from(frame.export.1));
+    let (wx0, wy0, wx1, wy1) = frame.window;
+    let (mut cut, mut blank) = (Vec::new(), 0);
+    for (index, &start) in starts.iter().enumerate() {
+        let Some(&(x0, y0, x1, y1)) = boxes.get(&index) else {
+            blank += 1;
+            continue;
+        };
+        let on_frame = x0 > 0 && y0 > 0 && x1 < width - 1 && y1 < height - 1;
+        let in_window = x0 as f64 >= wx0 - 0.5 && y0 as f64 >= wy0 - 0.5 && (x1 + 1) as f64 <= wx1 + 0.5 && (y1 + 1) as f64 <= wy1 + 0.5;
+        if !(on_frame && in_window) {
+            cut.push(start);
+        }
+    }
+    cut.sort_unstable();
+    cut.dedup();
+    let unseen = if blank > 0 { format!(" {blank} câu chưa đo được (libass không vẽ ra chữ).") } else { String::new() };
+    if cut.is_empty() {
+        return if blank == 0 {
+            SubtitleFit { ok: Some(true), detail: "phụ đề nằm trong khung — đo trên chữ libass vẽ".into(), at_ms: Vec::new() }
+        } else {
+            SubtitleFit { ok: None, detail: format!("không thấy câu nào bị cắt.{unseen}"), at_ms: Vec::new() }
+        };
+    }
+    let named: Vec<String> = cut.iter().take(NAMED).map(|ms| clock(*ms as f64 / 1000.0)).collect();
+    let more = if cut.len() > NAMED { "…" } else { "" };
+    let detail = format!("{} câu bị cắt mép ({}): {}{more} — đo trên chữ libass vẽ.{unseen}", cut.len(), frame.why, named.join(", "));
+    cut.truncate(MAX_SPANS);
+    SubtitleFit { ok: Some(false), detail, at_ms: cut }
+}
+
+/// Where libass draws the burned lines: the export's own layers painted white (`measure_ass`) on a black frame of
+/// the export's size, one frame per moment, and FFmpeg's `bbox` around what was drawn. Reads no part of the video.
+fn measure_subtitles(work: &Path, ffmpeg: &Path, frame: &SubtitleFrame, dir: &Path, running: &Running) -> SubtitleFit {
+    let unmeasured = |why: String| SubtitleFit { ok: None, detail: format!("chưa đo được phụ đề: {why}"), at_ms: Vec::new() };
+    let (starts, layers) = moments(&frame.burns);
+    let mut filters = Vec::new();
+    for (index, (burn, shown)) in frame.burns.iter().zip(&layers).enumerate() {
+        let file = dir.join(format!("measure-{}.ass", index + 1));
+        if !(unlinked(work) && plain(dir)) || write_atomic(&file, measure_ass(&burn.style, shown).as_bytes()).is_err() {
+            return unmeasured("không ghi được tệp đo".into());
+        }
+        filters.push(subtitles_filter(&display_path(&file)));
+    }
+    let (width, height) = frame.export;
+    let mut args: Vec<OsString> = ["-nostdin", "-hide_banner", "-nostats", "-loglevel", "level+info", "-f", "lavfi", "-i"]
+        .into_iter().map(OsString::from).collect();
+    args.push(format!("color=c=black:s={width}x{height}:r=1:d={}", starts.len()).into());
+    args.extend(crate::gpu::thread_args(false));
+    args.extend(["-vf".into(), format!("{},bbox", filters.join(",")).into()]);
+    args.extend(["-f", "null", "-"].map(OsString::from));
+    let log_path = dir.join("measure.log");
+    if let Err(error) = run_tracked(ffmpeg, args, work, &log_path, running, |_| {}) {
+        return unmeasured(if error.is_empty() { "FFmpeg dừng giữa chừng".into() } else { error });
+    }
+    // About 150 bytes of log per moment.
+    let limit = LOG_LIMIT + 512 * starts.len() as u64;
+    let text = fs::File::open(&log_path).ok().map(|file| {
+        let mut bytes = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut std::io::Read::take(file, limit), &mut bytes);
+        String::from_utf8_lossy(&bytes).into_owned()
+    }).unwrap_or_default();
+    fit_of(frame, &starts, &read_boxes(&text))
 }
 
 // ---------- The FFmpeg pass ----------
@@ -417,8 +449,9 @@ struct Pass {
 /// Stretches of output time, in seconds.
 type Spans = Vec<(f64, f64)>;
 
-/// The checks from the probe (None: not readable), the pass and the log, with the black and frozen stretches.
-fn checks_of(plan: &Plan, probe: Option<&Probe>, pass: &Pass, log: &LogFacts) -> (Vec<Check>, Spans, Spans) {
+/// The checks from the probe (None: not readable), the pass, the log and the subtitle measure, with the black and
+/// frozen stretches.
+fn checks_of(plan: &Plan, probe: Option<&Probe>, pass: &Pass, log: &LogFacts, subtitles: &SubtitleFit) -> (Vec<Check>, Spans, Spans) {
     let mut checks = Vec::new();
     let duration = probe.map(|probe| probe.duration);
     let reached = duration.is_none_or(|duration| pass.decoded_end >= duration - SYNC_TOLERANCE_MS / 1000.0);
@@ -450,7 +483,7 @@ fn checks_of(plan: &Plan, probe: Option<&Probe>, pass: &Pass, log: &LogFacts) ->
         (true, true) => check("frozen", "Hình đứng", Some(true), "không có đoạn đứng hình từ 2 giây ngoài các đoạn dừng hình cố ý"),
         (true, false) => check("frozen", "Hình đứng", Some(false), span_detail(&frozen, "đứng hình")),
     });
-    checks.push(check("subtitle_frame", "Phụ đề trong khung", plan.subtitles.ok, plan.subtitles.detail.clone()));
+    checks.push(check("subtitle_frame", "Phụ đề trong khung", subtitles.ok, subtitles.detail.clone()));
     (checks, black, frozen)
 }
 
@@ -635,7 +668,14 @@ fn check_once(work: &Path, ffmpeg: &Path, plan: &Plan, dir: &Path, running: &Run
     let decoded_end = last_us.map_or(0.0, |us| us as f64 / 1e6 + 1.0 / fps.max(1.0));
     let log = read_log(&text, decoded_end);
     let pass = Pass { finished: result.is_ok(), decoded_end, last_line: result.err().unwrap_or_default() };
-    let (checks, black, frozen) = checks_of(plan, probe.as_ref(), &pass, &log);
+    let subtitles = match &plan.subtitles {
+        Some(frame) => measure_subtitles(work, ffmpeg, frame, dir, running),
+        None => SubtitleFit { ok: None, detail: "không có phụ đề in vào hình".into(), at_ms: Vec::new() },
+    };
+    if running.cancelled.load(Ordering::SeqCst) {
+        return ExportCheck::new(&plan.video, "STOPPED");
+    }
+    let (checks, black, frozen) = checks_of(plan, probe.as_ref(), &pass, &log, &subtitles);
     ExportCheck::new(&plan.video, "DONE").with_checks(checks, &black, &frozen)
 }
 
@@ -888,73 +928,106 @@ mod tests {
     }
 
     const LONG: &str = "Đây là một câu phụ đề khá dài để thử khung dọc";
+    /// 41 Chinese characters with no space: libass (no Unicode line breaking for a native .ass) keeps it one row.
+    const CHINESE: &str = "大家好欢迎来到我们的频道今天我们来聊一聊这座城市里最有名的一家老字号餐厅和它的故事吧";
 
-    #[test]
-    fn subtitle_fit() {
-        let wide = Framing { export: (1920, 1080), out: (1920, 1080), fill: "black", aspect: None };
-        let none = super::subtitle_fit(&[], &wide);
-        assert_eq!(none.ok, None);
-        // the lines arrive on the export's clock (#930): 12 s is 12 s out
-        let line = burn(style(json!({})), LONG, 12_000);
-        assert_eq!(super::subtitle_fit(&[&line], &wide).ok, Some(true), "no fill: libass keeps it inside");
-        // 16:9 → 9:16 cropped to fill: the long bottom line is cut
-        let tall = Framing { export: (1920, 1080), out: (608, 1080), fill: "fill", aspect: Some("9:16") };
-        let cut = super::subtitle_fit(&[&line], &tall);
-        assert_eq!(cut.ok, Some(false));
-        assert_eq!(cut.at_ms, [12_000]);
-        assert_eq!(cut.detail, "1 câu có thể bị cắt mép (khung 9:16, cắt cho đầy): 0:12 — ước lượng theo cỡ chữ và vị trí");
-        for fill in ["blur", "black"] {
-            assert_eq!(super::subtitle_fit(&[&line], &Framing { fill, ..tall }).ok, Some(true), "{fill} keeps the whole picture");
-        }
-        // a short line in the middle stays inside the 9:16 window
-        assert_eq!(super::subtitle_fit(&[&burn(style(json!({})), "Chào", 12_000)], &tall).ok, Some(true));
-        // Chinese characters are a whole em wide: 17 of them at size 1 (about 816 px) do not fit the 9:16 window (607 px)
-        let mut size_one = style(json!({}));
-        size_one.size = 1.0;
-        let chinese = BurnSubtitles { style: size_one.clone(), lines: vec![Cue { start_ms: 4_000, end_ms: 6_000, text: "大家好欢迎来到我们的频道今天我们来".into() }] };
-        assert_eq!(super::subtitle_fit(&[&chinese], &tall).at_ms, [4_000]);
-        let latin = BurnSubtitles { style: size_one, lines: vec![Cue { start_ms: 4_000, end_ms: 6_000, text: "Xin chao cac ban!".into() }] };
-        assert_eq!(super::subtitle_fit(&[&latin], &tall).ok, Some(true), "17 Latin letters are about half as wide");
-        // libass breaks only at spaces here, so a long Chinese sentence stays one row: cut by a 1:1 or 4:3 fill,
-        // and too wide for the picture itself when it has no fill at all (recheck 3)
-        let sentence = BurnSubtitles { style: style(json!({})), lines: vec![Cue { start_ms: 5_000, end_ms: 7_000,
-            text: "大家好欢迎来到我们的频道今天我们来聊一聊这座城市里最有名的一家老字号餐厅和它的故事吧".into() }] };
-        for (out, aspect) in [((1080, 1080), "1:1"), ((1440, 1080), "4:3")] {
-            let window = Framing { out, aspect: Some(aspect), ..tall };
-            assert_eq!(super::subtitle_fit(&[&sentence], &window).at_ms, [5_000], "{aspect}");
-        }
-        let plain = super::subtitle_fit(&[&sentence], &wide);
-        assert_eq!(plain.at_ms, [5_000]);
-        assert!(plain.detail.contains("chữ vượt ra ngoài khung hình"), "{}", plain.detail);
-        // the same words with spaces wrap into rows and fit the 4:3 window
-        let spaced = BurnSubtitles { style: style(json!({})), lines: vec![Cue { start_ms: 5_000, end_ms: 7_000,
-            text: "大家好 欢迎来到 我们的频道 今天 我们来聊一聊".into() }] };
-        assert_eq!(super::subtitle_fit(&[&spaced], &Framing { out: (1440, 1080), aspect: Some("4:3"), ..tall }).ok, Some(true));
-        // without a box the outline sticks out past the last letter: a dragged line that just fits is cut by it
-        let mut snug = style(json!({"x": 0.0625, "y": 0.5}));
-        snug.size = 1.0;
-        let cue = vec![Cue { start_ms: 3_000, end_ms: 5_000, text: "ABCDEFGHIJ".into() }];
-        assert_eq!(super::subtitle_fit(&[&BurnSubtitles { style: snug.clone(), lines: cue.clone() }], &wide).at_ms, [3_000]);
-        snug.outline_width = 0.0;
-        assert_eq!(super::subtitle_fit(&[&BurnSubtitles { style: snug, lines: cue }], &wide).ok, Some(true));
-        // a dragged layer: libass does not pull a positioned line back in, so a long line placed near the left edge sticks out
-        let dragged = burn(style(json!({"x": 0.1, "y": 0.5})), LONG, 7_000);
-        let out = super::subtitle_fit(&[&dragged], &wide);
-        assert_eq!((out.ok, out.at_ms.clone()), (Some(false), vec![7_000]));
-        assert!(out.detail.contains("chữ vượt ra ngoài khung hình"), "{}", out.detail);
-        assert_eq!(super::subtitle_fit(&[&burn(style(json!({"x": 0.5, "y": 0.5})), "Chào", 7_000)], &wide).ok, Some(true));
-        // no false alarm for a dragged layer whose long line wraps, or one dragged flush to the bottom edge (#930 recheck)
-        let pho = "Hôm nay chúng ta sẽ cùng nhau tìm hiểu cách nấu món phở bò truyền thống của Hà Nội, từ khâu chọn xương, ninh nước dùng cho đến cách thái thịt bò thật mỏng và đẹp";
-        assert_eq!(super::subtitle_fit(&[&burn(style(json!({"x": 0.45, "y": 0.8333})), pho, 7_000)], &wide).ok, Some(true));
-        let mut flush = style(json!({"x": 0.5, "y": 0.9761}));
-        flush.size = 1.0;
-        assert_eq!(super::subtitle_fit(&[&BurnSubtitles { style: flush, lines: vec![Cue { start_ms: 7_000, end_ms: 9_000, text: "Xin chao cac ban".into() }] }], &wide).ok, Some(true));
-        // a second layer counts too
-        let both = super::subtitle_fit(&[&burn(style(json!({})), "Chào", 2_000), &line], &tall);
-        assert_eq!((both.ok, both.at_ms), (Some(false), vec![12_000]));
+    fn cue(start_ms: u64, end_ms: u64, text: &str) -> Cue {
+        Cue { start_ms, end_ms, text: text.into() }
     }
 
-    /// #930: Phụ đề is burned after the part looks, so a crop, zoom, tilt or turn of a part never puts it at risk.
+    #[test]
+    fn subtitle_frame_keeps_what_fill_keeps() {
+        let wide = Framing { export: (1920, 1080), out: (1920, 1080), fill: "black", aspect: None };
+        assert_eq!(subtitle_frame(&[], &wide), None);
+        assert_eq!(subtitle_frame(&[&BurnSubtitles { style: style(json!({})), lines: Vec::new() }], &wide), None, "nothing burned");
+        let line = burn(style(json!({})), LONG, 12_000);
+        let whole = subtitle_frame(&[&line], &wide).unwrap();
+        assert_eq!((whole.export, whole.window, whole.why.as_str()), ((1920, 1080), (0.0, 0.0, 1920.0, 1080.0), "chữ vượt ra ngoài khung hình"));
+        // 16:9 → 9:16 cropped to fill: only the middle 607.5 px of the width stays
+        let tall = Framing { export: (1920, 1080), out: (608, 1080), fill: "fill", aspect: Some("9:16") };
+        let kept = subtitle_frame(&[&line], &tall).unwrap();
+        let (x0, y0, x1, y1) = kept.window;
+        assert!((x0 - 656.25).abs() < 1.0 && (x1 - 1263.75).abs() < 1.0 && y0 == 0.0 && y1 == 1080.0, "{:?}", kept.window);
+        assert_eq!(kept.why, "khung 9:16, cắt cho đầy");
+        for fill in ["blur", "black"] {
+            assert_eq!(subtitle_frame(&[&line], &Framing { fill, ..tall }).unwrap().window, (0.0, 0.0, 1920.0, 1080.0), "{fill} keeps it all");
+        }
+        // 16:9 → 21:9 filled: the top and bottom go
+        let (_, top, _, bottom) = subtitle_frame(&[&line], &Framing { out: (2520, 1080), fill: "fill", aspect: Some("21:9"), ..tall }).unwrap().window;
+        assert!(top > 100.0 && bottom < 980.0, "{top} {bottom}");
+        // an empty layer is left out, a second layer kept
+        let empty = BurnSubtitles { style: style(json!({})), lines: Vec::new() };
+        assert_eq!(subtitle_frame(&[&empty, &line, &line], &wide).unwrap().burns.len(), 2);
+    }
+
+    #[test]
+    fn moments_show_what_is_on_screen_together() {
+        let first = BurnSubtitles { style: style(json!({})), lines: vec![cue(4_000, 6_000, "B"), cue(0, 10_000, "A"), cue(12_000, 13_000, "C")] };
+        let second = BurnSubtitles { style: style(json!({})), lines: vec![cue(5_000, 7_000, "x")] };
+        let burns = [first, second];
+        let (starts, layers) = moments(&burns);
+        // middles 5 000 (A), 5 000 (B, the same moment), 6 000 (x; B has just ended), 12 500 (C)
+        assert_eq!(starts, [0, 5_000, 12_000]);
+        let texts = |shown: &Vec<&Cue>| shown.iter().map(|line| line.text.clone()).collect::<Vec<_>>();
+        assert_eq!(layers[0].iter().map(texts).collect::<Vec<_>>(), [vec!["A", "B"], vec!["A"], vec!["C"]]);
+        assert_eq!(layers[1].iter().map(texts).collect::<Vec<_>>(), [vec!["x"], vec!["x"], vec![]]);
+        // the measure script draws moment i from second i, painted white, at the layer's dragged spot
+        let mut dragged = style(json!({"x": 0.25, "y": 0.5, "box": "#101010", "box_opacity": 0.5}));
+        dragged.primary = "#FFFF00".into();
+        let script = measure_ass(&dragged, &layers[0]);
+        assert!(script.contains("Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,{\\an5\\pos(480,540)}A\n"), "{script}");
+        assert_eq!(script.matches("Dialogue:").count(), 4);
+        assert!(script.contains(",&H00FFFFFF,&H000000FF,&H00FFFFFF,&H80FFFFFF,-1,"), "{script}");
+        assert!(!script.contains("&H0000FFFF") && !script.contains("101010"), "no real colour left");
+        // a box nobody can see stays unseen
+        let clear = measure_ass(&style(json!({"box": "#000000", "box_opacity": 0.0})), &layers[1]);
+        assert!(clear.contains(",&HFFFFFFFF,-1,"), "{clear}");
+    }
+
+    #[test]
+    fn boxes_are_read_from_the_bbox_log() {
+        let log = "[Parsed_color_0 @ 0x1] [info] something\n\
+[Parsed_bbox_1 @ 0x55f8] [info] n:0 pts:0 pts_time:0 x1:894 x2:1025 y1:979 y2:1024 w:132 h:46 crop=132:46:894:979 drawbox=894:979:132:46\n\
+[Parsed_bbox_1 @ 0x55f8] [info] n:2 pts:2 pts_time:2 x1:0 x2:1919 y1:975 y2:1028 w:1920 h:54 crop=1920:54:0:975 drawbox=0:975:1920:54\n\
+[Parsed_bbox_1 @ 0x55f8] [info] n:3 pts:3 broken\n";
+        let boxes = read_boxes(log);
+        assert_eq!(boxes.len(), 2);
+        assert_eq!(boxes[&0], (894, 979, 1025, 1024));
+        assert_eq!(boxes[&2], (0, 975, 1919, 1028));
+    }
+
+    #[test]
+    fn fit_of_judges_the_measured_boxes() {
+        let line = burn(style(json!({})), LONG, 12_000);
+        let wide = subtitle_frame(&[&line], &Framing { export: (1920, 1080), out: (1920, 1080), fill: "black", aspect: None }).unwrap();
+        let tall = subtitle_frame(&[&line], &Framing { export: (1920, 1080), out: (608, 1080), fill: "fill", aspect: Some("9:16") }).unwrap();
+        let boxes = |list: &[(usize, (i64, i64, i64, i64))]| list.iter().copied().collect::<HashMap<_, _>>();
+        let short = (894, 979, 1025, 1024);
+        let long = (358, 976, 1560, 1034);
+        let fine = fit_of(&wide, &[2_000, 12_000], &boxes(&[(0, short), (1, long)]));
+        assert_eq!((fine.ok, fine.detail.as_str()), (Some(true), "phụ đề nằm trong khung — đo trên chữ libass vẽ"));
+        let cut = fit_of(&tall, &[2_000, 12_000], &boxes(&[(0, short), (1, long)]));
+        assert_eq!((cut.ok, cut.at_ms.clone()), (Some(false), vec![12_000]));
+        assert_eq!(cut.detail, "1 câu bị cắt mép (khung 9:16, cắt cho đầy): 0:12 — đo trên chữ libass vẽ.");
+        // ink on the outermost column or row runs on past the frame
+        let edge = fit_of(&wide, &[3_000, 4_000, 5_000], &boxes(&[(0, (0, 975, 1919, 1028)), (1, (10, 1000, 300, 1079)), (2, (1, 1, 1918, 1078))]));
+        assert_eq!((edge.ok, edge.at_ms), (Some(false), vec![3_000, 4_000]));
+        assert!(edge.detail.starts_with("2 câu bị cắt mép (chữ vượt ra ngoài khung hình): 0:03, 0:04"), "{}", edge.detail);
+        // nothing drawn for a moment: not measured, never called fine
+        let blank = fit_of(&wide, &[2_000, 12_000], &boxes(&[(0, short)]));
+        assert_eq!(blank.ok, None);
+        assert!(blank.detail.contains("1 câu chưa đo được"), "{}", blank.detail);
+        let both = fit_of(&tall, &[2_000, 12_000, 20_000], &boxes(&[(0, short), (1, long)]));
+        assert_eq!(both.ok, Some(false));
+        assert!(both.detail.ends_with("1 câu chưa đo được (libass không vẽ ra chữ)."), "{}", both.detail);
+        // at most NAMED times in words, MAX_SPANS kept
+        let many: Vec<u64> = (0..60).map(|index| index * 1_000).collect();
+        let all = fit_of(&wide, &many, &HashMap::from_iter((0..60).map(|index| (index, (0, 0, 10, 10)))));
+        assert_eq!(all.at_ms.len(), MAX_SPANS);
+        assert!(all.detail.starts_with("60 câu bị cắt mép (chữ vượt ra ngoài khung hình): 0:00, 0:01, 0:02, 0:03, 0:04… "), "{}", all.detail);
+    }
+
+    /// #930: Phụ đề is burned after the part looks, so a crop, zoom, tilt or turn of a part never moves what is measured.
     #[test]
     fn part_looks_do_not_move_the_burned_lines() {
         let wide = Framing { export: (1920, 1080), out: (1920, 1080), fill: "black", aspect: None };
@@ -964,8 +1037,54 @@ mod tests {
         edit.segments[0].tilt = 3.0;
         edit.segments[1].rotate = 90;
         let line = burn(style(json!({})), LONG, 12_000);
-        let plan = plan(&edit, &[false], 20.0, true, &[], &[&line], &wide);
-        assert_eq!(plan.subtitles.ok, Some(true));
+        let planned = plan(&edit, &[false], 20.0, true, &[], &[&line], &wide);
+        assert_eq!(planned.subtitles, subtitle_frame(&[&line], &wide));
+        assert_eq!(planned.subtitles.unwrap().window, (0.0, 0.0, 1920.0, 1080.0));
+    }
+
+    /// With DUBFLOW_TEST_FFMPEG: libass itself says where the lines land.
+    #[test]
+    fn real_subtitle_measure() {
+        let Ok(ffmpeg) = std::env::var("DUBFLOW_TEST_FFMPEG") else { return };
+        let ffmpeg = PathBuf::from(ffmpeg);
+        let dir = temp("measure");
+        let work = dir.join("work");
+        let folder = work.join(CHECKS_DIR).join("00000000000000000000");
+        fs::create_dir_all(&folder).unwrap();
+        let running = Running { children: Mutex::new(Vec::new()), cancelled: AtomicBool::new(false) };
+        let measure = |lines: Vec<Cue>, style: SubtitleStyle, framing: &Framing| {
+            let burn = BurnSubtitles { style, lines };
+            measure_subtitles(&work, &ffmpeg, &subtitle_frame(&[&burn], framing).unwrap(), &folder, &running)
+        };
+        let wide = Framing { export: (1920, 1080), out: (1920, 1080), fill: "black", aspect: None };
+        let four_three = Framing { export: (1920, 1080), out: (1440, 1080), fill: "fill", aspect: Some("4:3") };
+        // short lines at the bottom, one with a box: inside
+        let fine = measure(vec![cue(1_000, 3_000, "Chào"), cue(4_000, 6_000, LONG)], style(json!({})), &wide);
+        assert_eq!(fine.ok, Some(true), "{}", fine.detail);
+        assert_eq!(measure(vec![cue(1_000, 3_000, "Chào")], style(json!({"box": "#000000", "box_opacity": 0.6})), &four_three).ok, Some(true));
+        // a Chinese sentence with no space stays one row: wider than the picture, and cut by a 4:3 fill
+        let chinese = measure(vec![cue(1_000, 3_000, "Chào"), cue(5_000, 7_000, CHINESE)], style(json!({})), &wide);
+        assert_eq!((chinese.ok, chinese.at_ms.clone()), (Some(false), vec![5_000]), "{}", chinese.detail);
+        assert_eq!(measure(vec![cue(5_000, 7_000, CHINESE)], style(json!({})), &four_three).at_ms, [5_000]);
+        // the same words with spaces wrap and stay inside the 4:3 window
+        let spaced = measure(vec![cue(5_000, 7_000, "大家好 欢迎来到 我们的频道 今天 我们来聊一聊")], style(json!({})), &four_three);
+        assert_eq!(spaced.ok, Some(true), "{}", spaced.detail);
+        // a long line dragged near the left edge sticks out; the same line in the middle does not
+        assert_eq!(measure(vec![cue(7_000, 9_000, LONG)], style(json!({"x": 0.1, "y": 0.5})), &wide).at_ms, [7_000]);
+        assert_eq!(measure(vec![cue(7_000, 9_000, LONG)], style(json!({"x": 0.5, "y": 0.5})), &wide).ok, Some(true));
+        // libass leaves wrapped rows uneven (recheck 4), whatever an estimate says: 30 words wrap into rows wider than the
+        // 4:3 window and are cut by it
+        let words = vec!["nghiêng"; 30].join(" ");
+        assert_eq!(measure(vec![cue(9_000, 11_000, &words)], style(json!({"size": 1.0})), &four_three).at_ms, [9_000]);
+        // an ordinary short line under a 9:16 fill is no false alarm
+        let tall = Framing { export: (1920, 1080), out: (608, 1080), fill: "fill", aspect: Some("9:16") };
+        assert_eq!(measure(vec![cue(1_000, 3_000, "Xin chào các bạn")], style(json!({})), &tall).ok, Some(true));
+        assert_eq!(measure(vec![cue(1_000, 3_000, LONG)], style(json!({})), &tall).at_ms, [1_000]);
+        // two lines at once stack: both are measured together
+        let stacked = measure(vec![cue(1_000, 5_000, "Dòng một"), cue(2_000, 4_000, "Dòng hai")], style(json!({})), &wide);
+        assert_eq!(stacked.ok, Some(true), "{}", stacked.detail);
+        let _ = fs::remove_dir_all(dir);
+        println!("subtitle-measure: ran against real FFmpeg");
     }
 
     #[test]
