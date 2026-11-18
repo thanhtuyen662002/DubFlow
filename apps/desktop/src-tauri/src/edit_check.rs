@@ -140,7 +140,7 @@ impl Plan {
     /// burned lines are not measured then (recheck 13).
     pub(super) fn parts_cut_at(mut self, cuts: &[f64]) -> Self {
         if let Some(frame) = self.subtitles.as_mut().filter(|frame| frame.unmeasurable.is_none()) {
-            if frame.burns.iter().any(|burn| restacked(&burn.lines, cuts)) {
+            if frame.burns.iter().any(|burn| restacked(&burn.lines, cuts, frame.rate)) {
                 frame.unmeasurable = Some(PARTS.into());
             }
         }
@@ -201,12 +201,24 @@ fn stamp_in(report: &Value) -> Option<Stamp> {
 }
 
 /// Some line of one layer is on screen across a cut and shared the screen with another line of that layer before it:
-/// the part after the cut places it afresh, where one libass for the whole export keeps the place it took.
-fn restacked(lines: &[Cue], cuts: &[f64]) -> bool {
-    cuts.iter().map(|cut| (cut * 1000.0).round() as u64).any(|at| {
-        lines.iter().enumerate().any(|(index, line)| line.start_ms < at && at < line.end_ms
-            && lines.iter().enumerate().any(|(other_index, other)| other_index != index
-                && other.start_ms.max(line.start_ms) < other.end_ms.min(line.end_ms).min(at)))
+/// the part after the cut places it afresh, where one libass for the whole export keeps the place it took. Judged on
+/// the times libass is given: the lines as `burn_ass` wrote them (`burn_ms`) against the cut's first frame and the
+/// frame before it as the filter hands them over (`drawn_ms`, on the export's `rate`): at 30 fps the frame at 233.8 s
+/// is drawn at 233799 ms, so a line written to end at 233.80 is still on it (recheck 16).
+fn restacked(lines: &[Cue], cuts: &[f64], rate: (u64, u64)) -> bool {
+    let step = if rate.0 > 0 && rate.1 > 0 { rate.1 as f64 / rate.0 as f64 } else { 0.001 };
+    let span = |line: &Cue| (burn_ms(line.start_ms), burn_ms(line.end_ms));
+    cuts.iter().any(|&cut| {
+        let (first, last) = (drawn_ms(cut, rate), drawn_ms(cut - step, rate));
+        lines.iter().enumerate().any(|(index, line)| {
+            let (start, end) = span(line);
+            // drawn before the cut and on the part's first frame, after sharing the screen with another line before it
+            start <= last && first < end && lines.iter().enumerate().any(|(other_index, other)| {
+                let (other_start, other_end) = span(other);
+                let together = other_start.max(start);
+                other_index != index && together <= last && together < other_end.min(end)
+            })
+        })
     })
 }
 
@@ -997,7 +1009,20 @@ pub(super) fn stop_all() {
 /// This window's turn to check (`TURN`), or None when "Dừng kiểm tra" or closing stopped it while it waited.
 /// While it waits its check.json says RUNNING and `waiting`, so the UI keeps polling and can stop it.
 fn wait_turn(work: &Path, dir: &Path, plan: &Plan, running: &Running) -> Turn<'static> {
-    wait_turn_in(&TURN, &WAITING, MAX_WAITING, running, || save(work, dir, &ExportCheck { waiting: true, ..ExportCheck::of(plan, "RUNNING") }))
+    wait_turn_in(&TURN, &WAITING, MAX_WAITING, running, WAIT_BEAT,
+        || save(work, dir, &ExportCheck { waiting: true, ..ExportCheck::of(plan, "RUNNING") }))
+}
+
+/// How often a waiting check says again that it waits (its report's `checked_at`), and how long a waiting report
+/// stays alive without being said again: a waiting check holds no lease, so another DubFlow on the same project tells
+/// a live wait from one a closed app left by this beat, never by the lease (recheck 16).
+const WAIT_BEAT: Duration = Duration::from_secs(5);
+const WAIT_ALIVE_SECS: u64 = 30;
+
+/// A waiting report its check said again within WAIT_ALIVE_SECS (a clock a little ahead is allowed too).
+fn waiting_alive(report: &Value) -> bool {
+    report["state"] == "RUNNING" && report["waiting"] == true
+        && report["checked_at"].as_u64().is_some_and(|at| at.abs_diff(unix_now()) < WAIT_ALIVE_SECS)
 }
 
 /// Taking the one check turn.
@@ -1009,8 +1034,9 @@ enum Turn<'a> {
     Full,
 }
 
-/// Wait for `turn` unless `max` others already wait in `waiting` (then `Full` at once); `announce` once on waiting.
-fn wait_turn_in<'a>(turn: &'a Mutex<()>, waiting: &AtomicUsize, max: usize, running: &Running, announce: impl FnOnce()) -> Turn<'a> {
+/// Wait for `turn` unless `max` others already wait in `waiting` (then `Full` at once); `announce` on waiting, and
+/// again every `beat` while it waits.
+fn wait_turn_in<'a>(turn: &'a Mutex<()>, waiting: &AtomicUsize, max: usize, running: &Running, beat: Duration, announce: impl Fn()) -> Turn<'a> {
     let take = || match turn.try_lock() {
         Ok(guard) => Some(guard),
         Err(std::sync::TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
@@ -1023,6 +1049,7 @@ fn wait_turn_in<'a>(turn: &'a Mutex<()>, waiting: &AtomicUsize, max: usize, runn
         return Turn::Full;
     }
     announce();
+    let mut said = Instant::now();
     let taken = loop {
         if running.cancelled.load(Ordering::SeqCst) {
             break Turn::Stopped;
@@ -1030,7 +1057,11 @@ fn wait_turn_in<'a>(turn: &'a Mutex<()>, waiting: &AtomicUsize, max: usize, runn
         if let Some(guard) = take() {
             break Turn::Taken(guard);
         }
-        std::thread::sleep(Duration::from_millis(200));
+        if said.elapsed() >= beat {
+            announce();
+            said = Instant::now();
+        }
+        std::thread::sleep(Duration::from_millis(200).min(beat));
     };
     waiting.fetch_sub(1, Ordering::SeqCst);
     taken
@@ -1399,6 +1430,10 @@ fn settle(work: &Path, dir: &Path, video: &Path) -> Option<Value> {
     if ours(dir) {
         return None;
     }
+    // a check another DubFlow runs waits its turn there (it holds no lease while it waits): left as it is
+    if let Some(alive) = load_check(work, dir).filter(waiting_alive) {
+        return Some(alive);
+    }
     let stale = ExportCheck { stamp: stamp_in(&load_check(work, dir).unwrap_or_default()), ..ExportCheck::new(video, "INTERRUPTED") };
     save(work, dir, &stale);
     serde_json::to_value(&stale).ok()
@@ -1418,7 +1453,8 @@ pub(super) fn attach(work: &Path, exports: &mut [Value]) {
             continue;
         }
         // The lease file is only made in `work/checks/<key>` while all three are plain folders.
-        if value["state"] == "RUNNING" && !ours(&dir) && unlinked(work) && plain(&work.join(CHECKS_DIR)) {
+        // a live wait of another DubFlow's check is left alone: no lease is taken from under it (recheck 16)
+        if value["state"] == "RUNNING" && !ours(&dir) && !waiting_alive(&value) && unlinked(work) && plain(&work.join(CHECKS_DIR)) {
             // A free lease means no window is checking: the app closed mid-check.
             if let Some((pinned, lease)) = pin(work, &dir).and_then(|pinned| Some((pinned, own_lease(work, &dir)?))) {
                 value = settle(work, &dir, &video).unwrap_or(value);
@@ -1821,8 +1857,13 @@ mod tests {
         assert_eq!(planned(vec![cue(0, 4_000, "A"), cue(2_000, 11_000, "B")], &[12.0]), None);
         assert_eq!(planned(vec![cue(0, 4_000, "A"), cue(6_000, 11_000, "B")], &[5.0]), None, "A ends before the cut, B is alone across it");
         assert_eq!(planned(vec![cue(0, 9_000, "A"), cue(6_000, 11_000, "B")], &[5.0]), None, "A is alone up to the cut: placed the same");
-        // a line ending exactly at the cut is not on screen across it
+        // a line ending exactly at the cut is not on screen across it, when the cut's frame is drawn at the cut
         assert_eq!(planned(vec![cue(0, 5_000, "A"), cue(2_000, 5_000, "B")], &[5.0]), None);
+        // at 30 fps the frame at 233.8 s is drawn at 233 799 ms: a line written to end at 233.80 is still on it,
+        // placed afresh by the part after the cut (recheck 16)
+        assert_eq!(drawn_ms(233.8, (30, 1)), 233_799);
+        assert_eq!(planned(vec![cue(230_000, 232_000, "X"), cue(231_000, 233_800, "L")], &[233.8]).as_deref(), Some(PARTS));
+        assert_eq!(planned(vec![cue(230_000, 232_000, "X"), cue(231_000, 233_790, "L")], &[233.8]), None, "gone a frame before");
         // lines on two layers never push each other (one libass per layer)
         let first = BurnSubtitles { style: style(json!({})), lines: vec![cue(0, 4_000, "A")] };
         let second = BurnSubtitles { style: style(json!({})), lines: vec![cue(2_000, 11_000, "B")] };
@@ -1972,7 +2013,7 @@ mod tests {
         std::thread::scope(|scope| {
             let waits: Vec<_> = runners.iter().map(|running| {
                 let (turn, waiting) = (&turn, &waiting);
-                scope.spawn(move || matches!(wait_turn_in(turn, waiting, 2, running, || {}), Turn::Taken(_)))
+                scope.spawn(move || matches!(wait_turn_in(turn, waiting, 2, running, WAIT_BEAT, || {}), Turn::Taken(_)))
             }).collect();
             let deadline = Instant::now() + Duration::from_secs(10);
             while waiting.load(Ordering::SeqCst) < 2 && Instant::now() < deadline {
@@ -1984,7 +2025,7 @@ mod tests {
             let finished: Vec<usize> = waits.iter().enumerate().filter(|(_, wait)| wait.is_finished()).map(|(index, _)| index).collect();
             assert_eq!(finished.len(), 1, "one was turned away at once");
             let extra = Running { children: Mutex::new(Vec::new()), cancelled: AtomicBool::new(false) };
-            assert!(matches!(wait_turn_in(&turn, &waiting, 2, &extra, || panic!("never announced")), Turn::Full));
+            assert!(matches!(wait_turn_in(&turn, &waiting, 2, &extra, WAIT_BEAT, || panic!("never announced")), Turn::Full));
             // stopping one frees its place
             let stopped = (0..3).find(|index| !finished.contains(index)).unwrap();
             runners[stopped].cancelled.store(true, Ordering::SeqCst);
@@ -2120,12 +2161,14 @@ mod tests {
         let video = dir.join("Phim.mp4");
         let folder = check_dir(&work, &video);
         fs::create_dir_all(&folder).unwrap();
+        // a report attach would show (and settle) if it were read: stamped with the file at the name (recheck 16)
+        fs::write(&video, b"video").unwrap();
         let elsewhere = dir.join("elsewhere.json");
-        let running = br#"{"kind":"export_check","state":"RUNNING","checks":[]}"#;
-        fs::write(&elsewhere, running).unwrap();
+        let running = serde_json::to_vec(&json!({"kind": "export_check", "state": "RUNNING", "checks": [], "stamp": stamp_of(&video)})).unwrap();
+        fs::write(&elsewhere, &running).unwrap();
         // the file is valid when it has one name
         let own = dir.join("own.json");
-        fs::write(&own, running).unwrap();
+        fs::write(&own, &running).unwrap();
         assert_eq!(read_check_file(&own).unwrap()["state"], "RUNNING");
         fs::hard_link(&elsewhere, folder.join("check.json")).unwrap();
         assert_eq!(read_check_file(&folder.join("check.json")), None, "a second name is not the check's own file");
@@ -2143,10 +2186,17 @@ mod tests {
             assert_eq!(load_check(&work, &folder), None);
             attach(&work, &mut exports);
             assert!(exports[0].get("check").is_none(), "{}", exports[0]);
-            assert_eq!((fs::read(&own).unwrap(), fs::metadata(&own).unwrap().modified().unwrap()), (running.to_vec(), outside_stamp));
+            assert_eq!((fs::read(&own).unwrap(), fs::metadata(&own).unwrap().modified().unwrap()), (running.clone(), outside_stamp));
             assert!(!folder.join("lease").exists());
             fs::remove_file(folder.join("check.json")).unwrap();
         }
+        // the same report as the check's own single-name file is shown (and, no window running it, settled): only
+        // the link kept the others hidden, not their stamp
+        fs::write(folder.join("check.json"), &running).unwrap();
+        attach(&work, &mut exports);
+        assert_eq!(exports[0]["check"]["state"], "INTERRUPTED", "{}", exports[0]);
+        fs::remove_file(folder.join("check.json")).unwrap();
+        exports[0].as_object_mut().unwrap().remove("check");
         #[cfg(unix)]
         {
             let fifo = folder.join("check.json");
@@ -2168,14 +2218,17 @@ mod tests {
         let video = dir.join("Phim.mp4");
         let folder = check_dir(&work, &video);
         fs::create_dir_all(&folder).unwrap();
-        fs::write(folder.join("check.json"), serde_json::to_vec(&ExportCheck::new(&video, "DONE")).unwrap()).unwrap();
+        // reports stamped with the file at the name, so attach would show them if it read them (recheck 16)
+        fs::write(&video, b"video").unwrap();
+        let stamped = |state| ExportCheck { stamp: stamp_of(&video), ..ExportCheck::new(&video, state) };
+        fs::write(folder.join("check.json"), serde_json::to_vec(&stamped("DONE")).unwrap()).unwrap();
         assert_eq!(load_check(&work, &folder).unwrap()["state"], "DONE", "the check's own file is read");
         // the same check folder elsewhere, with a valid single-name check.json
         let elsewhere = dir.join("elsewhere");
         let key = folder.file_name().unwrap();
         fs::create_dir_all(elsewhere.join(key)).unwrap();
         let outside = elsewhere.join(key).join("check.json");
-        let running = serde_json::to_vec(&ExportCheck::new(&video, "RUNNING")).unwrap();
+        let running = serde_json::to_vec(&stamped("RUNNING")).unwrap();
         fs::write(&outside, &running).unwrap();
         let stamp = fs::metadata(&outside).unwrap().modified().unwrap();
         fs::rename(work.join(CHECKS_DIR), dir.join("old-checks")).unwrap();
@@ -2198,6 +2251,8 @@ mod tests {
         fs::rename(dir.join("old-checks"), work.join(CHECKS_DIR)).unwrap();
         assert!(at_place(&open_own(&folder.join("check.json")).unwrap(), &work, &folder), "the real file is accepted");
         assert_eq!(load_check(&work, &folder).unwrap()["state"], "DONE");
+        attach(&work, &mut exports);
+        assert_eq!(exports[0]["check"]["state"], "DONE", "the own report is shown: only the link hid the other");
         assert_eq!(fs::read(&outside).unwrap(), running, "the outside file is unchanged");
         let _ = fs::remove_dir_all(dir);
     }
@@ -2544,6 +2599,49 @@ mod tests {
         let _ = fs::remove_dir_all(dir);
     }
 
+    /// A check waiting its turn in another DubFlow on the same project (it holds no lease while it waits) says so
+    /// every WAIT_BEAT: a live wait is shown as it is and no lease is taken from under it; a wait no one has said
+    /// again for WAIT_ALIVE_SECS was left by a closed app and is settled (recheck 16).
+    #[test]
+    fn a_wait_another_dubflow_keeps_alive_is_never_settled() {
+        let dir = temp("other-host");
+        let work = dir.join("work");
+        let video = dir.join("Phim.mp4");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(&video, b"video").unwrap();
+        let folder = check_dir(&work, &video);
+        fs::create_dir_all(&folder).unwrap();
+        let waiting = |checked_at: u64| ExportCheck { waiting: true, checked_at, stamp: stamp_of(&video), ..ExportCheck::new(&video, "RUNNING") };
+        fs::write(folder.join("check.json"), serde_json::to_vec(&waiting(unix_now())).unwrap()).unwrap();
+        let mut exports = vec![json!({ "path": display_path(&video) })];
+        attach(&work, &mut exports);
+        assert_eq!((exports[0]["check"]["state"].as_str(), exports[0]["check"]["waiting"].as_bool()), (Some("RUNNING"), Some(true)));
+        assert!(!folder.join("lease").exists(), "no lease taken from under a live wait");
+        assert_eq!(read_check(&work, &video)["state"], "RUNNING");
+        // left by a closed app: said last a minute ago
+        fs::write(folder.join("check.json"), serde_json::to_vec(&waiting(unix_now() - 60)).unwrap()).unwrap();
+        attach(&work, &mut exports);
+        assert_eq!(exports[0]["check"]["state"], "INTERRUPTED");
+        // the wait is said again every beat
+        let turn = Mutex::new(());
+        let held = turn.lock().unwrap();
+        let said = AtomicUsize::new(0);
+        let running = Running { children: Mutex::new(Vec::new()), cancelled: AtomicBool::new(false) };
+        std::thread::scope(|scope| {
+            let wait = scope.spawn(|| matches!(wait_turn_in(&turn, &AtomicUsize::new(0), 2, &running, Duration::from_millis(40),
+                || { said.fetch_add(1, Ordering::SeqCst); }), Turn::Stopped));
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while said.load(Ordering::SeqCst) < 3 && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            running.cancelled.store(true, Ordering::SeqCst);
+            assert!(wait.join().unwrap());
+        });
+        assert!(said.load(Ordering::SeqCst) >= 3, "said again while waiting");
+        drop(held);
+        let _ = fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn checks_take_turns() {
         let dir = temp("turns");
@@ -2811,7 +2909,8 @@ mod tests {
         // a check folder that is a link is refused too, and never read
         fs::create_dir(work.join(CHECKS_DIR)).unwrap();
         link_dir(&elsewhere, &check_dir(&work, &video));
-        fs::write(elsewhere.join("check.json"), serde_json::to_vec(&ExportCheck::new(&video, "DONE")).unwrap()).unwrap();
+        // stamped with the file at the name, so only the link keeps it from being shown (recheck 16)
+        fs::write(elsewhere.join("check.json"), serde_json::to_vec(&ExportCheck { stamp: stamp_of(&video), ..ExportCheck::new(&video, "DONE") }).unwrap()).unwrap();
         run(&work, &missing, plain_plan(1.0, false, None).for_video(video.clone(), false, stamp_of(&video)));
         let mut exports = vec![json!({"path": display_path(&video)})];
         attach(&work, &mut exports);
