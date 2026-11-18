@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { Autosaver, MAX_WAIT_MS, QUIET_MS, RETRY_FIRST_MS, RETRY_MAX_MS, retryDelay, saveDelay } from "../src/features/edit/autosave.ts";
-import { askAlone, CLOSE_EVENT, CLOSE_LISTENERS_KEY, CLOSE_WAIT_MS, closeGuard, closeRequests, flushWithin, pageQuestions, storageIds, unsavedPrompt,
-  wireWindowClose } from "../src/features/edit/close_guard.ts";
+import { askAlone, CLOSE_EVENT, CLOSE_LISTENERS_KEY, CLOSE_WAIT_MS, closeGuard, closeRequests, flushWithin, pageQuestions, StaleCloseListeners,
+  storageIds, unsavedPrompt, wireWindowClose } from "../src/features/edit/close_guard.ts";
 
 // A fake clock: timers run when the test moves time on. `fire` is when a timer set for `ms` really fires (a browser
 // drops the fraction of a millisecond, for one).
@@ -793,7 +793,8 @@ for (const action of ["close", "exit"]) {
     await settle();
     assert.equal(tauri.state.closed, 1, "the window closes");
   }
-  // a removal that fails is kept, and tried again before the next listener: from the close (stop) and from the start
+  // a removal that fails is kept, and tried again before the next listener: from the close (stop) and from the start;
+  // while it is there the new listener is in place but not ready (StaleCloseListeners)
   {
     const store = memoryStore();
     const failing = new Set([0]);
@@ -802,15 +803,105 @@ for (const action of ["close", "exit"]) {
     const stop = await onCloseRequested(async () => {});
     await assert.rejects(Promise.resolve(stop()));
     assert.deepEqual(kept(store), { ids: [0] });
-    const stop1 = await onCloseRequested(async () => {});  // 0 still fails: kept with the new one
-    assert.equal(typeof stop1, "function", "the guard still starts");
-    assert.deepEqual(kept(store), { ids: [0, 1] });
+    await assert.rejects(onCloseRequested(async () => {}), StaleCloseListeners, "0 still fails: not ready");
+    assert.deepEqual(kept(store), { ids: [0, 1] }, "kept with the new one");
+    assert.deepEqual(closeListeners(tauri), [0, 1], "the new one is in place: every close still reaches the guard");
     tauri.reload();
     failing.clear();
     await closeRequests("main", tauri.bridge, store)(async () => {});
     assert.deepEqual(tauri.state.calls.filter((call) => call.startsWith("unlisten")), ["unlisten 0", "unlisten 1"]);
     assert.deepEqual(closeListeners(tauri), [2]);
     assert.deepEqual(kept(store), { ids: [2] });
+  }
+  // the Lead's case: a reload left a listener that cannot be removed while the guard starts. The guard is not ready,
+  // so the editor stays closed (the view checks closeGuarded below); a close is not lost to the leftover listener: it
+  // reaches the guard, which removes the leftover first and then closes; while it still cannot go, the window stays
+  // open and guarded, and the next close tries again
+  for (const via of ["button", "system"]) {
+    const store = memoryStore();
+    const failing = new Set();
+    const tauri = fakeTauri({ failUnlisten: (id) => failing.has(id) });
+    await page(tauri, store);  // 0
+    tauri.reload();
+    failing.add(0);
+    const button = fakeButton();
+    assert.equal(await page(tauri, store, button), false, `${via}: not ready while the leftover listener is there`);
+    assert.deepEqual(closeListeners(tauri), [0, 1]);
+    const request = () => (via === "button" ? button.click() : void tauri.close());
+    request();
+    await settle();
+    assert.equal(tauri.state.closed, 0, `${via}: the leftover still cannot go: the window stays open`);
+    assert.deepEqual(closeListeners(tauri), [0, 1], `${via}: and guarded`);
+    failing.clear();
+    request();
+    await settle();
+    assert.deepEqual(tauri.state.calls.filter((call) => call.startsWith("unlisten")), ["unlisten 0", "unlisten 1"],
+      `${via}: the leftover goes first, then the guard's own`);
+    assert.deepEqual(closeListeners(tauri), []);
+    assert.equal(tauri.state.closed, 1, `${via}: the close completes after the cleanup`);
+    assert.equal(store.get(), null);
+  }
+  // the same when the leftover is one whose id never came back (a reload mid-listen): not ready until it is removed
+  {
+    const store = memoryStore();
+    const failing = new Set();
+    const tauri = fakeTauri({ failUnlisten: (id) => failing.has(id) });
+    await page(tauri, store);  // 0
+    tauri.reload();
+    tauri.state.dropReplies = true;
+    void page(tauri, store);  // 0 goes, 1 is in place and its id never comes back
+    await settle();
+    tauri.state.dropReplies = false;
+    tauri.reload();
+    failing.add(1);
+    const button = fakeButton();
+    assert.equal(await page(tauri, store, button), false, "the lost listener could not be removed: not ready");
+    assert.deepEqual(closeListeners(tauri), [1, 2]);
+    assert.deepEqual(kept(store), { ids: [2, 1] });
+    failing.clear();
+    button.click();
+    await settle();
+    assert.deepEqual(closeListeners(tauri), []);
+    assert.equal(tauri.state.closed, 1, "closes once the lost listener is removed");
+  }
+  // a leftover removed by one close is not tried again by the next (its own removal failed in between)
+  {
+    const store = memoryStore();
+    const failing = new Set();
+    const tries = [];
+    const tauri = fakeTauri({ failUnlisten: (id) => { tries.push(id); return failing.has(id); } });
+    await page(tauri, store);  // 0
+    tauri.reload();
+    failing.add(0);
+    const button = fakeButton();
+    assert.equal(await page(tauri, store, button), false);  // 1
+    failing.clear();
+    failing.add(1);
+    button.click();
+    await settle();
+    assert.deepEqual(closeListeners(tauri), [1], "the leftover went; the guard's own could not");
+    failing.clear();
+    button.click();
+    await settle();
+    assert.equal(tauri.state.closed, 1);
+    assert.deepEqual(tries, [0, 0, 1, 1], "0: at the start and by the first close only");
+  }
+  // × and Alt+F4 at once: both wait for the same answer, and the listener is removed once and the window closed once
+  for (const first of ["button", "system"]) {
+    const store = memoryStore();
+    const tauri = fakeTauri();
+    let closes = 0, asked = 0;
+    const { timers } = clock();
+    const button = fakeButton();
+    const ask = async () => { asked += 1; await new Promise((resolve) => setTimeout(resolve, 3)); return true; };
+    assert.equal(await wireWindowClose({ close: () => { closes += 1; return tauri.close(); },
+      onCloseRequested: closeRequests("main", tauri.bridge, store) }, button, closeGuard({ flush: async () => false, ask, timers })), true);
+    if (first === "button") { button.click(); void tauri.close(); } else { void tauri.close(); button.click(); }
+    await settle();
+    assert.equal(asked, 1, `${first} first: one question`);
+    assert.deepEqual(tauri.state.calls.filter((call) => call.startsWith("unlisten")), ["unlisten 0"], `${first} first: one unlisten`);
+    assert.equal(closes, 1, `${first} first: one window.close()`);
+    assert.equal(tauri.state.closed, 1);
   }
   // a store that refuses or holds something else: the guard still starts, and nothing else is removed
   for (const store of [

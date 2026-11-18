@@ -161,23 +161,41 @@ function remember(store: IdStore, id: number): void {
 export const SWEEP_LIMIT = 4096;
 
 /**
+ * A close request listener is in place, but one left behind (by a page before a reload, or one this page could not
+ * remove) is still there: it holds every close of the window for a handler that no longer runs, so the guard is not
+ * ready (the editor stays closed). `stop` removes those first, then this page's own; it throws while one remains.
+ */
+export class StaleCloseListeners extends Error {
+  readonly stop: () => Promise<void>;
+
+  constructor(stop: () => Promise<void>) {
+    super("a close request listener left behind could not be removed");
+    this.stop = stop;
+  }
+}
+
+/**
  * `ClosableWindow.onCloseRequested` that a reload cannot break (Issue #929). Tauri keeps a page's listeners after
  * the page reloads (F5, Ctrl+R, Tải lại), and while one is there it holds every close of the window for it, though
  * nothing runs it any more: the window could no longer be closed. So the ids are kept where a reload finds them, and
  * every listener left behind (a page before a reload, or one this page could not remove) is removed before a new one
- * starts; a removal that fails is tried again the next time. A reload while a listen was under way leaves one whose
- * id never came back: then every close listener between where that listen started and this page's own is removed
- * (Tauri numbers listeners in order, removes by event and id, and nothing else listens to close requests).
+ * starts. A reload while a listen was under way leaves one whose id never came back: then every close listener
+ * between where that listen started and this page's own is removed (Tauri numbers listeners in order, removes by
+ * event and id, and nothing else listens to close requests). Ready only when none is left: when one could not be
+ * removed, the new listener still hears every close but the answer is `StaleCloseListeners`, whose `stop` (and the
+ * next listener) tries the removal again.
  */
 export function closeRequests(label: string, bridge: EventBridge, store: IdStore): ClosableWindow["onCloseRequested"] {
   return async (handler) => {
     const before = readListeners(store);
+    /** Left behind and still in place: removed before this page's own goes. */
+    const left = new Set<number>();
     for (const id of before.ids) {
       try {
         await bridge.unlisten(CLOSE_EVENT, id);
         forget(store, id);
       } catch {
-        // kept: tried again before the next listener
+        left.add(id);  // kept: tried again by stop and before the next listener
       }
     }
     // this listen gets an id above every one known; a listen whose id never came back keeps its own start
@@ -194,15 +212,25 @@ export function closeRequests(label: string, bridge: EventBridge, store: IdStore
           forget(store, lost);
         } catch {
           remember(store, lost);
+          left.add(lost);
         }
       }
     }
     const { from: _done, ...listeners } = readListeners(store);
     writeListeners(store, listeners);
-    return async () => {
+    const stop = async (): Promise<void> => {
+      // every one left behind first: while one is there it holds the close; one that still fails keeps this page's
+      // own in place too, so the close stays guarded
+      for (const stale of [...left]) {
+        await bridge.unlisten(CLOSE_EVENT, stale);
+        forget(store, stale);
+        left.delete(stale);
+      }
       await bridge.unlisten(CLOSE_EVENT, id);
       forget(store, id);
     };
+    if (left.size) throw new StaleCloseListeners(stop);
+    return stop;
   };
 }
 
@@ -210,49 +238,60 @@ export function closeRequests(label: string, bridge: EventBridge, store: IdStore
  * The × button and the system's close (Alt+F4, the taskbar) both go through `mayClose`; the window stays open when it
  * answers false. A close request is always held: when `mayClose` lets it through, the listener is removed first and
  * the window closed again, so the system closes it normally (Tauri's own wrapper would destroy the window instead,
- * which needs a permission the app does not have). A close asked for while the listener is still starting waits for
- * it. Resolves true once the guard is in place, false when it could not start: the editor opens only once it is in
- * place (a system close the guard cannot see would lose a change without asking).
+ * which needs a permission the app does not have). Two closes at once (× and Alt+F4) share one answer and one
+ * release: the listener is removed once and the window closed once. A close asked for while the listener is still
+ * starting waits for it. Resolves true once the guard is in place, false when it could not start or a listener left
+ * behind could not be removed: the editor opens only when it is ready (a system close the guard cannot see, or one a
+ * leftover listener holds, would lose a change without asking or keep the window open for good).
  */
 export function wireWindowClose(window: ClosableWindow, button: { addEventListener(type: "click", listener: () => void): void },
   mayClose: () => Promise<boolean>): Promise<boolean> {
+  /** Removes the listener (and any left behind, first); null while none is in place. */
   let stop: (() => unknown) | null = null;
-  let arming = false;
-  let wanted = false;
-  const release = async (): Promise<void> => {
-    if (arming) {
-      wanted = true;
-      return;
-    }
-    const unlisten = stop;
-    stop = null;
-    try {
-      if (unlisten) await unlisten();
-      await window.close();
-    } catch {
-      // still open: guarded again
-      void arm();
-    }
+  /** The listener being put in place: a close waits for it. */
+  let arming: Promise<boolean> | null = null;
+  /** The close under way: another close shares it. */
+  let releasing: Promise<void> | null = null;
+  const release = (): Promise<void> => {
+    if (releasing) return releasing;
+    const current = (async () => {
+      if (arming) await arming;
+      const unlisten = stop;
+      stop = null;
+      let removed = false;
+      try {
+        if (unlisten) await unlisten();
+        removed = true;
+        await window.close();
+      } catch {
+        // still open, and guarded again: by the listener still in place (a leftover one could not go: tried again
+        // on the next close), or by a new one
+        if (!removed && unlisten) stop = unlisten;
+        else void arm();
+      }
+    })();
+    releasing = current;
+    void current.finally(() => { if (releasing === current) releasing = null; });
+    return current;
   };
   const request = async (): Promise<void> => {
     if (await mayClose()) await release();
   };
   const arm = (): Promise<boolean> => {
-    arming = true;
-    return window.onCloseRequested(async (event) => {
+    const current = window.onCloseRequested(async (event) => {
       event.preventDefault();
       await request();
     }).then((unlisten) => {
       stop = unlisten;
       return true;
-    }, () => false).then((armed) => {
-      arming = false;
-      if (wanted) {
-        wanted = false;
-        void release();
-      }
-      return armed;
+    }, (error: unknown) => {
+      // in place, but a leftover listener holds every close: not ready; the next close removes it first
+      if (error instanceof StaleCloseListeners) stop = error.stop;
+      return false;
     });
+    arming = current;
+    void current.finally(() => { if (arming === current) arming = null; });
+    return current;
   };
   button.addEventListener("click", () => { void request().catch(() => undefined); });
   return arm();
