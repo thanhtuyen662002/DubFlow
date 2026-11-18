@@ -928,7 +928,7 @@ mod tests {
     }
 
     const LONG: &str = "Đây là một câu phụ đề khá dài để thử khung dọc";
-    /// 41 Chinese characters with no space: libass (no Unicode line breaking for a native .ass) keeps it one row.
+    /// 41 Chinese characters with no space.
     const CHINESE: &str = "大家好欢迎来到我们的频道今天我们来聊一聊这座城市里最有名的一家老字号餐厅和它的故事吧";
 
     fn cue(start_ms: u64, end_ms: u64, text: &str) -> Cue {
@@ -1062,10 +1062,11 @@ mod tests {
         let fine = measure(vec![cue(1_000, 3_000, "Chào"), cue(4_000, 6_000, LONG)], style(json!({})), &wide);
         assert_eq!(fine.ok, Some(true), "{}", fine.detail);
         assert_eq!(measure(vec![cue(1_000, 3_000, "Chào")], style(json!({"box": "#000000", "box_opacity": 0.6})), &four_three).ok, Some(true));
-        // a Chinese sentence with no space stays one row: wider than the picture, and cut by a 4:3 fill
-        let chinese = measure(vec![cue(1_000, 3_000, "Chào"), cue(5_000, 7_000, CHINESE)], style(json!({})), &wide);
+        // a long Chinese sentence with no space: whether libass breaks it between characters depends on its build
+        // (Unicode line breaking), which is why the check measures instead of guessing; either way it is cut by a 4:3
+        // fill, and only that line is named
+        let chinese = measure(vec![cue(1_000, 3_000, "Chào"), cue(5_000, 7_000, CHINESE)], style(json!({})), &four_three);
         assert_eq!((chinese.ok, chinese.at_ms.clone()), (Some(false), vec![5_000]), "{}", chinese.detail);
-        assert_eq!(measure(vec![cue(5_000, 7_000, CHINESE)], style(json!({})), &four_three).at_ms, [5_000]);
         // the same words with spaces wrap and stay inside the 4:3 window
         let spaced = measure(vec![cue(5_000, 7_000, "大家好 欢迎来到 我们的频道 今天 我们来聊一聊")], style(json!({})), &four_three);
         assert_eq!(spaced.ok, Some(true), "{}", spaced.detail);
