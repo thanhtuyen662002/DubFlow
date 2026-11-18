@@ -1301,6 +1301,13 @@ fn pin(work: &Path, dir: &Path) -> Option<fs::File> {
 fn hold_folder(folder: &Path, place: Option<PathBuf>) -> Option<fs::File> {
     let mut options = fs::OpenOptions::new();
     options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // O_NOFOLLOW | O_NONBLOCK: a link swapped in at the folder's name is not opened, and a FIFO swapped in after
+        // the caller's look opens at once (and is then refused as no folder) instead of hanging the UI or the turn.
+        options.custom_flags(NO_FOLLOW);
+    }
     #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt;
@@ -2204,6 +2211,19 @@ mod tests {
             let started = Instant::now();
             assert_eq!(read_check_file(&fifo), None);
             assert!(started.elapsed() < Duration::from_secs(5), "a FIFO never holds the reader");
+            fs::remove_file(&fifo).unwrap();
+            // a FIFO (or a link) at a folder's own name, as if swapped in after the look: holding it fails at once
+            // (recheck 17), so attach, pin and prune never hang there
+            let held_fifo = dir.join("held-fifo");
+            assert!(Command::new("mkfifo").arg(&held_fifo).status().unwrap().success());
+            let started = Instant::now();
+            assert!(hold_folder(&held_fifo, fs::canonicalize(&held_fifo).ok()).is_none());
+            assert!(started.elapsed() < Duration::from_secs(5), "a FIFO never holds the folder hold");
+            let held_link = dir.join("held-link");
+            std::os::unix::fs::symlink(&folder, &held_link).unwrap();
+            // the link's target is the place asked for, so only O_NOFOLLOW keeps it from being held
+            assert!(hold_folder(&held_link, fs::canonicalize(&held_link).ok()).is_none(), "a link at the folder's name is not opened");
+            assert!(hold_folder(&folder, fs::canonicalize(&folder).ok()).is_some(), "the plain folder is held");
         }
         let _ = fs::remove_dir_all(dir);
     }
