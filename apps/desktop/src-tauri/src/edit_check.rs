@@ -498,14 +498,15 @@ fn measure_subtitles(work: &Path, ffmpeg: &Path, frame: &SubtitleFrame, video: &
         return SubtitleFit { ok: None, detail: "không câu phụ đề nào hiện đủ một khung hình".into(), at_ms: Vec::new() };
     }
     let mut filters = Vec::new();
+    // Each script is written and then held open until FFmpeg is done with it (`held_script`): FFmpeg reads the held
+    // file itself, never a name a swap could lead elsewhere (Lead review 4614040481).
+    let mut scripts = Vec::new();
     for (index, (burn, shown)) in frame.burns.iter().zip(&layers).enumerate() {
-        let name = format!("measure-{}.ass", index + 1);
-        let file = dir.join(&name);
-        // Written through the held folder (`write_held`), so a `checks` swapped meanwhile never leads it elsewhere.
-        if !write_held(work, dir, &name, measure_ass(&burn.style, shown).as_bytes(), &|| {}) {
+        let Some(script) = held_script(work, dir, &format!("measure-{}.ass", index + 1), measure_ass(&burn.style, shown).as_bytes()) else {
             return unmeasured("không ghi được tệp đo".into());
-        }
-        filters.push(subtitles_filter(&display_path(&file)));
+        };
+        filters.push(subtitles_filter(&display_path(&script.path)));
+        scripts.push(script);
     }
     let (width, height) = frame.export;
     let mut args: Vec<OsString> = ["-nostdin", "-hide_banner", "-nostats", "-loglevel", "level+info", "-f", "lavfi", "-i"]
@@ -520,7 +521,60 @@ fn measure_subtitles(work: &Path, ffmpeg: &Path, frame: &SubtitleFrame, video: &
     if let Err(error) = result {
         return unmeasured(if error.is_empty() { "FFmpeg dừng giữa chừng".into() } else { error });
     }
+    drop(scripts);
     fit_of(frame, &starts, &read_boxes(&text))
+}
+
+/// A subtitle measure script written in the check folder and held open for FFmpeg to read.
+struct HeldScript {
+    _folder: fs::File,
+    _file: fs::File,
+    /// The name FFmpeg opens it by: on Linux the held handle itself (`/proc/<DubFlow>/fd/<n>`, which reopens exactly
+    /// the file this handle holds, whatever is done to `checks` meanwhile); elsewhere its name in the folder.
+    path: PathBuf,
+}
+
+/// Write `bytes` as `name` in the check folder (`write_held`), then hold that very file: opened through the held
+/// folder without following a link, kept only when it is a plain file with no other name holding exactly `bytes`.
+/// On Windows it is held with read sharing only, so while FFmpeg reads it it can be neither renamed, replaced nor
+/// written, and the held folder cannot be swapped; on Linux FFmpeg reads it through the held handle.
+fn held_script(work: &Path, dir: &Path, name: &str, bytes: &[u8]) -> Option<HeldScript> {
+    if !write_held(work, dir, name, bytes, &|| {}) {
+        return None;
+    }
+    let (folder, path) = held_name(work, dir, name, &|| {})?;
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(NO_FOLLOW);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_SHARE_READ: u32 = 0x1;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        options.share_mode(FILE_SHARE_READ).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let file = options.open(&path).ok()?;
+    let metadata = file.metadata().ok()?;
+    if !metadata.is_file() || is_link(&metadata) || links(&file, &metadata) != Some(1) {
+        return None;
+    }
+    let mut held = Vec::new();
+    std::io::Read::read_to_end(&mut std::io::Read::take(&file, bytes.len() as u64 + 1), &mut held).ok()?;
+    if held != bytes {
+        return None;
+    }
+    #[cfg(target_os = "linux")]
+    let path = {
+        use std::os::unix::io::AsRawFd;
+        PathBuf::from(format!("/proc/{}/fd/{}", std::process::id(), file.as_raw_fd()))
+    };
+    #[cfg(not(target_os = "linux"))]
+    let path = dir.join(name);
+    Some(HeldScript { _folder: folder, _file: file, path })
 }
 
 // ---------- The check's own files ----------
@@ -3065,6 +3119,52 @@ mod tests {
         let started = Instant::now();
         assert_eq!(stamp_of(&video), None);
         assert!(started.elapsed() < Duration::from_secs(5), "a FIFO never holds the stamp");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// FFmpeg reads the subtitle measure script DubFlow wrote, even when `work/checks` is swapped for a link to an
+    /// outside folder holding a script of the same name after the script is written and before FFmpeg opens it (here
+    /// the fake FFmpeg does the swap itself, right at that boundary): it reads the held file, never the outside one
+    /// (Lead review 4614040481). Linux only: there FFmpeg is given the held handle; on Windows the held folder and
+    /// script cannot be renamed or replaced while FFmpeg runs.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn ffmpeg_reads_the_held_measure_script_through_a_swap() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp("held-script");
+        let work = dir.join("work");
+        let checks = work.join(CHECKS_DIR);
+        let video = dir.join("Phim.mp4");
+        let folder = check_dir(&work, &video);
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(&video, b"video").unwrap();
+        let key = folder.file_name().unwrap().to_owned();
+        let elsewhere = dir.join("elsewhere");
+        fs::create_dir_all(elsewhere.join(&key)).unwrap();
+        fs::write(elsewhere.join(&key).join("measure-1.ass"), "OUTSIDE USER FILE").unwrap();
+        let moved = dir.join("checks-real");
+        let seen = dir.join("seen.ass");
+        // The fake FFmpeg swaps `checks` for a link to `elsewhere`, then reads the script it was given.
+        let fake = dir.join("ffmpeg");
+        fs::write(&fake, format!("#!/bin/sh\nmv '{checks}' '{moved}' && ln -s '{elsewhere}' '{checks}'\n\
+            for a in \"$@\"; do case \"$a\" in *subtitles=filename=*) p=\"${{a#*subtitles=filename=}}\"; p=\"${{p%%,format=gray*}}\"; \
+            cat \"$p\" > '{seen}';; esac; done\nexit 1\n",
+            checks = checks.display(), moved = moved.display(), elsewhere = elsewhere.display(), seen = seen.display())).unwrap();
+        fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+        let probe = dir.join("ffprobe");
+        let times: String = (0..50).map(|k| format!("{:.6}\\n", k as f64 * 0.04)).collect();
+        fs::write(&probe, format!("#!/bin/sh\ncase \"$*\" in *packet=pts_time*) printf '{times}';; *) exit 1;; esac\n")).unwrap();
+        fs::set_permissions(&probe, fs::Permissions::from_mode(0o755)).unwrap();
+        let line = burn(style(json!({})), LONG, 1_000);
+        let framing = Framing { export: (640, 360), out: (640, 360), fill: "black", aspect: None };
+        let frame = subtitle_frame(&[&line], &framing).unwrap();
+        let running = Running { children: Mutex::new(Vec::new()), cancelled: AtomicBool::new(false) };
+        let fit = measure_subtitles(&work, &fake, &frame, &video, &folder, &running);
+        assert_eq!(fit.ok, None, "the fake FFmpeg fails, so nothing is measured");
+        assert!(fs::symlink_metadata(&checks).unwrap().file_type().is_symlink(), "the swap really ran");
+        let read = fs::read_to_string(&seen).unwrap();
+        assert!(read.starts_with("[Script Info]") && !read.contains("OUTSIDE"), "FFmpeg read DubFlow's own script: {read}");
+        assert_eq!(fs::read_to_string(elsewhere.join(&key).join("measure-1.ass")).unwrap(), "OUTSIDE USER FILE");
         let _ = fs::remove_dir_all(dir);
     }
 
