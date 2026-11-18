@@ -80,6 +80,10 @@ pub(super) struct Plan {
     intended_holds: Vec<(f64, f64)>,
     /// The burned Phụ đề to measure; None when nothing is burned.
     subtitles: Option<SubtitleFrame>,
+    /// The published file's size and modified time (ns) when it was handed over: a file changed or replaced at the
+    /// same name before or during the check is not judged against this export's plan (recheck 8).
+    #[serde(default)]
+    stamp: Option<(u64, u64)>,
 }
 
 /// Phụ đề to measure (#935): the burned layers as the export drew them, the export frame they were drawn on, and
@@ -97,13 +101,29 @@ pub(super) struct SubtitleFrame {
 impl Plan {
     /// The plan for the video `run_export` published, and whether its .srt was written.
     pub(super) fn for_video(mut self, video: PathBuf, srt_written: bool) -> Self {
+        self.stamp = stamp_of(&video);
         self.video = video;
         if !srt_written {
             self.srt_end_ms = None;
         }
         self
     }
+
+    /// The published file is still the one this plan is for (or no stamp was taken).
+    fn same_file(&self) -> bool {
+        self.stamp.is_none() || stamp_of(&self.video) == self.stamp
+    }
 }
+
+/// A file's size and modified time in ns.
+fn stamp_of(video: &Path) -> Option<(u64, u64)> {
+    let metadata = fs::metadata(video).ok()?;
+    let modified = metadata.modified().ok()?.duration_since(UNIX_EPOCH).ok()?;
+    Some((metadata.len(), u64::try_from(modified.as_nanos()).ok()?))
+}
+
+/// Said when the published file changed before its check could judge it.
+const CHANGED: &str = "video đã bị thay đổi hoặc thay bằng tệp khác sau khi xuất, nên không kiểm tra theo bản xuất này";
 
 /// How the main video's picture reaches the exported frame.
 pub(super) struct Framing<'a> {
@@ -124,6 +144,7 @@ pub(super) fn plan(edit: &Edit, stills: &[bool], expected_seconds: f64, has_audi
         srt_end_ms: cues.iter().map(|cue| cue.end_ms).max(),
         intended_holds: intended_holds(edit, stills),
         subtitles: subtitle_frame(burns, framing),
+        stamp: None,
     }
 }
 
@@ -222,7 +243,9 @@ fn stretches<'a>(burns: &'a [BurnSubtitles], frames: &[u64]) -> (Vec<u64>, Shown
 }
 
 /// The exported video's frame times in whole ms, sorted, read by ffprobe from its packets (no decoding), tracked by
-/// `running`. FFmpeg's subtitles filter drew each frame at its time in ms, rounded down.
+/// `running`, as FFmpeg's subtitles filter handed them to libass: the export's frames are on the AV_TIME_BASE clock
+/// (`settb=AVTB`), and the filter computes `pts * (1/1000000) * 1000` in double and truncates, so a frame at 0.2 s is
+/// drawn at 199 ms (recheck 8).
 fn frame_times(ffprobe: &Path, video: &Path, running: &Running) -> Option<Vec<u64>> {
     use std::io::Read;
     let mut command = Command::new(ffprobe);
@@ -238,9 +261,14 @@ fn frame_times(ffprobe: &Path, video: &Path, running: &Running) -> Option<Vec<u6
         return None;
     }
     let mut times: Vec<u64> = text.lines().filter_map(|line| line.trim().trim_end_matches(',').parse::<f64>().ok())
-        .filter(|seconds| seconds.is_finite() && *seconds >= 0.0).map(|seconds| (seconds * 1e6).round() as u64 / 1000).collect();
+        .filter(|seconds| seconds.is_finite() && *seconds >= 0.0).map(|seconds| libass_ms((seconds * 1e6).round())).collect();
     times.sort_unstable();
     (!times.is_empty()).then_some(times)
+}
+
+/// The ms libass is given for a frame at `micros` on the AV_TIME_BASE clock, computed as vf_subtitles does.
+fn libass_ms(micros: f64) -> u64 {
+    (micros * (1.0 / 1_000_000.0) * 1000.0) as u64
 }
 
 /// `bbox`'s log: for each frame where something was drawn, its frame number and the drawn area (x0, y0, x1, y1,
@@ -320,7 +348,7 @@ fn measure_subtitles(work: &Path, ffmpeg: &Path, frame: &SubtitleFrame, video: &
     let mut filters = Vec::new();
     for (index, (burn, shown)) in frame.burns.iter().zip(&layers).enumerate() {
         let file = dir.join(format!("measure-{}.ass", index + 1));
-        if !(unlinked(work) && plain(dir)) || write_durable(&file, measure_ass(&burn.style, shown).as_bytes()).is_err() {
+        if !owned(work, dir) || write_durable(&file, measure_ass(&burn.style, shown).as_bytes()).is_err() {
             return unmeasured("không ghi được tệp đo".into());
         }
         filters.push(subtitles_filter(&display_path(&file)));
@@ -348,7 +376,7 @@ fn measure_subtitles(work: &Path, ffmpeg: &Path, frame: &SubtitleFrame, video: &
 /// is made with `create_new`, which refuses anything put there in between, a link included: nothing on disk is ever
 /// opened through this name. None when the folders are not plain any more or the name holds a folder.
 fn fresh_file(work: &Path, dir: &Path, name: &str) -> Option<fs::File> {
-    if !(unlinked(work) && plain(dir)) {
+    if !owned(work, dir) {
         return None;
     }
     let path = dir.join(name);
@@ -697,6 +725,13 @@ fn plain(dir: &Path) -> bool {
     fs::symlink_metadata(dir).is_ok_and(|metadata| metadata.is_dir() && !is_link(&metadata))
 }
 
+/// The check folder `dir` (`work/checks/<key>`) may be written now: `work`, `checks` and `dir` are each a plain
+/// folder, looked at again right before each write (a `checks` swapped for a link during a long decode would
+/// otherwise lead writes elsewhere; recheck 8).
+fn owned(work: &Path, dir: &Path) -> bool {
+    unlinked(work) && dir.parent().is_some_and(|checks| checks == work.join(CHECKS_DIR) && plain(checks)) && plain(dir)
+}
+
 /// The check folder of `video` below `work`.
 fn check_dir(work: &Path, video: &Path) -> PathBuf {
     work.join(CHECKS_DIR).join(file_key(video))
@@ -704,7 +739,7 @@ fn check_dir(work: &Path, video: &Path) -> PathBuf {
 
 /// Written only while `work`, `checks` and the folder are still plain folders.
 fn save(work: &Path, dir: &Path, report: &ExportCheck) {
-    if unlinked(work) && dir.parent().is_some_and(plain) && plain(dir) {
+    if owned(work, dir) {
         let _ = write_durable(&dir.join("check.json"), &serde_json::to_vec(report).unwrap_or_default());
     }
 }
@@ -721,7 +756,7 @@ pub(super) fn run(work: &Path, ffmpeg: &Path, plan: Plan) {
     if !register(&CHECKING, &CLOSING, &dir, &running) {
         return; // DubFlow is closing
     }
-    if unlinked(work) && plain(&dir) {
+    if owned(work, &dir) {
         let _ = write_durable(&dir.join("plan.json"), &serde_json::to_vec(&plan).unwrap_or_default());
     }
     let report = match wait_turn(work, &dir, &plan.video, &running) {
@@ -749,7 +784,7 @@ pub(super) fn run(work: &Path, ffmpeg: &Path, plan: Plan) {
 /// empty file `create_new` makes, so it is always the check's own file and no file elsewhere is ever held. A lease
 /// another window holds cannot be removed on Windows, so `create_new` fails and None says the check is busy.
 fn own_lease(work: &Path, dir: &Path) -> Option<fs::File> {
-    if !(unlinked(work) && plain(dir)) {
+    if !owned(work, dir) {
         return None;
     }
     let path = dir.join("lease");
@@ -847,6 +882,9 @@ fn check_once(work: &Path, ffmpeg: &Path, plan: &Plan, dir: &Path, running: &Run
     if !ffmpeg.is_file() {
         return unavailable("không tìm thấy FFmpeg".into());
     }
+    if !plan.same_file() {
+        return unavailable(CHANGED.into());
+    }
     save(work, dir, &ExportCheck::new(&plan.video, "RUNNING"));
     let probe = probe_tracked(&ffprobe_beside(ffmpeg), &plan.video, running);
     if running.cancelled.load(Ordering::SeqCst) {
@@ -887,6 +925,9 @@ fn check_once(work: &Path, ffmpeg: &Path, plan: &Plan, dir: &Path, running: &Run
     };
     if running.cancelled.load(Ordering::SeqCst) {
         return ExportCheck::new(&plan.video, "STOPPED");
+    }
+    if !plan.same_file() {
+        return unavailable(CHANGED.into());
     }
     let (checks, black, frozen) = checks_of(plan, probe.as_ref(), &pass, &log, &subtitles);
     ExportCheck::new(&plan.video, "DONE").with_checks(checks, &black, &frozen)
@@ -1278,7 +1319,7 @@ mod tests {
 
     /// Frame times of a constant-rate video, as FFmpeg's subtitles filter sees them (whole ms, rounded down).
     fn grid(fps: f64, seconds: f64) -> Vec<u64> {
-        (0..(fps * seconds) as u64).map(|frame| (frame as f64 * 1000.0 / fps + 1e-6).floor() as u64).collect()
+        (0..(fps * seconds) as u64).map(|frame| libass_ms((frame as f64 * 1_000_000.0 / fps).round())).collect()
     }
 
     /// Only what a frame of the export shows is measured together (rechecks 6 and 7): times as `burn_ass` writes
@@ -1305,10 +1346,21 @@ mod tests {
         let burns = [lines(vec![cue(0, 4_000, "A"), cue(3_990, 7_000, "B")])];
         let (starts, layers) = stretches(&burns, &frames);
         assert_eq!((starts, pairs(&layers[0])), (vec![0, 4_000], vec![(0, 1), (1, 2)]));
-        // B written 0:00:00.28 starts on the frame at 280 ms, where A still shows: measured together
-        let burns = [lines(vec![cue(0, 300, "A"), cue(285, 1_000, "B")])];
+        // B written 0:00:00.24 starts on the frame at 240 ms, where A still shows: measured together
+        let burns = [lines(vec![cue(0, 300, "A"), cue(240, 1_000, "B")])];
         let (starts, layers) = stretches(&burns, &frames);
-        assert_eq!((starts, pairs(&layers[0])), (vec![0, 280, 320], vec![(0, 2), (1, 3)]));
+        assert_eq!((starts, pairs(&layers[0])), (vec![0, 240, 320], vec![(0, 2), (1, 3)]));
+        // vf_subtitles gives libass the frame at 0.28 s as 279 ms (pts × 1e-6 × 1000, truncated; recheck 8), so B
+        // written 0:00:00.28 first shows at 320 ms, after A: measured apart, as the export draws them
+        assert_eq!((libass_ms(200_000.0), libass_ms(280_000.0), libass_ms(240_000.0)), (199, 279, 240));
+        assert_eq!((frames[5], frames[7]), (199, 279));
+        let burns = [lines(vec![cue(0, 300, "A"), cue(280, 1_000, "B")])];
+        let (starts, layers) = stretches(&burns, &frames);
+        assert_eq!((starts, pairs(&layers[0])), (vec![0, 320], vec![(0, 1), (1, 2)]));
+        // and A ending at 400 still shows on the frame at 0.40 s (399 ms), so B from 390 stacks over it
+        let burns = [lines(vec![cue(0, 400, "A"), cue(390, 3_000, "B")])];
+        let (starts, layers) = stretches(&burns, &frames);
+        assert_eq!((starts, pairs(&layers[0])), (vec![0, 399, 440], vec![(0, 2), (1, 3)]));
         // a line shorter than a frame is never drawn, so never measured
         let burns = [lines(vec![cue(1_010, 1_030, "flash"), cue(2_000, 3_000, "C")])];
         let (starts, layers) = stretches(&burns, &frames);
@@ -1415,7 +1467,7 @@ mod tests {
             measure_subtitles(&work, &ffmpeg, &subtitle_frame(&[&burn], framing).unwrap(), &clip, &folder, &running)
         };
         let frames = frame_times(&ffprobe_beside(&ffmpeg), &clip, &running).unwrap();
-        assert_eq!((frames.len(), frames[0], frames[1], frames[299]), (300, 0, 40, 11_960), "the clip's own frame times");
+        assert_eq!((frames.len(), frames[0], frames[1], frames[299]), (300, 0, 40, 11_959), "the clip's own frame times, as libass gets them");
         let wide = Framing { export: (1920, 1080), out: (1920, 1080), fill: "black", aspect: None };
         let four_three = Framing { export: (1920, 1080), out: (1440, 1080), fill: "fill", aspect: Some("4:3") };
         // short lines at the bottom, one with a box: inside
@@ -1624,6 +1676,61 @@ mod tests {
             assert_eq!(read_check_file(&fifo), None);
             assert!(started.elapsed() < Duration::from_secs(5), "a FIFO never holds the reader");
         }
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// A file changed or replaced at the published name before its check ran is not judged against this export's
+    /// plan (recheck 8: a re-export to the same name while the first check waited).
+    #[test]
+    fn a_replaced_video_is_not_judged_by_the_old_plan() {
+        let dir = temp("replaced");
+        let work = dir.join("work");
+        let video = dir.join("Phim.mp4");
+        fs::write(&video, b"export one").unwrap();
+        let fake = dir.join("ffmpeg");
+        fs::write(&fake, b"").unwrap();
+        let plan = plain_plan(1.0, true, None).for_video(video.clone(), false);
+        assert!(plan.same_file());
+        std::thread::sleep(Duration::from_millis(20));
+        fs::write(&video, b"export two, longer").unwrap();
+        assert!(!plan.same_file());
+        run(&work, &fake, plan);
+        let report = read_check(&work, &video);
+        assert_eq!((report["state"].as_str(), report["error"].as_str()), (Some("UNAVAILABLE"), Some(CHANGED)), "{report}");
+        assert_eq!(fs::read(&video).unwrap(), b"export two, longer");
+        // a plan saved before stamps existed still reads
+        let old: Plan = serde_json::from_value(json!({"video": "x.mp4", "expected_seconds": 1.0, "has_audio": false,
+            "srt_end_ms": null, "intended_holds": [], "subtitles": null})).unwrap();
+        assert_eq!(old.stamp, None);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// `checks` swapped for a link after the check started (a long decode): nothing is removed, made or written
+    /// through it (recheck 8).
+    #[cfg(unix)]
+    #[test]
+    fn a_checks_folder_swapped_for_a_link_is_never_written_through() {
+        let dir = temp("swapped");
+        let work = dir.join("work");
+        let video = dir.join("Phim.mp4");
+        let folder = check_dir(&work, &video);
+        fs::create_dir_all(&folder).unwrap();
+        assert!(owned(&work, &folder));
+        let elsewhere = dir.join("elsewhere");
+        let key = folder.file_name().unwrap();
+        fs::create_dir_all(elsewhere.join(key)).unwrap();
+        let marker = elsewhere.join(key).join("measure.log");
+        fs::write(&marker, b"user data").unwrap();
+        fs::rename(work.join(CHECKS_DIR), dir.join("old-checks")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, work.join(CHECKS_DIR)).unwrap();
+        assert!(plain(&folder), "the last step alone looks plain");
+        assert!(!owned(&work, &folder));
+        assert!(fresh_file(&work, &folder, "measure.log").is_none());
+        assert!(own_lease(&work, &folder).is_none());
+        save(&work, &folder, &ExportCheck::new(&video, "DONE"));
+        assert_eq!(fs::read(&marker).unwrap(), b"user data");
+        let left: Vec<_> = fs::read_dir(elsewhere.join(key)).unwrap().flatten().map(|entry| entry.file_name()).collect();
+        assert_eq!(left.len(), 1, "{left:?}");
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -1968,23 +2075,32 @@ mod tests {
         let report = read_check(&work, &truncated);
         assert_eq!((report["state"].as_str(), report["checks"][0]["ok"].as_bool()), (Some("DONE"), Some(false)), "{report}");
         assert_eq!(fs::read(&truncated).unwrap(), &bytes[..bytes.len() / 2]);
-        // Dừng kiểm tra mid-run: STOPPED, the video untouched
+        // Dừng kiểm tra mid-run, while FFmpeg decodes (recheck 8: not before it starts): the decode is ended at once,
+        // STOPPED, the video untouched
         let long = dir.join("long.mp4");
-        let made = Command::new(&ffmpeg).args(["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=320x240:r=25:d=240", "-f", "lavfi", "-i",
-            "sine=f=330:d=240", "-c:v", "mpeg4", "-q:v", "20", "-c:a", "aac", "-shortest"]).arg(&long).status().unwrap();
+        let made = Command::new(&ffmpeg).args(["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=320x240:r=25:d=600", "-f", "lavfi", "-i",
+            "sine=f=330:d=600", "-c:v", "mpeg4", "-q:v", "20", "-c:a", "aac", "-shortest"]).arg(&long).status().unwrap();
         assert!(made.success());
         let long_bytes = fs::read(&long).unwrap();
         let worker = {
-            let (work, ffmpeg, plan) = (work.clone(), ffmpeg.clone(), plain_plan(240.0, true, None).for_video(long.clone(), false));
+            let (work, ffmpeg, plan) = (work.clone(), ffmpeg.clone(), plain_plan(600.0, true, None).for_video(long.clone(), false));
             std::thread::spawn(move || run(&work, &ffmpeg, plan))
         };
-        let folder = check_dir(&work, &long);
-        let deadline = Instant::now() + Duration::from_secs(30);
-        while !CHECKING.lock().unwrap().contains_key(&folder) && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(5));
+        let deadline = Instant::now() + Duration::from_secs(120);
+        let mut percent = 0.0;
+        while Instant::now() < deadline && !worker.is_finished() {
+            let report = read_check_file(&check_dir(&work, &long).join("check.json")).unwrap_or_default();
+            percent = report["percent"].as_f64().unwrap_or(0.0);
+            if report["state"] == "RUNNING" && percent > 0.0 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
         }
+        assert!(percent > 0.0 && percent < 90.0, "the decode was seen running ({percent}%)");
+        let stopped = Instant::now();
         cancel(&work, &long);
         worker.join().unwrap();
+        assert!(stopped.elapsed() < Duration::from_secs(3), "Dừng kiểm tra ended the running FFmpeg ({:?})", stopped.elapsed());
         assert_eq!(read_check(&work, &long)["state"], "STOPPED");
         assert_eq!(fs::read(&long).unwrap(), long_bytes);
         let _ = fs::remove_dir_all(dir);
