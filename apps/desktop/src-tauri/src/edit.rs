@@ -1469,11 +1469,13 @@ fn output_has_audio(edit: &Edit, inputs: &[Input]) -> bool {
 /// with `xfade` + `acrossfade` (the neighbours overlap), then lays overlays
 /// on top and mixes their sound in.
 fn render_script(edit: &Edit, inputs: &[Input], frame: &Frame, quality: &str) -> (String, bool) {
-    video_graph(edit, inputs, frame, quality, "v", "a")
+    video_graph(edit, inputs, frame, quality, "v", "a", false)
 }
 
-/// `render_script` with the picture ending as `[video_out]` and the sound as `[audio_out]`.
-fn video_graph(edit: &Edit, inputs: &[Input], frame: &Frame, quality: &str, video_out: &str, audio_out: &str) -> (String, bool) {
+/// `render_script` with the picture ending as `[video_out]` and the sound as `[audio_out]`. With `grid` (Phụ đề
+/// burned after it) and overlays, the joined picture is put on the export's own frames (`fps`) before the overlays:
+/// an overlay ends its stream at its last frame's start, so an `fps` after it would drop that frame (#943).
+fn video_graph(edit: &Edit, inputs: &[Input], frame: &Frame, quality: &str, video_out: &str, audio_out: &str, grid: bool) -> (String, bool) {
     if inputs.len() == 1 && edit.transitions.is_empty() && edit.overlays.is_empty() && edit.stems.is_empty() && edit.segments.iter().all(Segment::is_plain) {
         return (filter_graph(&edit.segments, inputs[0].has_audio, quality, video_out, audio_out), inputs[0].has_audio);
     }
@@ -1578,6 +1580,10 @@ fn video_graph(edit: &Edit, inputs: &[Input], frame: &Frame, quality: &str, vide
         current = (video, audio);
     }
     let mut video = current.0;
+    if grid && !edit.overlays.is_empty() {
+        lines.push(format!("[{video}]fps={}[vg]", frame.fps));
+        video = "vg".to_owned();
+    }
     for (index, overlay) in edit.overlays.iter().enumerate() {
         let shown = (overlay.end - overlay.start).min(length - overlay.at).max(0.0);
         let (at, until) = (num(overlay.at), num(overlay.at + shown));
@@ -1761,12 +1767,14 @@ fn duck_filter(start: f64, end: f64, db: f64) -> String {
 /// Phụ đề (Issue #930) is drawn just before it, on the finished picture.
 /// Phụ đề is drawn on the export's own frames (`fps` first): frame N is drawn at
 /// N / fps exactly, so Kiểm tra kỹ thuật knows when libass drew each frame (#935).
+/// With overlays that `fps` comes before them (`video_graph`'s grid), so the overlays' last frame is kept (#943).
 fn export_script(edit: &Edit, inputs: &[Input], frame: &Frame, quality: &str, mix: &Mix, finish: &Finish) -> (String, bool) {
-    let burn = finish.burn.as_ref().map(|burn| format!("fps={},{burn}", frame.fps));
+    let grid = finish.burn.is_some();
+    let burn = finish.burn.as_ref().map(|burn| if edit.overlays.is_empty() { format!("fps={},{burn}", frame.fps) } else { burn.clone() });
     let steps: Vec<&String> = burn.iter().chain(finish.texts.iter()).chain(finish.reframe.iter()).collect();
     let video_out = if steps.is_empty() { "v" } else { "vt" };
     let audio_out = if finish.normalize { "an" } else { "a" };
-    let (mut graph, has_audio) = mixed_script(edit, inputs, frame, quality, mix, video_out, audio_out);
+    let (mut graph, has_audio) = mixed_script(edit, inputs, frame, quality, mix, video_out, audio_out, grid);
     let mut label = video_out.to_owned();
     for (index, filter) in steps.iter().enumerate() {
         let out = if index + 1 == steps.len() { "v".to_owned() } else { format!("vf{index}") };
@@ -1783,12 +1791,12 @@ fn export_script(edit: &Edit, inputs: &[Input], frame: &Frame, quality: &str, mi
 }
 
 /// The picture (ending as `[video_out]`) and the mixed sound (`[audio_out]`).
-fn mixed_script(edit: &Edit, inputs: &[Input], frame: &Frame, quality: &str, mix: &Mix, video_out: &str, audio_out: &str) -> (String, bool) {
+fn mixed_script(edit: &Edit, inputs: &[Input], frame: &Frame, quality: &str, mix: &Mix, video_out: &str, audio_out: &str, grid: bool) -> (String, bool) {
     // Parts of the main sound turned up can clip: they always pass the limiter.
     if mix.sounds.is_empty() && mix.main_volume == 1.0 && mix.main_clean.is_plain() && edit.stems.is_empty() {
-        return video_graph(edit, inputs, frame, quality, video_out, audio_out);
+        return video_graph(edit, inputs, frame, quality, video_out, audio_out, grid);
     }
-    let (graph, has_main) = video_graph(edit, inputs, frame, quality, video_out, "am");
+    let (graph, has_main) = video_graph(edit, inputs, frame, quality, video_out, "am", grid);
     if mix.sounds.is_empty() && !has_main {
         return (graph, false);
     }
@@ -6475,9 +6483,13 @@ Dialogue: 3,0:00:05.00,0:00:07.00,T1,,256,256,0,,{\\an6\\pos(1024,360)}{\\ko10}G
             reframe: Some(reframe_filter(720, 720, "black")), ..Finish::default() };
         let (burned, has_audio) = export_script(&edit, &input, &frame(), "720p", &mix, &finish);
         assert!(has_audio);
-        // on the export's own frames (#935): frame N is drawn at N / fps
-        assert_eq!(burned, format!("{};\n[vt]fps={},subtitles=filename=s.ass,subtitles=filename=s2.ass[vf0];\n[vf0]subtitles=filename=t.ass[vf1];\n[vf1]{}[v]",
-            plain.replace("setsar=1[v]", "setsar=1[vt]"), frame().fps, reframe_filter(720, 720, "black")));
+        // on the export's own frames (#935): frame N is drawn at N / fps. With overlays the picture is put on those
+        // frames before them, never after (#943: an overlay ends at its last frame's start, an `fps` after drops it).
+        let gridded = plain.replace("setsar=1[v]", "setsar=1[vt]").replacen(";\n[0:v]trim=start=0:end=2,", &format!(";\n[vj]fps={}[vg];\n[0:v]trim=start=0:end=2,", frame().fps), 1)
+            .replacen("[vj][ov0]overlay=", "[vg][ov0]overlay=", 1);
+        assert_eq!(burned, format!("{gridded};\n[vt]subtitles=filename=s.ass,subtitles=filename=s2.ass[vf0];\n[vf0]subtitles=filename=t.ass[vf1];\n[vf1]{}[v]",
+            reframe_filter(720, 720, "black")));
+        assert_eq!(burned.matches("fps=25/1[vg]").count(), 1, "{burned}");
         let at = burned.find("subtitles=filename=s.ass").unwrap();
         assert!(burned[..at].contains("overlay") && burned[..at].contains("setsar=1[vt]"), "after the overlays and the scale: {burned}");
         assert!(!burned[at..].contains("trim") && !burned[at..].contains("concat"), "after the cuts: {burned}");
