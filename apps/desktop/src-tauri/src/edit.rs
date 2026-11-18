@@ -2346,16 +2346,14 @@ fn burn_prefix(style: &SubtitleStyle) -> String {
     }
 }
 
-/// The burn of `style` for Kiểm tra kỹ thuật: `slots[i]` are the lines shown together at one moment of the export,
-/// drawn from second i to i + 1, in the order `burn_ass` writes them, so they stack as they do there.
-pub(super) fn measure_ass(style: &SubtitleStyle, slots: &[Vec<&Cue>]) -> String {
+/// The burn of `style` for Kiểm tra kỹ thuật on the check's shortened clock: each line drawn from second `first` to
+/// `last` (its stretches, `edit_check::stretches`), in the order `burn_ass` writes them.
+pub(super) fn measure_ass(style: &SubtitleStyle, lines: &[(usize, usize, &Cue)]) -> String {
     let mut script = burn_head(style, true);
     let prefix = burn_prefix(style);
-    for (at, lines) in slots.iter().enumerate() {
-        for line in lines {
-            script.push_str(&format!("Dialogue: 0,{},{},Default,,0,0,0,,{prefix}{}\n", ass_time(at as f64), ass_time(at as f64 + 1.0),
-                ass_text(line.text.trim())));
-        }
+    for (first, last, line) in lines {
+        script.push_str(&format!("Dialogue: 0,{},{},Default,,0,0,0,,{prefix}{}\n", ass_time(*first as f64), ass_time(*last as f64),
+            ass_text(line.text.trim())));
     }
     script
 }

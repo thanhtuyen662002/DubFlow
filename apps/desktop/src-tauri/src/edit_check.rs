@@ -150,28 +150,38 @@ fn subtitle_frame(burns: &[&BurnSubtitles], framing: &Framing) -> Option<Subtitl
     Some(SubtitleFrame { burns, export: framing.export, window, why })
 }
 
-/// One moment per line (its middle), each with the lines of every layer shown at that moment, so lines shown
-/// together stack as in the export. Returns the start of the line each moment is for, and for each layer the lines
-/// it shows at each moment, in `burn_ass`'s order.
-fn moments(burns: &[BurnSubtitles]) -> (Vec<u64>, Vec<Vec<Vec<&Cue>>>) {
-    let mut at: Vec<(u64, u64)> = burns.iter().flat_map(|burn| burn.lines.iter())
-        .map(|cue| (cue.start_ms + cue.end_ms.saturating_sub(cue.start_ms) / 2, cue.start_ms)).collect();
-    at.sort_unstable();
-    at.dedup_by_key(|(middle, _)| *middle);
+/// The burned lines on a shortened clock: each stretch of the export in which the same lines are on screen becomes
+/// one second, in order, and every line covers the same stretches as in the export. libass then draws one frame per
+/// stretch with exactly that stretch's lines, which appear in the export's order, so lines shown together stack as
+/// libass stacks them there (a line keeps the place it took when it appeared). One line per line: no growth with
+/// overlaps. Returns when each stretch starts in the export, and for each layer its lines with their first and
+/// past-the-last stretch, in `burn_ass`'s order.
+fn stretches(burns: &[BurnSubtitles]) -> (Vec<u64>, Vec<Vec<(usize, usize, &Cue)>>) {
+    let mut bounds: Vec<u64> = burns.iter().flat_map(|burn| burn.lines.iter()).flat_map(|line| [line.start_ms, line.end_ms]).collect();
+    bounds.sort_unstable();
+    bounds.dedup();
+    let index = |ms: u64| bounds.binary_search(&ms).unwrap_or(0);
+    // How many lines are on screen in [bounds[k], bounds[k + 1]).
+    let mut change = vec![0_i64; bounds.len() + 1];
+    for line in burns.iter().flat_map(|burn| burn.lines.iter()).filter(|line| line.end_ms > line.start_ms) {
+        change[index(line.start_ms)] += 1;
+        change[index(line.end_ms)] -= 1;
+    }
+    let (mut shown, mut slot, mut starts) = (0_i64, vec![usize::MAX; bounds.len()], Vec::new());
+    for (k, bound) in bounds.iter().enumerate() {
+        shown += change[k];
+        if shown > 0 {
+            slot[k] = starts.len();
+            starts.push(*bound);
+        }
+    }
     let layers = burns.iter().map(|burn| {
-        let mut lines: Vec<&Cue> = burn.lines.iter().collect();
+        let mut lines: Vec<&Cue> = burn.lines.iter().filter(|line| line.end_ms > line.start_ms).collect();
         lines.sort_by_key(|line| (line.start_ms, line.end_ms));
-        let (mut next, mut shown) = (0, Vec::<&Cue>::new());
-        at.iter().map(|&(middle, _)| {
-            while next < lines.len() && lines[next].start_ms <= middle {
-                shown.push(lines[next]);
-                next += 1;
-            }
-            shown.retain(|line| line.end_ms > middle);
-            shown.clone()
-        }).collect()
+        // a line's own stretches are all on screen, so they are consecutive seconds
+        lines.into_iter().map(|line| (slot[index(line.start_ms)], slot[index(line.end_ms) - 1] + 1, line)).collect()
     }).collect();
-    (at.into_iter().map(|(_, start)| start).collect(), layers)
+    (starts, layers)
 }
 
 /// `bbox`'s log: for each frame where something was drawn, its frame number and the drawn area (x0, y0, x1, y1,
@@ -189,8 +199,8 @@ fn read_boxes(text: &str) -> HashMap<usize, (i64, i64, i64, i64)> {
     boxes
 }
 
-/// The measured result: a moment's drawing must stay off the frame's outermost pixels (ink there runs on past the
-/// edge) and inside the kept window. A moment where libass drew nothing is not measured, never called fine.
+/// The measured result: a stretch's drawing must stay off the frame's outermost pixels (ink there runs on past the
+/// edge) and inside the kept window. A stretch where libass drew nothing is not measured, never called fine.
 fn fit_of(frame: &SubtitleFrame, starts: &[u64], boxes: &HashMap<usize, (i64, i64, i64, i64)>) -> SubtitleFit {
     let (width, height) = (i64::from(frame.export.0), i64::from(frame.export.1));
     let (wx0, wy0, wx1, wy1) = frame.window;
@@ -208,26 +218,27 @@ fn fit_of(frame: &SubtitleFrame, starts: &[u64], boxes: &HashMap<usize, (i64, i6
     }
     cut.sort_unstable();
     cut.dedup();
-    let unseen = if blank > 0 { format!(" {blank} câu chưa đo được (libass không vẽ ra chữ).") } else { String::new() };
+    let unseen = if blank > 0 { format!(" {blank} đoạn chưa đo được (libass không vẽ ra chữ).") } else { String::new() };
     if cut.is_empty() {
         return if blank == 0 {
             SubtitleFit { ok: Some(true), detail: "phụ đề nằm trong khung — đo trên chữ libass vẽ".into(), at_ms: Vec::new() }
         } else {
-            SubtitleFit { ok: None, detail: format!("không thấy câu nào bị cắt.{unseen}"), at_ms: Vec::new() }
+            SubtitleFit { ok: None, detail: format!("không thấy đoạn nào bị cắt.{unseen}"), at_ms: Vec::new() }
         };
     }
     let named: Vec<String> = cut.iter().take(NAMED).map(|ms| clock(*ms as f64 / 1000.0)).collect();
     let more = if cut.len() > NAMED { "…" } else { "" };
-    let detail = format!("{} câu bị cắt mép ({}): {}{more} — đo trên chữ libass vẽ.{unseen}", cut.len(), frame.why, named.join(", "));
+    let detail = format!("phụ đề bị cắt mép ở {} đoạn ({}), từ: {}{more} — đo trên chữ libass vẽ.{unseen}", cut.len(), frame.why, named.join(", "));
     cut.truncate(MAX_SPANS);
     SubtitleFit { ok: Some(false), detail, at_ms: cut }
 }
 
 /// Where libass draws the burned lines: the export's own layers painted white (`measure_ass`) on a black frame of
-/// the export's size, one frame per moment, and FFmpeg's `bbox` around what was drawn. Reads no part of the video.
+/// the export's size, one frame per stretch (`stretches`), and FFmpeg's `bbox` around what was drawn. Reads no part
+/// of the video.
 fn measure_subtitles(work: &Path, ffmpeg: &Path, frame: &SubtitleFrame, dir: &Path, running: &Running) -> SubtitleFit {
     let unmeasured = |why: String| SubtitleFit { ok: None, detail: format!("chưa đo được phụ đề: {why}"), at_ms: Vec::new() };
-    let (starts, layers) = moments(&frame.burns);
+    let (starts, layers) = stretches(&frame.burns);
     let mut filters = Vec::new();
     for (index, (burn, shown)) in frame.burns.iter().zip(&layers).enumerate() {
         let file = dir.join(format!("measure-{}.ass", index + 1));
@@ -961,27 +972,33 @@ mod tests {
     }
 
     #[test]
-    fn moments_show_what_is_on_screen_together() {
+    fn stretches_keep_the_order_and_overlaps_of_the_export() {
         let first = BurnSubtitles { style: style(json!({})), lines: vec![cue(4_000, 6_000, "B"), cue(0, 10_000, "A"), cue(12_000, 13_000, "C")] };
         let second = BurnSubtitles { style: style(json!({})), lines: vec![cue(5_000, 7_000, "x")] };
         let burns = [first, second];
-        let (starts, layers) = moments(&burns);
-        // middles 5 000 (A), 5 000 (B, the same moment), 6 000 (x; B has just ended), 12 500 (C)
-        assert_eq!(starts, [0, 5_000, 12_000]);
-        let texts = |shown: &Vec<&Cue>| shown.iter().map(|line| line.text.clone()).collect::<Vec<_>>();
-        assert_eq!(layers[0].iter().map(texts).collect::<Vec<_>>(), [vec!["A", "B"], vec!["A"], vec!["C"]]);
-        assert_eq!(layers[1].iter().map(texts).collect::<Vec<_>>(), [vec!["x"], vec!["x"], vec![]]);
-        // the measure script draws moment i from second i, painted white, at the layer's dragged spot
+        let (starts, layers) = stretches(&burns);
+        // A | A B | A B x | A x | A | (nothing: left out) | C
+        assert_eq!(starts, [0, 4_000, 5_000, 6_000, 7_000, 12_000]);
+        let spans = |layer: &Vec<(usize, usize, &Cue)>| layer.iter().map(|(first, last, line)| (*first, *last, line.text.clone())).collect::<Vec<_>>();
+        assert_eq!(spans(&layers[0]), [(0, 5, "A".to_owned()), (1, 3, "B".to_owned()), (5, 6, "C".to_owned())]);
+        assert_eq!(spans(&layers[1]), [(2, 4, "x".to_owned())]);
+        // the measure script: painted white, each line once on the short clock, at the layer's dragged spot
         let mut dragged = style(json!({"x": 0.25, "y": 0.5, "box": "#101010", "box_opacity": 0.5}));
         dragged.primary = "#FFFF00".into();
         let script = measure_ass(&dragged, &layers[0]);
-        assert!(script.contains("Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,{\\an5\\pos(480,540)}A\n"), "{script}");
-        assert_eq!(script.matches("Dialogue:").count(), 4);
+        assert!(script.contains("Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\\an5\\pos(480,540)}A\n"), "{script}");
+        assert_eq!(script.matches("Dialogue:").count(), 3);
         assert!(script.contains(",&H00FFFFFF,&H000000FF,&H00FFFFFF,&H80FFFFFF,-1,"), "{script}");
         assert!(!script.contains("&H0000FFFF") && !script.contains("101010"), "no real colour left");
         // a box nobody can see stays unseen
         let clear = measure_ass(&style(json!({"box": "#000000", "box_opacity": 0.0})), &layers[1]);
         assert!(clear.contains(",&HFFFFFFFF,-1,"), "{clear}");
+        // 2 000 lines that all run to the end (a broken .srt): one script line each, at most one frame per start
+        let piled = BurnSubtitles { style: style(json!({})), lines: (0..2_000).map(|index| cue(index * 10, 60_000, "x")).collect() };
+        let (starts, layers) = stretches(std::slice::from_ref(&piled));
+        assert_eq!((starts.len(), layers[0].len()), (2_000, 2_000));
+        assert!(layers[0].iter().all(|(_, last, _)| *last == 2_000));
+        assert_eq!(measure_ass(&piled.style, &layers[0]).matches("Dialogue:").count(), 2_000);
     }
 
     #[test]
@@ -1008,23 +1025,23 @@ mod tests {
         assert_eq!((fine.ok, fine.detail.as_str()), (Some(true), "phụ đề nằm trong khung — đo trên chữ libass vẽ"));
         let cut = fit_of(&tall, &[2_000, 12_000], &boxes(&[(0, short), (1, long)]));
         assert_eq!((cut.ok, cut.at_ms.clone()), (Some(false), vec![12_000]));
-        assert_eq!(cut.detail, "1 câu bị cắt mép (khung 9:16, cắt cho đầy): 0:12 — đo trên chữ libass vẽ.");
+        assert_eq!(cut.detail, "phụ đề bị cắt mép ở 1 đoạn (khung 9:16, cắt cho đầy), từ: 0:12 — đo trên chữ libass vẽ.");
         // ink on the outermost column or row runs on past the frame
         let edge = fit_of(&wide, &[3_000, 4_000, 5_000], &boxes(&[(0, (0, 975, 1919, 1028)), (1, (10, 1000, 300, 1079)), (2, (1, 1, 1918, 1078))]));
         assert_eq!((edge.ok, edge.at_ms), (Some(false), vec![3_000, 4_000]));
-        assert!(edge.detail.starts_with("2 câu bị cắt mép (chữ vượt ra ngoài khung hình): 0:03, 0:04"), "{}", edge.detail);
+        assert!(edge.detail.starts_with("phụ đề bị cắt mép ở 2 đoạn (chữ vượt ra ngoài khung hình), từ: 0:03, 0:04"), "{}", edge.detail);
         // nothing drawn for a moment: not measured, never called fine
         let blank = fit_of(&wide, &[2_000, 12_000], &boxes(&[(0, short)]));
         assert_eq!(blank.ok, None);
-        assert!(blank.detail.contains("1 câu chưa đo được"), "{}", blank.detail);
+        assert!(blank.detail.contains("1 đoạn chưa đo được"), "{}", blank.detail);
         let both = fit_of(&tall, &[2_000, 12_000, 20_000], &boxes(&[(0, short), (1, long)]));
         assert_eq!(both.ok, Some(false));
-        assert!(both.detail.ends_with("1 câu chưa đo được (libass không vẽ ra chữ)."), "{}", both.detail);
+        assert!(both.detail.ends_with("1 đoạn chưa đo được (libass không vẽ ra chữ)."), "{}", both.detail);
         // at most NAMED times in words, MAX_SPANS kept
         let many: Vec<u64> = (0..60).map(|index| index * 1_000).collect();
         let all = fit_of(&wide, &many, &HashMap::from_iter((0..60).map(|index| (index, (0, 0, 10, 10)))));
         assert_eq!(all.at_ms.len(), MAX_SPANS);
-        assert!(all.detail.starts_with("60 câu bị cắt mép (chữ vượt ra ngoài khung hình): 0:00, 0:01, 0:02, 0:03, 0:04… "), "{}", all.detail);
+        assert!(all.detail.starts_with("phụ đề bị cắt mép ở 60 đoạn (chữ vượt ra ngoài khung hình), từ: 0:00, 0:01, 0:02, 0:03, 0:04… "), "{}", all.detail);
     }
 
     /// #930: Phụ đề is burned after the part looks, so a crop, zoom, tilt or turn of a part never moves what is measured.
@@ -1081,6 +1098,14 @@ mod tests {
         let tall = Framing { export: (1920, 1080), out: (608, 1080), fill: "fill", aspect: Some("9:16") };
         assert_eq!(measure(vec![cue(1_000, 3_000, "Xin chào các bạn")], style(json!({})), &tall).ok, Some(true));
         assert_eq!(measure(vec![cue(1_000, 3_000, LONG)], style(json!({})), &tall).at_ms, [1_000]);
+        // a line that appears while another is shown stacks above or below it and keeps that place after the first
+        // ends (libass); in the middle at size 2 the pair is taller than what a 21:9 fill keeps (recheck 5)
+        let wide_fill = Framing { export: (1920, 1080), out: (2520, 1080), fill: "fill", aspect: Some("21:9") };
+        let pho = "Hôm nay chúng ta sẽ cùng nhau tìm hiểu cách nấu món phở bò truyền thống của Hà Nội, từ khâu chọn xương, ninh nước dùng";
+        let pair = vec![cue(0, 4_000, pho), cue(3_000, 7_000, pho)];
+        let stacked = measure(pair.clone(), style(json!({"size": 2.0, "align": "middle"})), &wide_fill);
+        assert_eq!(stacked.ok, Some(false), "{}", stacked.detail);
+        assert_eq!(measure(vec![pair[0].clone()], style(json!({"size": 2.0, "align": "middle"})), &wide_fill).ok, Some(true), "one alone fits");
         // two lines at once stack: both are measured together
         let stacked = measure(vec![cue(1_000, 5_000, "Dòng một"), cue(2_000, 4_000, "Dòng hai")], style(json!({})), &wide);
         assert_eq!(stacked.ok, Some(true), "{}", stacked.detail);
