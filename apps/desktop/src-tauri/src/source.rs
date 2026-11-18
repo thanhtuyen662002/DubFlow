@@ -73,6 +73,9 @@ pub struct Sources {
     /// The running service has checked the install and reads requests (`source_ready`). Until then a link that
     /// starts waits for that check, which takes minutes on the first start after an install (#937).
     ready: AtomicBool,
+    /// DubFlow is closing: no service starts again (a link waiting when the old one ends would start a new one that
+    /// outlives the app).
+    closed: AtomicBool,
 }
 
 /// What `claim_next` found.
@@ -340,6 +343,9 @@ impl Sources {
         *self.launch.lock().map_err(|_| fail("source launch lock poisoned"))? =
             Some((supervisor.to_path_buf(), root.to_path_buf(), data.to_path_buf()));
         let mut guard = self.service.lock().map_err(|_| fail("source service lock poisoned"))?;
+        if self.closed.load(Ordering::SeqCst) {
+            return Err(fail("DubFlow đang đóng."));
+        }
         if let Some(service) = guard.as_mut() {
             if matches!(service.child.try_wait(), Ok(None)) {
                 return Ok(());
@@ -767,6 +773,8 @@ impl Sources {
     }
 
     pub fn shutdown(&self) {
+        // Set before taking the service: a start that holds it now finishes, and this then ends that service.
+        self.closed.store(true, Ordering::SeqCst);
         if let Ok(mut guard) = self.service.lock() {
             if let Some(mut service) = guard.take() {
                 if self.ready.load(Ordering::SeqCst) {
@@ -1531,6 +1539,9 @@ mod tests {
         let started = std::time::Instant::now();
         sources.shutdown();
         assert!(started.elapsed() < std::time::Duration::from_secs(5), "closing waited {:?} for the install check", started.elapsed());
+        assert!(sources.service.lock().unwrap().is_none());
+        // a link still waiting when the service ends starts no new one after the app closed (review of #946)
+        assert!(sources.warm_up(&service, &root, &data).is_err());
         assert!(sources.service.lock().unwrap().is_none());
     }
 }
