@@ -772,8 +772,10 @@ pub(crate) fn record_run(kind: &str, dir: &Path) {
     }
 }
 
-/// Drop the record of the run in `dir` (a project being deleted).
+/// Drop the record of the run in `dir` (a project being deleted), after stopping every Kiểm tra kỹ thuật below it
+/// and waiting for each to end, so no check writes or holds a file in the folder as it is removed.
 pub(crate) fn forget_run(dir: &Path) {
+    check::stop_under(dir);
     if let Some(path) = crate::control_root().ok().and_then(|data| run_record(&data, dir)) {
         let _ = fs::remove_file(path);
     }

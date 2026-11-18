@@ -137,10 +137,12 @@ impl Plan {
     /// The export was rendered in parts cut at `cuts` (s, `parts::render`). Each part burns Phụ đề with a libass of its
     /// own, so lines that shared the screen before a cut and are still on screen across it are stacked anew there,
     /// while the measure runs one libass over the whole export: it would judge another layout than the video's, so the
-    /// burned lines are not measured then (recheck 13).
+    /// burned lines are not measured then (recheck 13). A dragged layer (`\\pos` on every line, `burn_prefix`) is never
+    /// stacked by libass, so each part places its lines exactly as one run does: it is measured (recheck 21).
     pub(super) fn parts_cut_at(mut self, cuts: &[f64]) -> Self {
         if let Some(frame) = self.subtitles.as_mut().filter(|frame| frame.unmeasurable.is_none()) {
-            if frame.burns.iter().any(|burn| restacked(&burn.lines, cuts, frame.rate)) {
+            let dragged = |burn: &BurnSubtitles| burn.style.x.is_some() && burn.style.y.is_some();
+            if frame.burns.iter().any(|burn| !dragged(burn) && restacked(&burn.lines, cuts, frame.rate)) {
                 frame.unmeasurable = Some(PARTS.into());
             }
         }
@@ -997,11 +999,13 @@ pub(super) fn run(work: &Path, ffmpeg: &Path, plan: Plan) {
     // Stopped because DubFlow is closing, not by Dừng kiểm tra: said as such.
     let report = if report.state == "STOPPED" && CLOSING.load(Ordering::SeqCst) { ExportCheck::of(&plan, "INTERRUPTED") } else { report };
     save(work, &dir, &report);
+    drop(held);
+    prune(work);
+    // Left the registry only once nothing of the check touches `work` any more, so a project delete that stopped it
+    // (`stop_under`) and waited for it never races its last save or its cleanup (recheck 21).
     if let Ok(mut checking) = CHECKING.lock() {
         checking.remove(&dir);
     }
-    drop(held);
-    prune(work);
 }
 
 /// The check folder's lease, held (on Windows with no sharing) while the check runs. Whatever is at that name is
@@ -1252,6 +1256,32 @@ fn held_base(_held: &fs::File, checks: &Path) -> PathBuf {
 pub(super) fn cancel(work: &Path, video: &Path) {
     if let Some(entry) = CHECKING.lock().ok().and_then(|checking| checking.get(&check_dir(work, video)).cloned()) {
         stop(&entry);
+    }
+}
+
+/// A project folder `run` is being deleted: stop every check of this window whose folder is below it (waiting or
+/// running) and wait, at most `STOP_WAIT`, until each has saved its end and left the registry, so none writes, holds
+/// or reads in the folder while it is removed (recheck 21). Only stops, never touches a file.
+pub(super) fn stop_under(run: &Path) {
+    stop_under_in(&CHECKING, run, STOP_WAIT);
+}
+
+/// How long a project delete waits for its checks to end.
+const STOP_WAIT: Duration = Duration::from_secs(10);
+
+fn stop_under_in(checking: &Mutex<HashMap<PathBuf, Arc<Running>>>, run: &Path, wait: Duration) {
+    let real = fs::canonicalize(run).ok();
+    let below = |dir: &Path| dir.starts_with(run)
+        || real.as_ref().zip(dir.parent().and_then(|checks| fs::canonicalize(checks).ok())).is_some_and(|(run, checks)| checks.starts_with(run));
+    let entries: Vec<(PathBuf, Arc<Running>)> = checking.lock().map(|checking| checking.iter()
+        .filter(|(dir, _)| below(dir)).map(|(dir, entry)| (dir.clone(), entry.clone())).collect()).unwrap_or_default();
+    for (_, entry) in &entries {
+        stop(entry);
+    }
+    let deadline = Instant::now() + wait;
+    while Instant::now() < deadline && checking.lock().is_ok_and(|checking| entries.iter()
+        .any(|(dir, entry)| checking.get(dir).is_some_and(|now| Arc::ptr_eq(now, entry)))) {
+        std::thread::sleep(Duration::from_millis(50));
     }
 }
 
@@ -1949,6 +1979,14 @@ mod tests {
         assert_eq!(drawn_ms(233.8, (30, 1)), 233_799);
         assert_eq!(planned(vec![cue(230_000, 232_000, "X"), cue(231_000, 233_800, "L")], &[233.8]).as_deref(), Some(PARTS));
         assert_eq!(planned(vec![cue(230_000, 232_000, "X"), cue(231_000, 233_790, "L")], &[233.8]), None, "gone a frame before");
+        // a dragged layer (\\pos on every line) is never stacked by libass: measured across the cut (recheck 21); a
+        // layer with only one of x/y set is not dragged (burn_prefix) and is still judged
+        let dragged = |changes: Value| {
+            let layer = BurnSubtitles { style: style(changes), lines: vec![cue(0, 4_000, "A"), cue(2_000, 11_000, "B")] };
+            plan(&edit, &[false], 600.0, true, &[], &[&layer], &wide, "30/1").parts_cut_at(&[5.0]).subtitles.unwrap().unmeasurable
+        };
+        assert_eq!(dragged(json!({"x": 0.1, "y": 0.5})), None);
+        assert_eq!(dragged(json!({"x": 0.1})).as_deref(), Some(PARTS));
         // lines on two layers never push each other (one libass per layer)
         let first = BurnSubtitles { style: style(json!({})), lines: vec![cue(0, 4_000, "A")] };
         let second = BurnSubtitles { style: style(json!({})), lines: vec![cue(2_000, 11_000, "B")] };
@@ -2709,6 +2747,50 @@ mod tests {
             checking.remove(&check_dir(&work, &video));
             checking.remove(&check_dir(&work, &other));
         }
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// A project being deleted first stops every check below its folder, waiting or running, and waits until each
+    /// has left the registry (its last save and cleanup done); a check of another project goes on (recheck 21).
+    #[test]
+    fn deleting_a_project_stops_and_waits_for_its_checks() {
+        let dir = temp("delete-run");
+        let run = dir.join("Tong hop - A").join("run-1");
+        let checks = run.join(".dubflow-work").join("edit").join(CHECKS_DIR);
+        let other = dir.join("Tong hop - B").join("run-1").join(".dubflow-work").join("edit").join(CHECKS_DIR);
+        fs::create_dir_all(&checks).unwrap();
+        fs::create_dir_all(&other).unwrap();
+        let checking = Arc::new(Mutex::new(HashMap::new()));
+        let ours = Arc::new(Running { children: Mutex::new(vec![long_child()]), cancelled: AtomicBool::new(false) });
+        let theirs = Arc::new(Running { children: Mutex::new(Vec::new()), cancelled: AtomicBool::new(false) });
+        let (mine, elsewhere) = (checks.join("0".repeat(20)), other.join("1".repeat(20)));
+        checking.lock().unwrap().insert(mine.clone(), ours.clone());
+        checking.lock().unwrap().insert(elsewhere.clone(), theirs.clone());
+        // the check ends a moment after it is stopped, as run() does: saves, cleans up, then leaves the registry
+        let ending = {
+            let (checking, ours, mine) = (checking.clone(), ours.clone(), mine.clone());
+            std::thread::spawn(move || {
+                while !ours.cancelled.load(Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                std::thread::sleep(Duration::from_millis(300));
+                checking.lock().unwrap().remove(&mine);
+            })
+        };
+        let started = Instant::now();
+        stop_under_in(&checking, &run, Duration::from_secs(10));
+        assert!(ours.cancelled.load(Ordering::SeqCst), "the project's check is stopped");
+        assert!(!checking.lock().unwrap().contains_key(&mine), "the delete goes on only once the check has ended");
+        assert!(started.elapsed() >= Duration::from_millis(300));
+        assert!(!theirs.cancelled.load(Ordering::SeqCst) && checking.lock().unwrap().contains_key(&elsewhere),
+            "a check of another project goes on");
+        ending.join().unwrap();
+        // a check that never ends does not hold the delete past the wait
+        let stuck = Arc::new(Running { children: Mutex::new(Vec::new()), cancelled: AtomicBool::new(false) });
+        checking.lock().unwrap().insert(mine.clone(), stuck.clone());
+        let started = Instant::now();
+        stop_under_in(&checking, &run, Duration::from_millis(200));
+        assert!(stuck.cancelled.load(Ordering::SeqCst) && started.elapsed() < Duration::from_secs(5));
         let _ = fs::remove_dir_all(dir);
     }
 
