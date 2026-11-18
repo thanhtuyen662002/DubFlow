@@ -65,6 +65,8 @@ class DownloadErrorCode(str, Enum):
     CHECKSUM_MISMATCH = "CHECKSUM_MISMATCH"
     RESUME_INVALID = "RESUME_INVALID"
     CANCELLED = "CANCELLED"
+    # #884 interim: a user-configured proxy would carry the request; the peer it reaches cannot be bound.
+    PROXY_UNSUPPORTED = "PROXY_UNSUPPORTED"
 
 
 class DownloadError(ValueError):
@@ -186,17 +188,13 @@ class EgressPolicy:
             raise DownloadError(DownloadErrorCode.NETWORK, "source host could not be resolved", retryable=True, action="retry")
         if not all(self._allowed(answer) for answer in answers):
             if any(_in_fake_ip(answer) for answer in answers):
-                # Clash/Surge TUN "fake-IP" DNS: the real target is hidden, so it cannot be checked (#884)
+                # Clash/Surge TUN "fake-IP" DNS: the real target is hidden, so it cannot be checked (#884). System-proxy
+                # mode is not offered as a way out: proxied source access is refused too until a validating proxy exists.
                 raise _egress_denied("source host resolved to a proxy fake-IP address (198.18.0.0/15); the real target "
-                                     "cannot be checked. Switch the proxy to real-IP DNS (redir-host) or system-proxy "
-                                     "mode, or exclude DubFlow from TUN mode")
+                                     "cannot be checked. Switch the proxy to real-IP DNS (redir-host), or exclude "
+                                     "DubFlow from TUN mode")
             raise _egress_denied("source URL points to a private or non-public network address")
         return answers
-
-    def check_proxied(self, host: str, port: int) -> None:
-        """Behind a user-configured proxy the proxy reaches the target, so only the name can be checked: it must
-        resolve here, to public addresses only. A name that does not resolve locally fails closed (#884)."""
-        self.resolve(host, port)
 
     def check_url(self, url: str) -> str:
         url = validate_http_url(url)
@@ -256,9 +254,13 @@ def _proxied(request: Request) -> bool:
     return bool(getattr(request, "_tunnel_host", None)) or request.has_proxy()
 
 
-def _target_host_port(request: Request) -> tuple[str, int]:
-    scheme, host, port = _origin(request.full_url)
-    return host or "", port
+def _proxy_refused() -> DownloadError:
+    # #884 interim: behind a user-configured proxy the proxy, not this process, resolves and connects to the target,
+    # so no address checked here binds the peer it reaches. Refuse before any lookup or socket; never bypass the
+    # proxy. The condition never names the proxy (its URL can carry user:password).
+    return DownloadError(DownloadErrorCode.PROXY_UNSUPPORTED, "a configured network proxy would carry this media "
+                         "request; proxied source access is refused until the proxy is turned off (#884)",
+                         retryable=False, action="disable_proxy")
 
 
 class _EgressHTTPHandler(HTTPHandler):
@@ -268,10 +270,7 @@ class _EgressHTTPHandler(HTTPHandler):
 
     def http_open(self, request):  # type: ignore[no-untyped-def]
         if _proxied(request):
-            # A user-configured proxy makes the connection; only the target
-            # name can be checked here. The proxy itself is trusted config.
-            self._egress.check_proxied(*_target_host_port(request))
-            return self.do_open(HTTPConnection, request)
+            raise _proxy_refused()
         return self.do_open(lambda *a, **k: _BoundHTTPConnection(*a, egress=self._egress, **k), request)
 
 
@@ -282,8 +281,7 @@ class _EgressHTTPSHandler(HTTPSHandler):
 
     def https_open(self, request):  # type: ignore[no-untyped-def]
         if _proxied(request):
-            self._egress.check_proxied(*_target_host_port(request))
-            return self.do_open(HTTPSConnection, request, context=self._context)
+            raise _proxy_refused()
         return self.do_open(lambda *a, **k: _BoundHTTPSConnection(*a, egress=self._egress, **k), request, context=self._context)
 
 
@@ -560,9 +558,10 @@ class MediaMaterializer:
             except DownloadError as error:
                 mapping = {DownloadErrorCode.AUTH_REQUIRED: SourceErrorCode.AUTH_REQUIRED,
                            DownloadErrorCode.RATE_LIMITED: SourceErrorCode.RATE_LIMITED,
-                           DownloadErrorCode.NETWORK: SourceErrorCode.NETWORK}
+                           DownloadErrorCode.NETWORK: SourceErrorCode.NETWORK,
+                           DownloadErrorCode.PROXY_UNSUPPORTED: SourceErrorCode.PROXY_UNSUPPORTED}
                 raise SourceError(mapping.get(error.code, SourceErrorCode.SOURCE_CHANGED),
-                    "selected recovery stream access failed", retryable=error.retryable) from None
+                    "selected recovery stream access failed", retryable=error.retryable, action=error.action) from None
             except (OSError, HTTPException, TimeoutError):
                 raise SourceError(SourceErrorCode.NETWORK, "selected recovery stream read failed", retryable=True) from None
             finally:

@@ -136,12 +136,19 @@ class AuthenticatedYtDlpTransport:
         )
         if code:
             # 8: the helper's egress guard refused a non-public peer (#884): not retryable, the link itself is refused.
+            # 9: a configured network proxy is in use and the helper refused before any request (#884 interim). The
+            # link is fine, so it gets its own code: the desktop picks its message from the code alone.
             codes = {2: SourceErrorCode.AUTH_REQUIRED, 3: SourceErrorCode.RATE_LIMITED,
                      4: SourceErrorCode.NOT_FOUND, 5: SourceErrorCode.SOURCE_CHANGED, 7: SourceErrorCode.UNSUPPORTED,
-                     8: SourceErrorCode.INVALID_INPUT}
+                     8: SourceErrorCode.INVALID_INPUT, 9: SourceErrorCode.PROXY_UNSUPPORTED}
             error_code = codes.get(code, SourceErrorCode.NETWORK)
-            error = SourceError(error_code, "authenticated provider inspection failed", provider_id=provider_id,
-                retryable=code in {3, 6}, action="authenticate" if code == 2 else "retry_with_changed_conditions" if code in {3, 6} else None)
+            if code == 9:
+                error = SourceError(error_code, "a configured network proxy is in use; DubFlow cannot validate the address "
+                    "the proxy connects to, so proxied source access is refused until the proxy is turned off (#884)",
+                    provider_id=provider_id, retryable=False, action="disable_proxy")
+            else:
+                error = SourceError(error_code, "authenticated provider inspection failed", provider_id=provider_id,
+                    retryable=code in {3, 6}, action="authenticate" if code == 2 else "retry_with_changed_conditions" if code in {3, 6} else None)
             detail = diagnostic_tail(stderr)
             if detail:
                 # Only the worker's local error log (and the user's report) sees this note, never the wire.

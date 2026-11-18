@@ -308,6 +308,8 @@ fn human_error(code: &str, provider: &str) -> String {
         "INVALID_INPUT" => "Link không hợp lệ.".into(),
         "SOURCE_REQUEST_REJECTED" => "Dịch vụ tải không nhận link này. Hãy thử lại.".into(),
         "SOURCE_CHANGED" => "Trang nguồn vừa thay đổi nên chưa tải được. Hãy cập nhật DubFlow lên bản mới nhất rồi thử lại.".into(),
+        // #884 interim: the link is fine; the user's proxy is the cause, so the message says how to turn it off.
+        "PROXY_UNSUPPORTED" => "Máy đang dùng proxy (proxy hệ thống của Windows hoặc biến HTTPS_PROXY). DubFlow chưa kiểm tra được proxy sẽ kết nối tới địa chỉ nào nên tạm thời không tải link qua proxy. Hãy tắt proxy hệ thống (Cài đặt › Mạng & Internet › Proxy, hoặc tắt “System Proxy” trong Clash/v2rayN) rồi thử lại.".into(),
         "SOURCE_WORKER_FAILED" => "Trình tải gặp lỗi bất ngờ. Bấm “Thử lại”; nếu vẫn lỗi, bấm “Gửi báo cáo lỗi” rồi gửi file zip trên Desktop cho nhà phát triển.".into(),
         other => format!("Tải link thất bại ({other})."),
     }
@@ -1209,6 +1211,18 @@ mod tests {
         sources.on_event(&json!({"event":"source_error", "scan_id":"d", "code":"AUTH_REQUIRED"}));
         let status = sources.status("d").unwrap();
         assert_eq!((status.state.as_str(), status.error_code.as_deref()), ("failed", Some("AUTH_REQUIRED")));
+    }
+
+    #[test]
+    fn a_proxy_refusal_keeps_its_code_and_says_to_turn_the_proxy_off() {
+        let sources = Arc::new(Sources::default());
+        queued(&sources, "p", "preparing");
+        sources.on_event(&json!({"event":"source_error", "scan_id":"p", "code":"PROXY_UNSUPPORTED", "retryable":false}));
+        let status = sources.status("p").unwrap();
+        assert_eq!((status.state.as_str(), status.error_code.as_deref()), ("failed", Some("PROXY_UNSUPPORTED")));
+        let message = status.error.unwrap();
+        assert!(message.contains("proxy") && message.contains("tắt proxy hệ thống"), "{message}");
+        assert!(!message.contains("Link không hợp lệ"));
     }
 
     #[test]

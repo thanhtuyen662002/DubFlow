@@ -55,6 +55,7 @@ class AuthenticatedTransportTests(unittest.TestCase):
         for code in range(2, 8):
             cases.append(({"native_exit_code": code}, code))
         cases.append(({"native_exit_code": 99}, 5))
+        cases.append(({"native_exit_code": 9}, 5))  # only the helper's own proxy refusal may exit 9 (#884)
 
         python = Path(sys.executable).resolve()
         with tempfile.TemporaryDirectory(dir=python.parent) as temp:
@@ -135,6 +136,42 @@ class YoutubeDL:
                         self.assertEqual(context.exception.code, codes[code])
                         self.assertEqual(context.exception.retryable, code in {3, 6})
                         self.assertNotIn("synthetic-secret", json.dumps(context.exception.to_dict()))
+
+    def test_actual_isolated_helper_refuses_a_configured_proxy_with_a_typed_error(self):
+        # #884 interim: behind a configured proxy the real helper exits 9 before any request; the parent turns that
+        # into PROXY_UNSUPPORTED (not retryable, action disable_proxy) and the proxy never sees a connection.
+        import socket
+        python = Path(sys.executable).resolve()
+        with tempfile.TemporaryDirectory(dir=python.parent) as temp:
+            helper = Path(temp) / "authenticated_native.py"
+            helper.write_bytes((Path(__file__).resolve().parents[2] / "engine/dubflow/download/authenticated_native.py").read_bytes())
+            archive = Path(temp) / "recorded-sdk.zip"
+            with zipfile.ZipFile(archive, "w") as zipped:
+                zipped.writestr("yt_dlp/__init__.py", "raise SystemExit(42)\n")  # reaching the SDK shows as exit 42
+            root = Path(os.path.commonpath([str(python), str(helper)]))
+            pins = {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in
+                    {"python": python, "helper": helper, "sdk_archive": archive}.items()}
+            transport = AuthenticatedYtDlpTransport(runtime_root=root, python=python, helper=helper, sdk_archive=archive, pins=pins, timeout_s=10)
+            proxy = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.addCleanup(proxy.close)
+            proxy.bind(("127.0.0.2", 0))
+            proxy.listen(8)
+            clean = {key: value for key, value in os.environ.items() if "proxy" not in key.lower()}
+            clean["HTTPS_PROXY"] = f"http://127.0.0.2:{proxy.getsockname()[1]}"
+            with patch.dict(os.environ, clean, clear=True):
+                for provider, url in (("generic", "https://media.example.test/watch"),
+                                      ("bilibili", "https://www.bilibili.com/video/BV1xx411c7mD")):
+                    with self.subTest(provider=provider), self.assertRaises(SourceError) as context:
+                        transport.inspect_url(url, provider_id=provider)
+                    error = context.exception
+                    self.assertIs(error.code, SourceErrorCode.PROXY_UNSUPPORTED)
+                    self.assertIs(error.retryable, False)
+                    self.assertEqual(error.action, "disable_proxy")
+                    self.assertEqual(error.provider_id, provider)
+                    self.assertTrue(any("extractor exit 9" in note for note in getattr(error, "__notes__", ())))
+            proxy.settimeout(0.5)
+            with self.assertRaises(socket.timeout):  # a handshake completes without accept(): none was ever made
+                proxy.accept()[0].close()
 
     def test_actual_isolated_helper_stdin_cookie_and_metadata_boundary(self):
         # CI's Python and default TEMP may be on different Windows drives.

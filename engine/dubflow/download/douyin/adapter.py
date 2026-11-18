@@ -375,6 +375,7 @@ class DouyinSourceAdapter:
                 DownloadErrorCode.SOURCE_CHANGED: SourceErrorCode.SOURCE_CHANGED,
                 DownloadErrorCode.NETWORK: SourceErrorCode.NETWORK,
                 DownloadErrorCode.UNSUPPORTED: SourceErrorCode.UNSUPPORTED,
+                DownloadErrorCode.PROXY_UNSUPPORTED: SourceErrorCode.PROXY_UNSUPPORTED,
             }
             raise SourceError(mapping.get(error.code, SourceErrorCode.SOURCE_CHANGED), "Douyin media download failed", provider_id=self.provider_id, source_id=item.identity.source_id, retryable=error.retryable, action=error.action) from error
 

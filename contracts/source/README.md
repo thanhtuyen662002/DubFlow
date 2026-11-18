@@ -13,7 +13,14 @@ checkpointable cursor so a restart can resume from the last emitted page.
 Required failure classes include `AUTH_REQUIRED`, `RATE_LIMITED`,
 `SOURCE_CHANGED`, `NOT_FOUND`, `PRIVATE`, `NETWORK` and `UNSUPPORTED`. Fixture
 adapters implement the same interface without network access and are the only
-adapters used by required deterministic CI.
+adapters used by required deterministic CI. `PROXY_UNSUPPORTED` (not retryable,
+action `disable_proxy`) means a configured network proxy is in use: until an
+app-owned validating proxy exists, proxied source access is refused before any
+request reaches the proxy, and the proxy is never bypassed (#884). The yt-dlp
+helper refuses every network operation, the app-owned media transport refuses
+every proxied request (including Douyin downloads from fresh page details), and
+generic links are refused on the helper's own proxy test before the target is
+looked up locally. `NO_PROXY` does not lift the refusal.
 
 An enumeration page may also carry per-item `failures`. A poisoned, private or
 deleted item is recorded with its source id and structured code while the

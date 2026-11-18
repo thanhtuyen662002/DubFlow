@@ -8,7 +8,8 @@ import unittest
 from unittest.mock import Mock
 
 from engine.dubflow.download.generic import GenericUrlAdapter, YtDlpTransport
-from engine.dubflow.download.materializer import EgressPolicy
+from engine.dubflow.download.generic.adapter import DirectUrlTransport
+from engine.dubflow.download.materializer import DownloadError, DownloadErrorCode, EgressPolicy
 from engine.dubflow.download.materializer import HttpResponse, MediaMaterializer
 from engine.dubflow.download.source_adapter import SourceError, SourceErrorCode
 
@@ -111,6 +112,24 @@ class GenericAdapterTests(unittest.TestCase):
             adapter.download(adapter.inspect("https://video.example.test/x"), Path("/unused/final.mp4"))
         self.assertEqual(context.exception.code, SourceErrorCode.UNSUPPORTED)
         materializer.download.assert_not_called()
+
+    def test_proxy_refusal_keeps_its_typed_code_for_download_and_direct_links(self) -> None:
+        # #884 interim: a proxied media or direct-link request is refused by the transport; both generic mappings
+        # must keep PROXY_UNSUPPORTED (not SOURCE_CHANGED or NETWORK) and its non-retryable action.
+        refused = DownloadError(DownloadErrorCode.PROXY_UNSUPPORTED, "a configured network proxy is in use", action="disable_proxy")
+        materializer = Mock()
+        materializer.download.side_effect = refused
+        adapter = GenericUrlAdapter(MetadataTransport({"id": "x", "url": "https://cdn.example.test/v.mp4", "vcodec": "h264", "acodec": "aac"}), materializer=materializer)
+        with self.assertRaises(SourceError) as downloaded:
+            adapter.download(adapter.inspect("https://video.example.test/x"), Path("/unused/final.mp4"))
+        transport = Mock()
+        transport.open.side_effect = refused
+        with self.assertRaises(SourceError) as direct:
+            DirectUrlTransport(transport).inspect_url("https://cdn.example.test/v.mp4")
+        for context in (downloaded, direct):
+            self.assertIs(context.exception.code, SourceErrorCode.PROXY_UNSUPPORTED)
+            self.assertFalse(context.exception.retryable)
+            self.assertEqual(context.exception.action, "disable_proxy")
 
 
 if __name__ == "__main__":

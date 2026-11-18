@@ -6,6 +6,7 @@ import json
 from typing import Mapping
 from urllib.parse import parse_qsl, urlsplit
 
+from ..authenticated_native import proxy_configured
 from ..materializer import DownloadError, EgressPolicy, PUBLIC_EGRESS
 from ..source_adapter import SourceError, SourceErrorCode, SourceIdentity, SourceItem, SourcePage, SourcePageFailure, canonicalize_url
 
@@ -56,7 +57,17 @@ def require_public(url: str, egress: EgressPolicy) -> str:
     The SDK/helper makes its own connections, so this is a resolve-time check
     only; the media it returns is fetched through the peer-bound
     ``UrllibHttpTransport``. See #490 for the residual rebinding window.
+
+    Behind a configured proxy the helper refuses every request (exit 9, #884
+    interim), so the link is refused here first with the same typed code, on
+    the helper's own predicate, before any local lookup of the target: a name
+    that does not resolve here must not turn the refusal into a retryable
+    NETWORK error, and the target is not looked up outside the proxy at all.
     """
+    if proxy_configured():
+        raise SourceError(SourceErrorCode.PROXY_UNSUPPORTED, "a configured network proxy is in use; DubFlow cannot "
+                          "validate the address the proxy connects to, so proxied source access is refused until the "
+                          "proxy is turned off (#884)", provider_id="generic", retryable=False, action="disable_proxy")
     try:
         egress.check_url(url)
     except DownloadError as error:
@@ -160,12 +171,18 @@ class GenericSdkTransport:
                 try:
                     entry = self._complete_entry(entry)
                 except SourceError as error:
+                    if error.code is SourceErrorCode.PROXY_UNSUPPORTED:
+                        # The proxy, not this item, is the cause (#884): stop the scan at the last committed page
+                        # instead of failing every remaining item for good.
+                        raise
                     failures.append(SourcePageFailure(fallback, error.code, error.condition, error.retryable))
                     continue
                 identity = sdk_identity(entry)
                 title = _text(entry.get("title", entry.get("id")), maximum=1024)
                 items.append(SourceItem(identity, title))
-            except (SourceError, ValueError, TypeError):
+            except (SourceError, ValueError, TypeError) as error:
+                if isinstance(error, SourceError) and error.code is SourceErrorCode.PROXY_UNSUPPORTED:
+                    raise  # the re-raise above would otherwise become an item SOURCE_CHANGED here
                 failures.append(SourcePageFailure(fallback, SourceErrorCode.SOURCE_CHANGED, "playlist video metadata is invalid"))
         next_offset = offset + len(raw["entries"])
         if raw["has_more"] and next_offset >= MAX_ITEMS:

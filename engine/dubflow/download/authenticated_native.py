@@ -44,14 +44,20 @@ def scoped_cookies(provider, headers):
 # - libcurl: ``CURLOPT_OPENSOCKETFUNCTION`` sees the address of every connection (redirects included) before the
 #   socket exists, and refuses a non-public one: no SYN is sent. If that hook cannot be installed, every curl request
 #   fails closed.
-# The only non-public peers allowed are the exact (address, port) endpoints of the proxies the SDK will use (the
-# user's own configuration). Behind such a proxy the proxy reaches the target, so the peer check cannot see it:
+# Behind a user-configured proxy the proxy, not this process, resolves and connects to the target, so no address
+# checked here binds the peer it reaches (a public proxy passes the peer check and can still reach a private target).
+# Until an app-owned validating proxy exists, every operation that would use the network is refused before the SDK
+# is imported (exit 9): no request, lookup or socket. The proxy is never bypassed (no proxy="" and no direct retry).
+# The parent uses the same proxy_configured() test to refuse generic links before any local lookup, and its media
+# transport refuses every proxied request (materializer.py), so no source path reaches a configured proxy.
+# Only health_check, which makes no request, still runs behind a proxy, and the older layers stay as a second line:
+# - the only non-public peers allowed are the exact (address, port) endpoints of the configured proxies;
 # - every request URL and every redirect target of the SDK's urllib handler is checked by name (it must resolve here,
 #   to public addresses only; a name that does not resolve fails closed), which also stops a direct or no_proxy
 #   request to the proxy's own private endpoint;
 # - libcurl follows redirects inside C, out of reach of that check, so impersonated requests fail closed behind a
 #   proxy.
-EGRESS_REFUSED = []  # set when the guard refused a connection: the process then exits with code 8
+EGRESS_REFUSED = []  # set when the guard refused a connection: the process then exits with code 8 ("proxied": 9)
 
 
 def _embedded_ipv4(address):
@@ -84,12 +90,28 @@ def _normal(value):
         return None
 
 
+PROXY_KEYS = ("http", "https", "all", "ftp")
+
+
+def proxy_configured(proxies=None):
+    """#884 interim: the one test for "a user-configured proxy would carry source traffic".
+
+    The helper exits 9 on it, and the parent refuses generic links on it before any local lookup, so both sides
+    refuse the same configurations. The proxies are read where the SDK reads them (environment, then the Windows
+    registry or macOS settings). NO_PROXY never clears it: a bypass list does not make the proxy's peer checkable.
+    """
+    if proxies is None:
+        import urllib.request
+        proxies = urllib.request.getproxies()
+    return any(proxies.get(key) for key in PROXY_KEYS)
+
+
 def proxy_endpoints(proxies):
     """{(address, port)} of the configured proxies, the only non-public peers this process may reach."""
     import socket
     allowed = set()
     for key, value in (proxies or {}).items():
-        if key not in {"http", "https", "all", "ftp"} or not isinstance(value, str) or not value:
+        if key not in PROXY_KEYS or not isinstance(value, str) or not value:
             continue  # "no" and stray *_proxy variables are not proxies
         try:
             parts = urlsplit(value if "://" in value else "http://" + value)
@@ -114,6 +136,17 @@ class EgressRefused(PermissionError):
 def _refuse(where):
     EGRESS_REFUSED.append(where)
     return EgressRefused(13, "connection to a non-public network address refused")
+
+
+class ProxiedEgressRefused(EgressRefused):
+    """#884 interim: a user-configured proxy would resolve and reach the target itself; its peer cannot be bound."""
+    native_exit_code = 9
+
+
+def _refuse_proxied():
+    # The message never names the proxy: its URL can carry user:password.
+    EGRESS_REFUSED.append("proxied")
+    return ProxiedEgressRefused(13, "a configured proxy would reach the target itself; its peer cannot be validated")
 
 
 _TARGET_CHECK = []  # behind a proxy: the check every SDK request URL and redirect target must pass
@@ -607,7 +640,8 @@ def public_metadata(raw, *, generic=False):
 
 def failure_exit_code(error):
     if EGRESS_REFUSED:
-        return 8
+        return 9 if EGRESS_REFUSED[0] == "proxied" else 8
+    # 9 is left out on purpose: only the proxy refusal above may produce it, never an SDK error that carries it.
     native_code = getattr(error, "native_exit_code", None)
     if type(native_code) is int and native_code in {2, 3, 4, 5, 6, 7, 8}:
         return native_code
@@ -685,8 +719,13 @@ def main():
         # takes its proxies from the same place (no "proxy" option is ever passed).
         import urllib.request
         proxies = urllib.request.getproxies()
-        install_egress_guard(proxy_endpoints(proxies),
-                             proxied=any(proxies.get(key) for key in ("http", "https", "all", "ftp")))
+        proxied = proxy_configured(proxies)
+        if proxied and operation != "health_check":
+            # The proxy, not this process, resolves and connects to the target, so no answer checked here binds the
+            # peer it reaches. Refuse before the SDK is imported: no request, lookup or socket. Never bypass the proxy.
+            # health_check is the only exception because it makes no request; a new operation is refused by default.
+            raise _refuse_proxied()
+        install_egress_guard(proxy_endpoints(proxies), proxied=proxied)
         import yt_dlp
         guard_sdk_targets()
         from yt_dlp.globals import plugin_dirs
