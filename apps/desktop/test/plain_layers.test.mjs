@@ -3,7 +3,7 @@ import {
   activeTrack, addExtracted, addTrack, burnRequests, MAX_TRACKS, plainLayers, removeTrack, serializeLayers, serializePlain, srtLines,
 } from "../src/features/edit/plain_subs.ts";
 import { DEFAULT_STYLE } from "../src/features/edit/subtitles.ts";
-import { createEdit, split } from "../src/features/edit/model.ts";
+import { createEdit, remapCues, setLook, split } from "../src/features/edit/model.ts";
 
 // The whole 10 s video: burned lines keep their times.
 const whole = createEdit(10, { path: "D:\\v\\a.mp4", width: 1280, height: 720 });
@@ -79,5 +79,9 @@ assert.deepEqual(burnRequests(two, whole), {});
   const early = split(whole, 0.5);
   const none = { ...early, segments: [early.segments[0]] };  // the first 0.5 s: no line at all, nothing burned
   assert.deepEqual(burnRequests(layered, none), {});
+  // a reversed video: the burn shows the lines as the preview does (backwards in time), the .srt has none
+  const reversed = setLook(whole, whole.segments[0].id, { reverse: true });
+  assert.deepEqual(burnRequests(layered, reversed).burn.lines.map((line) => [line.start_ms, line.end_ms, line.text]), [[6000, 7000, "谢谢"], [8000, 9000, "大家好"]]);
+  assert.deepEqual(remapCues(activeTrack(layered).lines, reversed), []);
 }
 console.log("plain_layers ok");

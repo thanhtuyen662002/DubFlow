@@ -1,8 +1,8 @@
 DUBFLOW_PR_V1
 Issue: #930
 Lease-Owner: Claude/issue-930-burn-after-cut
-Lease-Heartbeat: 2026-11-17T20:13:20Z
-Tested-Base-SHA: 0d18f38c94adb75c8204da978a4e081f204bc653
+Lease-Heartbeat: 2026-11-18T03:19:41Z
+Tested-Base-SHA: 6077eb40419c19daf45a62cb87b2aad5f7e9dd0e
 Conflict-Domains: desktop-edit-export,desktop-edit-subtitles
 Expected-Paths:
 - .claims/issue-930-burn-after-cut.md

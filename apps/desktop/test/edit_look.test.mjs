@@ -81,7 +81,7 @@ assert.equal(remapCues([{ start_ms: 29000, end_ms: 31000, text: "x" }], frozen).
 // main-video parts), for every kind of edit.
 {
   const { cueAt } = await import("../src/features/edit/subtitles.ts");
-  const { setTransition, outputDuration: length, MAIN, insertMedia } = await import("../src/features/edit/model.ts");
+  const { setTransition, outputDuration: length, MAIN, insertAt } = await import("../src/features/edit/model.ts");
   const video = createEdit(64, { path: "D:\\a.mp4", width: 1280, height: 720 });
   const three = split(split(video, 16), 32);
   const lines = [{ start_ms: 5000, end_ms: 7000, text: "SUB A" }, { start_ms: 15000, end_ms: 18000, text: "CROSS" },
@@ -100,13 +100,12 @@ assert.equal(remapCues([{ start_ms: 29000, end_ms: 31000, text: "x" }], frozen).
     deleted: { ...three, segments: [three.segments[0], three.segments[2]] },
     looks: setLook(setLook(three, p1, { zoom: 1.08, tilt: 1.5 }), p3, { flipH: true, rotate: 90 }),
   };
-  if (typeof insertMedia === "function") {
-    try {
-      edits.inserted = insertMedia(three, 16, { id: "m2", path: "D:\\b.mp4", duration: 5, width: 1280, height: 720, kind: "video" });
-    } catch {
-      // the insert helper's shape differs: the other edits cover the timeline rules
-    }
-  }
+  // a 10 s clip of another video at 16 s: its source times overlap the lines, which must not show on it
+  edits.inserted = insertAt(three, 16, { path: "D:\\b.mp4", title: "b", duration: 10, width: 1280, height: 720, fps: 30, hasAudio: true, kind: "video" });
+  assert.equal(edits.inserted.segments.length, 4);
+  // a line split 0.05 s before its end, the rest played at a quarter speed: the preview shows it 0.2 s longer
+  const short = split(video, 6.95);
+  edits["short piece"] = setSpeed(short, short.segments[1].id, 0.25);
   for (const [name, edit] of Object.entries(edits)) {
     const burned = remapCues(lines, edit, { shown: true });
     const sorted = [...lines].sort((a, b) => a.start_ms - b.start_ms);
@@ -120,8 +119,8 @@ assert.equal(remapCues([{ start_ms: 29000, end_ms: 31000, text: "x" }], frozen).
         first ??= { t: t.toFixed(3), want, got };
       }
     }
-    // pieces under MIN_CUE_PIECE are left out on purpose; nothing else may differ
-    assert.ok(bad <= 10, `${name}: ${bad} instants differ from the preview, first ${JSON.stringify(first)}`);
+    // only millisecond rounding at a line's ends may differ
+    assert.ok(bad <= 2, `${name}: ${bad} instants differ from the preview, first ${JSON.stringify(first)}`);
     for (let i = 1; i < burned.length; i += 1) assert.ok(burned[i].start_ms >= burned[i - 1].end_ms, `${name}: never two lines at once`);
   }
 }

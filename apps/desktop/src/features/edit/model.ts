@@ -1644,8 +1644,8 @@ export function remapCues(cues: readonly Cue[], edit: Edit, options: { shown?: b
     for (const { cue, source } of reverse ? [...ordered].reverse() : ordered) {
       const cueStart = cue.start_ms / 1000, cueEnd = cue.end_ms / 1000;
       const from = Math.max(cueStart, segment.start), to = Math.min(cueEnd, segment.end);
-      const kept = to - from;
-      if (kept <= 0 || (kept < MIN_CUE_PIECE && kept < cueEnd - cueStart - 1e-6)) continue;
+      // every piece the preview shows, however short (MIN_CUE_PIECE only tidies the .srt)
+      if (to - from <= 0) continue;
       const [a, b] = reverse ? [segment.end - to, segment.end - from] : [from - segment.start, to - segment.start];
       show(starts[index] + a / segment.speed, starts[index] + b / segment.speed, cue, source);
     }
