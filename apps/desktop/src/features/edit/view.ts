@@ -69,6 +69,8 @@ export type LibraryJob = { id: string; title: string; outputPath: string; kind: 
  * a compilation (Issue #426), a documentary or any video file (Issue #497).
  */
 /** The editor does not open while a system close could lose a change without asking (Issue #929). */
+/** Every part of the page the editor's controls are in: inert while the editor is held (test/edit_autosave checks). */
+export const HELD_PARTS = ["#queue-content", "#export-dialog", "#snap-dialog", "#tl-menu", "#ratio-pop", "#tl-transition"];
 const UNGUARDED = "Không mở được chế độ chỉnh sửa: DubFlow chưa bảo vệ được việc đóng cửa sổ, nên đóng lúc này có thể mất thay đổi chưa lưu. Hãy khởi động lại DubFlow.";
 
 /** A change a reload could not save, carried for its video's reopened editor (Issue #929). */
@@ -3718,9 +3720,13 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   /** Hold the open editor, or let it go (Editor.hold). */
   function hold(on: boolean): void {
     holding = on && session !== null;
-    // the editor's own dialogs too (Phiên bản và mẫu, Xuất video): they sit outside the editor's screen
-    for (const part of [screen, dialog, $("#snap-dialog")]) part.inert = holding;
-    if (holding) closePopover();
+    // the editor's own dialogs, menu and popovers too (Phiên bản và mẫu, Xuất video, the segment menu, Tỉ lệ khung
+    // hình, the transition popover): they sit outside the editor's screen
+    for (const part of HELD_PARTS) $(part).inert = holding;
+    if (!holding) return;
+    closePopover();
+    closeMenu();
+    canvasView.close();
   }
 
   /**

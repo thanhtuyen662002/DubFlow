@@ -1716,6 +1716,64 @@ for (const action of ["close", "exit"]) {
     await settle();
     assert.equal(tauri.state.closed, 1, "Vẫn đóng closes it");
   }
+  // Lead 4608548990: the editor is held at once, also while its close still writes the draft and asks, not only once
+  // the user stayed; a listener put back meanwhile lets it go, and a second system close while the editor's question
+  // is still open reaches the guard, which does not stack a second question: the window stays
+  {
+    const tauri = fakeTauri();
+    let listenFails = false, closeFails = true, pending = false, asked = 0, questionOpen = false, editorAnswer;
+    const inner = closeRequests("main", tauri.bridge, memoryStore());
+    const { timers, advance, nextDue } = clock();
+    const editor = { open: true, holds: [], told: [], closes: 0 };
+    const place = { open: () => questionOpen, focusStay: () => {} };
+    const held = editorGuard({
+      open: () => editor.open,
+      // the editor's own close: its draft write fails within CLOSE_WAIT_MS, then it asks
+      close: async () => {
+        editor.closes += 1;
+        await new Promise((resolve) => timers.set(resolve, CLOSE_WAIT_MS));
+        questionOpen = true;
+        const stay = await new Promise((resolve) => { editorAnswer = resolve; });
+        questionOpen = false;
+        return !stay;
+      },
+      hold: (on) => { editor.holds.push(on); },
+      tell: (message) => { editor.told.push(message); },
+    });
+    const wiring = wireWindowClose({ close: async () => { if (closeFails) throw new Error("close refused"); return tauri.close(); },
+      onCloseRequested: (handler) => (listenFails ? Promise.reject(new Error("ipc")) : inner(handler)) }, fakeButton(),
+    closeGuard({ flush: async () => !pending, ask: () => askAlone(async () => { asked += 1; return asked === 1; }, place), timers, waitMs: 0 }),
+    { timers, ...held });
+    assert.equal(await wiring.ready(), true);
+    pending = true;
+    listenFails = true;
+    void tauri.close();  // Alt+F4, "Vẫn đóng": the listener goes, window.close() fails, none can be put back
+    await settle();
+    assert.equal(editor.closes, 1, "the editor's close is writing its draft");
+    assert.deepEqual(editor.holds, [true], "held before its close answers");
+    assert.deepEqual(editor.told, [EDITOR_HELD]);
+    await advance(CLOSE_WAIT_MS);  // its write did not make it: it asks (the retries meanwhile failed too)
+    await settle();
+    assert.equal(questionOpen, true);
+    assert.deepEqual(editor.holds, [true], "still held while it asks");
+    listenFails = false;
+    await advance(nextDue() - timers.now());  // the next retry puts a listener back, the question still open
+    await settle();
+    assert.deepEqual(closeListeners(tauri), [1]);
+    assert.deepEqual(editor.holds, [true, false], "let go: every close reaches the guard again");
+    closeFails = false;
+    void tauri.close();  // a second Alt+F4 while the editor's question is open
+    await settle();
+    assert.equal(asked, 1, "no second question on top of the open one");
+    assert.equal(tauri.state.closed, 0, "the window stays");
+    editorAnswer(true);  // Ở lại
+    await settle();
+    assert.deepEqual(editor.holds, [true, false], "not held again: a listener is in place");
+    void tauri.close();  // Alt+F4 again: asked, and this time the answer is Ở lại
+    await settle();
+    assert.equal(asked, 2);
+    assert.equal(tauri.state.closed, 0);
+  }
   // round 10: a retry that puts a listener back with a leftover one it cannot remove (not ready, but every close reaches
   // the guard) while the editor's close is still asking: the user stays, and the editor is not held (nothing else
   // would let it go: no retry follows a listener in place)
@@ -1738,15 +1796,17 @@ for (const action of ["close", "exit"]) {
     void tauri.close();  // Alt+F4: 0 goes, window.close() fails, none can be put back: the editor's close asks
     await settle();
     assert.equal(typeof answer, "function", "the editor's close is asking");
+    assert.deepEqual(editor.holds, [true], "held while it asks");
     listenFails = false;
     await advance(RETRY_FIRST_MS);  // 2 is put in place, 1 stays: not ready
     await settle();
     assert.deepEqual(closeListeners(tauri), [1, 2]);
     assert.equal(wiring.now(), false);
+    assert.deepEqual(editor.holds, [true, false], "let go: every close reaches the guard");
     answer(false);  // Ở lại
     await settle();
-    assert.deepEqual(editor.holds, [], "not held: every close reaches the guard");
-    assert.deepEqual(editor.told, []);
+    assert.deepEqual(editor.holds, [true, false], "and not held again");
+    assert.deepEqual(editor.told, [EDITOR_HELD, ""]);
     assert.equal(nextDue(), Infinity, "no retry: the next close removes the leftover first");
     failing.clear();
     closeFails = false;
@@ -1795,12 +1855,13 @@ for (const action of ["close", "exit"]) {
     };
     const leftCase = await run({ left: true });
     assert.equal(leftCase.editor.closes, 1, "one close at a time");
-    assert.deepEqual(leftCase.editor.holds, []);
-    assert.deepEqual(leftCase.editor.told, [EDITOR_LEFT]);
+    assert.deepEqual(leftCase.editor.holds, [true, false], "held from the start, let go when it left");
+    assert.deepEqual(leftCase.editor.told, [EDITOR_HELD, EDITOR_LEFT]);
     leftCase.held.guarded();
-    assert.deepEqual(leftCase.editor.holds, [], "nothing to let go");
+    assert.deepEqual(leftCase.editor.holds, [true, false], "nothing more to let go");
     const backCase = await run({ back: true });
-    assert.deepEqual(backCase.editor.holds, [], "the guard came back while asking: not held");
+    assert.deepEqual(backCase.editor.holds, [true, false], "the guard came back while asking: let go, not held again");
+    assert.deepEqual(backCase.editor.told, [EDITOR_HELD, ""]);
     const throwsCase = await run({ throws: true });
     assert.deepEqual(throwsCase.editor.holds, [true]);
     assert.deepEqual(throwsCase.editor.told, [EDITOR_HELD]);
@@ -1822,8 +1883,8 @@ for (const action of ["close", "exit"]) {
       open = false;
       release();
       await settle();
-      assert.deepEqual(editor.holds, []);
-      assert.deepEqual(editor.told, []);
+      assert.deepEqual(editor.holds, [true, false]);
+      assert.deepEqual(editor.told, [EDITOR_HELD]);
     }
     // each time the guard goes, the editor open then is closed (the one before left, and one was opened since)
     {
@@ -1836,7 +1897,7 @@ for (const action of ["close", "exit"]) {
       held.unguarded();
       await settle();
       assert.equal(closes, 2);
-      assert.deepEqual(editor.told, [EDITOR_LEFT, EDITOR_LEFT]);
+      assert.deepEqual(editor.told, [EDITOR_HELD, EDITOR_LEFT, EDITOR_HELD, EDITOR_LEFT]);
     }
   }
   // a re-arm after a failed close that finds a leftover it cannot remove: a listener is in place (every close reaches
@@ -2045,7 +2106,31 @@ for (const action of ["close", "exit"]) {
   assert.match(main, /const closable = \{ close: \(\) => appWindow\.close\(\), onCloseRequested: closeRequests\(appWindow\.label, events, storageIds\(\(\) => window\.sessionStorage\)\) \};\s*const held = editorGuard\(\{ open: \(\) => editor\.target !== null \|\| editor\.reopening, close: \(\) => editor\.close\(false\),\s*hold: \(on\) => editor\.hold\(on\), tell: showError \}\);\s*const wiring = wireWindowClose\(closable, \$\("#window-close"\), mayClose, \{ timers: windowTimers, \.\.\.held \}\);\s*windowCloseReady = \(\) => wiring\.ready\(\);\s*windowCloseNow = \(\) => wiring\.now\(\);/,
     "the editor asks whether the guard is ready now, each time it opens (and again once the video loaded); a guard that could not be put back closes or holds the open editor and is tried again");
   // a held editor takes no input: no key, no drop; a closed one is let go
-  assert.match(view, /function hold\(on: boolean\): void \{\s*holding = on && session !== null;\s*for \(const part of \[screen, dialog, \$\("#snap-dialog"\)\]\) part\.inert = holding;\s*if \(holding\) closePopover\(\);\s*\}/);
+  assert.match(view, /function hold\(on: boolean\): void \{\s*holding = on && session !== null;\s*for \(const part of HELD_PARTS\) \$\(part\)\.inert = holding;\s*if \(!holding\) return;\s*closePopover\(\);\s*closeMenu\(\);\s*canvasView\.close\(\);\s*\}/);
+  // every element the editor's views use sits inside a part the hold makes inert (Lead 4608548990, review round 11)
+  {
+    const html = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/<!--[\s\S]*?-->/g, "");
+    const parents = new Map();
+    const open = [];
+    const empty = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
+    for (const [, close, name, attrs] of html.slice(html.indexOf("<body")).matchAll(/<(\/?)([a-zA-Z][a-zA-Z0-9-]*)([^>]*)>/g)) {
+      const tag = name.toLowerCase();
+      if (close) { while (open.length && open.pop().tag !== tag); continue; }
+      const id = /\sid="([^"]+)"/.exec(attrs)?.[1];
+      if (id) parents.set(id, [...open.map((element) => element.id), id]);
+      if (!empty.has(tag) && !attrs.trim().endsWith("/")) open.push({ tag, id });
+    }
+    const { readdirSync } = await import("node:fs");
+    const held = JSON.parse(/export const HELD_PARTS = (\[[^\]]*\]);/.exec(view)[1]).map((part) => part.slice(1));
+    assert.ok(held.includes("queue-content"));
+    const used = new Set();
+    for (const file of readdirSync(new URL("../src/features/edit/", import.meta.url))) {
+      for (const [, id] of readFileSync(new URL(`../src/features/edit/${file}`, import.meta.url), "utf8").matchAll(/\$(?:<[^>]*>)?\("#([\w-]+)"\)/g)) used.add(id);
+    }
+    assert.ok(used.size > 300, `the editor's elements found: ${used.size}`);
+    const outside = [...used].filter((id) => !parents.get(id)?.some((part) => held.includes(part)));
+    assert.deepEqual(outside, [], "every editor element is held with the editor");
+  }
   assert.match(view, /const dialog = \$\("#export-dialog"\);/);
   assert.match(view, /document\.addEventListener\("keydown", \(event\) => \{\s*if \(!session \|\| holding \|\| screen\.hidden/);
   assert.match(view, /drop: \(paths, point\) => \{ if \(!holding\) void dropFiles\(paths, point\); \},\s*hold,/);

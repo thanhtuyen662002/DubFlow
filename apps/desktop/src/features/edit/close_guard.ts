@@ -387,19 +387,17 @@ export type HeldEditor = {
 };
 
 /**
- * What the open editor does when the window close is not guarded any more (Issue #929, Lead 4607806191 and
- * 4608236916): a system close would close the window at once, and nothing in the page can hold it. The editor closes
- * as the user would. When the user stays instead (its change could not be saved), it is held: it takes no input, so
- * no change is added that the system close could lose, while its pending change is retried; it is let go once a
- * listener is in place again (`guarded`). The × button still asks.
+ * What the open editor does when the window close is not guarded any more (Issue #929, Lead 4607806191, 4608236916
+ * and 4608548990): a system close would close the window at once, and nothing in the page can hold it. The editor is
+ * held at once (it takes no input; the question is outside it and stays usable), so no change is added that a system
+ * close could lose, also while its close writes the draft and asks. Then it closes as the user would. When it stays
+ * (its change could not be saved), it stays held while its pending change is retried, until a listener is in place
+ * again (`guarded`, which lets it go also while the close is still under way). The × button still asks.
  */
 export function editorGuard(editor: HeldEditor): Required<Pick<WireOptions, "unguarded" | "guarded">> {
   let holding = false;
   let closing = false;
-  /** No listener is in place since the last `unguarded` (a `guarded` since, even with a leftover listener: one is). */
-  let lost = false;
   const letGo = (): void => {
-    lost = false;
     if (!holding) return;
     holding = false;
     editor.hold(false);
@@ -407,19 +405,19 @@ export function editorGuard(editor: HeldEditor): Required<Pick<WireOptions, "ung
   };
   return {
     unguarded: () => {
-      lost = true;
       if (closing || !editor.open()) return;
       closing = true;
-      const stayed = (): void => {
-        if (!lost || !editor.open()) return;
-        holding = true;
-        editor.hold(true);
-        editor.tell(EDITOR_HELD);
-      };
-      void editor.close().then((left) => {
+      holding = true;
+      editor.hold(true);
+      editor.tell(EDITOR_HELD);
+      const settled = (left: boolean): void => {
+        // stayed with no listener back: still held; left, or gone some other way: nothing to hold
+        if (!left && editor.open()) return;
+        holding = false;
+        editor.hold(false);
         if (left) editor.tell(EDITOR_LEFT);
-        else stayed();
-      }, stayed).finally(() => { closing = false; });
+      };
+      void editor.close().then(settled, () => settled(false)).finally(() => { closing = false; });
     },
     guarded: letGo,
   };
@@ -427,8 +425,8 @@ export function editorGuard(editor: HeldEditor): Required<Pick<WireOptions, "ung
 
 /** The open editor closed because the window close is not guarded. */
 export const EDITOR_LEFT = "DubFlow không còn chặn được việc đóng cửa sổ bằng Alt+F4 nên đã thoát chế độ chỉnh sửa. Nếu Chỉnh sửa không mở lại được, hãy khởi động lại DubFlow.";
-/** The open editor is held because the window close is not guarded and its change is not saved. */
-export const EDITOR_HELD = "DubFlow không còn chặn được việc đóng cửa sổ bằng Alt+F4 và chưa lưu được thay đổi, nên tạm khoá Chỉnh sửa trong lúc tự thử lại. Muốn đóng, hãy bấm nút × để được hỏi trước khi mất thay đổi.";
+/** The open editor is held because the window close is not guarded. */
+export const EDITOR_HELD = "DubFlow không còn chặn được việc đóng cửa sổ bằng Alt+F4, nên tạm khoá Chỉnh sửa cho tới khi chặn lại được; thay đổi chưa lưu vẫn được tự lưu lại. Muốn đóng, hãy bấm nút × để được hỏi trước khi mất thay đổi.";
 
 /** Where a question shows: whether one is open now, and the "stay" button of the newest one. */
 export type QuestionPlace = { open(): boolean; focusStay(): void };
