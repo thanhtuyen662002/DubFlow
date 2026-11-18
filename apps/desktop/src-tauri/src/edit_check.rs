@@ -38,6 +38,10 @@ const MIN_FROZEN: f64 = 2.0;
 const PEAK: &str = "loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json";
 /// The filters run on a 320-pixel copy (like the documentary shot detector): every frame is still decoded.
 const SMALL: &str = "scale=320:-2";
+/// A part whose picture covers less than this share of the finished frame is measured on its middle box (#949).
+const BOXED_AREA: f64 = 0.9;
+/// At most this many boxed stretches go into the check's filter graph; with more, the whole frame is measured.
+const MAX_BOXED_SPANS: usize = 64;
 const CHECKS_DIR: &str = "checks";
 const LOG_LIMIT: u64 = 4 * 1024 * 1024;
 const CHECK_LIMIT: u64 = 64 * 1024;
@@ -83,11 +87,27 @@ pub(super) struct Plan {
     intended_holds: Vec<(f64, f64)>,
     /// The burned Phụ đề to measure; None when nothing is burned.
     subtitles: Option<SubtitleFrame>,
+    /// Parts whose picture fills only the middle of the frame, measured there for Hình đen and Hình đứng (#949).
+    #[serde(default)]
+    boxed: Option<Boxed>,
     /// The published file's identity (`Stamp`), taken by `run_export` at publication, before the export is listed or
     /// marked COMPLETED: a file changed or replaced at the same name before or during the check is not judged
     /// against this export's plan (recheck 8, Lead review).
     #[serde(default)]
     stamp: Option<Stamp>,
+}
+
+/// Parts whose picture fills only the middle of the finished frame (#949): a turned part, a picture of another shape
+/// than the frame, a Khung hình with bars. Their bars never change and hide how much the picture moves, so a quiet
+/// picture read as frozen: Hình đen and Hình đứng look at the middle box every such picture covers instead.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(super) struct Boxed {
+    /// Output-time spans, sorted and merged.
+    spans: Vec<(f64, f64)>,
+    /// The middle box's width and height, as fractions of the finished frame.
+    size: (f64, f64),
+    /// The finished frame (`Framing::out`), for the size of the copy the filters measure.
+    frame: (u32, u32),
 }
 
 /// A file's size, modified time (ns) and identity on its disk: the volume serial and file index on Windows, the
@@ -131,6 +151,17 @@ impl Plan {
         if let Some(frame) = self.subtitles.as_mut().filter(|_| turned) {
             frame.unmeasurable = Some(TURNED.into());
         }
+        if turned {
+            // The frame FFmpeg turns is not the export frame the parts were fitted to: no box is known.
+            self.boxed = None;
+        }
+        self
+    }
+
+    /// The parts that fill only the middle of the frame, from each media's picture size (`pictures[i]`: None when
+    /// unknown, e.g. a phone video turned when played) (#949).
+    pub(super) fn with_pictures(mut self, edit: &Edit, pictures: &[Option<(u32, u32)>], framing: &Framing) -> Self {
+        self.boxed = boxed_parts(edit, pictures, framing);
         self
     }
 
@@ -264,6 +295,7 @@ pub(super) fn plan(edit: &Edit, stills: &[bool], expected_seconds: f64, has_audi
         srt_end_ms: cues.iter().map(|cue| cue.end_ms).max(),
         intended_holds: intended_holds(edit, stills),
         subtitles: subtitle_frame(burns, framing).map(|frame| SubtitleFrame { rate: rate_of(fps), ..frame }),
+        boxed: None,
         stamp: None,
     }
 }
@@ -275,6 +307,54 @@ fn intended_holds(edit: &Edit, stills: &[bool]) -> Vec<(f64, f64)> {
         .filter(|(_, segment)| segment.freeze.is_some() || stills.get(segment.media).copied().unwrap_or(false))
         .map(|(index, segment)| (at[index], at[index] + segment_length(segment)))
         .collect()
+}
+
+/// The share of the finished frame (width, height) a part's picture covers: the source picture, cropped, turned a
+/// quarter, fitted into the export frame (scaled to fit, black bars: `video_graph`'s fit), zoomed (the slow zoom
+/// enlarges the fitted frame, bars and all), then Khung hình ("fill" crops the export frame to the finished one, the
+/// others fit it with bars or a blurred copy). None when the picture's size is unknown.
+fn covered(segment: &Segment, pictures: &[Option<(u32, u32)>], framing: &Framing) -> Option<(f64, f64)> {
+    let (width, height) = pictures.get(segment.media).copied().flatten()?;
+    let (keep_w, keep_h) = segment.crop.map_or((1.0, 1.0), |crop| (crop.w, crop.h));
+    let (mut w, mut h) = (f64::from(width.max(1)) * keep_w, f64::from(height.max(1)) * keep_h);
+    if segment.rotate % 180 == 90 {
+        std::mem::swap(&mut w, &mut h);
+    }
+    let (ew, eh) = (f64::from(framing.export.0.max(1)), f64::from(framing.export.1.max(1)));
+    let fit = (ew / w).min(eh / h);
+    let zoom = segment.zoom.map_or(1.0, |zoom| zoom.from.min(zoom.to).max(1.0));
+    let (mut cw, mut ch) = ((w * fit / ew * zoom).min(1.0), (h * fit / eh * zoom).min(1.0));
+    if framing.out != framing.export {
+        let (ow, oh) = (f64::from(framing.out.0.max(1)), f64::from(framing.out.1.max(1)));
+        let scale = if framing.fill == "fill" { (ow / ew).max(oh / eh) } else { (ow / ew).min(oh / eh) };
+        (cw, ch) = ((cw * ew * scale / ow).min(1.0), (ch * eh * scale / oh).min(1.0));
+    }
+    Some((cw, ch))
+}
+
+/// The parts that cover less than `BOXED_AREA` of the finished frame, and the middle box all of them cover: every
+/// picture is centred (the fit pads both sides alike, Khung hình centres too), so the smallest width and height
+/// make a box inside each one.
+fn boxed_parts(edit: &Edit, pictures: &[Option<(u32, u32)>], framing: &Framing) -> Option<Boxed> {
+    let at = parts::positions(edit);
+    let mut spans: Vec<(f64, f64)> = Vec::new();
+    let mut size = (1.0_f64, 1.0_f64);
+    for (index, segment) in edit.segments.iter().enumerate() {
+        let Some((w, h)) = covered(segment, pictures, framing) else { continue };
+        if w * h < BOXED_AREA {
+            spans.push((at[index], at[index] + segment_length(segment)));
+            size = (size.0.min(w), size.1.min(h));
+        }
+    }
+    spans.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut merged: Vec<(f64, f64)> = Vec::new();
+    for (start, end) in spans {
+        match merged.last_mut() {
+            Some(last) if start <= last.1 + 1e-3 => last.1 = last.1.max(end),
+            _ => merged.push((start, end)),
+        }
+    }
+    (!merged.is_empty() && merged.len() <= MAX_BOXED_SPANS).then(|| Boxed { spans: merged, size, frame: framing.out })
 }
 
 /// What to measure: the layers that burn lines, and the window "fill" keeps. Phụ đề is drawn on the export frame
@@ -674,13 +754,23 @@ fn probe_tracked(ffprobe: &Path, video: &Path, running: &Running) -> Option<Prob
 
 /// One decode of the whole file: black and frozen stretches on a small copy, and
 /// the true peak when there is sound. `threads` is `gpu::thread_args(true)`.
-fn check_args(video: &Path, has_audio: bool, threads: Vec<OsString>) -> Vec<OsString> {
+fn check_args(video: &Path, has_audio: bool, threads: Vec<OsString>, boxed: Option<&Boxed>) -> Vec<OsString> {
     let mut args: Vec<OsString> = ["-nostdin", "-hide_banner", "-loglevel", "level+info", "-nostats", "-progress", "pipe:1"]
         .into_iter().map(OsString::from).collect();
     args.extend(threads);
     args.push("-i".into());
     args.push(video.into());
-    let mut graph = format!("[0:v:0]{SMALL},{BLACK},{FREEZE}[v]");
+    let mut graph = match boxed {
+        None => format!("[0:v:0]{SMALL},{BLACK},{FREEZE}[v]"),
+        // While a boxed part plays, its middle box is laid over the whole small copy: the filters see only picture.
+        Some(boxed) => {
+            let (width, height) = (320, even(320.0 * f64::from(boxed.frame.1.max(1)) / f64::from(boxed.frame.0.max(1))));
+            let when = boxed.spans.iter().map(|(start, end)| format!("between(t,{},{})", num(*start), num(*end))).collect::<Vec<_>>().join("+");
+            format!("[0:v:0]split=2[vw][vm];[vw]scale={width}:{height},setsar=1[vws];\
+                     [vm]crop=w='trunc(iw*{}/2)*2':h='trunc(ih*{}/2)*2',scale={width}:{height},setsar=1[vms];\
+                     [vws][vms]overlay=enable='{when}',{BLACK},{FREEZE}[v]", num6(boxed.size.0), num6(boxed.size.1))
+        }
+    };
     if has_audio {
         graph.push_str(&format!(";[0:a:0]{PEAK}[a]"));
     }
@@ -1266,7 +1356,7 @@ fn check_once(work: &Path, ffmpeg: &Path, plan: &Plan, dir: &Path, running: &Run
     let has_audio = probe.as_ref().is_some_and(|probe| probe.has_audio);
     let mut last_us: Option<i64> = None;
     let mut written = Instant::now();
-    let args = check_args(&plan.video, has_audio, crate::gpu::thread_args(true));
+    let args = check_args(&plan.video, has_audio, crate::gpu::thread_args(true), plan.boxed.as_ref());
     let mut reader = LogReader::default();
     let (result, text) = run_logged(ffmpeg, args, work, dir, "ffmpeg.log", LOG_LIMIT, running, |line| {
         if let Some(value) = line.strip_prefix("out_time_us=") {
@@ -1759,11 +1849,11 @@ mod tests {
     #[test]
     fn args_decode_the_whole_file_once() {
         let text = |args: Vec<OsString>| args.iter().map(|arg| arg.to_string_lossy().into_owned()).collect::<Vec<_>>().join(" ");
-        assert_eq!(text(check_args(Path::new("out.mp4"), true, Vec::new())),
+        assert_eq!(text(check_args(Path::new("out.mp4"), true, Vec::new(), None)),
             "-nostdin -hide_banner -loglevel level+info -nostats -progress pipe:1 -i out.mp4 -filter_complex \
 [0:v:0]scale=320:-2,blackdetect=d=2:pic_th=0.98:pix_th=0.10,freezedetect=n=0.001:d=2[v];\
 [0:a:0]loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json[a] -map [v] -map [a] -f null -");
-        assert_eq!(text(check_args(Path::new("out.mp4"), false, vec!["-threads".into(), "4".into()])),
+        assert_eq!(text(check_args(Path::new("out.mp4"), false, vec!["-threads".into(), "4".into()], None)),
             "-nostdin -hide_banner -loglevel level+info -nostats -progress pipe:1 -threads 4 -i out.mp4 -filter_complex \
 [0:v:0]scale=320:-2,blackdetect=d=2:pic_th=0.98:pix_th=0.10,freezedetect=n=0.001:d=2[v] -map [v] -f null -");
     }
@@ -1878,6 +1968,57 @@ mod tests {
         // fade through black keeps the length
         edit.transitions[0].kind = TransitionKind::Fade;
         assert_eq!(intended_holds(&edit, &[false, true]), [(10.0, 13.0), (13.0, 18.0)]);
+    }
+
+    #[test]
+    fn boxed_parts_are_the_ones_that_fill_only_the_middle() {
+        // #949: a part turned a quarter in a 16:9 frame covers 0.316 of its width; a plain one fills it.
+        let wide = Framing { export: (1280, 720), out: (1280, 720), fill: "black", aspect: None };
+        let turned = Segment { rotate: 90, ..segment(0, 32.0, 64.0) };
+        let edit = Edit { segments: vec![segment(0, 0.0, 16.0), Segment { rotate: 180, ..segment(0, 16.0, 32.0) }, turned], ..Edit::default() };
+        let boxed = boxed_parts(&edit, &[Some((1280, 720))], &wide).unwrap();
+        assert_eq!(boxed.spans, [(32.0, 64.0)]);
+        assert!((boxed.size.0 - 405.0 / 1280.0).abs() < 1e-3 && boxed.size.1 == 1.0, "{:?}", boxed.size);
+        assert_eq!(boxed.frame, (1280, 720));
+        assert_eq!(boxed_parts(&Edit { segments: vec![segment(0, 0.0, 16.0)], ..Edit::default() }, &[Some((1280, 720))], &wide), None);
+        // an unknown picture (a turned phone video) is measured as before
+        assert_eq!(boxed_parts(&edit, &[None], &wide), None);
+        // a portrait clip (media 1) between landscape parts, after a dissolve: positions follow the overlap
+        let mixed = Edit { segments: vec![segment(0, 0.0, 10.0), segment(1, 0.0, 5.0), segment(1, 5.0, 8.0), segment(0, 10.0, 20.0)],
+            transitions: vec![Transition { after: 0, kind: TransitionKind::Dissolve, duration: 1.0 }], ..Edit::default() };
+        let boxed = boxed_parts(&mixed, &[Some((1920, 1080)), Some((1080, 1920))], &Framing { export: (1920, 1080), out: (1920, 1080), ..wide }).unwrap();
+        assert_eq!(boxed.spans, [(9.0, 17.0)], "two touching parts are one stretch");
+        assert!((boxed.size.0 - 0.316).abs() < 1e-3, "{:?}", boxed.size);
+        // cropped to its middle 9:16, or zoomed far enough to fill: no bars
+        let cropped = Segment { crop: Some(Crop { x: 0.0, y: 0.0, w: 1.0, h: 0.3164 }), ..segment(1, 0.0, 5.0) };
+        let zoomed = Segment { zoom: Some(Zoom { from: 3.2, to: 3.5, x: 0.5, y: 0.5 }), ..segment(1, 0.0, 5.0) };
+        for part in [cropped, zoomed] {
+            assert_eq!(boxed_parts(&Edit { segments: vec![part], ..Edit::default() }, &[None, Some((1080, 1920))], &wide), None, "{part:?}");
+        }
+        // Khung hình 9:16 with bars: a landscape part is letterboxed (0.316 of the height); "fill" crops it to the frame
+        let bars = Framing { export: (1280, 720), out: (406, 720), fill: "black", aspect: Some("9:16") };
+        let plain = Edit { segments: vec![segment(0, 0.0, 16.0)], ..Edit::default() };
+        let boxed = boxed_parts(&plain, &[Some((1280, 720))], &bars).unwrap();
+        assert!((boxed.size.0 - 1.0).abs() < 1e-9 && (boxed.size.1 - 0.317).abs() < 2e-3, "{:?}", boxed.size);
+        assert_eq!(boxed_parts(&plain, &[Some((1280, 720))], &Framing { fill: "fill", ..bars }), None);
+        // too many stretches: the whole frame, as before
+        let many = Edit { segments: (0..=MAX_BOXED_SPANS).flat_map(|i| [segment(0, i as f64, i as f64 + 0.5), Segment { rotate: 90, ..segment(0, i as f64 + 0.5, i as f64 + 1.0) }]).collect(),
+            ..Edit::default() };
+        assert_eq!(boxed_parts(&many, &[Some((1280, 720))], &wide), None);
+        // a turned main video: the plan keeps no box
+        let planned = plan(&edit, &[false], 64.0, true, &[], &[], &wide, "25/1").with_pictures(&edit, &[Some((1280, 720))], &wide);
+        assert!(planned.boxed.is_some());
+        assert_eq!(planned.turned_source(true).boxed, None);
+    }
+
+    #[test]
+    fn boxed_parts_are_measured_on_their_middle_box() {
+        let text = |args: Vec<OsString>| args.iter().map(|arg| arg.to_string_lossy().into_owned()).collect::<Vec<_>>().join(" ");
+        let boxed = Boxed { spans: vec![(32.0, 64.0), (70.5, 80.25)], size: (0.31640625, 1.0), frame: (1280, 720) };
+        assert_eq!(text(check_args(Path::new("out.mp4"), false, Vec::new(), Some(&boxed))),
+            "-nostdin -hide_banner -loglevel level+info -nostats -progress pipe:1 -i out.mp4 -filter_complex \
+[0:v:0]split=2[vw][vm];[vw]scale=320:180,setsar=1[vws];[vm]crop=w='trunc(iw*0.316406/2)*2':h='trunc(ih*1/2)*2',scale=320:180,setsar=1[vms];\
+[vws][vms]overlay=enable='between(t,32,64)+between(t,70.5,80.25)',blackdetect=d=2:pic_th=0.98:pix_th=0.10,freezedetect=n=0.001:d=2[v] -map [v] -f null -");
     }
 
     fn style(changes: Value) -> SubtitleStyle {
@@ -3478,6 +3619,45 @@ mod tests {
         assert!(exports[0].get("check").is_none());
         unlink_dir(&check_dir(&work, &video));
         let _ = fs::remove_dir_all(dir);
+    }
+
+    /// With DUBFLOW_TEST_FFMPEG: a quiet picture turned a quarter (black bars beside it) is not read as frozen (#949),
+    /// and a picture held still there still is.
+    #[test]
+    fn real_export_check_measures_a_boxed_part_on_its_picture() {
+        let Ok(ffmpeg) = std::env::var("DUBFLOW_TEST_FFMPEG") else { return };
+        let ffmpeg = PathBuf::from(ffmpeg);
+        let dir = temp("real-boxed");
+        let work = dir.join("work");
+        let video = dir.join("turned.mp4");
+        // 0–6 s a quiet grainy picture filling the frame, 6–12 s the same turned and fitted with bars (as the export
+        // fits a part turned 90°), 12–16 s one frame of it held still. MPEG-4 Part 2: the shipped FFmpeg has no x264.
+        let quiet = "color=gray:s=640x360:r=25:d=6,format=yuv420p,noise=c0s=8:c0f=t";
+        let fit = "transpose=1,scale=640:360:force_original_aspect_ratio=decrease,pad=640:360:(ow-iw)/2:(oh-ih)/2,setsar=1";
+        let made = Command::new(&ffmpeg).args(["-v", "error", "-y", "-f", "lavfi", "-i", quiet, "-f", "lavfi", "-i", &format!("{quiet},{fit}"),
+            "-f", "lavfi", "-i", &format!("{quiet},{fit},trim=end_frame=1,tpad=stop_mode=clone:stop_duration=4"),
+            "-filter_complex", "[0:v][1:v][2:v]concat=n=3:v=1:a=0[v]", "-map", "[v]", "-c:v", "mpeg4", "-q:v", "3"]).arg(&video).status().unwrap();
+        assert!(made.success());
+        let wide = Framing { export: (640, 360), out: (640, 360), fill: "black", aspect: None };
+        let edit = Edit { segments: vec![segment(0, 0.0, 6.0), Segment { rotate: 90, ..segment(0, 6.0, 12.0) },
+            Segment { rotate: 90, ..segment(0, 12.0, 16.0) }], ..Edit::default() };
+        let frozen = |plan: Plan| {
+            run(&work, &ffmpeg, plan.for_video(video.clone(), false, stamp_of(&video)));
+            let report = read_check(&work, &video);
+            assert_eq!(report["state"], "DONE", "{report}");
+            assert_eq!(report["black"], json!([]), "{report}");
+            report["frozen"].as_array().unwrap().iter().map(|span| (span[0].as_f64().unwrap(), span[1].as_f64().unwrap())).collect::<Vec<_>>()
+        };
+        // The whole frame (no picture sizes known): the quiet turned part reads as frozen from 6 s, the false report.
+        let whole = frozen(plan(&edit, &[false], 16.0, false, &[], &[], &wide, "25/1"));
+        assert!(matches!(whole.as_slice(), [(start, end)] if (*start - 6.0).abs() < 0.1 && *end > 15.9), "{whole:?}");
+        // Measured on the picture: only the held frame.
+        let planned = plan(&edit, &[false], 16.0, false, &[], &[], &wide, "25/1").with_pictures(&edit, &[Some((640, 360))], &wide);
+        assert_eq!(planned.boxed.as_ref().map(|boxed| boxed.spans.clone()), Some(vec![(6.0, 16.0)]));
+        let boxed = frozen(planned);
+        assert!(matches!(boxed.as_slice(), [(start, end)] if (*start - 12.0).abs() < 0.1 && *end > 15.9), "{boxed:?}");
+        let _ = fs::remove_dir_all(dir);
+        println!("boxed-check: ran against real FFmpeg");
     }
 
     /// With DUBFLOW_TEST_FFMPEG (ffprobe beside it): the check against real FFmpeg.
