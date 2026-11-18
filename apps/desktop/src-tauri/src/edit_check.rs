@@ -921,10 +921,41 @@ fn held_name(work: &Path, dir: &Path, name: &str, between: &dyn Fn()) -> Option<
     Some((pinned, path))
 }
 
+/// Make `work/checks` and the check folder `dir` in it (each kept when already a plain folder), each made through its
+/// held parent: `checks` inside `work` held, `dir` inside `checks` held (`hold_checks`). On Linux the folder is made
+/// through the handle (/proc/self/fd), so a `work/checks` renamed and swapped for a link after the look never gets a
+/// folder made in the link's target; on Windows the held parent cannot be renamed or swapped meanwhile. True only
+/// when the folder is then the check's own (`pin`). `between` runs right before `dir` is made (tests race it there).
+fn make_check_folder(work: &Path, dir: &Path, between: &dyn Fn()) -> bool {
+    let made = |path: PathBuf| match fs::create_dir(path) {
+        Ok(()) => true,
+        Err(error) => error.kind() == std::io::ErrorKind::AlreadyExists,
+    };
+    if !unlinked(work) || dir.parent() != Some(work.join(CHECKS_DIR).as_path()) {
+        return false;
+    }
+    let Some(key) = dir.file_name() else { return false };
+    if !plain(&work.join(CHECKS_DIR)) {
+        let Some(held_work) = hold_folder(work, fs::canonicalize(work).ok()) else { return false };
+        if !unlinked(work) || !made(held_base(&held_work, work).join(CHECKS_DIR)) {
+            return false;
+        }
+    }
+    let Some(held_checks) = hold_checks(work) else { return false };
+    if !plain(dir) {
+        between();
+        if !made(held_base(&held_checks, &work.join(CHECKS_DIR)).join(key)) {
+            return false;
+        }
+    }
+    drop(held_checks);
+    pin(work, dir).is_some()
+}
+
 /// Check the published `plan.video`. Every outcome leaves the video exactly as exported.
 pub(super) fn run(work: &Path, ffmpeg: &Path, plan: Plan) {
     let dir = check_dir(work, &plan.video);
-    if !unlinked(work) || plain_folder(&work.join(CHECKS_DIR)).is_err() || plain_folder(&dir).is_err() {
+    if !make_check_folder(work, &dir, &|| {}) {
         return;
     }
     // Registered first, so this window's `attach` knows the check is its own (`ours`) while it waits; a check of
@@ -2871,6 +2902,59 @@ mod tests {
             assert_eq!(fs::read(real.join(name)).unwrap(), bytes, "{name}: made in the real folder");
             assert_eq!(marks(), before, "{name}: still untouched outside");
         }
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// The check folder is made with `checks` swapped for a link to an outside folder right before: no folder is ever
+    /// made outside. On Windows the held `checks` cannot be renamed and the folder is made in it; on Linux the swap
+    /// happens, the folder is made in the real `checks` through the held handle, and the check does not start (recheck
+    /// 18). With nothing racing, `checks` and the folder are made and are the check's own.
+    #[test]
+    fn the_check_folder_is_never_made_through_checks_swapped_mid_create() {
+        let dir = temp("held-create");
+        let work = dir.join("work");
+        let checks = work.join(CHECKS_DIR);
+        let video = dir.join("Phim.mp4");
+        let folder = check_dir(&work, &video);
+        let key = folder.file_name().unwrap().to_owned();
+        fs::create_dir_all(&work).unwrap();
+        // nothing racing: both made from nothing
+        assert!(make_check_folder(&work, &folder, &|| {}));
+        assert!(plain(&checks) && plain(&folder));
+        fs::remove_dir(&folder).unwrap();
+        let elsewhere = dir.join("elsewhere");
+        fs::create_dir_all(&elsewhere).unwrap();
+        let moved = dir.join("checks-real");
+        let swapped = std::cell::Cell::new(false);
+        let made = make_check_folder(&work, &folder, &|| {
+            if fs::rename(&checks, &moved).is_ok() {
+                link_dir(&elsewhere, &checks);
+                swapped.set(true);
+            }
+        });
+        assert!(!elsewhere.join(&key).exists(), "no folder made in the link's target");
+        assert_eq!(fs::read_dir(&elsewhere).unwrap().count(), 0, "nothing at all made outside");
+        #[cfg(windows)]
+        {
+            assert!(!swapped.get(), "the held checks folder cannot be renamed");
+            assert!(made && plain(&folder), "the folder is made in the real checks");
+        }
+        #[cfg(target_os = "linux")]
+        {
+            assert!(swapped.get(), "the race really ran (checks was swapped for a link)");
+            assert!(!made, "a check whose checks folder is a link does not start");
+            assert!(plain(&moved.join(&key)), "the folder was made in the real checks, through the held handle");
+        }
+        if swapped.get() {
+            unlink_dir(&checks);
+            fs::rename(&moved, &checks).unwrap();
+        }
+        // a checks that is a link is never made into, nor is the folder below it
+        fs::remove_dir_all(&checks).unwrap();
+        link_dir(&elsewhere, &checks);
+        assert!(!make_check_folder(&work, &folder, &|| {}));
+        assert_eq!(fs::read_dir(&elsewhere).unwrap().count(), 0);
+        unlink_dir(&checks);
         let _ = fs::remove_dir_all(dir);
     }
 

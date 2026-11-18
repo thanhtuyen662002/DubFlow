@@ -308,6 +308,7 @@ jobs:
           # the FIFO and symlink cases.
           for name in \
             lease_logs_and_measure_scripts_never_go_through_checks_swapped_mid_write \
+            the_check_folder_is_never_made_through_checks_swapped_mid_create \
             plan_and_waiting_writes_never_go_through_checks_swapped_mid_write \
             prune_never_removes_through_checks_swapped_mid_prune \
             a_checks_folder_swapped_for_a_link_is_never_written_through \
