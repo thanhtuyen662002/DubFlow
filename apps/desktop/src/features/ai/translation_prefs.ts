@@ -1,10 +1,12 @@
 import { PROVIDERS, type AiSession, type Provider } from "./provider.ts";
 import { BEEP_SOUNDS, type BeepSound } from "./beep_sound.ts";
+import { providerReady, type AiContext } from "./ai_context.ts";
 
 /**
- * How a new video's subtitles are translated and cleaned (Cài đặt › Tài khoản):
- * "Dịch theo ngữ cảnh bằng AI" with the default provider's saved key, and the
- * words that platforms' community rules often flag. Not secret: kept in local storage.
+ * How a new video's subtitles are cleaned (Cài đặt › Dịch phụ đề): the words that platforms'
+ * community rules often flag. Not secret: kept in local storage. Whether the default provider's
+ * saved key translates in context is asked and stored on its own (ai_context.ts), so a save of
+ * these settings never changes it.
  */
 export type SensitiveMode = "off" | "variant" | "beep";
 export type SensitiveWord = { from: string; to: string };
@@ -13,7 +15,7 @@ export type SensitiveWord = { from: string; to: string };
  * (the tone, a bird, a dog, or `beepFile`, a sound the user picked).
  */
 export type TranslationPrefs = {
-  aiTranslation: boolean; sensitiveMode: SensitiveMode; words: SensitiveWord[]; beepSound: BeepSound; beepFile: string | null;
+  sensitiveMode: SensitiveMode; words: SensitiveWord[]; beepSound: BeepSound; beepFile: string | null;
 };
 
 const STORAGE = "dubflow.translationPrefs.v1";
@@ -26,7 +28,7 @@ export const DEFAULT_SENSITIVE_WORDS: readonly SensitiveWord[] = [
 ].map(([from, to]) => ({ from, to }));
 
 export const DEFAULT_PREFS: TranslationPrefs = {
-  aiTranslation: true, sensitiveMode: "off", words: [...DEFAULT_SENSITIVE_WORDS], beepSound: "beep", beepFile: null,
+  sensitiveMode: "off", words: [...DEFAULT_SENSITIVE_WORDS], beepSound: "beep", beepFile: null,
 };
 const MAX_PATH = 1024;
 
@@ -63,7 +65,7 @@ export function normalizePrefs(value: unknown): TranslationPrefs {
   const picked = BEEP_SOUNDS.includes(raw.beepSound as BeepSound) ? raw.beepSound as BeepSound : "beep";
   // A file choice without its file plays the plain beep.
   const beepSound = picked === "custom" && !beepFile ? "beep" : picked;
-  return { aiTranslation: raw.aiTranslation !== false, sensitiveMode: mode, words, beepSound, beepFile };
+  return { sensitiveMode: mode, words, beepSound, beepFile };
 }
 
 /** `sensitiveWords` for the host: the words, and in beep mode the covering sound. */
@@ -90,15 +92,16 @@ export function savePrefs(prefs: TranslationPrefs): void {
 
 /**
  * The `start_job` arguments for a new video: the provider that translates in context
- * (only when its key is saved; the host reads the key itself) and the sensitive words.
+ * (only when the user said yes to it and its key is saved; the host reads the key itself)
+ * and the sensitive words. `aiContext` is required so no caller can forget the user's answer.
  */
-export function translationJobArgs(prefs: TranslationPrefs, session: Pick<AiSession, "provider" | "saved" | "options">, title: string): Record<string, unknown> {
+export function translationJobArgs(prefs: TranslationPrefs, session: Pick<AiSession, "provider" | "saved" | "options">, title: string,
+  aiContext: AiContext): Record<string, unknown> {
   const provider: Provider = session.provider();
-  const ready = provider === "custom" ? Boolean(session.options(provider).baseUrl && session.options(provider).model) : session.saved(provider) !== null;
   const options = session.options(provider);
   const info = PROVIDERS[provider];
   return {
-    aiTranslation: prefs.aiTranslation && ready ? {
+    aiTranslation: aiContext === "on" && providerReady(session, provider) ? {
       provider,
       model: options.model?.trim() || info.model || null,
       baseUrl: info.baseUrl !== undefined ? (options.baseUrl?.trim() || info.baseUrl || null) : null,

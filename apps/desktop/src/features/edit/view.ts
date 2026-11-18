@@ -27,6 +27,7 @@ import {
 import { mountSubtitles } from "./subtitles_view.ts";
 import { activeTrack, burnRequests, plainLayers, serializeLayers, srtLines, type PlainLayers } from "./plain_subs.ts";
 import { loadPrefs, translationJobArgs } from "../ai/translation_prefs.ts";
+import type { AiContext } from "../ai/ai_context.ts";
 import { STYLE_STORAGE_KEY, storedStyle } from "./subtitles.ts";
 import { COVER_STORAGE_KEY, plainCover } from "./cover.ts";
 import { mountCover } from "./cover_view.ts";
@@ -124,6 +125,8 @@ export type EditorHost = {
   sfx: SfxLibrary;
   /** The AI account "Gợi ý AI" uses (Cài đặt › Tài khoản). */
   ai: AiSession;
+  /** Whether a saved key may translate Tách phụ đề: asked once, the first time a provider is ready. */
+  decideAi: () => Promise<AiContext>;
   openAiSettings: () => void;
   /** Thu giọng: save recorded bytes with the edit at `outputPath` (`kind`); the saved file's path. */
   saveRecording: (bytes: ArrayBuffer, outputPath: string, kind: string) => Promise<string>;
@@ -1198,10 +1201,12 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       renderPanel();
     },
     plainCover: (seconds) => cover.draw(session?.plainCover && (mode === "cover" || !!cover.document()) ? seconds : null),
-    extractArgs: () => session ? {
+    // "off" unless the caller asked first: cancel and status only need the video, never the AI choice.
+    extractArgs: (aiContext: AiContext = "off") => session ? {
       outputPath: session.outputPath, kind: session.target.kind,
-      ...translationJobArgs(loadPrefs(), host.ai, session.outputPath.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, "") ?? ""),
+      ...translationJobArgs(loadPrefs(), host.ai, session.outputPath.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, "") ?? "", aiContext),
     } : null,
+    decideAi: () => host.decideAi(),
   });
   const revisionReady = $("#edit-revision-ready");
   const audio = mountAudio(invoke, {

@@ -630,6 +630,15 @@ const MAX_GLOSSARY_BYTES: usize = 192 * 1024;
 /// `{"project": [...], "shared": [...], "context": {...}}`, read only by the translation step.
 pub(crate) fn write_translation_settings_with(output: &Path, ai: Option<&AiTranslation>, sensitive: Option<&Value>, title: Option<&str>,
     glossary: Option<&Value>) -> Result<Option<String>, String> {
+    write_translation_settings_in(ai_keys::keys_closed(), output, ai, sensitive, title, glossary)
+}
+
+/// While saved keys are closed to this run (DUBFLOW_NO_SAVED_KEYS, rc21) no AI translation is written for any
+/// provider, whatever the webview asked: a custom server on this machine needs no key, so closing the keys alone
+/// would not stop it. Both `start_job` and `edit_subs_extract` come through here.
+fn write_translation_settings_in(closed: bool, output: &Path, ai: Option<&AiTranslation>, sensitive: Option<&Value>, title: Option<&str>,
+    glossary: Option<&Value>) -> Result<Option<String>, String> {
+    let ai = if closed { None } else { ai };
     let path = output.join(TRANSLATION_SETTINGS_FILE);
     let short = |value: &Option<String>, limit: usize| value.as_deref().map(str::trim).filter(|text| !text.is_empty())
         .map(|text| text.chars().filter(|ch| !ch.is_control()).take(limit).collect::<String>());
@@ -2456,6 +2465,17 @@ mod tests {
         assert!(write_translation_settings_with(&dir, None, None, None, Some(&huge)).is_err());
         assert_eq!(write_translation_settings_with(&dir, None, None, None, None).unwrap(), None);
         assert!(!dir.join(TRANSLATION_SETTINGS_FILE).exists());
+        // DUBFLOW_NO_SAVED_KEYS: no AI translation for any provider, a keyless custom server on this machine included
+        // (the same `ai` was written above with keys open); the rest of the settings are still written.
+        let local = AiTranslation { provider: "custom".into(), model: Some("qwen2.5".into()), base_url: Some("http://127.0.0.1:11434/v1".into()) };
+        for ai in [&local, &ai] {
+            assert_eq!(write_translation_settings_in(true, &dir, Some(ai), None, Some("Phim"), None).unwrap(), None);
+            assert!(!dir.join(TRANSLATION_SETTINGS_FILE).exists());
+            assert_eq!(write_translation_settings_in(true, &dir, Some(ai), Some(&words), Some("Phim"), None).unwrap(), None);
+            let written: Value = serde_json::from_slice(&fs::read(dir.join(TRANSLATION_SETTINGS_FILE)).unwrap()).unwrap();
+            assert_eq!(written["ai"], Value::Null);
+            assert_eq!(written["sensitive"], words);
+        }
         fs::remove_dir_all(&dir).unwrap();
     }
 

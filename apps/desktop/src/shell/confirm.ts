@@ -6,21 +6,44 @@ export type ConfirmOptions = {
   cancelLabel?: string;
   /** The confirm button is red: the action removes or discards something. */
   danger?: boolean;
+  /**
+   * The button focused when the dialog opens (default confirm). "cancel" is for an opt-in such as paid AI use: Enter
+   * then confirms only while the confirm button itself has focus, never by default.
+   */
+  initialFocus?: "confirm" | "cancel";
+  /**
+   * A press on the dimmed area outside cancels, except within this many milliseconds of the dialog opening: the second
+   * click of a double-click that opened it is not an answer (default 0).
+   */
+  backdropGraceMs?: number;
 };
 
-export type ConfirmKeyAction = "confirm" | "cancel" | "next" | "previous" | null;
+/** "stay": the key is taken (nothing underneath sees it) but does nothing. */
+export type ConfirmKeyAction = "confirm" | "cancel" | "next" | "previous" | "stay" | null;
 
 export function confirmLabels(options: ConfirmOptions): { confirm: string; cancel: string } {
   return { confirm: options.confirmLabel?.trim() || "Đồng ý", cancel: options.cancelLabel?.trim() || "Hủy" };
 }
 
+/** Which button has focus when the dialog opens. */
+export function initialFocus(options: ConfirmOptions): "confirm" | "cancel" {
+  return options.initialFocus === "cancel" ? "cancel" : "confirm";
+}
+
 /**
  * What a key does inside the dialog: Esc cancels, Enter confirms (unless the
  * cancel button has focus, where Enter presses it), Tab cycles the two buttons.
+ * `confirmOnlyFocused` (a dialog opened on cancel): Enter confirms only while the
+ * confirm button has focus; with focus anywhere else (the text clicked, the page)
+ * it does nothing.
  */
-export function confirmKeyAction(key: string, shift: boolean, cancelFocused: boolean): ConfirmKeyAction {
+export function confirmKeyAction(key: string, shift: boolean, cancelFocused: boolean,
+  confirmOnlyFocused = false, confirmFocused = false): ConfirmKeyAction {
   if (key === "Escape") return "cancel";
-  if (key === "Enter") return cancelFocused ? "cancel" : "confirm";
+  if (key === "Enter") {
+    if (cancelFocused) return "cancel";
+    return !confirmOnlyFocused || confirmFocused ? "confirm" : "stay";
+  }
   if (key === "Tab") return shift ? "previous" : "next";
   return null;
 }
@@ -30,6 +53,14 @@ export function cycleFocus(current: number, count: number, backwards: boolean): 
   if (count <= 0) return -1;
   const start = current < 0 || current >= count ? (backwards ? 0 : -1) : current;
   return (start + (backwards ? count - 1 : 1)) % count;
+}
+
+/** Whether `backdrop` is the topmost dialog: the last `.confirm-backdrop` among `siblings` (document.body's children). */
+export function isTopmostDialog(backdrop: unknown, siblings: ArrayLike<{ classList: { contains(name: string): boolean } }>): boolean {
+  for (let index = siblings.length - 1; index >= 0; index -= 1) {
+    if (siblings[index].classList.contains("confirm-backdrop")) return siblings[index] === backdrop;
+  }
+  return false;
 }
 
 export function confirmDialog(options: ConfirmOptions): Promise<boolean> {
@@ -67,12 +98,16 @@ export function confirmDialog(options: ConfirmOptions): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
     let settled = false;
     const buttons = [cancel, confirm];
-    // Captured on the document so keys never reach the screen underneath.
+    const guarded = initialFocus(options) === "cancel";
+    // Captured on the document so keys never reach the screen underneath. Only the topmost dialog takes a key, and
+    // no other listener sees it: one Enter never answers two stacked dialogs.
     const onKey = (event: KeyboardEvent): void => {
-      const action = confirmKeyAction(event.key, event.shiftKey, document.activeElement === cancel);
+      if (!isTopmostDialog(backdrop, document.body.children)) return;
+      const action = confirmKeyAction(event.key, event.shiftKey, document.activeElement === cancel, guarded, document.activeElement === confirm);
       if (!action) return;
       event.preventDefault();
-      event.stopPropagation();
+      event.stopImmediatePropagation();
+      if (action === "stay") return;
       if (action === "confirm") finish(true);
       else if (action === "cancel") finish(false);
       else buttons[cycleFocus(buttons.indexOf(document.activeElement as HTMLButtonElement), buttons.length, action === "previous")].focus();
@@ -89,9 +124,10 @@ export function confirmDialog(options: ConfirmOptions): Promise<boolean> {
     cancel.addEventListener("click", () => finish(false));
     confirm.addEventListener("click", () => finish(true));
     backdrop.addEventListener("mousedown", (event) => {
-      if (event.target === backdrop) finish(false);
+      if (event.target === backdrop && Date.now() - opened >= (options.backdropGraceMs ?? 0)) finish(false);
     });
+    const opened = Date.now();
     document.body.append(backdrop);
-    confirm.focus();
+    (initialFocus(options) === "cancel" ? cancel : confirm).focus();
   });
 }

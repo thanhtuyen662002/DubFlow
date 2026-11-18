@@ -2,6 +2,7 @@
  * "Chọn từ Hàng đợi": Lồng tiếng, Bán hàng and Ghép video take their videos
  * from the Hàng đợi list through this dialog.
  */
+import { isTopmostDialog } from "../../shell/confirm.ts";
 import { filterMedia, originLabel, type MediaEntry } from "./model.ts";
 
 export type PickOptions = {
@@ -102,7 +103,11 @@ export function pickFromMedia(options: PickOptions): Promise<MediaEntry[]> {
 
   let resolve: (value: MediaEntry[]) => void = () => undefined;
   const onKey = (event: KeyboardEvent): void => {
-    if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); finish([]); }
+    // Only the topmost dialog takes the key, and no other listener sees it: one Esc never closes two (#934).
+    if (event.key !== "Escape" || !isTopmostDialog(backdrop, document.body.children)) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    finish([]);
   };
   function finish(value: MediaEntry[]): void {
     document.removeEventListener("keydown", onKey, true);
