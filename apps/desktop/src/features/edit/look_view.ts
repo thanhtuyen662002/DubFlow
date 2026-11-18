@@ -133,10 +133,12 @@ export function mountLook(context: LookContext): LookPanel {
     const segment = segmentNow(context.base());
     if (!segment) return false;
     const next = setLook(context.base(), segment.id, partial);
+    // Read before the commit: after it the base is `next` itself.
+    const changed = next !== context.base();
     if (draft) context.preview(next);
     // Committed even when unchanged: that ends a preview that went back to where it started.
     else context.commit(next, segment.id);
-    return next !== context.base();
+    return changed;
   }
 
   function pictureSize(edit: Edit, segment: Segment): { width: number; height: number } {
