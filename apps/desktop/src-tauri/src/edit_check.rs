@@ -971,10 +971,69 @@ pub(super) fn cancel(work: &Path, video: &Path) {
     }
 }
 
-/// A check.json of at most `CHECK_LIMIT` bytes that is an export check.
+/// The check.json of the check folder `dir` (`work/checks/<key>`). Read only while `work`, `checks` and `dir` are
+/// plain folders, looked at before and after the read, through a handle `open_own` judged, and only when that handle
+/// is the file at exactly `work`'s own `checks/<key>/check.json` (`at_place`): a linked `checks` swapped in between
+/// the look and the open never leads the read elsewhere (Lead review 4609721830).
+fn load_check(work: &Path, dir: &Path) -> Option<Value> {
+    if !owned(work, dir) {
+        return None;
+    }
+    let file = open_own(&dir.join("check.json"))?;
+    if !at_place(&file, work, dir) {
+        return None;
+    }
+    let value = read_check_json(file)?;
+    owned(work, dir).then_some(value)
+}
+
+/// Where `work`'s own check.json of `dir` is, with every link above `work` resolved as the handle's own path is.
+fn own_place(work: &Path, dir: &Path) -> Option<PathBuf> {
+    Some(fs::canonicalize(work).ok()?.join(CHECKS_DIR).join(dir.file_name()?).join("check.json"))
+}
+
+/// The opened file is `work`'s own check.json of `dir`, by the handle's own path (Linux: /proc/self/fd).
+#[cfg(target_os = "linux")]
+fn at_place(file: &fs::File, work: &Path, dir: &Path) -> bool {
+    use std::os::unix::io::AsRawFd;
+    let real = fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd()));
+    own_place(work, dir).is_some_and(|place| real.is_ok_and(|real| real == place))
+}
+
+/// The opened file is `work`'s own check.json of `dir`, by the handle's own path (GetFinalPathNameByHandleW, as
+/// `fs::canonicalize` gives `work`'s).
+#[cfg(windows)]
+fn at_place(file: &fs::File, work: &Path, dir: &Path) -> bool {
+    use std::os::windows::ffi::OsStringExt;
+    use std::os::windows::io::AsRawHandle;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetFinalPathNameByHandleW(file: *mut std::ffi::c_void, path: *mut u16, length: u32, flags: u32) -> u32;
+    }
+    let mut buffer = vec![0u16; 32_768];
+    // SAFETY: the handle is open for the call and the buffer holds `buffer.len()` wide characters.
+    let length = unsafe { GetFinalPathNameByHandleW(file.as_raw_handle(), buffer.as_mut_ptr(), buffer.len() as u32, 0) } as usize;
+    if length == 0 || length >= buffer.len() {
+        return false;
+    }
+    let real = PathBuf::from(std::ffi::OsString::from_wide(&buffer[..length]));
+    own_place(work, dir).is_some_and(|place| real.to_string_lossy().eq_ignore_ascii_case(&place.to_string_lossy()))
+}
+
+/// Elsewhere the folders are looked at again after the read (`load_check`).
+#[cfg(all(unix, not(target_os = "linux")))]
+fn at_place(_file: &fs::File, _work: &Path, _dir: &Path) -> bool {
+    true
+}
+
+/// A check.json file at `path` read as `load_check` reads one, without the folder checks (tests).
+#[cfg(test)]
 fn read_check_file(path: &Path) -> Option<Value> {
-    // Never through a link: only the check's own plain file is read, and only its first bytes.
-    let file = open_own(path)?;
+    read_check_json(open_own(path)?)
+}
+
+/// At most `CHECK_LIMIT` bytes of an opened check.json that is an export check.
+fn read_check_json(file: fs::File) -> Option<Value> {
     let mut bytes = Vec::new();
     std::io::Read::read_to_end(&mut std::io::Read::take(file, CHECK_LIMIT + 1), &mut bytes).ok()?;
     if bytes.len() as u64 > CHECK_LIMIT {
@@ -1060,7 +1119,7 @@ fn ours(dir: &Path) -> bool {
 /// `attach` first read it has saved its result, which is kept and never overwritten. Still
 /// RUNNING with no window checking: saved and returned as INTERRUPTED. None: left as it is.
 fn settle(work: &Path, dir: &Path, video: &Path) -> Option<Value> {
-    if let Some(now) = read_check_file(&dir.join("check.json")).filter(|now| now["state"] != "RUNNING") {
+    if let Some(now) = load_check(work, dir).filter(|now| now["state"] != "RUNNING") {
         return Some(now);
     }
     if ours(dir) {
@@ -1077,11 +1136,7 @@ pub(super) fn attach(work: &Path, exports: &mut [Value]) {
     for entry in exports.iter_mut().rev().take(ATTACHED) {
         let Some(video) = entry["path"].as_str().map(PathBuf::from) else { continue };
         let dir = check_dir(work, &video);
-        let path = dir.join("check.json");
-        if !plain(&dir) {
-            continue;
-        }
-        let Some(mut value) = read_check_file(&path) else { continue };
+        let Some(mut value) = load_check(work, &dir) else { continue };
         // The lease file is only made in `work/checks/<key>` while all three are plain folders.
         if value["state"] == "RUNNING" && !ours(&dir) && unlinked(work) && plain(&work.join(CHECKS_DIR)) {
             // A free lease means no window is checking: the app closed mid-check.
@@ -1679,6 +1734,48 @@ mod tests {
         let _ = fs::remove_dir_all(dir);
     }
 
+    /// A `checks` folder that is a link (or is swapped for one between the look and the open) never leads a read of
+    /// check.json elsewhere, by `attach` either: a valid check there is not attached, and nothing there changes.
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_checks_folder_is_never_read_through() {
+        let dir = temp("readlinked");
+        let work = dir.join("work");
+        let video = dir.join("Phim.mp4");
+        let folder = check_dir(&work, &video);
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("check.json"), serde_json::to_vec(&ExportCheck::new(&video, "DONE")).unwrap()).unwrap();
+        assert_eq!(load_check(&work, &folder).unwrap()["state"], "DONE", "the check's own file is read");
+        // the same check folder elsewhere, with a valid single-name check.json
+        let elsewhere = dir.join("elsewhere");
+        let key = folder.file_name().unwrap();
+        fs::create_dir_all(elsewhere.join(key)).unwrap();
+        let outside = elsewhere.join(key).join("check.json");
+        let running = serde_json::to_vec(&ExportCheck::new(&video, "RUNNING")).unwrap();
+        fs::write(&outside, &running).unwrap();
+        let stamp = fs::metadata(&outside).unwrap().modified().unwrap();
+        fs::rename(work.join(CHECKS_DIR), dir.join("old-checks")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, work.join(CHECKS_DIR)).unwrap();
+        assert!(plain(&folder), "the last step alone looks plain");
+        assert_eq!(load_check(&work, &folder), None);
+        let mut exports = vec![json!({ "path": display_path(&video) })];
+        attach(&work, &mut exports);
+        assert!(exports[0].get("check").is_none(), "{}", exports[0]);
+        assert!(own_lease(&work, &folder).is_none(), "no lease to settle under");
+        assert_eq!((fs::read(&outside).unwrap(), fs::metadata(&outside).unwrap().modified().unwrap()), (running.clone(), stamp));
+        assert_eq!(fs::read_dir(elsewhere.join(key)).unwrap().count(), 1, "nothing was made there");
+        // the race itself: a handle opened through the swapped `checks` is caught by where it really is
+        #[cfg(target_os = "linux")]
+        {
+            let through = open_own(&folder.join("check.json")).expect("the final step alone is a plain single-name file");
+            assert!(!at_place(&through, &work, &folder));
+            fs::remove_file(work.join(CHECKS_DIR)).unwrap();
+            fs::rename(dir.join("old-checks"), work.join(CHECKS_DIR)).unwrap();
+            assert!(at_place(&open_own(&folder.join("check.json")).unwrap(), &work, &folder));
+        }
+        let _ = fs::remove_dir_all(dir);
+    }
+
     /// A file changed or replaced at the published name before its check ran is not judged against this export's
     /// plan (recheck 8: a re-export to the same name while the first check waited).
     #[test]
@@ -2089,7 +2186,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(120);
         let mut percent = 0.0;
         while Instant::now() < deadline && !worker.is_finished() {
-            let report = read_check_file(&check_dir(&work, &long).join("check.json")).unwrap_or_default();
+            let report = load_check(&work, &check_dir(&work, &long)).unwrap_or_default();
             percent = report["percent"].as_f64().unwrap_or(0.0);
             if report["state"] == "RUNNING" && percent > 0.0 {
                 break;
