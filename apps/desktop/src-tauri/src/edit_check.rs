@@ -1255,6 +1255,19 @@ pub(super) fn cancel(work: &Path, video: &Path) {
     }
 }
 
+/// "Dừng kiểm tra" when the editor's own draft can no longer be found (its source video moved, or its drive gone):
+/// stop every check of this window reading the exported `video`, whatever draft it belongs to. A check needs only the
+/// exported file, so Stop still frees it (recheck 20). Only stops, never touches a file.
+pub(super) fn cancel_video(video: &Path) {
+    let key = file_key(video);
+    let entries: Vec<Arc<Running>> = CHECKING.lock().map(|checking| checking.iter()
+        .filter(|(dir, _)| dir.file_name().is_some_and(|name| name == key.as_str()))
+        .map(|(_, entry)| entry.clone()).collect()).unwrap_or_default();
+    for entry in entries {
+        stop(&entry);
+    }
+}
+
 /// The check.json of the check folder `dir` (`work/checks/<key>`). Read only while `work`, `checks` and `dir` are
 /// plain folders, looked at before and after the read, through a handle `open_own` judged, and only when that handle
 /// is the file at exactly `work`'s own `checks/<key>/check.json` (`at_place`): a linked `checks` swapped in between
@@ -2662,6 +2675,41 @@ mod tests {
         let late = Arc::new(Running { children: Mutex::new(Vec::new()), cancelled: AtomicBool::new(false) });
         assert!(!register(&checking, &closing, Path::new("checks/late"), &late), "no check starts once DubFlow closes");
         assert_eq!(checking.lock().unwrap().len(), 2);
+    }
+
+    /// "Dừng kiểm tra" for an export whose editor draft can no longer be found (its source moved or its drive gone)
+    /// still stops the check reading that export, and its FFmpeg is killed; a check of another video goes on
+    /// (recheck 20).
+    #[test]
+    fn stop_works_when_the_drafts_source_is_gone() {
+        let dir = temp("stop-gone");
+        let work = dir.join("work");
+        let video = dir.join("Phim (sửa 1).mp4");
+        let other = dir.join("Khác.mp4");
+        let ours = Arc::new(Running { children: Mutex::new(vec![long_child()]), cancelled: AtomicBool::new(false) });
+        let theirs = Arc::new(Running { children: Mutex::new(Vec::new()), cancelled: AtomicBool::new(false) });
+        {
+            let mut checking = CHECKING.lock().unwrap();
+            checking.insert(check_dir(&work, &video), ours.clone());
+            checking.insert(check_dir(&work, &other), theirs.clone());
+        }
+        let source = dir.join("gone").join("Phim.mp4");
+        assert!(super::edit_target(&display_path(&source), "file").is_err(), "the draft's source cannot be found");
+        assert_eq!(super::edit_check_cancel(display_path(&source), "file".into(), display_path(&video)), Ok(()));
+        assert!(ours.cancelled.load(Ordering::SeqCst), "the check of the export is stopped");
+        let mut child = ours.children.lock().unwrap().pop().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while child.try_wait().unwrap().is_none() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(child.try_wait().unwrap().is_some(), "its FFmpeg is killed, not left reading the export");
+        assert!(!theirs.cancelled.load(Ordering::SeqCst), "a check of another video goes on");
+        {
+            let mut checking = CHECKING.lock().unwrap();
+            checking.remove(&check_dir(&work, &video));
+            checking.remove(&check_dir(&work, &other));
+        }
+        let _ = fs::remove_dir_all(dir);
     }
 
     /// A check whose turn comes but whose folder cannot be held or lease taken (here a folder planted at the lease

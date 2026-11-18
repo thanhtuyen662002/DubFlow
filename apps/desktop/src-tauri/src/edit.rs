@@ -3676,8 +3676,12 @@ pub fn stop_checks() {
 /// "Dừng kiểm tra": stop the Kiểm tra kỹ thuật of the export `path`; the video stays as exported.
 #[tauri::command]
 pub fn edit_check_cancel(output_path: String, kind: String, path: String) -> Result<(), String> {
-    let target = edit_target(&output_path, &kind)?;
-    check::cancel(&target.work, Path::new(&path));
+    match edit_target(&output_path, &kind) {
+        Ok(target) => check::cancel(&target.work, Path::new(&path)),
+        // The draft's source is gone (moved, drive unplugged) while its check still reads the export: stopped by
+        // the exported video alone, so its FFmpeg never keeps the file open until the decode ends.
+        Err(_) => check::cancel_video(Path::new(&path)),
+    }
     Ok(())
 }
 
