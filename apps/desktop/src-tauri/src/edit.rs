@@ -6785,9 +6785,10 @@ aloop=loop=-1:size=144000,atrim=duration=8,adelay=2000:all=1"), "{script}");
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// With DUBFLOW_TEST_FFMPEG: an export whose parts move (zoom, tilt), the last one included, with a burned
-    /// layer after them ends at the edit's own length (#940). zoompan used to hand on its input's end time in the
-    /// wrong time base, and the `fps` before the burned Phụ đề copied the last frame for hours (rc26: "99%" forever).
+    /// With DUBFLOW_TEST_FFMPEG: an export whose parts move (zoom, tilt), the last one included, with burned Phụ đề
+    /// drawn by the real `subtitles` (libass) filter, ends at the edit's own length (#940). zoompan used to hand on
+    /// its input's end time in the wrong time base, and the `fps` before the burned Phụ đề copied the last frame for
+    /// hours (rc26: "99%" forever). The line is a vector drawing (no font needed) and must show on the last part.
     #[test]
     fn real_zoomed_parts_with_burned_lines_end() {
         let Ok(ffmpeg) = std::env::var("DUBFLOW_TEST_FFMPEG") else { return };
@@ -6795,21 +6796,35 @@ aloop=loop=-1:size=144000,atrim=duration=8,adelay=2000:all=1"), "{script}");
         let dir = std::env::temp_dir().join(format!("dubflow-zoom-end-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
+        // Removed however the test ends (an endless export leaves a large file).
+        struct Gone(PathBuf);
+        impl Drop for Gone {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let _gone = Gone(dir.clone());
         let source = dir.join("source.mp4");
-        let made = Command::new(&ffmpeg).args(["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=320x240:r=30:d=12", "-f", "lavfi", "-i",
+        let made = Command::new(&ffmpeg).args(["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=320x240:r=30:d=12,lutyuv=y=val/2", "-f", "lavfi", "-i",
             "sine=f=330:d=12", "-c:v", "mpeg4", "-q:v", "3", "-c:a", "aac", "-shortest"]).arg(&source).status().unwrap();
         assert!(made.success());
+        // The picture is kept dark (luma at most ~128) so only the line is white. A white 60x30 box at (100,100) from 9 s to 11 s, inside the last (zoomed) part.
+        let lines = dir.join("lines.ass");
+        fs::write(&lines, "[Script Info]\nScriptType: v4.00+\nPlayResX: 320\nPlayResY: 240\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, \
+            PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, \
+            BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: D,Arial,20,&H00FFFFFF,&H00FFFFFF,&H00FFFFFF,\
+            &H00000000,0,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, \
+            Effect, Text\nDialogue: 0,0:00:09.00,0:00:11.00,D,,0,0,0,,{\\pos(100,100)\\p1}m 0 0 l 60 0 60 30 0 30{\\p0}\n").unwrap();
         let moving = |start: f64, end: f64| Segment { zoom: Some(Zoom { from: 1.0, to: 1.12, x: 0.5, y: 0.5 }), tilt: 1.5, ..segment(start, end, 1.0, 1.0) };
         let timeline = Edit { segments: vec![moving(0.0, 4.0), segment(4.0, 8.0, 1.0, 1.0), moving(8.0, 12.0)], ..Edit::default() };
         let frame = Frame { width: 320, height: 240, fps: "25/1".into() };
         let mix = Mix { main_volume: 1.0, ..Mix::default() };
-        // The burned layer stands in for `subtitles` (it is the `fps` before it that waited for the end).
-        let finish = Finish { burn: Some("null".into()), ..Finish::default() };
+        let finish = Finish { burn: Some(subtitles_filter(&crate::display_path(&lines))), ..Finish::default() };
         let (graph, has_audio) = export_script(&timeline, &[Input { has_audio: true }], &frame, "source", &mix, &finish);
-        assert!(has_audio && graph.contains(",fps=25/1,zoompan=") && graph.contains("[vt]fps=25/1,null[v]"), "{graph}");
+        assert!(has_audio && graph.matches(",fps=25/1,zoompan=").count() == 2 && graph.contains("[vt]fps=25/1,subtitles=filename="), "{graph}");
         let out = dir.join("out.mp4");
         let mut child = Command::new(&ffmpeg).args(["-nostdin", "-v", "error", "-y", "-i"]).arg(&source).arg("-filter_complex").arg(&graph)
-            .args(["-map", "[v]", "-map", "[a]", "-c:v", "mpeg4", "-q:v", "5", "-c:a", "aac", "-r", "25/1"]).arg(&out)
+            .args(["-map", "[v]", "-map", "[a]", "-c:v", "mpeg4", "-q:v", "2", "-c:a", "aac", "-r", "25/1"]).arg(&out)
             .stdin(Stdio::null()).stdout(Stdio::null()).spawn().unwrap();
         let started = Instant::now();
         let status = loop {
@@ -6823,13 +6838,30 @@ aloop=loop=-1:size=144000,atrim=duration=8,adelay=2000:all=1"), "{script}");
             }
             std::thread::sleep(Duration::from_millis(100));
         };
-        let status = status.unwrap_or_else(|| panic!("the export never ended (#940): {} bytes after 120 s", fs::metadata(&out).map(|m| m.len()).unwrap_or(0)));
-        assert!(status.success());
-        let probe = Command::new(ffmpeg.with_file_name(ffmpeg.file_name().unwrap().to_string_lossy().replace("ffmpeg", "ffprobe")))
-            .args(["-v", "error", "-select_streams", "v:0", "-count_frames", "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0"])
-            .arg(&out).output().unwrap();
-        assert_eq!(String::from_utf8_lossy(&probe.stdout).trim(), "300", "12 s at 25 fps");
-        let _ = fs::remove_dir_all(&dir);
+        let Some(status) = status else {
+            let size = fs::metadata(&out).map(|meta| meta.len()).unwrap_or(0);
+            panic!("the export never ended (#940): {size} bytes after 120 s");
+        };
+        assert!(status.success(), "the export failed: {status} (an endless one can also run out of memory, #940)");
+        let ffprobe = ffmpeg.with_file_name(ffmpeg.file_name().unwrap().to_string_lossy().replace("ffmpeg", "ffprobe"));
+        let probe = |entries: &str| {
+            let output = Command::new(&ffprobe).args(["-v", "error", "-select_streams", "v:0", "-count_frames", "-show_entries", entries, "-of", "csv=p=0"])
+                .arg(&out).output().unwrap();
+            String::from_utf8_lossy(&output.stdout).trim().to_owned()
+        };
+        assert_eq!(probe("stream=nb_read_frames"), "300", "12 s at 25 fps");
+        let duration: f64 = probe("stream=duration").parse().unwrap();
+        assert!((duration - 12.0).abs() < 0.001, "video stream {duration} s");
+        // The box's middle (inside its edges) at 10 s is white: libass drew the line on the last part.
+        let pixels = |at: &str| {
+            let output = Command::new(&ffmpeg).args(["-v", "error", "-ss", at, "-i"]).arg(&out)
+                .args(["-frames:v", "1", "-vf", "crop=40:14:110:108,format=gray", "-f", "rawvideo", "-"]).output().unwrap();
+            output.stdout
+        };
+        let inside = pixels("10");
+        assert_eq!(inside.len(), 40 * 14);
+        assert!(inside.iter().all(|&luma| luma >= 200), "the burned line is not on the frame at 10 s: min {:?}", inside.iter().min());
+        assert!(pixels("6").iter().any(|&luma| luma < 200), "the box shows outside its time");
         println!("zoom-end: ran against real FFmpeg");
     }
 }

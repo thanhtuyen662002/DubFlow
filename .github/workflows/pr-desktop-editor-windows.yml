@@ -183,7 +183,7 @@ jobs:
           $text = Get-Content -LiteralPath $log -Raw
           if ($text -notmatch '(?m)zoom-end: ran against real FFmpeg\s*$') { throw 'Zoomed-parts export end test did not run against real FFmpeg (marker missing)' }
           if ($text -notmatch '(?m)^test result: ok\. 1 passed; 0 failed;') { throw 'Expected exactly one zoomed-parts export end test to pass' }
-          Write-Host 'Zoomed parts (zoom + tilt, the last part included) with a burned layer export to their own length through the pinned FFmpeg'
+          Write-Host 'Zoomed parts (zoom + tilt, the last part included) with Phụ đề burned by libass export to their own length through the pinned FFmpeg'
 
       - name: Run the media adapter tests against real FFmpeg
         shell: pwsh
