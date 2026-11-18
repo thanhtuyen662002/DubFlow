@@ -51,6 +51,7 @@ import { pickFromMedia } from "./features/media/picker.ts";
 import { COVER_STORAGE_KEY, describeCoverStyle, normalizeCoverStyle, storedCoverStyle, type CoverMode, type CoverStyle } from "./features/edit/cover.ts";
 import { configureHostAi, createAiSession, isKeyError, PROVIDERS } from "./features/ai/provider.ts";
 import { loadPrefs, translationJobArgs } from "./features/ai/translation_prefs.ts";
+import { decideAiContext, setKeysClosed } from "./features/ai/ai_context.ts";
 import { glossaryArgs } from "./features/ai/glossary.ts";
 import { mountGlossaryBooks, mountJobGlossary } from "./features/ai/glossary_view.ts";
 import { rewriteAsNarration, type NarrationStyle } from "./features/narration/ai.ts";
@@ -134,8 +135,12 @@ const packageVideo = mountPackage(invoke, { cpuOnly });
 const claudeKey = createAiSession(hostKeyStore(invoke));
 // ChatGPT, DeepSeek, Qwen… are called through the host with the model chosen in Cài đặt AI.
 configureHostAi(invoke, (provider) => claudeKey.options(provider));
-/** Saved keys and model choices; a job started before they load waits for them. */
-const aiRestored = claudeKey.restore().catch(() => undefined);
+/** Saved keys and model choices, and whether this run may use saved keys; a job started before they load waits for them. */
+const aiRestored = Promise.all([
+  claudeKey.restore().catch(() => undefined),
+  // DUBFLOW_NO_SAVED_KEYS (a candidate or test run): no AI translation and no question about it, custom server included.
+  invoke<Record<string, unknown> | null>("ai_key_status").then((status) => setKeysClosed(status?.keysClosed === true), () => undefined),
+]).then(() => undefined);
 // The sound-effect pack and the user's sound folder (editor Âm thanh, Cài đặt).
 const sfxLibrary = createSfxLibrary(invoke);
 const shorts = mountShorts(invoke, claudeKey);
@@ -676,6 +681,11 @@ const editor = mountEditor(invoke, {
   },
   sfx: sfxLibrary,
   ai: claudeKey,
+  // Tách phụ đề asks, once, before a saved key translates (as a dubbing job does).
+  decideAi: async () => {
+    await aiRestored;
+    return decideAiContext(claudeKey, "start");
+  },
   openAiSettings: () => aiSettings.open(),
   // The recording goes as the raw body (a JSON array of bytes would be several times larger).
   saveRecording: (bytes, outputPath, kind) => isTauri
@@ -1380,13 +1390,16 @@ async function startJob(job: QueueJob): Promise<void> {
   queue.updateStatus(job.id, { ...job.status, state: "RUNNING", reason: "starting", message: "Đang khởi động xử lý" });
   try {
     await aiRestored;
+    // Asked once, before a saved key is first used for translation; meanwhile the job waits (it is already RUNNING,
+    // so no other start can begin). "Không", Esc or nothing ready: no AI.
+    const aiContext = await decideAiContext(claudeKey, "start");
     const request = startJobRequest(job, outputRoot(), cpuOnly(), rememberedSubtitleStyle(), rememberedCoverStyle());
     const started = await invoke<{ output_dir: string } | null>("start_job", {
       ...request,
       // The Vibi.pro voice when "Giọng Vibi.pro" is on; the host adds the saved key.
       cloudVoice: dubbingVoice(loadVibiChoice(), request.enableDubbing === true),
       // "Dịch phụ đề bằng AI theo ngữ cảnh" and "Từ nhạy cảm" (Cài đặt › Tài khoản); the host adds the saved key.
-      ...translationJobArgs(loadPrefs(), claudeKey, job.displayName),
+      ...translationJobArgs(loadPrefs(), claudeKey, job.displayName, aiContext),
       // Thuật ngữ & ngữ cảnh (Issue #903): read only by the translation step.
       glossary: glossaryArgs(job.glossary, glossaryBooks.books()),
     });

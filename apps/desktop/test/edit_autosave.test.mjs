@@ -1998,7 +1998,7 @@ for (const action of ["close", "exit"]) {
   assert.match(confirm, /backdrop\.className = "confirm-backdrop"/);
   assert.match(confirm, /panel\.className = "confirm-panel"/);
   assert.match(confirm, /actions\.className = "confirm-actions"/);
-  assert.match(confirm, /document\.body\.append\(backdrop\);\s*confirm\.focus\(\);\s*\}\);\s*\}/, "the dialog is on the page when confirmDialog returns");
+  assert.match(confirm, /document\.body\.append\(backdrop\);\s*[^;\n]*\.focus\(\);\s*\}\);\s*\}/, "the dialog is on the page when confirmDialog returns");
   // the page's questions, on a stand-in document: the newest panel's first button gets the focus
   const focused = [];
   const panel = (name) => ({ querySelector: (selector) => selector === ".confirm-actions button" ? { focus: () => focused.push(name) } : null });
@@ -2016,7 +2016,8 @@ for (const action of ["close", "exit"]) {
   } finally {
     delete globalThis.document;
   }
-  assert.match(confirm, /cancelFocused \? "cancel" : "confirm"/, "Enter on the focused Ở lại answers stay");
+  const { confirmKeyAction } = await import("../src/shell/confirm.ts");
+  assert.equal(confirmKeyAction("Enter", false, true), "cancel", "Enter on the focused Ở lại answers stay");
 }
 
 // The wiring (view.ts and main.ts are DOM code): a failed save reaches the saver, and every close goes through the guard.

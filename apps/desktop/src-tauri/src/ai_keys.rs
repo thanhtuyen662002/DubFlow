@@ -86,6 +86,8 @@ fn status_in(closed: bool, from: &Store) -> Result<Value, String> {
         let key = saved_in(closed, from, &target(provider)?)?;
         status.insert(provider.to_owned(), json!(key.as_deref().map(masked)));
     }
+    // So the webview neither asks about nor sends AI translation in such a run (a custom server needs no key).
+    status.insert("keysClosed".to_owned(), json!(closed));
     Ok(Value::Object(status))
 }
 
@@ -370,6 +372,7 @@ mod tests {
         assert_eq!(saved_in(true, &STAND_IN, "DubFlow/ai-key/claude").unwrap(), None);
         let status = status_in(true, &STAND_IN).unwrap();
         assert!(PROVIDERS.iter().chain(VOICE_PROVIDERS.iter()).all(|provider| status[*provider].is_null()));
+        assert_eq!(status["keysClosed"], json!(true));
         let refused = set_in(true, &STAND_IN, "claude", "stand-in-key-not-real-0042").unwrap_err();
         assert!(refused.contains(NO_SAVED_KEYS_ENV), "{refused}");
         assert!(delete_in(true, &STAND_IN, "claude").unwrap_err().contains(NO_SAVED_KEYS_ENV));
@@ -377,6 +380,7 @@ mod tests {
         // open: the same calls reach the store (so the test above proves the guard, not a broken stand-in)
         assert_eq!(saved_in(false, &STAND_IN, "DubFlow/ai-key/claude").unwrap().as_deref(), Some("stand-in-key-not-real-0042"));
         assert_eq!(status_in(false, &STAND_IN).unwrap()["gemini"], "…0042");
+        assert_eq!(status_in(false, &STAND_IN).unwrap()["keysClosed"], json!(false));
         assert_eq!(set_in(false, &STAND_IN, "claude", "stand-in-key-not-real-0042").unwrap(), "…0042");
         delete_in(false, &STAND_IN, "vibi").unwrap();
         let seen = calls();

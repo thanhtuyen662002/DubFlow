@@ -7,6 +7,7 @@
  */
 import type { QueueJob } from "../queue/model.ts";
 import type { ConfirmOptions } from "../../shell/confirm.ts";
+import type { AiContext } from "../ai/ai_context.ts";
 import { COVER_STORAGE_KEY, type AutoRegion, type CoverDocument } from "./cover.ts";
 import { formatClock, MAIN, outputToSource, parseClock, type Edit } from "./model.ts";
 import {
@@ -72,8 +73,13 @@ export type SubtitleContext = {
   plainChanged: (burst?: string) => void;
   /** Draw a plain video's Che at a time of the main video, when it shows. */
   plainCover: (seconds: number | null) => void;
-  /** Tách phụ đề: the open video and the user's AI translation settings, for edit_subs_extract. */
-  extractArgs: () => Record<string, unknown> | null;
+  /**
+   * Tách phụ đề: the open video and the user's translation settings, for edit_subs_extract. AI translation only
+   * with `aiContext` "on" (from `decideAi`); left out, the arguments carry none.
+   */
+  extractArgs: (aiContext?: AiContext) => Record<string, unknown> | null;
+  /** Asks once, before a saved key is first used for translation; the answer to pass to `extractArgs`. */
+  decideAi: () => Promise<AiContext>;
 };
 
 export type SubtitleMode = {
@@ -1313,9 +1319,11 @@ export function mountSubtitles(invoke: Invoke, host: SubtitleHost, context: Subt
   }
 
   extractStart.addEventListener("click", async () => {
-    if (!layers || extracting) return;
-    const args = context.extractArgs();
-    if (!args) return;
+    if (!layers || extracting || !context.extractArgs()) return;
+    const aiContext = await context.decideAi();
+    // The dialog is modal, but the video could still have closed meanwhile.
+    const args = context.extractArgs(aiContext);
+    if (!layers || extracting || !args) return;
     extractState("Đang bắt đầu tách phụ đề…", true);
     try {
       await invoke("edit_subs_extract", { ...args, language: extractLang.value });

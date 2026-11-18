@@ -63,25 +63,28 @@ assert.deepEqual(parseWordList("Chết = chớt\n\n giết→giớt \nchết = k
   { from: "chết", to: "chớt" }, { from: "giết", to: "giớt" }, { from: "dao", to: "dao" }]);
 assert.equal(formatWordList([{ from: "chết", to: "chớt" }, { from: "dao", to: "dao" }]), "chết = chớt\ndao");
 assert.deepEqual(parseWordList(formatWordList(DEFAULT_SENSITIVE_WORDS)), [...DEFAULT_SENSITIVE_WORDS]);
+// The AI translation choice is no longer part of these settings (ai_context.ts keeps it on its own).
 assert.deepEqual(normalizePrefs({ sensitiveMode: "loud", aiTranslation: false, words: "x" }),
-  { aiTranslation: false, sensitiveMode: "off", words: [...DEFAULT_SENSITIVE_WORDS], beepSound: "beep", beepFile: null });
+  { sensitiveMode: "off", words: [...DEFAULT_SENSITIVE_WORDS], beepSound: "beep", beepFile: null });
+assert.equal("aiTranslation" in normalizePrefs({ aiTranslation: true }), false);
 // The covering sound: a known one, and a file choice only with its file.
 assert.equal(normalizePrefs({ beepSound: "dog" }).beepSound, "dog");
 assert.equal(normalizePrefs({ beepSound: "cat" }).beepSound, "beep");
 assert.equal(normalizePrefs({ beepSound: "custom" }).beepSound, "beep");
 assert.deepEqual([normalizePrefs({ beepSound: "custom", beepFile: "D:\\sfx\\meo.mp3" }).beepSound, normalizePrefs({ beepFile: "a\nb" }).beepFile], ["custom", null]);
 
-// Job arguments: AI translation only with a saved key (or a custom server); words only when on.
-const prefs = { aiTranslation: true, sensitiveMode: "beep", words: [{ from: "chết", to: "chớt" }] };
+// Job arguments: AI translation only when the user said yes and with a saved key (or a custom server); words only when on.
+// The "ask"/"off" cases are in ai_context.test.mjs.
+const prefs = { sensitiveMode: "beep", words: [{ from: "chết", to: "chớt" }] };
 const fake = (provider, saved, options = {}) => ({ provider: () => provider, saved: () => saved, options: () => options });
-assert.deepEqual(translationJobArgs(prefs, fake("deepseek", "…1234"), "Video"), {
+assert.deepEqual(translationJobArgs(prefs, fake("deepseek", "…1234"), "Video", "on"), {
   aiTranslation: { provider: "deepseek", model: "deepseek-flash", baseUrl: null },
   sensitiveWords: { mode: "beep", words: [{ from: "chết", to: "chớt" }], sound: "beep" }, title: "Video" });
-assert.equal(translationJobArgs(prefs, fake("deepseek", null), "").aiTranslation, null);
-assert.equal(translationJobArgs({ ...prefs, aiTranslation: false }, fake("gemini", "…1"), "").aiTranslation, null);
-assert.deepEqual(translationJobArgs(prefs, fake("custom", null, { baseUrl: "http://localhost:1234/v1", model: "m" }), "").aiTranslation,
+assert.equal(translationJobArgs(prefs, fake("deepseek", null), "", "on").aiTranslation, null);
+assert.equal(translationJobArgs(prefs, fake("gemini", "…1"), "", "off").aiTranslation, null);
+assert.deepEqual(translationJobArgs(prefs, fake("custom", null, { baseUrl: "http://localhost:1234/v1", model: "m" }), "", "on").aiTranslation,
   { provider: "custom", model: "m", baseUrl: "http://localhost:1234/v1" });
-assert.equal(translationJobArgs({ ...prefs, sensitiveMode: "off" }, fake("gemini", "…1"), "").sensitiveWords, null);
+assert.equal(translationJobArgs({ ...prefs, sensitiveMode: "off" }, fake("gemini", "…1"), "", "on").sensitiveWords, null);
 assert.deepEqual(sensitiveArgs({ ...prefs, beepSound: "bird" }), { mode: "beep", words: prefs.words, sound: "bird" });
 assert.deepEqual(sensitiveArgs({ ...prefs, beepSound: "custom", beepFile: "D:\\a.mp3" }), { mode: "beep", words: prefs.words, sound: "custom", sound_file: "D:\\a.mp3" });
 assert.deepEqual(sensitiveArgs({ ...prefs, sensitiveMode: "variant", beepSound: "dog" }), { mode: "variant", words: prefs.words });

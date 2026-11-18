@@ -6,6 +6,9 @@ import {
   DEFAULT_SENSITIVE_WORDS, formatWordList, loadPrefs, parseWordList, savePrefs, type SensitiveMode, type TranslationPrefs,
 } from "./translation_prefs.ts";
 import { playFor, playSamples, soundClip, type BeepSound } from "./beep_sound.ts";
+import {
+  aiContextAnswered, aiContextHint, decideAiContext, loadAiContext, providerReady, resetAiContextIfNoKey, saveAiContext,
+} from "./ai_context.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 
@@ -93,9 +96,7 @@ export const FREE_TIER_NOTE = "Gói miễn phí giới hạn số lần gọi m�
 
 /** Whether any provider is ready for AI translation (a saved key, or a custom server with a model). */
 export function anyKeyReady(session: AiSession): boolean {
-  return PROVIDER_IDS.some((id) => id === "custom"
-    ? Boolean(session.options(id).baseUrl && session.options(id).model)
-    : session.saved(id) !== null);
+  return PROVIDER_IDS.some((id) => providerReady(session, id));
 }
 
 /** The user's message for a failed "Kiểm tra khóa". */
@@ -134,7 +135,9 @@ export function mountAiSettings(session: AiSession, reveal: () => void, invoke?:
   const state = $("#ai-settings-state");
   const providerSelect = $<HTMLSelectElement>("#ai-settings-provider");
   providerSelect.replaceChildren(...PROVIDER_IDS.map((id) => element("option", { value: id, textContent: PROVIDERS[id].label })));
-  $("#ai-settings-note").textContent = `${KEY_STORAGE_NOTE.replace("; đổi hoặc xóa trong “Cài đặt › Tài khoản”", "")} Khóa chỉ được dùng để gọi đúng nhà cung cấp đó khi bạn dùng tính năng AI hoặc dịch phụ đề.`;
+  $("#ai-settings-note").textContent = `${KEY_STORAGE_NOTE.replace("; đổi hoặc xóa trong “Cài đặt › Tài khoản”", "")} Khóa chỉ được dùng để gọi đúng nhà cung cấp đó khi bạn dùng tính năng AI hoặc đã bật dịch phụ đề bằng AI.`;
+  // Read (and an older "off" carried over) before any save of the translation settings below drops the old field.
+  loadAiContext();
   let prefs = loadPrefs();
 
   function card(provider: Provider): HTMLElement {
@@ -247,6 +250,13 @@ export function mountAiSettings(session: AiSession, reveal: () => void, invoke?:
         await setKeyFor(session, provider, input.value);
         state.textContent = `Đã lưu khóa ${info.name}. Bấm “Kiểm tra khóa” để chắc chắn khóa dùng được.`;
         render();
+        // The first key: ask now, while the user is looking at it, whether it may translate subtitles (charged). Only
+        // for the key that would translate (the default provider's); another one is asked about when it first would.
+        if (provider === session.provider() && loadAiContext() === "ask") {
+          const answer = await decideAiContext(session, "saved");
+          if (answer !== "ask") state.textContent = `${state.textContent} ${aiContextAnswered(session.provider(), answer)}`;
+          renderPrefs();
+        }
       } catch (error) {
         state.textContent = String(error).slice(0, 200);
         save.disabled = false;
@@ -255,6 +265,8 @@ export function mountAiSettings(session: AiSession, reveal: () => void, invoke?:
     remove.addEventListener("click", async () => {
       try {
         await setKeyFor(session, provider, "");
+        // The last key gone: a yes given for it is not a yes for whatever key comes next.
+        resetAiContextIfNoKey(session);
         state.textContent = `Đã xóa khóa ${info.name} khỏi máy này.`;
         render();
       } catch (error) {
@@ -305,7 +317,8 @@ export function mountAiSettings(session: AiSession, reveal: () => void, invoke?:
   const sensitiveSound = $<HTMLSelectElement>("#sensitive-sound");
   let previewAudio: HTMLAudioElement | null = null;
   function renderPrefs(): void {
-    aiToggle.checked = prefs.aiTranslation;
+    const aiContext = loadAiContext();
+    aiToggle.checked = aiContext === "on";
     sensitiveMode.value = prefs.sensitiveMode;
     sensitiveWords.value = formatWordList(prefs.words);
     $("#sensitive-words-box").hidden = prefs.sensitiveMode === "off";
@@ -317,11 +330,11 @@ export function mountAiSettings(session: AiSession, reveal: () => void, invoke?:
     fileNote.textContent = prefs.beepSound === "custom" ? (name ? `Đang dùng: ${name}` : "Chưa chọn file: bấm “Chọn file âm thanh…” (chưa có file thì video dùng tiếng bíp).") : "";
     fileNote.title = prefs.beepSound === "custom" ? prefs.beepFile ?? "" : "";
     const provider = session.provider();
-    const ready = provider === "custom" ? Boolean(session.options(provider).baseUrl && session.options(provider).model) : session.saved(provider) !== null;
+    const ready = providerReady(session, provider);
     const hint = $("#ai-translate-hint");
     hint.textContent = ready
-      ? `Video mới: ${PROVIDERS[provider].name} dịch cả đoạn hội thoại theo ngữ cảnh (xưng hô, thành ngữ, văn nói). Nếu AI lỗi, phụ đề dùng bản dịch offline như cũ. Lời thoại được gửi tới ${PROVIDERS[provider].company}.` +
-        (provider === "gemini" ? " Nếu là khóa miễn phí, Google có thể dùng lời thoại để cải thiện sản phẩm; video riêng tư hãy dùng khóa trả phí hoặc tắt mục này." : "")
+      ? aiContextHint(provider, aiContext, `Video mới: ${PROVIDERS[provider].name} dịch cả đoạn hội thoại theo ngữ cảnh (xưng hô, thành ngữ, văn nói). Nếu AI lỗi, phụ đề dùng bản dịch offline như cũ. Lời thoại được gửi tới ${PROVIDERS[provider].company}.` +
+        (provider === "gemini" ? " Nếu là khóa miễn phí, Google có thể dùng lời thoại để cải thiện sản phẩm; video riêng tư hãy dùng khóa trả phí hoặc tắt mục này." : ""))
       : provider === "custom"
         ? "Chưa nhập địa chỉ máy chủ và model: phụ đề đang dùng bộ dịch offline (dịch từng câu)."
         : `Chưa có khóa ${PROVIDERS[provider].name}: phụ đề đang dùng bộ dịch offline (dịch từng câu). Lưu khóa ở mục Tài khoản để dịch theo ngữ cảnh.`;
@@ -331,7 +344,11 @@ export function mountAiSettings(session: AiSession, reveal: () => void, invoke?:
       hint.append(" ", go);
     }
   }
-  aiToggle.addEventListener("change", () => { prefs = { ...prefs, aiTranslation: aiToggle.checked }; savePrefs(prefs); });
+  // Turning it on here, next to the hint that says it is charged, is the user's answer too.
+  aiToggle.addEventListener("change", () => {
+    saveAiContext(aiToggle.checked ? "on" : "off");
+    renderPrefs();
+  });
   sensitiveMode.addEventListener("change", () => {
     prefs = { ...prefs, sensitiveMode: sensitiveMode.value as SensitiveMode };
     savePrefs(prefs);
