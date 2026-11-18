@@ -2725,7 +2725,8 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(10), "the probe did not hold the check");
         assert_eq!(read_check(&work, &video)["state"], "STOPPED");
         let pid = fs::read_to_string(&pid_file).unwrap();
-        let alive = Command::new("kill").args(["-0", pid.trim()]).status().is_ok_and(|status| status.success());
+        // silenced: a "No such process" line from kill would land in the CI log the Linux job greps
+        let alive = Command::new("kill").args(["-0", pid.trim()]).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|status| status.success());
         assert!(!alive, "the probe is gone");
         let _ = fs::remove_dir_all(dir);
     }
