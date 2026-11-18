@@ -952,7 +952,7 @@ fn open_own(path: &Path) -> Option<fs::File> {
     {
         use std::os::unix::fs::OpenOptionsExt;
         // O_NONBLOCK: a FIFO planted here opens at once (and is then refused) instead of hanging the reader.
-        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        options.custom_flags(NO_FOLLOW);
     }
     #[cfg(windows)]
     {
@@ -972,14 +972,42 @@ fn links(_file: &fs::File, metadata: &fs::Metadata) -> Option<u64> {
     Some(metadata.nlink())
 }
 
+/// O_NOFOLLOW | O_NONBLOCK (the values of libc, which this crate does not take in: no manifest change for two flags).
+#[cfg(all(any(target_os = "linux", target_os = "android"),
+          any(target_arch = "x86", target_arch = "x86_64", target_arch = "riscv64", target_arch = "loongarch64", target_arch = "s390x")))]
+const NO_FOLLOW: i32 = 0x20000 | 0x800;
+#[cfg(all(any(target_os = "linux", target_os = "android"),
+          any(target_arch = "arm", target_arch = "aarch64", target_arch = "powerpc", target_arch = "powerpc64")))]
+const NO_FOLLOW: i32 = 0x8000 | 0x800;
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd", target_os = "dragonfly"))]
+const NO_FOLLOW: i32 = 0x100 | 0x4;
+
 /// How many names the opened file has.
 #[cfg(windows)]
 fn links(file: &fs::File, _metadata: &fs::Metadata) -> Option<u64> {
     use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Storage::FileSystem::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION};
-    // SAFETY: the handle is open for the call and the structure is plain data the call fills.
-    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
-    (unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut info) } != 0).then_some(u64::from(info.nNumberOfLinks))
+    #[repr(C)]
+    #[derive(Default)]
+    #[allow(dead_code)] // filled by Windows; only `links` is read
+    struct FileInformation {
+        attributes: u32,
+        created: [u32; 2],
+        accessed: [u32; 2],
+        written: [u32; 2],
+        volume: u32,
+        size_high: u32,
+        size_low: u32,
+        links: u32,
+        index_high: u32,
+        index_low: u32,
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetFileInformationByHandle(file: *mut std::ffi::c_void, information: *mut FileInformation) -> i32;
+    }
+    let mut info = FileInformation::default();
+    // SAFETY: the handle is open for the call and `info` is a valid out pointer (as in storage.rs).
+    (unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } != 0).then_some(u64::from(info.links))
 }
 
 /// A check of this window runs in `dir`.

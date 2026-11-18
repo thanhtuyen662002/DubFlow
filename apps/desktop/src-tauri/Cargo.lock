@@ -898,7 +898,6 @@ dependencies = [
 name = "dubflow-desktop-host"
 version = "0.1.0"
 dependencies = [
- "libc",
  "rfd",
  "serde",
  "serde_json",
