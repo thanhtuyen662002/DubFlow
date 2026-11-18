@@ -873,10 +873,21 @@ fn check_dir(work: &Path, video: &Path) -> PathBuf {
     work.join(CHECKS_DIR).join(file_key(video))
 }
 
-/// Written only while `work`, `checks` and the folder are still plain folders.
+/// Written only while `work`, `checks` and the folder are still plain folders, through `write_held`.
 fn save(work: &Path, dir: &Path, report: &ExportCheck) {
+    write_held(work, dir, "check.json", &serde_json::to_vec(report).unwrap_or_default(), &|| {});
+}
+
+/// Write `name` in the check folder `dir` while the folder is held (`pin`) for just this write: on Windows the
+/// folder, `checks`, `work` and the folders above cannot be renamed or swapped for a junction meanwhile, and on Linux
+/// the write goes through the held handle (/proc/self/fd), so a swap never leads it outside. A check waiting its
+/// turn holds the folder only for these moments (Lead review 4611211117). `between` runs after the last look and
+/// right before the write (tests race it there).
+fn write_held(work: &Path, dir: &Path, name: &str, bytes: &[u8], between: &dyn Fn()) {
+    let Some(pinned) = pin(work, dir) else { return };
     if owned(work, dir) {
-        let _ = write_durable(&dir.join("check.json"), &serde_json::to_vec(report).unwrap_or_default());
+        between();
+        let _ = write_durable(&held_base(&pinned, dir).join(name), bytes);
     }
 }
 
@@ -892,9 +903,7 @@ pub(super) fn run(work: &Path, ffmpeg: &Path, plan: Plan) {
     if !register(&CHECKING, &CLOSING, &dir, &running) {
         return; // DubFlow is closing
     }
-    if owned(work, &dir) {
-        let _ = write_durable(&dir.join("plan.json"), &serde_json::to_vec(&plan).unwrap_or_default());
-    }
+    write_held(work, &dir, "plan.json", &serde_json::to_vec(&plan).unwrap_or_default(), &|| {});
     let mut held = None;
     let report = match wait_turn(work, &dir, &plan, &running) {
         // The folder is held, then the lease taken, only once the turn is this check's: a check waiting its turn
@@ -1131,8 +1140,8 @@ fn hold_checks(work: &Path) -> Option<fs::File> {
     (unlinked(work) && plain(&checks)).then_some(held)
 }
 
-/// Where the folders inside the held `checks` are reached: through the handle itself on Linux, by name elsewhere
-/// (on Windows the handle keeps that name from being swapped).
+/// Where the files and folders inside a held folder are reached: through the handle itself on Linux, by name
+/// elsewhere (on Windows the handle keeps that name from being swapped).
 #[cfg(target_os = "linux")]
 fn held_base(held: &fs::File, _checks: &Path) -> PathBuf {
     use std::os::unix::io::AsRawFd;
@@ -2563,6 +2572,61 @@ mod tests {
         fs::write(folder.join("check.json"), serde_json::to_vec(&ExportCheck::new(&video, "RUNNING")).unwrap()).unwrap();
         assert_eq!(settle(&work, &folder, &video).unwrap()["state"], "INTERRUPTED");
         assert_eq!(read_check(&work, &video)["state"], "INTERRUPTED");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// The plan and the waiting report are written while no check holds the folder (a check waiting its turn
+    /// holds nothing): `checks` swapped for a link to an outside folder holding the same check folder, between the
+    /// look and the write, never leads either write outside. On Windows the folder is held for the write, so the swap
+    /// is refused; on Linux the swap happens and the write still lands in the real folder, through the held handle
+    /// (Lead review 4611211117).
+    #[test]
+    fn plan_and_waiting_writes_never_go_through_checks_swapped_mid_write() {
+        use sha2::{Digest, Sha256};
+        let dir = temp("held-write");
+        let work = dir.join("work");
+        let checks = work.join(CHECKS_DIR);
+        let video = dir.join("Phim.mp4");
+        let folder = check_dir(&work, &video);
+        fs::create_dir_all(&folder).unwrap();
+        let elsewhere = dir.join("elsewhere");
+        let outside = elsewhere.join(folder.file_name().unwrap());
+        fs::create_dir_all(&outside).unwrap();
+        for name in ["plan.json", "check.json"] {
+            fs::write(outside.join(name), format!("user data in {name}")).unwrap();
+        }
+        let marks = || ["plan.json", "check.json"].map(|name| {
+            let bytes = fs::read(outside.join(name)).unwrap();
+            (Sha256::digest(&bytes).to_vec(), bytes, fs::metadata(outside.join(name)).unwrap().modified().unwrap())
+        });
+        let before = marks();
+        let moved = dir.join("checks-real");
+        for name in ["plan.json", "check.json"] {
+            let swapped = std::cell::Cell::new(false);
+            write_held(&work, &folder, name, b"{\"new\":true}", &|| {
+                if fs::rename(&checks, &moved).is_ok() {
+                    link_dir(&elsewhere, &checks);
+                    swapped.set(true);
+                }
+            });
+            assert_eq!(marks(), before, "{name}: the outside files keep their bytes, SHA-256 and modified time");
+            #[cfg(windows)]
+            {
+                assert!(!swapped.get(), "{name}: the held folder's checks cannot be renamed");
+                assert_eq!(fs::read(folder.join(name)).unwrap(), b"{\"new\":true}", "{name}: written in the real folder");
+            }
+            if swapped.get() {
+                unlink_dir(&checks);
+                assert_eq!(fs::read(moved.join(folder.file_name().unwrap()).join(name)).unwrap(), b"{\"new\":true}",
+                    "{name}: written in the real folder, through the held handle");
+                fs::rename(&moved, &checks).unwrap();
+            }
+        }
+        // with nothing racing, both are written in the check folder
+        write_held(&work, &folder, "plan.json", b"{}", &|| {});
+        save(&work, &folder, &ExportCheck { waiting: true, ..ExportCheck::new(&video, "RUNNING") });
+        assert_eq!(fs::read(folder.join("plan.json")).unwrap(), b"{}");
+        assert_eq!(read_check_file(&folder.join("check.json")).unwrap()["waiting"], true);
         let _ = fs::remove_dir_all(dir);
     }
 
