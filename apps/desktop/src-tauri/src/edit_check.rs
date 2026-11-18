@@ -517,7 +517,7 @@ fn measure_subtitles(work: &Path, ffmpeg: &Path, frame: &SubtitleFrame, video: &
     args.extend(["-vf".into(), format!("format=rgb24,{},format=gray,bbox", filters.join(",")).into()]);
     args.extend(["-f", "null", "-"].map(OsString::from));
     // About 150 bytes of log per stretch.
-    let (result, text) = run_logged(ffmpeg, args, work, dir, "measure.log", LOG_LIMIT + 512 * starts.len() as u64, running, |_| {});
+    let (result, text) = run_logged(ffmpeg, args, work, dir, "measure.log", LOG_LIMIT + 512 * starts.len() as u64, running, |_| {}, |_| {});
     if let Err(error) = result {
         return unmeasured(if error.is_empty() { "FFmpeg dừng giữa chừng".into() } else { error });
     }
@@ -601,12 +601,13 @@ fn fresh_file_with(work: &Path, dir: &Path, name: &str, between: &dyn Fn()) -> O
     fs::OpenOptions::new().read(true).write(true).create_new(true).open(&path).ok()
 }
 
-/// Run FFmpeg tracked by `running` with its log in a `fresh_file`, read back through the same handle (at most
-/// `limit` bytes): whether it exited 0 (else its last log line) and the log.
+/// Run FFmpeg tracked by `running` with its log in a `fresh_file`, read back through the same handle: every log line
+/// goes to `each`, however long the log; whether it exited 0 (else its last log line) and the log's first `limit`
+/// bytes.
 #[allow(clippy::too_many_arguments)]
 fn run_logged(ffmpeg: &Path, args: Vec<OsString>, work: &Path, dir: &Path, name: &str, limit: u64, running: &Running,
-              mut line: impl FnMut(&str)) -> (Result<(), String>, String) {
-    use std::io::{Read, Seek};
+              mut line: impl FnMut(&str), mut each: impl FnMut(&str)) -> (Result<(), String>, String) {
+    use std::io::{BufRead, Read, Seek};
     // Without its log FFmpeg's findings would be lost and the pass would look clean: then it does not run.
     let Some(mut log) = fresh_file(work, dir, name) else {
         return (Err(fail("Không tạo được nhật ký kiểm tra")), String::new());
@@ -623,15 +624,35 @@ fn run_logged(ffmpeg: &Path, args: Vec<OsString>, work: &Path, dir: &Path, name:
         line(&text);
     }
     let ok = wait_tracked(running, id);
-    let mut bytes = Vec::new();
+    let (mut head, mut last) = (Vec::new(), String::new());
     if log.rewind().is_ok() {
-        let _ = (&mut log).take(limit).read_to_end(&mut bytes);
+        let mut reader = BufReader::new(&mut log);
+        let mut bytes = Vec::new();
+        loop {
+            bytes.clear();
+            // a line at most LINE_LIMIT long (a longer one is read on in pieces)
+            match (&mut reader).take(LINE_LIMIT).read_until(b'\n', &mut bytes) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+            if (head.len() as u64) < limit {
+                let room = usize::try_from(limit - head.len() as u64).unwrap_or(usize::MAX).min(bytes.len());
+                head.extend_from_slice(&bytes[..room]);
+            }
+            let text = String::from_utf8_lossy(&bytes);
+            let text = text.trim_end_matches(['\n', '\r']);
+            if !text.trim().is_empty() {
+                last = text.trim().chars().take(240).collect();
+            }
+            each(text);
+        }
     }
-    let text = String::from_utf8_lossy(&bytes).into_owned();
-    let last = || text.lines().rev().find(|line| !line.trim().is_empty()).map(|line| line.trim().chars().take(240).collect::<String>());
-    let result = if ok { Ok(()) } else { Err(last().unwrap_or_default()) };
-    (result, text)
+    let result = if ok { Ok(()) } else { Err(last) };
+    (result, String::from_utf8_lossy(&head).into_owned())
 }
+
+/// The longest piece of one log line `run_logged` reads at once.
+const LINE_LIMIT: u64 = 64 * 1024;
 
 /// ffprobe on `video`, tracked by `running` like FFmpeg, so Dừng kiểm tra and closing DubFlow end it too.
 fn probe_tracked(ffprobe: &Path, video: &Path, running: &Running) -> Option<Probe> {
@@ -691,17 +712,39 @@ fn field(line: &str, name: &str) -> Option<f64> {
 /// The log's facts; a freeze still open at the end runs to `decoded_end`
 /// (the same rule as an open silence in analysis.py).
 fn read_log(text: &str, decoded_end: f64) -> LogFacts {
-    let mut facts = LogFacts::default();
-    let mut open: Option<f64> = None;
+    let mut reader = LogReader::default();
     for line in text.lines() {
+        reader.line(line);
+    }
+    reader.finish(decoded_end)
+}
+
+/// The largest JSON block kept while reading the log (loudnorm's is under 1 KB).
+const BLOCK_LIMIT: usize = 64 * 1024;
+
+/// `read_log`, a line at a time: the whole log is read, however long, so no event after some size is ever lost
+/// (a damaged export logs an error per broken block; its black stretches still count; recheck 22).
+#[derive(Default)]
+struct LogReader {
+    facts: LogFacts,
+    open: Option<f64>,
+    /// The JSON block being read, from its `{`.
+    block: Option<String>,
+    /// The last whole block holding `"input_i"` (loudnorm's; measure.py reads the last one the same way).
+    loudnorm: Option<String>,
+}
+
+impl LogReader {
+    fn line(&mut self, line: &str) {
+        let facts = &mut self.facts;
         // By the filters' own keys, not by the "[blackdetect @" prefix: FFmpeg names a filter
         // instance as it likes ("[Parsed_blackdetect_1 @"), and that name may change between builds.
         if let (Some(start), Some(end)) = (field(line, "black_start:"), field(line, "black_end:")) {
             facts.black.push((start, end));
         } else if let Some(start) = field(line, "freezedetect.freeze_start:") {
-            open = Some(start);
+            self.open = Some(start);
         } else if let Some(end) = field(line, "freezedetect.freeze_end:") {
-            if let Some(start) = open.take() {
+            if let Some(start) = self.open.take() {
                 facts.freeze.push((start, end));
             }
         }
@@ -715,19 +758,40 @@ fn read_log(text: &str, decoded_end: f64) -> LogFacts {
                 break;
             }
         }
-    }
-    if let Some(start) = open {
-        facts.freeze.push((start, decoded_end.max(start)));
-    }
-    // The last `loudnorm` JSON block (measure.py reads it the same way).
-    if let Some(key) = text.rfind("\"input_i\"") {
-        if let (Some(open), Some(close)) = (text[..key].rfind('{'), text[key..].find('}')) {
-            facts.peak = serde_json::from_str::<Value>(&text[open..=key + close]).ok()
-                .and_then(|block| block["input_tp"].as_str().and_then(|value| value.trim().parse::<f64>().ok()))
-                .filter(|value| !value.is_nan() && *value != f64::INFINITY);
+        let rest = match (line.rfind('{'), self.block.as_mut()) {
+            (Some(open), _) => {
+                self.block = Some(String::new());
+                &line[open..]
+            }
+            (None, Some(block)) => {
+                block.push('\n');
+                line
+            }
+            (None, None) => return,
+        };
+        let Some(block) = self.block.as_mut() else { return };
+        match rest.find('}') {
+            Some(close) => {
+                block.push_str(&rest[..=close]);
+                let block = self.block.take().unwrap_or_default();
+                if block.contains("\"input_i\"") {
+                    self.loudnorm = Some(block);
+                }
+            }
+            None if block.len() + rest.len() > BLOCK_LIMIT => self.block = None,
+            None => block.push_str(rest),
         }
     }
-    facts
+
+    fn finish(mut self, decoded_end: f64) -> LogFacts {
+        if let Some(start) = self.open {
+            self.facts.freeze.push((start, decoded_end.max(start)));
+        }
+        self.facts.peak = self.loudnorm.and_then(|block| serde_json::from_str::<Value>(&block).ok())
+            .and_then(|block| block["input_tp"].as_str().and_then(|value| value.trim().parse::<f64>().ok()))
+            .filter(|value| !value.is_nan() && *value != f64::INFINITY);
+        self.facts
+    }
 }
 
 /// `spans` without the parts inside any of `cut`.
@@ -1203,6 +1267,7 @@ fn check_once(work: &Path, ffmpeg: &Path, plan: &Plan, dir: &Path, running: &Run
     let mut last_us: Option<i64> = None;
     let mut written = Instant::now();
     let args = check_args(&plan.video, has_audio, crate::gpu::thread_args(true));
+    let mut reader = LogReader::default();
     let (result, text) = run_logged(ffmpeg, args, work, dir, "ffmpeg.log", LOG_LIMIT, running, |line| {
         if let Some(value) = line.strip_prefix("out_time_us=") {
             if let Ok(us) = value.trim().parse::<i64>() {
@@ -1213,7 +1278,7 @@ fn check_once(work: &Path, ffmpeg: &Path, plan: &Plan, dir: &Path, running: &Run
             save(work, dir, &ExportCheck { percent, ..ExportCheck::of(plan, "RUNNING") });
             written = Instant::now();
         }
-    });
+    }, |line| reader.line(line));
     if running.cancelled.load(Ordering::SeqCst) {
         return ExportCheck::of(plan, "STOPPED");
     }
@@ -1224,7 +1289,7 @@ fn check_once(work: &Path, ffmpeg: &Path, plan: &Plan, dir: &Path, running: &Run
         }
     }
     let decoded_end = last_us.map_or(0.0, |us| us as f64 / 1e6 + 1.0 / fps.max(1.0));
-    let log = read_log(&text, decoded_end);
+    let log = reader.finish(decoded_end);
     let pass = Pass { finished: result.is_ok(), decoded_end, last_line: result.err().unwrap_or_default() };
     let subtitles = match &plan.subtitles {
         Some(frame) => measure_subtitles(work, ffmpeg, frame, &plan.video, dir, running),
@@ -1756,6 +1821,38 @@ mod tests {
         let bare = "black_start:4 black_end:7 black_duration:3\nlavfi.freezedetect.freeze_start: 7\nlavfi.freezedetect.freeze_end: 10.04\n";
         let facts = read_log(bare, 33.0);
         assert_eq!((facts.black, facts.freeze), (vec![(4.0, 7.0)], vec![(7.0, 10.04)]));
+    }
+
+    /// A log far past LOG_LIMIT (a damaged export logs an error per broken block) is read to its end: a black
+    /// stretch logged after 4 MiB still counts, every error is counted, and the last line is the real last line
+    /// (recheck 22). Unix: the fake FFmpeg is a shell script.
+    #[cfg(unix)]
+    #[test]
+    fn a_long_log_is_read_to_its_end() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp("long-log");
+        let work = dir.join("work");
+        let folder = check_dir(&work, &dir.join("Phim.mp4"));
+        fs::create_dir_all(&folder).unwrap();
+        let fake = dir.join("ffmpeg");
+        let error = format!("[mpeg4 @ 0x55e10674edc0] [error] ac-tex damaged at 13 10 {}", "x".repeat(60));
+        fs::write(&fake, format!("#!/bin/sh\nyes '{error}' | head -n 60000 >&2\n\
+            echo '[blackdetect @ 0x7f932c000cc0] [info] black_start:611.681 black_end:617.647 black_duration:5.966' >&2\nexit 0\n")).unwrap();
+        fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+        let running = Running { children: Mutex::new(Vec::new()), cancelled: AtomicBool::new(false) };
+        let mut reader = LogReader::default();
+        let (result, head) = run_logged(&fake, Vec::new(), &work, &folder, "ffmpeg.log", LOG_LIMIT, &running, |_| {}, |line| reader.line(line));
+        assert_eq!(result, Ok(()));
+        assert!(fs::metadata(folder.join("ffmpeg.log")).unwrap().len() > LOG_LIMIT, "the log really is longer than LOG_LIMIT");
+        assert!(head.len() as u64 <= LOG_LIMIT, "only a bounded head is kept in memory");
+        let facts = reader.finish(620.0);
+        assert_eq!(facts.black, [(611.681, 617.647)], "the black stretch after 4 MiB counts");
+        assert_eq!(facts.errors, 60_000, "every error is counted");
+        // a failed run's last line is the log's real last line, not the head's
+        fs::write(&fake, format!("#!/bin/sh\nyes '{error}' | head -n 60000 >&2\necho '[fatal] the real last line' >&2\nexit 1\n")).unwrap();
+        let (result, _) = run_logged(&fake, Vec::new(), &work, &folder, "ffmpeg.log", LOG_LIMIT, &running, |_| {}, |_| {});
+        assert_eq!(result, Err("[fatal] the real last line".into()));
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
