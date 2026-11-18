@@ -2863,8 +2863,9 @@ mod tests {
             assert_eq!(marks(), before, "{name}: the outside files keep their bytes, SHA-256 and modified time");
             let real = restore();
             let (file, bytes) = made.unwrap_or_else(|| panic!("{name}: made in the real folder"));
-            assert_eq!(fs::read(real.join(name)).unwrap(), bytes, "{name}: made in the real folder");
+            // the lease is held without sharing on Windows: let it go before reading it back
             drop(file);
+            assert_eq!(fs::read(real.join(name)).unwrap(), bytes, "{name}: made in the real folder");
             assert_eq!(marks(), before, "{name}: still untouched outside");
         }
         let _ = fs::remove_dir_all(dir);
