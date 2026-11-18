@@ -597,9 +597,9 @@ function renderPlayButton(): void {
   $("#player-time").textContent = editor.timeLabel() ?? `${duration(playerVideo.currentTime * 1000)} / ${duration(length * 1000)}`;
 }
 
-// Whether every window close goes through the editing draft check (set where the window's close is wired, below);
+// Whether every window close goes through the editing draft check now (set where the window's close is wired, below);
 // without a window (the browser preview) there is nothing to guard.
-let windowCloseGuarded: Promise<boolean> = Promise.resolve(true);
+let windowCloseReady: () => Promise<boolean> = async () => true;
 /** Whether DubFlow may quit now (the window close guard's answer); without a window there is nothing to guard. */
 let mayQuit: () => Promise<boolean> = async () => true;
 /**
@@ -687,7 +687,7 @@ const editor = mountEditor(invoke, {
     : previewInvoke<string>("thumbnail_save", { bytes: bytes.byteLength, folder, name, format }),
   openReview: () => void openReview(),
   cpuOnly: () => cpuOnly(),
-  closeGuarded: () => windowCloseGuarded,
+  closeGuarded: () => windowCloseReady(),
   outputRoot: () => outputRoot(),
   // Back to the page the video was opened from: the Chỉnh sửa list, the queue or another page.
   left: () => {
@@ -3022,7 +3022,7 @@ $("#window-maximize").addEventListener("click", () => void appWindow?.toggleMaxi
 // not lost without asking (Issue #929).
 if (appWindow) {
   const mayClose = closeGuard({ before: () => editor.closing(), flush: () => editor.flush(),
-    ask: () => askAlone(() => confirmDialog(unsavedPrompt("close"))), timers: windowTimers });
+    ask: () => askAlone(() => confirmDialog(unsavedPrompt("close", false, editor.unsaved()))), timers: windowTimers });
   mayQuit = mayClose;
   // Tauri's event plugin by listener id, the commands its own listen and unlisten use: a reload finds and removes the
   // close listener the page before it left (see closeRequests)
@@ -3042,7 +3042,15 @@ if (appWindow) {
     },
   };
   const closable = { close: () => appWindow.close(), onCloseRequested: closeRequests(appWindow.label, events, storageIds(() => window.sessionStorage)) };
-  windowCloseGuarded = wireWindowClose(closable, $("#window-close"), mayClose);
+  // a close that failed and could not put the guard back: Alt+F4 and the taskbar would close at once, so editing ends
+  // here (its draft written first, or asked about) and does not open again (windowCloseReady is false)
+  const wiring = wireWindowClose(closable, $("#window-close"), mayClose, () => {
+    if (!editor.target && !editor.reopening) return;
+    void editor.close(false).then((left) => {
+      if (left) showError("DubFlow không còn chặn được việc đóng cửa sổ (Alt+F4) nên đã thoát chế độ chỉnh sửa. Hãy khởi động lại DubFlow để chỉnh sửa tiếp.");
+    }, () => undefined);
+  });
+  windowCloseReady = () => wiring.ready();
 }
 $("#app-header").addEventListener("mousedown", (event) => {
   if (!appWindow || event.button !== 0) return;
