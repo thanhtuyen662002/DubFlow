@@ -774,8 +774,10 @@ impl Sources {
                     let _ = service.stdin.flush();
                 } else {
                     // Still checking the install (started with the app, #945): it reads no request until that check
-                    // ends, minutes on a cold disk, and has opened nothing yet. Waiting would keep a closed DubFlow
-                    // (and its single-instance claim) alive that long, so a reopen or a restart after an update fails.
+                    // ends, minutes on a cold disk. It may already hold its owner lock and database, but it has started
+                    // no download; the lock is an open file the system frees when the process ends. Waiting would
+                    // keep a closed DubFlow (and its single-instance claim) alive that long, so a reopen or a restart
+                    // after an update fails.
                     let _ = service.child.kill();
                 }
                 drop(service.stdin);

@@ -1,7 +1,7 @@
 DUBFLOW_PR_V1
 Issue: #945
 Lease-Owner: Claude/issue-945-link-service-warm-start
-Lease-Heartbeat: 2026-11-18T17:02:21Z
+Lease-Heartbeat: 2026-11-18T17:24:25Z
 Tested-Base-SHA: 41c624d6c4416a371bc6148a1ad4f3b3908b5fc1
 Conflict-Domains: desktop-link-download,desktop-app-startup
 Expected-Paths:
