@@ -17,11 +17,15 @@
 //! own app-owned folder, `work/checks/<file_key(video)>/`, never beside the
 //! user's file, and it never touches `status.json` or `exports.json`.
 use super::*;
+use std::sync::atomic::AtomicUsize;
 
 /// = final_qc.SYNC_TOLERANCE_MS (a test reads final_qc.py).
 pub(super) const SYNC_TOLERANCE_MS: f64 = 120.0;
 /// = final_qc.CLIP_DBTP (a test reads final_qc.py).
 pub(super) const CLIP_DBTP: f64 = 0.0;
+/// A track whose true peak stays below this carries no audible sound (#935 "silent"). Final QC has no such rule:
+/// it only reads the peak, so this warning is the check's own and advisory.
+const SILENT_DBTP: f64 = -60.0;
 /// FFmpeg's defaults, written out so a newer FFmpeg cannot move them. Advisory only.
 const BLACK: &str = "blackdetect=d=2:pic_th=0.98:pix_th=0.10";
 const FREEZE: &str = "freezedetect=n=0.001:d=2";
@@ -48,6 +52,11 @@ static CHECKING: LazyLock<Mutex<HashMap<PathBuf, Arc<Running>>>> = LazyLock::new
 static CLOSING: AtomicBool = AtomicBool::new(false);
 /// One check at a time in this window: each is a full decode, so they never pile up beside the next export.
 static TURN: Mutex<()> = Mutex::new(());
+/// Checks waiting for `TURN`, at most `MAX_WAITING`.
+static WAITING: AtomicUsize = AtomicUsize::new(0);
+/// The tests of this crate run many checks at once on the one `TURN`; the bound itself is tested on its own
+/// (`the_check_queue_is_bounded`).
+const MAX_WAITING: usize = if cfg!(test) { 64 } else { 3 };
 
 /// Burned subtitles inside the frame: `ok` None when there is nothing to estimate.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -136,50 +145,82 @@ fn subtitle_frame(burns: &[&BurnSubtitles], framing: &Framing) -> Option<Subtitl
     if burns.is_empty() {
         return None;
     }
-    let (ew, eh) = (f64::from(framing.export.0.max(1)), f64::from(framing.export.1.max(1)));
-    let (ow, oh) = (f64::from(framing.out.0.max(1)), f64::from(framing.out.1.max(1)));
-    // `reframe_filter` "fill": the frame scaled up and its middle kept along the long axis.
     let filled = framing.fill == "fill" && framing.out != framing.export;
-    let (kx, ky) = if !filled { (1.0, 1.0) } else if ow / oh < ew / eh { ((ow / oh) / (ew / eh), 1.0) } else { (1.0, (ew / eh) / (ow / oh)) };
-    let window = ((1.0 - kx) / 2.0 * ew, (1.0 - ky) / 2.0 * eh, (1.0 + kx) / 2.0 * ew, (1.0 + ky) / 2.0 * eh);
+    let window = if filled { fill_window(framing.export, framing.out) } else {
+        (0.0, 0.0, f64::from(framing.export.0), f64::from(framing.export.1))
+    };
     let why = match (filled, framing.aspect) {
         (true, Some(aspect)) => format!("khung {aspect}, cắt cho đầy"),
         (true, None) => "cắt cho đầy khung".to_owned(),
-        (false, _) => "chữ vượt ra ngoài khung hình".to_owned(),
+        (false, _) => EDGE.to_owned(),
     };
     Some(SubtitleFrame { burns, export: framing.export, window, why })
 }
 
-/// The burned lines on a shortened clock: each stretch of the export in which the same lines are on screen becomes
-/// one second, in order, and every line covers the same stretches as in the export. libass then draws one frame per
-/// stretch with exactly that stretch's lines, which appear in the export's order, so lines shown together stack as
-/// libass stacks them there (a line keeps the place it took when it appeared). One line per line: no growth with
-/// overlaps. Returns when each stretch starts in the export, and for each layer its lines with their first and
-/// past-the-last stretch, in `burn_ass`'s order.
-fn stretches(burns: &[BurnSubtitles]) -> (Vec<u64>, Vec<Vec<(usize, usize, &Cue)>>) {
-    let mut bounds: Vec<u64> = burns.iter().flat_map(|burn| burn.lines.iter()).flat_map(|line| [line.start_ms, line.end_ms]).collect();
+/// The part of the export frame `reframe_filter`'s "fill" keeps, in export pixels, as FFmpeg computes it: `scale`
+/// with force_original_aspect_ratio=increase (`av_rescale` rounds to the nearest pixel), then `crop`'s centred offset,
+/// which it rounds down to an even pixel for yuv420p.
+fn fill_window(export: (u32, u32), out: (u32, u32)) -> (f64, f64, f64, f64) {
+    let (ew, eh) = (u64::from(export.0.max(1)), u64::from(export.1.max(1)));
+    let (ow, oh) = (u64::from(out.0.max(1)), u64::from(out.1.max(1)));
+    let rescale = |a: u64, b: u64, c: u64| (a * b + c / 2) / c;
+    let (sw, sh) = (rescale(oh, ew, eh).max(ow), rescale(ow, eh, ew).max(oh));
+    let (x, y) = ((sw - ow) / 2 & !1, (sh - oh) / 2 & !1);
+    let (fx, fy) = (ew as f64 / sw as f64, eh as f64 / sh as f64);
+    (x as f64 * fx, y as f64 * fy, (x + ow) as f64 * fx, (y + oh) as f64 * fy)
+}
+
+/// The first frame of a `fps` video that libass draws at or after `ms`: `burn_ass` writes times in centiseconds, and
+/// FFmpeg's subtitles filter asks for each frame at its time in whole milliseconds (rounded down).
+fn first_frame_at(ms: u64, fps: f64) -> u64 {
+    let fps = if fps.is_finite() && fps > 0.0 { fps } else { 30.0 };
+    let ms = (ms + 5) / 10 * 10;
+    let at = |frame: u64| (frame as f64 * 1000.0 / fps + 1e-6).floor() as u64;
+    let mut frame = (ms as f64 * fps / 1000.0).ceil() as u64;
+    while frame > 0 && at(frame - 1) >= ms {
+        frame -= 1;
+    }
+    while at(frame) < ms {
+        frame += 1;
+    }
+    frame
+}
+
+/// The burned lines on a shortened clock: each run of frames of the export (at `fps`) that shows the same lines
+/// becomes one second, in order, and every line covers the same runs as in the export; a line or an overlap no frame
+/// shows is left out, as libass never draws it there. libass then draws one frame per run with exactly that run's
+/// lines, which appear in the export's order, so lines shown together stack as libass stacks them there (a line keeps
+/// the place it took when it appeared). One script line per line: no growth with overlaps. Returns when each run
+/// starts in the export (ms), and for each layer its lines with their first and past-the-last run, in `burn_ass`'s
+/// order.
+fn stretches(burns: &[BurnSubtitles], fps: f64) -> (Vec<u64>, Vec<Vec<(usize, usize, &Cue)>>) {
+    let frames = |line: &Cue| (first_frame_at(line.start_ms, fps), first_frame_at(line.end_ms, fps));
+    let mut bounds: Vec<u64> = burns.iter().flat_map(|burn| burn.lines.iter()).map(frames).filter(|(first, end)| end > first)
+        .flat_map(|(first, end)| [first, end]).collect();
     bounds.sort_unstable();
     bounds.dedup();
-    let index = |ms: u64| bounds.binary_search(&ms).unwrap_or(0);
-    // How many lines are on screen in [bounds[k], bounds[k + 1]).
+    let index = |frame: u64| bounds.binary_search(&frame).unwrap_or(0);
+    // How many lines are on screen in frames [bounds[k], bounds[k + 1]).
     let mut change = vec![0_i64; bounds.len() + 1];
-    for line in burns.iter().flat_map(|burn| burn.lines.iter()).filter(|line| line.end_ms > line.start_ms) {
-        change[index(line.start_ms)] += 1;
-        change[index(line.end_ms)] -= 1;
+    for (first, end) in burns.iter().flat_map(|burn| burn.lines.iter()).map(frames).filter(|(first, end)| end > first) {
+        change[index(first)] += 1;
+        change[index(end)] -= 1;
     }
+    let fps = if fps.is_finite() && fps > 0.0 { fps } else { 30.0 };
     let (mut shown, mut slot, mut starts) = (0_i64, vec![usize::MAX; bounds.len()], Vec::new());
     for (k, bound) in bounds.iter().enumerate() {
         shown += change[k];
         if shown > 0 {
             slot[k] = starts.len();
-            starts.push(*bound);
+            starts.push((*bound as f64 * 1000.0 / fps).floor() as u64);
         }
     }
     let layers = burns.iter().map(|burn| {
-        let mut lines: Vec<&Cue> = burn.lines.iter().filter(|line| line.end_ms > line.start_ms).collect();
-        lines.sort_by_key(|line| (line.start_ms, line.end_ms));
-        // a line's own stretches are all on screen, so they are consecutive seconds
-        lines.into_iter().map(|line| (slot[index(line.start_ms)], slot[index(line.end_ms) - 1] + 1, line)).collect()
+        let mut lines: Vec<(u64, u64, &Cue)> = burn.lines.iter().map(|line| { let (first, end) = frames(line); (first, end, line) })
+            .filter(|(first, end, _)| end > first).collect();
+        lines.sort_by_key(|(_, _, line)| (line.start_ms, line.end_ms));
+        // a line's own runs are all on screen, so they are consecutive seconds
+        lines.into_iter().map(|(first, end, line)| (slot[index(first)], slot[index(end) - 1] + 1, line)).collect()
     }).collect();
     (starts, layers)
 }
@@ -204,7 +245,7 @@ fn read_boxes(text: &str) -> HashMap<usize, (i64, i64, i64, i64)> {
 fn fit_of(frame: &SubtitleFrame, starts: &[u64], boxes: &HashMap<usize, (i64, i64, i64, i64)>) -> SubtitleFit {
     let (width, height) = (i64::from(frame.export.0), i64::from(frame.export.1));
     let (wx0, wy0, wx1, wy1) = frame.window;
-    let (mut cut, mut blank) = (Vec::new(), 0);
+    let (mut cut, mut edge, mut cropped, mut blank) = (Vec::new(), false, false, 0);
     for (index, &start) in starts.iter().enumerate() {
         let Some(&(x0, y0, x1, y1)) = boxes.get(&index) else {
             blank += 1;
@@ -212,6 +253,11 @@ fn fit_of(frame: &SubtitleFrame, starts: &[u64], boxes: &HashMap<usize, (i64, i6
         };
         let on_frame = x0 > 0 && y0 > 0 && x1 < width - 1 && y1 < height - 1;
         let in_window = x0 as f64 >= wx0 - 0.5 && y0 as f64 >= wy0 - 0.5 && (x1 + 1) as f64 <= wx1 + 0.5 && (y1 + 1) as f64 <= wy1 + 0.5;
+        if !on_frame {
+            edge = true;
+        } else if !in_window {
+            cropped = true;
+        }
         if !(on_frame && in_window) {
             cut.push(start);
         }
@@ -226,23 +272,34 @@ fn fit_of(frame: &SubtitleFrame, starts: &[u64], boxes: &HashMap<usize, (i64, i6
             SubtitleFit { ok: None, detail: format!("không thấy đoạn nào bị cắt.{unseen}"), at_ms: Vec::new() }
         };
     }
+    // The frame's own edge, the "fill" crop, or both.
+    let why = match (edge, cropped) {
+        (true, false) => EDGE.to_owned(),
+        (false, _) => frame.why.clone(),
+        (true, true) => format!("{EDGE}; {}", frame.why),
+    };
     let named: Vec<String> = cut.iter().take(NAMED).map(|ms| clock(*ms as f64 / 1000.0)).collect();
     let more = if cut.len() > NAMED { "…" } else { "" };
-    let detail = format!("phụ đề bị cắt mép ở {} đoạn ({}), từ: {}{more} — đo trên chữ libass vẽ.{unseen}", cut.len(), frame.why, named.join(", "));
+    let detail = format!("phụ đề bị cắt mép ở {} đoạn ({why}), từ: {}{more} — đo trên chữ libass vẽ.{unseen}", cut.len(), named.join(", "));
     cut.truncate(MAX_SPANS);
     SubtitleFit { ok: Some(false), detail, at_ms: cut }
 }
 
+const EDGE: &str = "chữ vượt ra ngoài khung hình";
+
 /// Where libass draws the burned lines: the export's own layers painted white (`measure_ass`) on a black frame of
 /// the export's size, one frame per stretch (`stretches`), and FFmpeg's `bbox` around what was drawn. Reads no part
 /// of the video.
-fn measure_subtitles(work: &Path, ffmpeg: &Path, frame: &SubtitleFrame, dir: &Path, running: &Running) -> SubtitleFit {
+fn measure_subtitles(work: &Path, ffmpeg: &Path, frame: &SubtitleFrame, fps: f64, dir: &Path, running: &Running) -> SubtitleFit {
     let unmeasured = |why: String| SubtitleFit { ok: None, detail: format!("chưa đo được phụ đề: {why}"), at_ms: Vec::new() };
-    let (starts, layers) = stretches(&frame.burns);
+    let (starts, layers) = stretches(&frame.burns, fps);
+    if starts.is_empty() {
+        return SubtitleFit { ok: None, detail: "không câu phụ đề nào hiện đủ một khung hình".into(), at_ms: Vec::new() };
+    }
     let mut filters = Vec::new();
     for (index, (burn, shown)) in frame.burns.iter().zip(&layers).enumerate() {
         let file = dir.join(format!("measure-{}.ass", index + 1));
-        if !(unlinked(work) && plain(dir)) || write_atomic(&file, measure_ass(&burn.style, shown).as_bytes()).is_err() {
+        if !(unlinked(work) && plain(dir)) || write_durable(&file, measure_ass(&burn.style, shown).as_bytes()).is_err() {
             return unmeasured("không ghi được tệp đo".into());
         }
         filters.push(subtitles_filter(&display_path(&file)));
@@ -250,22 +307,83 @@ fn measure_subtitles(work: &Path, ffmpeg: &Path, frame: &SubtitleFrame, dir: &Pa
     let (width, height) = frame.export;
     let mut args: Vec<OsString> = ["-nostdin", "-hide_banner", "-nostats", "-loglevel", "level+info", "-f", "lavfi", "-i"]
         .into_iter().map(OsString::from).collect();
-    args.push(format!("color=c=black:s={width}x{height}:r=1:d={}", starts.len()).into());
+    // `color` makes only even sizes: one a pixel larger is cut down to the export's own size first.
+    args.push(format!("color=c=black:s={}x{}:r=1:d={}", width + width % 2, height + height % 2, starts.len()).into());
     args.extend(crate::gpu::thread_args(false));
-    args.extend(["-vf".into(), format!("{},bbox", filters.join(",")).into()]);
+    args.extend(["-vf".into(), format!("format=rgb24,crop={width}:{height}:0:0,{},format=gray,bbox", filters.join(",")).into()]);
     args.extend(["-f", "null", "-"].map(OsString::from));
-    let log_path = dir.join("measure.log");
-    if let Err(error) = run_tracked(ffmpeg, args, work, &log_path, running, |_| {}) {
+    // About 150 bytes of log per stretch.
+    let (result, text) = run_logged(ffmpeg, args, work, dir, "measure.log", LOG_LIMIT + 512 * starts.len() as u64, running, |_| {});
+    if let Err(error) = result {
         return unmeasured(if error.is_empty() { "FFmpeg dừng giữa chừng".into() } else { error });
     }
-    // About 150 bytes of log per moment.
-    let limit = LOG_LIMIT + 512 * starts.len() as u64;
-    let text = fs::File::open(&log_path).ok().map(|file| {
-        let mut bytes = Vec::new();
-        let _ = std::io::Read::read_to_end(&mut std::io::Read::take(file, limit), &mut bytes);
-        String::from_utf8_lossy(&bytes).into_owned()
-    }).unwrap_or_default();
     fit_of(frame, &starts, &read_boxes(&text))
+}
+
+// ---------- The check's own files ----------
+
+/// A new, empty file at `name` in the check folder `dir`, for reading and writing. Whatever is at that name is
+/// removed first (a link goes, never what it points to; another name of a file only loses this name), and the file
+/// is made with `create_new`, which refuses anything put there in between, a link included: nothing on disk is ever
+/// opened through this name. None when the folders are not plain any more or the name holds a folder.
+fn fresh_file(work: &Path, dir: &Path, name: &str) -> Option<fs::File> {
+    if !(unlinked(work) && plain(dir)) {
+        return None;
+    }
+    let path = dir.join(name);
+    if let Ok(metadata) = fs::symlink_metadata(&path) {
+        if metadata.is_dir() && !is_link(&metadata) {
+            return None;
+        }
+        // A link to a folder is removed as a folder on Windows.
+        let _ = fs::remove_file(&path).or_else(|_| fs::remove_dir(&path));
+    }
+    fs::OpenOptions::new().read(true).write(true).create_new(true).open(&path).ok()
+}
+
+/// Run FFmpeg tracked by `running` with its log in a `fresh_file`, read back through the same handle (at most
+/// `limit` bytes): whether it exited 0 (else its last log line) and the log.
+#[allow(clippy::too_many_arguments)]
+fn run_logged(ffmpeg: &Path, args: Vec<OsString>, work: &Path, dir: &Path, name: &str, limit: u64, running: &Running,
+              mut line: impl FnMut(&str)) -> (Result<(), String>, String) {
+    use std::io::{Read, Seek};
+    let mut log = fresh_file(work, dir, name);
+    let stderr = log.as_ref().and_then(|file| file.try_clone().ok()).map_or_else(Stdio::null, Stdio::from);
+    let mut command = Command::new(ffmpeg);
+    command.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(stderr);
+    let Ok((stdout, id)) = spawn_tracked(command, running) else {
+        return (Err(fail("Không chạy được FFmpeg")), String::new());
+    };
+    for text in stdout.map(|stdout| BufReader::new(stdout).lines()).into_iter().flatten().map_while(Result::ok) {
+        line(&text);
+    }
+    let ok = wait_tracked(running, id);
+    let mut bytes = Vec::new();
+    if let Some(file) = log.as_mut() {
+        if file.rewind().is_ok() {
+            let _ = file.take(limit).read_to_end(&mut bytes);
+        }
+    }
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    let last = || text.lines().rev().find(|line| !line.trim().is_empty()).map(|line| line.trim().chars().take(240).collect::<String>());
+    let result = if ok { Ok(()) } else { Err(last().unwrap_or_default()) };
+    (result, text)
+}
+
+/// ffprobe on `video`, tracked by `running` like FFmpeg, so Dừng kiểm tra and closing DubFlow end it too.
+fn probe_tracked(ffprobe: &Path, video: &Path, running: &Running) -> Option<Probe> {
+    use std::io::Read;
+    let mut command = Command::new(ffprobe);
+    command.args(PROBE_ARGS).arg(video).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    let (stdout, id) = spawn_tracked(command, running).ok()?;
+    let mut text = String::new();
+    if let Some(stdout) = stdout {
+        let _ = stdout.take(CHECK_LIMIT * 4).read_to_string(&mut text);
+    }
+    if !wait_tracked(running, id) {
+        return None;
+    }
+    parse_probe(&text)
 }
 
 // ---------- The FFmpeg pass ----------
@@ -295,7 +413,7 @@ fn check_args(video: &Path, has_audio: bool, threads: Vec<OsString>) -> Vec<OsSt
 struct LogFacts {
     black: Vec<(f64, f64)>,
     freeze: Vec<(f64, f64)>,
-    /// `loudnorm`'s `input_tp`; None when not printed or "-inf" (silence).
+    /// `loudnorm`'s `input_tp`; None when not printed. "-inf" (digital silence) is kept as minus infinity.
     peak: Option<f64>,
     errors: usize,
     first_error: Option<String>,
@@ -343,7 +461,7 @@ fn read_log(text: &str, decoded_end: f64) -> LogFacts {
         if let (Some(open), Some(close)) = (text[..key].rfind('{'), text[key..].find('}')) {
             facts.peak = serde_json::from_str::<Value>(&text[open..=key + close]).ok()
                 .and_then(|block| block["input_tp"].as_str().and_then(|value| value.trim().parse::<f64>().ok()))
-                .filter(|value| value.is_finite());
+                .filter(|value| !value.is_nan() && *value != f64::INFINITY);
         }
     }
     facts
@@ -520,6 +638,15 @@ fn output_checks(plan: &Plan, actual_ms: Option<i64>, has_audio: Option<bool>, p
     if plan.has_audio || has_audio == Some(true) {
         checks.push(match peak {
             None => check("audio", "Âm thanh", None, "chưa đo đỉnh âm"),
+            // A sound track that is there but silent: a warning when the edit has sound, as intended when it has none.
+            Some(top) if top < SILENT_DBTP => {
+                let level = if top.is_finite() { format!("đỉnh {top:.1} dBTP") } else { "không có tiếng nào".to_owned() };
+                if plan.has_audio {
+                    check("audio", "Âm thanh", Some(false), format!("bản sửa có tiếng nhưng âm thanh xuất ra im lặng ({level})"))
+                } else {
+                    check("audio", "Âm thanh", Some(true), format!("âm thanh im lặng, đúng như bản sửa ({level})"))
+                }
+            }
             Some(top) => check("audio", "Âm thanh", Some(top <= CLIP_DBTP), format!("đỉnh {top:.1} dBTP")),
         });
     }
@@ -554,7 +681,7 @@ fn check_dir(work: &Path, video: &Path) -> PathBuf {
 /// Written only while `work`, `checks` and the folder are still plain folders.
 fn save(work: &Path, dir: &Path, report: &ExportCheck) {
     if unlinked(work) && dir.parent().is_some_and(plain) && plain(dir) {
-        let _ = write_atomic(&dir.join("check.json"), &serde_json::to_vec(report).unwrap_or_default());
+        let _ = write_durable(&dir.join("check.json"), &serde_json::to_vec(report).unwrap_or_default());
     }
 }
 
@@ -564,22 +691,29 @@ pub(super) fn run(work: &Path, ffmpeg: &Path, plan: Plan) {
     if !unlinked(work) || plain_folder(&work.join(CHECKS_DIR)).is_err() || plain_folder(&dir).is_err() {
         return;
     }
-    // Its own lease: a new export of the same video is never refused because of a check.
+    // Its own lease: a new export of the same video is never refused because of a check. `work_lease` opens "lease"
+    // without truncating or writing it; a link put at that name is removed first, so no file elsewhere is held.
+    let lease_path = dir.join("lease");
+    if fs::symlink_metadata(&lease_path).is_ok_and(|metadata| is_link(&metadata)) {
+        let _ = fs::remove_file(&lease_path).or_else(|_| fs::remove_dir(&lease_path));
+    }
     let Ok(lease) = crate::work_lease::take(&dir, BUSY_CHECK) else { return };
     let running = Arc::new(Running { children: Mutex::new(Vec::new()), cancelled: AtomicBool::new(false) });
     if !register(&CHECKING, &CLOSING, &dir, &running) {
         return; // DubFlow is closing
     }
     if unlinked(work) && plain(&dir) {
-        let _ = write_atomic(&dir.join("plan.json"), &serde_json::to_vec(&plan).unwrap_or_default());
+        let _ = write_durable(&dir.join("plan.json"), &serde_json::to_vec(&plan).unwrap_or_default());
     }
     let report = match wait_turn(work, &dir, &plan.video, &running) {
-        Some(turn) => {
+        Turn::Taken(turn) => {
             let report = check_once(work, ffmpeg, &plan, &dir, &running);
             drop(turn);
             report
         }
-        None => ExportCheck::new(&plan.video, "STOPPED"),
+        Turn::Stopped => ExportCheck::new(&plan.video, "STOPPED"),
+        Turn::Full => ExportCheck { error: Some(format!("bỏ qua vì đã có {MAX_WAITING} video khác đang chờ kiểm tra")),
+            ..ExportCheck::new(&plan.video, "UNAVAILABLE") },
     };
     save(work, &dir, &report);
     if let Ok(mut checking) = CHECKING.lock() {
@@ -619,23 +753,44 @@ pub(super) fn stop_all() {
 
 /// This window's turn to check (`TURN`), or None when "Dừng kiểm tra" or closing stopped it while it waited.
 /// While it waits its check.json says RUNNING and `waiting`, so the UI keeps polling and can stop it.
-fn wait_turn(work: &Path, dir: &Path, video: &Path, running: &Running) -> Option<std::sync::MutexGuard<'static, ()>> {
-    let mut announced = false;
-    loop {
+fn wait_turn(work: &Path, dir: &Path, video: &Path, running: &Running) -> Turn<'static> {
+    wait_turn_in(&TURN, &WAITING, MAX_WAITING, running, || save(work, dir, &ExportCheck { waiting: true, ..ExportCheck::new(video, "RUNNING") }))
+}
+
+/// Taking the one check turn.
+enum Turn<'a> {
+    Taken(std::sync::MutexGuard<'a, ()>),
+    /// Dừng kiểm tra, or DubFlow closing, while waiting.
+    Stopped,
+    /// `max` checks were already waiting: this one is not queued (each waits on its own export's thread).
+    Full,
+}
+
+/// Wait for `turn` unless `max` others already wait in `waiting` (then `Full` at once); `announce` once on waiting.
+fn wait_turn_in<'a>(turn: &'a Mutex<()>, waiting: &AtomicUsize, max: usize, running: &Running, announce: impl FnOnce()) -> Turn<'a> {
+    let take = || match turn.try_lock() {
+        Ok(guard) => Some(guard),
+        Err(std::sync::TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+        Err(std::sync::TryLockError::WouldBlock) => None,
+    };
+    if let Some(guard) = take() {
+        return Turn::Taken(guard);
+    }
+    if waiting.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| (count < max).then_some(count + 1)).is_err() {
+        return Turn::Full;
+    }
+    announce();
+    let taken = loop {
         if running.cancelled.load(Ordering::SeqCst) {
-            return None;
+            break Turn::Stopped;
         }
-        match TURN.try_lock() {
-            Ok(turn) => return Some(turn),
-            Err(std::sync::TryLockError::Poisoned(poisoned)) => return Some(poisoned.into_inner()),
-            Err(std::sync::TryLockError::WouldBlock) => {}
-        }
-        if !announced {
-            save(work, dir, &ExportCheck { waiting: true, ..ExportCheck::new(video, "RUNNING") });
-            announced = true;
+        if let Some(guard) = take() {
+            break Turn::Taken(guard);
         }
         std::thread::sleep(Duration::from_millis(200));
-    }
+    };
+    waiting.fetch_sub(1, Ordering::SeqCst);
+    taken
 }
 
 fn check_once(work: &Path, ffmpeg: &Path, plan: &Plan, dir: &Path, running: &Running) -> ExportCheck {
@@ -644,14 +799,17 @@ fn check_once(work: &Path, ffmpeg: &Path, plan: &Plan, dir: &Path, running: &Run
         return unavailable("không tìm thấy FFmpeg".into());
     }
     save(work, dir, &ExportCheck::new(&plan.video, "RUNNING"));
-    let probe = probe_with(&ffprobe_beside(ffmpeg), &plan.video).ok();
+    let probe = probe_tracked(&ffprobe_beside(ffmpeg), &plan.video, running);
+    if running.cancelled.load(Ordering::SeqCst) {
+        return ExportCheck::new(&plan.video, "STOPPED");
+    }
     let fps = probe.as_ref().map_or(30.0, |probe| fps_number(&probe.fps));
     let total = probe.as_ref().map_or(plan.expected_seconds, |probe| probe.duration);
     let has_audio = probe.as_ref().is_some_and(|probe| probe.has_audio);
-    let log_path = dir.join("ffmpeg.log");
     let mut last_us: Option<i64> = None;
     let mut written = Instant::now();
-    let result = run_tracked(ffmpeg, check_args(&plan.video, has_audio, crate::gpu::thread_args(true)), work, &log_path, running, |line| {
+    let args = check_args(&plan.video, has_audio, crate::gpu::thread_args(true));
+    let (result, text) = run_logged(ffmpeg, args, work, dir, "ffmpeg.log", LOG_LIMIT, running, |line| {
         if let Some(value) = line.strip_prefix("out_time_us=") {
             if let Ok(us) = value.trim().parse::<i64>() {
                 last_us = Some(us.max(0));
@@ -665,11 +823,6 @@ fn check_once(work: &Path, ffmpeg: &Path, plan: &Plan, dir: &Path, running: &Run
     if running.cancelled.load(Ordering::SeqCst) {
         return ExportCheck::new(&plan.video, "STOPPED");
     }
-    let text = fs::File::open(&log_path).ok().map(|file| {
-        let mut bytes = Vec::new();
-        let _ = std::io::Read::read_to_end(&mut std::io::Read::take(file, LOG_LIMIT), &mut bytes);
-        String::from_utf8_lossy(&bytes).into_owned()
-    }).unwrap_or_default();
     if let Err(error) = &result {
         if last_us.is_none() && text.trim().is_empty() {
             // Not a word logged and no progress: FFmpeg never started.
@@ -680,7 +833,7 @@ fn check_once(work: &Path, ffmpeg: &Path, plan: &Plan, dir: &Path, running: &Run
     let log = read_log(&text, decoded_end);
     let pass = Pass { finished: result.is_ok(), decoded_end, last_line: result.err().unwrap_or_default() };
     let subtitles = match &plan.subtitles {
-        Some(frame) => measure_subtitles(work, ffmpeg, frame, dir, running),
+        Some(frame) => measure_subtitles(work, ffmpeg, frame, fps, dir, running),
         None => SubtitleFit { ok: None, detail: "không có phụ đề in vào hình".into(), at_ms: Vec::new() },
     };
     if running.cancelled.load(Ordering::SeqCst) {
@@ -730,10 +883,13 @@ pub(super) fn cancel(work: &Path, video: &Path) {
 
 /// A check.json of at most `CHECK_LIMIT` bytes that is an export check.
 fn read_check_file(path: &Path) -> Option<Value> {
-    if fs::metadata(path).map_or(true, |metadata| metadata.len() > CHECK_LIMIT) {
+    // Never through a link: only a plain file is read, and only its first bytes.
+    if !fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_file() && !is_link(&metadata) && metadata.len() <= CHECK_LIMIT) {
         return None;
     }
-    fs::read(path).ok().and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok()).filter(|value| value["kind"] == "export_check")
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut std::io::Read::take(fs::File::open(path).ok()?, CHECK_LIMIT), &mut bytes).ok()?;
+    serde_json::from_slice::<Value>(&bytes).ok().filter(|value| value["kind"] == "export_check")
 }
 
 /// A check of this window runs in `dir`.
@@ -879,7 +1035,8 @@ mod tests {
         assert_eq!(facts.peak, Some(-12.65));
         assert_eq!((facts.errors, facts.first_error.clone(), facts.fatal), (0, None, false));
         let silent = LOG.replace("\"-12.65\"", "\"-inf\"");
-        assert_eq!(read_log(&silent, 33.0).peak, None, "silence has no peak");
+        assert_eq!(read_log(&silent, 33.0).peak, Some(f64::NEG_INFINITY), "digital silence is kept, not taken for unmeasured");
+        assert_eq!(read_log(&LOG.replace("\"-12.65\"", "\"nan\""), 33.0).peak, None);
         assert_eq!(read_log("[info] no loudnorm here", 1.0).peak, None);
         let damaged = "[aac @ 0x55e106711380] [error] channel element 0.0 is not allocated
 [mpeg4 @ 0x55e10674edc0] [error] ac-tex damaged at 13 10
@@ -976,7 +1133,7 @@ mod tests {
         let first = BurnSubtitles { style: style(json!({})), lines: vec![cue(4_000, 6_000, "B"), cue(0, 10_000, "A"), cue(12_000, 13_000, "C")] };
         let second = BurnSubtitles { style: style(json!({})), lines: vec![cue(5_000, 7_000, "x")] };
         let burns = [first, second];
-        let (starts, layers) = stretches(&burns);
+        let (starts, layers) = stretches(&burns, 25.0);
         // A | A B | A B x | A x | A | (nothing: left out) | C
         assert_eq!(starts, [0, 4_000, 5_000, 6_000, 7_000, 12_000]);
         let spans = |layer: &Vec<(usize, usize, &Cue)>| layer.iter().map(|(first, last, line)| (*first, *last, line.text.clone())).collect::<Vec<_>>();
@@ -993,12 +1150,56 @@ mod tests {
         // a box nobody can see stays unseen
         let clear = measure_ass(&style(json!({"box": "#000000", "box_opacity": 0.0})), &layers[1]);
         assert!(clear.contains(",&HFFFFFFFF,-1,"), "{clear}");
-        // 2 000 lines that all run to the end (a broken .srt): one script line each, at most one frame per start
+        // 2 000 lines that all run to the end (a broken .srt): one script line each, at most one stretch per frame
         let piled = BurnSubtitles { style: style(json!({})), lines: (0..2_000).map(|index| cue(index * 10, 60_000, "x")).collect() };
-        let (starts, layers) = stretches(std::slice::from_ref(&piled));
-        assert_eq!((starts.len(), layers[0].len()), (2_000, 2_000));
-        assert!(layers[0].iter().all(|(_, last, _)| *last == 2_000));
+        let (starts, layers) = stretches(std::slice::from_ref(&piled), 25.0);
+        assert_eq!((starts.len(), layers[0].len()), (501, 2_000), "20 s of starts at 25 fps");
+        assert!(layers[0].iter().all(|(_, last, _)| *last == 501));
         assert_eq!(measure_ass(&piled.style, &layers[0]).matches("Dialogue:").count(), 2_000);
+    }
+
+    /// Only what a frame of the export shows is measured together (recheck 6): times are centiseconds in the burn,
+    /// and an overlap shorter than a frame is never drawn.
+    #[test]
+    fn stretches_follow_the_frames_libass_draws() {
+        // frames every 40 ms; 41 ms is written 0:00:00.04, 45 ms 0:00:00.05
+        assert_eq!([0, 39, 40, 41, 45].map(|ms| first_frame_at(ms, 25.0)), [0, 1, 1, 1, 2]);
+        assert_eq!(first_frame_at(1_004, 25.0), 25, "1.004 s is written 0:00:01.00");
+        assert_eq!(first_frame_at(1_005, 25.0), 26, "1.005 s is written 0:00:01.01");
+        // 29.97 fps: frame 30 is at 1001 ms
+        assert_eq!((first_frame_at(1_000, 30_000.0 / 1001.0), first_frame_at(1_001, 30_000.0 / 1001.0)), (30, 30));
+        let lines = |list: Vec<Cue>| BurnSubtitles { style: style(json!({})), lines: list };
+        // 3 ms of overlap, the same centisecond: never on screen together
+        let burns = [lines(vec![cue(0, 1_004, "A"), cue(1_001, 3_000, "B")])];
+        let (starts, layers) = stretches(&burns, 25.0);
+        assert_eq!(starts, [0, 1_000]);
+        assert_eq!(layers[0].iter().map(|(first, last, _)| (*first, *last)).collect::<Vec<_>>(), [(0, 1), (1, 2)]);
+        // 10 ms of overlap between two frames at 25 fps: the same
+        let burns = [lines(vec![cue(0, 4_000, "A"), cue(3_990, 7_000, "B")])];
+        let (starts, layers) = stretches(&burns, 25.0);
+        assert_eq!(starts, [0, 4_000]);
+        assert_eq!(layers[0].iter().map(|(first, last, _)| (*first, *last)).collect::<Vec<_>>(), [(0, 1), (1, 2)]);
+        // a line shorter than a frame is never drawn, so never measured
+        let burns = [lines(vec![cue(1_010, 1_030, "flash"), cue(2_000, 3_000, "C")])];
+        let (starts, layers) = stretches(&burns, 25.0);
+        assert_eq!((starts, layers[0].len()), (vec![2_000], 1));
+    }
+
+    #[test]
+    fn the_fill_window_is_ffmpegs_crop() {
+        // 854×480 to 1:1: the crop offset 187 is rounded down to 186 (yuv420p)
+        assert_eq!(fill_window((854, 480), (480, 480)), (186.0, 0.0, 666.0, 480.0));
+        let (x0, y0, x1, y1) = fill_window((1920, 1080), (608, 1080));
+        assert_eq!((x0, y0, x1, y1), (656.0, 0.0, 1264.0, 1080.0));
+        let (_, top, _, bottom) = fill_window((1920, 1080), (2520, 1080));
+        assert!((top - 168.0 * 1080.0 / 1418.0).abs() < 1e-9 && (bottom - 1248.0 * 1080.0 / 1418.0).abs() < 1e-9, "{top} {bottom}");
+        // a cut at the frame's own edge is named as such even under a fill
+        let line = burn(style(json!({})), LONG, 12_000);
+        let tall = subtitle_frame(&[&line], &Framing { export: (1920, 1080), out: (608, 1080), fill: "fill", aspect: Some("9:16") }).unwrap();
+        let top_edge = fit_of(&tall, &[1_000], &HashMap::from([(0, (700, 0, 1200, 60))]));
+        assert!(top_edge.detail.starts_with("phụ đề bị cắt mép ở 1 đoạn (chữ vượt ra ngoài khung hình), từ: 0:01"), "{}", top_edge.detail);
+        let both = fit_of(&tall, &[1_000, 2_000], &HashMap::from([(0, (700, 0, 1200, 60)), (1, (300, 900, 1500, 1000))]));
+        assert!(both.detail.contains("(chữ vượt ra ngoài khung hình; khung 9:16, cắt cho đầy)"), "{}", both.detail);
     }
 
     #[test]
@@ -1071,7 +1272,7 @@ mod tests {
         let running = Running { children: Mutex::new(Vec::new()), cancelled: AtomicBool::new(false) };
         let measure = |lines: Vec<Cue>, style: SubtitleStyle, framing: &Framing| {
             let burn = BurnSubtitles { style, lines };
-            measure_subtitles(&work, &ffmpeg, &subtitle_frame(&[&burn], framing).unwrap(), &folder, &running)
+            measure_subtitles(&work, &ffmpeg, &subtitle_frame(&[&burn], framing).unwrap(), 25.0, &folder, &running)
         };
         let wide = Framing { export: (1920, 1080), out: (1920, 1080), fill: "black", aspect: None };
         let four_three = Framing { export: (1920, 1080), out: (1440, 1080), fill: "fill", aspect: Some("4:3") };
@@ -1106,11 +1307,173 @@ mod tests {
         let stacked = measure(pair.clone(), style(json!({"size": 2.0, "align": "middle"})), &wide_fill);
         assert_eq!(stacked.ok, Some(false), "{}", stacked.detail);
         assert_eq!(measure(vec![pair[0].clone()], style(json!({"size": 2.0, "align": "middle"})), &wide_fill).ok, Some(true), "one alone fits");
+        // an odd export size is measured at that size: a long line dragged to the right edge is cut, a short one in
+        // the middle is not
+        let odd = Framing { export: (853, 481), out: (853, 481), fill: "black", aspect: None };
+        assert_eq!(measure(vec![cue(1_000, 3_000, LONG)], style(json!({"x": 0.9, "y": 0.5})), &odd).at_ms, [1_000]);
+        assert_eq!(measure(vec![cue(1_000, 3_000, "Chào")], style(json!({})), &odd).ok, Some(true));
         // two lines at once stack: both are measured together
         let stacked = measure(vec![cue(1_000, 5_000, "Dòng một"), cue(2_000, 4_000, "Dòng hai")], style(json!({})), &wide);
         assert_eq!(stacked.ok, Some(true), "{}", stacked.detail);
         let _ = fs::remove_dir_all(dir);
         println!("subtitle-measure: ran against real FFmpeg");
+    }
+
+    /// #935 "silent": a sound track that is there but silent warns when the edit has sound, never when it has none.
+    #[test]
+    fn a_silent_track_warns_only_when_the_edit_has_sound() {
+        let checks = by_id(&output_checks(&plain_plan(10.0, true, None), Some(10_000), Some(true), Some(f64::NEG_INFINITY)));
+        assert_eq!(checks["audio_stream"].ok, Some(true));
+        assert_eq!((checks["audio"].ok, checks["audio"].detail.as_str()),
+            (Some(false), "bản sửa có tiếng nhưng âm thanh xuất ra im lặng (không có tiếng nào)"));
+        let faint = by_id(&output_checks(&plain_plan(10.0, true, None), Some(10_000), Some(true), Some(-71.25)));
+        assert_eq!((faint["audio"].ok, faint["audio"].detail.as_str()), (Some(false), "bản sửa có tiếng nhưng âm thanh xuất ra im lặng (đỉnh -71.2 dBTP)"));
+        let quiet = by_id(&output_checks(&plain_plan(10.0, true, None), Some(10_000), Some(true), Some(-40.0)));
+        assert_eq!(quiet["audio"].ok, Some(true), "quiet is not silent");
+        let intended = by_id(&output_checks(&plain_plan(10.0, false, None), Some(10_000), Some(true), Some(f64::NEG_INFINITY)));
+        assert_eq!((intended["audio"].ok, intended["audio"].detail.as_str()), (Some(true), "âm thanh im lặng, đúng như bản sửa (không có tiếng nào)"));
+        let unmeasured = by_id(&output_checks(&plain_plan(10.0, true, None), Some(10_000), Some(true), None));
+        assert_eq!(unmeasured["audio"].ok, None);
+    }
+
+    /// At most `max` checks wait for the turn; the next is told at once, and a stopped wait leaves its place.
+    #[test]
+    fn the_check_queue_is_bounded() {
+        let turn = Mutex::new(());
+        let waiting = AtomicUsize::new(0);
+        let held = turn.lock().unwrap();
+        let runners: Vec<Arc<Running>> = (0..3).map(|_| Arc::new(Running { children: Mutex::new(Vec::new()), cancelled: AtomicBool::new(false) })).collect();
+        std::thread::scope(|scope| {
+            let waits: Vec<_> = runners.iter().map(|running| {
+                let (turn, waiting) = (&turn, &waiting);
+                scope.spawn(move || matches!(wait_turn_in(turn, waiting, 2, running, || {}), Turn::Taken(_)))
+            }).collect();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while waiting.load(Ordering::SeqCst) < 2 && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            std::thread::sleep(Duration::from_millis(300));
+            assert_eq!(waiting.load(Ordering::SeqCst), 2, "two wait");
+            // the third found the queue full without waiting
+            let finished: Vec<usize> = waits.iter().enumerate().filter(|(_, wait)| wait.is_finished()).map(|(index, _)| index).collect();
+            assert_eq!(finished.len(), 1, "one was turned away at once");
+            let extra = Running { children: Mutex::new(Vec::new()), cancelled: AtomicBool::new(false) };
+            assert!(matches!(wait_turn_in(&turn, &waiting, 2, &extra, || panic!("never announced")), Turn::Full));
+            // stopping one frees its place
+            let stopped = (0..3).find(|index| !finished.contains(index)).unwrap();
+            runners[stopped].cancelled.store(true, Ordering::SeqCst);
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while waiting.load(Ordering::SeqCst) > 1 && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert_eq!(waiting.load(Ordering::SeqCst), 1);
+            drop(held);
+            let taken: Vec<bool> = waits.into_iter().map(|wait| wait.join().unwrap()).collect();
+            assert_eq!(taken.iter().filter(|taken| **taken).count(), 1, "only the one still waiting got the turn: {taken:?}");
+        });
+        assert_eq!(waiting.load(Ordering::SeqCst), 0);
+    }
+
+    /// A link or a second name planted in a check folder, even one that already exists, never lets the check write
+    /// or hold a file elsewhere (ADR-0006).
+    #[test]
+    fn planted_links_in_a_check_folder_are_never_written_through() {
+        let dir = temp("planted");
+        let work = dir.join("work");
+        let video = dir.join("Phim.mp4");
+        fs::write(&video, b"not a video").unwrap();
+        let folder = check_dir(&work, &video);
+        fs::create_dir_all(&folder).unwrap();
+        let marker = dir.join("marker.bin");
+        fs::write(&marker, b"marker bytes").unwrap();
+        let before = || (fs::read(&marker).unwrap(), fs::metadata(&marker).unwrap().modified().unwrap());
+        let start = before();
+        std::thread::sleep(Duration::from_millis(20));
+        let mut planted = vec!["plan.json", "check.json", "ffmpeg.log"];
+        for name in &planted {
+            fs::hard_link(&marker, folder.join(name)).unwrap();
+        }
+        #[cfg(unix)]
+        for name in ["measure.log", "measure-1.ass", "lease", "check.json.partial", "plan.json.partial"] {
+            std::os::unix::fs::symlink(&marker, folder.join(name)).unwrap();
+            planted.push(name);
+        }
+        // A fake FFmpeg that fails at once: the check still writes plan.json and check.json and opens its log (on
+        // Unix it also says a word, so the subtitle measure runs too: measure-1.ass and measure.log).
+        let fake = dir.join(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" });
+        fs::write(&fake, b"").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::write(&fake, "#!/bin/sh\necho boom >&2\nexit 1\n").unwrap();
+            fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let line = burn(style(json!({})), LONG, 1_000);
+        let framing = Framing { export: (640, 360), out: (640, 360), fill: "black", aspect: None };
+        let plan = Plan { subtitles: subtitle_frame(&[&line], &framing), ..plain_plan(1.0, true, None) }.for_video(video.clone(), false);
+        run(&work, &fake, plan);
+        assert_eq!(before(), start, "the marker was never written");
+        for name in ["plan.json", "check.json"] {
+            let metadata = fs::symlink_metadata(folder.join(name)).unwrap();
+            assert!(metadata.is_file() && !is_link(&metadata), "{name} is the check's own file now");
+        }
+        assert_ne!(read_check(&work, &video)["state"], Value::Null);
+        #[cfg(unix)]
+        {
+            let report = read_check(&work, &video);
+            assert_eq!(report["state"], "DONE", "{report}");
+            let subtitles = report["checks"].as_array().unwrap().iter().find(|check| check["id"] == "subtitle_frame").unwrap().clone();
+            assert!(subtitles["detail"].as_str().unwrap().starts_with("chưa đo được phụ đề"), "{subtitles}");
+            for name in ["measure.log", "measure-1.ass", "ffmpeg.log"] {
+                let metadata = fs::symlink_metadata(folder.join(name)).unwrap();
+                assert!(metadata.is_file() && !is_link(&metadata), "{name} is the check's own file now");
+            }
+        }
+        // a check.json reached through a link is never read
+        #[cfg(unix)]
+        {
+            let elsewhere = dir.join("elsewhere.json");
+            fs::write(&elsewhere, br#"{"kind":"export_check","state":"DONE"}"#).unwrap();
+            fs::remove_file(folder.join("check.json")).unwrap();
+            std::os::unix::fs::symlink(&elsewhere, folder.join("check.json")).unwrap();
+            assert_eq!(read_check_file(&folder.join("check.json")), None);
+        }
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// Dừng kiểm tra while ffprobe hangs: the probe is ended too, nothing is left running.
+    #[cfg(unix)]
+    #[test]
+    fn stopping_ends_a_hanging_probe() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp("probe");
+        let work = dir.join("work");
+        let video = dir.join("Phim.mp4");
+        fs::write(&video, b"not a video").unwrap();
+        let pid_file = dir.join("probe.pid");
+        let (ffmpeg, ffprobe) = (dir.join("ffmpeg"), dir.join("ffprobe"));
+        fs::write(&ffprobe, format!("#!/bin/sh\necho $$ > '{}'\nexec sleep 30\n", pid_file.display())).unwrap();
+        fs::write(&ffmpeg, "#!/bin/sh\nexit 1\n").unwrap();
+        for file in [&ffmpeg, &ffprobe] {
+            fs::set_permissions(file, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let worker = {
+            let (work, ffmpeg, plan) = (work.clone(), ffmpeg.clone(), plain_plan(1.0, true, None).for_video(video.clone(), false));
+            std::thread::spawn(move || run(&work, &ffmpeg, plan))
+        };
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !pid_file.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let started = Instant::now();
+        cancel(&work, &video);
+        worker.join().unwrap();
+        assert!(started.elapsed() < Duration::from_secs(10), "the probe did not hold the check");
+        assert_eq!(read_check(&work, &video)["state"], "STOPPED");
+        let pid = fs::read_to_string(&pid_file).unwrap();
+        let alive = Command::new("kill").args(["-0", pid.trim()]).status().is_ok_and(|status| status.success());
+        assert!(!alive, "the probe is gone");
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -1390,6 +1753,18 @@ mod tests {
         run(&work, &ffmpeg, held.clone().for_video(video.clone(), true));
         assert_eq!(read_check(&work, &video)["frozen"], json!([]));
         assert_eq!(fs::read(&video).unwrap(), bytes, "the video is never changed");
+        // a sound track that is there but silent (#935): a warning when the edit has sound, fine when it has none
+        let silent = dir.join("silent.mp4");
+        let made = Command::new(&ffmpeg).args(["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=320x240:r=25:d=3", "-f", "lavfi", "-i",
+            "anullsrc=r=48000:cl=stereo", "-c:v", "mpeg4", "-q:v", "5", "-c:a", "aac", "-t", "3"]).arg(&silent).status().unwrap();
+        assert!(made.success());
+        run(&work, &ffmpeg, plain_plan(3.0, true, None).for_video(silent.clone(), false));
+        let report = read_check(&work, &silent);
+        let audio = |report: &Value| report["checks"].as_array().unwrap().iter().find(|check| check["id"] == "audio").unwrap().clone();
+        assert_eq!((report["state"].as_str(), audio(&report)["ok"].as_bool()), (Some("DONE"), Some(false)), "{report}");
+        assert!(audio(&report)["detail"].as_str().unwrap().starts_with("bản sửa có tiếng nhưng âm thanh xuất ra im lặng"), "{report}");
+        run(&work, &ffmpeg, plain_plan(3.0, false, None).for_video(silent.clone(), false));
+        assert_eq!(audio(&read_check(&work, &silent))["ok"], true, "an edit without sound exported silent is fine");
         // zeroed bytes: FFmpeg exits 0 but logs decode errors
         let zeroed = dir.join("zeroed.mp4");
         let mut damaged = bytes.clone();

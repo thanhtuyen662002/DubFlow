@@ -945,10 +945,12 @@ fn probe(video: &Path) -> Result<Probe, String> {
 }
 
 /// `probe` with a given FFprobe (Kiểm tra kỹ thuật uses the one beside its FFmpeg).
+/// What `probe_with` (and Kiểm tra kỹ thuật's tracked probe) asks ffprobe for.
+const PROBE_ARGS: [&str; 6] = ["-v", "error", "-show_entries", "format=duration,size:stream=codec_type,width,height,avg_frame_rate,r_frame_rate", "-of", "json"];
+
 fn probe_with(ffprobe: &Path, video: &Path) -> Result<Probe, String> {
     let mut command = Command::new(ffprobe);
-    command.args(["-v", "error", "-show_entries", "format=duration,size:stream=codec_type,width,height,avg_frame_rate,r_frame_rate", "-of", "json"])
-        .arg(video)
+    command.args(PROBE_ARGS).arg(video)
         .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
@@ -3319,9 +3321,24 @@ fn run_tracked(ffmpeg: &Path, args: Vec<OsString>, work: &Path, log_path: &Path,
     let log = unlinked(work).then(|| fs::File::create(log_path).ok()).flatten().map_or_else(Stdio::null, Stdio::from);
     let mut command = Command::new(ffmpeg);
     command.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(log);
+    let (stdout, id) = spawn_tracked(command, running).map_err(|_| fail("Không chạy được FFmpeg"))?;
+    let lines = stdout.map(|stdout| BufReader::new(stdout).lines());
+    for text in lines.into_iter().flatten().map_while(Result::ok) {
+        line(&text);
+    }
+    if wait_tracked(running, id) {
+        return Ok(());
+    }
+    let last = fs::read_to_string(log_path).ok()
+        .and_then(|text| text.lines().rev().find(|line| !line.trim().is_empty()).map(|line| line.trim().chars().take(240).collect::<String>()));
+    Err(last.unwrap_or_default())
+}
+
+/// Start `command` with its stdout piped and keep it in `running`, so `stop` ends it: its stdout and its id.
+fn spawn_tracked(mut command: Command, running: &Running) -> std::io::Result<(Option<std::process::ChildStdout>, u32)> {
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
-    let mut child = command.spawn().map_err(|_| fail("Không chạy được FFmpeg"))?;
+    let mut child = command.spawn()?;
     let stdout = child.stdout.take();
     let id = child.id();
     if let Ok(mut children) = running.children.lock() {
@@ -3330,18 +3347,14 @@ fn run_tracked(ffmpeg: &Path, args: Vec<OsString>, work: &Path, log_path: &Path,
     if running.cancelled.load(Ordering::SeqCst) {
         stop(running);
     }
-    let lines = stdout.map(|stdout| BufReader::new(stdout).lines());
-    for text in lines.into_iter().flatten().map_while(Result::ok) {
-        line(&text);
-    }
+    Ok((stdout, id))
+}
+
+/// Wait for the child `spawn_tracked` started as `id`, taking it out of `running`: whether it exited 0.
+fn wait_tracked(running: &Running, id: u32) -> bool {
     let child = running.children.lock().ok()
         .and_then(|mut children| children.iter().position(|child| child.id() == id).map(|at| children.swap_remove(at)));
-    if matches!(child.map(|mut child| child.wait()), Some(Ok(code)) if code.success()) {
-        return Ok(());
-    }
-    let last = fs::read_to_string(log_path).ok()
-        .and_then(|text| text.lines().rev().find(|line| !line.trim().is_empty()).map(|line| line.trim().chars().take(240).collect::<String>()));
-    Err(last.unwrap_or_default())
+    matches!(child.map(|mut child| child.wait()), Some(Ok(code)) if code.success())
 }
 
 /// Render, then publish the video and subtitles under names that are free now.
