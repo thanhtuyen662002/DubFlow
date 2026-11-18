@@ -1,7 +1,7 @@
 DUBFLOW_PR_V1
 Issue: #943
 Lease-Owner: Claude/issue-943-overlay-burned-subtitles-final-frame
-Lease-Heartbeat: 2026-11-18T15:26:24Z
+Lease-Heartbeat: 2026-11-18T15:33:47Z
 Tested-Base-SHA: 41c624d6c4416a371bc6148a1ad4f3b3908b5fc1
 Conflict-Domains: desktop-edit-export,ffmpeg-render-graph,desktop-windows-real-ffmpeg-ci
 Expected-Paths:
