@@ -5978,8 +5978,10 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
         let check_file = |video: &Path, state: &str| {
             let folder = work.join("checks").join(file_key(video));
             fs::create_dir_all(&folder).unwrap();
+            // tied to the exact file at the name, as every report is (a report without its file's stamp is never shown)
             fs::write(folder.join("check.json"), json!({"schema_version": 1, "kind": "export_check", "advisory": true, "state": state,
-                "percent": 100, "checks": [{"id": "black", "label": "Hình đen", "ok": false, "detail": "đen 3,0 giây ở 0:04–0:07"}]}).to_string()).unwrap();
+                "percent": 100, "checks": [{"id": "black", "label": "Hình đen", "ok": false, "detail": "đen 3,0 giây ở 0:04–0:07"}],
+                "stamp": check::stamp_of(video)}).to_string()).unwrap();
             folder
         };
         check_file(&exported, "DONE");
