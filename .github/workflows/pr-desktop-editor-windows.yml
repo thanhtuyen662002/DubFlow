@@ -171,6 +171,20 @@ jobs:
           if ($passed -ne 1) { throw "Expected one test run with the two export check tests passing, saw $passed" }
           Write-Host 'Export check tests passed against the pinned FFmpeg (blackdetect, freezedetect, loudnorm, decode errors, Dừng kiểm tra, Phụ đề measured with libass)'
 
+      - name: Run the editor's zoomed-parts export end test against the pinned FFmpeg (#940)
+        shell: pwsh
+        run: |
+          # zoompan handed on its input's end time in the wrong time base, and the `fps` before burned Phụ đề copied
+          # the last frame for hours (rc26: "99%" forever). This export must end at the edit's own length.
+          if (-not $env:DUBFLOW_TEST_FFMPEG -or -not (Test-Path -LiteralPath $env:DUBFLOW_TEST_FFMPEG)) { throw 'DUBFLOW_TEST_FFMPEG is not set to the pinned ffmpeg.exe' }
+          $log = Join-Path $env:RUNNER_TEMP 'zoom-end-test.log'
+          cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --locked edit::tests::real_zoomed_parts_with_burned_lines_end -- --exact --nocapture 2>&1 | Tee-Object -FilePath $log
+          if ($LASTEXITCODE -ne 0) { throw 'Zoomed-parts export end test against real FFmpeg failed' }
+          $text = Get-Content -LiteralPath $log -Raw
+          if ($text -notmatch '(?m)zoom-end: ran against real FFmpeg\s*$') { throw 'Zoomed-parts export end test did not run against real FFmpeg (marker missing)' }
+          if ($text -notmatch '(?m)^test result: ok\. 1 passed; 0 failed;') { throw 'Expected exactly one zoomed-parts export end test to pass' }
+          Write-Host 'Zoomed parts (zoom + tilt, the last part included) with Phụ đề burned by libass export to their own length through the pinned FFmpeg'
+
       - name: Run the media adapter tests against real FFmpeg
         shell: pwsh
         run: |
