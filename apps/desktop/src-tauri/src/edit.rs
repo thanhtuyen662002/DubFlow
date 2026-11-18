@@ -3599,10 +3599,12 @@ fn start_export(request: ExportRequest) -> Result<Value, String> {
         let burns: Vec<&BurnSubtitles> = request.burn.iter().chain(request.burn_extra.iter()).collect();
         let framing = check::Framing { export: (width, height), out: (out_width, out_height),
             fill: request.fill.as_deref().unwrap_or("black"), aspect: request.aspect.as_deref() };
-        // Each media's picture as FFmpeg decodes it; a turned phone video's is not known before it is turned.
-        let pictures: Vec<Option<(u32, u32)>> = probes.iter().map(|probe| (!probe.turned).then_some((probe.width, probe.height))).collect();
+        // Each media's picture as FFmpeg decodes it: a phone video turned when played comes out turned (autorotate).
+        let pictures: Vec<Option<(u32, u32)>> = probes.iter()
+            .map(|probe| Some(if probe.turned { (probe.height, probe.width) } else { (probe.width, probe.height) })).collect();
+        let shown: Vec<(f64, f64)> = request.texts.iter().map(|text| (text.at, text.at + text.duration)).collect();
         check::plan(&edit, &stills, output_seconds(&edit.segments, &edit.transitions), has_audio, &request.cues, &burns, &framing, &fps)
-            .with_pictures(&edit, &pictures, &framing)
+            .with_pictures(&edit, &pictures, &framing, &shown)
             .turned_source(facts.turned)
     });
     let job = ExportJob {
