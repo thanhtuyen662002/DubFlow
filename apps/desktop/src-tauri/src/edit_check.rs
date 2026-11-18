@@ -44,6 +44,8 @@ const BOXED_AREA: f64 = 0.9;
 const MAX_BOXED_SPANS: usize = 64;
 /// At most this many box shapes, the longest-playing ones; parts of other shapes are measured on the whole frame.
 const MAX_BOXES: usize = 4;
+/// Narrowest picture, in finished-frame pixels, measured on its own box.
+const MIN_BOX_PIXELS: f64 = 16.0;
 const CHECKS_DIR: &str = "checks";
 const LOG_LIMIT: u64 = 4 * 1024 * 1024;
 const CHECK_LIMIT: u64 = 64 * 1024;
@@ -348,7 +350,10 @@ fn boxed_parts(edit: &Edit, pictures: &[Option<(u32, u32)>], framing: &Framing, 
     whole.extend(edit.overlays.iter().map(|overlay| (overlay.at, overlay.at + (overlay.end - overlay.start).max(0.0))));
     for (index, segment) in edit.segments.iter().enumerate() {
         let span = (at[index], at[index] + segment_length(segment));
-        let Some((w, h)) = covered(segment, pictures, framing).filter(|(w, h)| w * h < BOXED_AREA) else {
+        // A picture only a few pixels across (a thin strip in a tall Khung hình) keeps the whole frame: its box would
+        // crop to nothing and fail the whole check (review of #950).
+        let Some((w, h)) = covered(segment, pictures, framing).filter(|(w, h)| w * h < BOXED_AREA
+            && w * f64::from(framing.out.0) >= MIN_BOX_PIXELS && h * f64::from(framing.out.1) >= MIN_BOX_PIXELS) else {
             whole.push(span);
             continue;
         };
@@ -791,11 +796,13 @@ fn check_args(video: &Path, has_audio: bool, threads: Vec<OsString>, boxed: Opti
     args.push(video.into());
     let mut graph = match boxed {
         None => format!("[0:v:0]{SMALL},{BLACK},{FREEZE}[v]"),
-        // While a boxed part plays, its middle box is laid over the whole small copy: the filters see only picture.
+        // While a boxed part plays, its middle box is laid over the whole small copy: Hình đứng sees only picture.
+        // Hình đen looks at the whole copy first, as before (review of #950): burned Phụ đề are not cropped away, and
+        // in a box their glyphs would weigh more against the black and hide a black stretch.
         Some(boxed) => {
             let (width, height) = (320, even(320.0 * f64::from(boxed.frame.1.max(1)) / f64::from(boxed.frame.0.max(1))));
             let count = boxed.boxes.len();
-            let mut graph = format!("[0:v:0]split={}[vw]{};[vw]scale={width}:{height},setsar=1[vb0]", count + 1,
+            let mut graph = format!("[0:v:0]split={}[vw]{};[vw]scale={width}:{height},setsar=1,{BLACK}[vb0]", count + 1,
                 (0..count).map(|index| format!("[vm{index}]")).collect::<String>());
             for (index, (size, spans)) in boxed.boxes.iter().enumerate() {
                 let when = spans.iter().map(|(start, end)| format!("between(t,{},{})", num(*start), num(*end))).collect::<Vec<_>>().join("+");
@@ -805,7 +812,7 @@ fn check_args(video: &Path, has_audio: bool, threads: Vec<OsString>, boxed: Opti
                     graph.push_str(&format!("[vb{}]", index + 1));
                 }
             }
-            graph.push_str(&format!(",{BLACK},{FREEZE}[v]"));
+            graph.push_str(&format!(",{FREEZE}[v]"));
             graph
         }
     };
@@ -2073,6 +2080,10 @@ mod tests {
         let planned = plan(&edit, &[false], 64.0, true, &[], &[], &wide, "25/1").with_pictures(&edit, &[Some((1280, 720))], &wide, &[]);
         assert!(planned.boxed.is_some());
         assert_eq!(planned.turned_source(true).boxed, None);
+        // a picture a few pixels high (a cropped panorama in a tall frame) would crop to nothing: whole frame (review of #950)
+        let strip = Edit { segments: vec![Segment { crop: Some(Crop { x: 0.0, y: 0.0, w: 1.0, h: 0.1 }), ..segment(0, 0.0, 8.0) }], ..Edit::default() };
+        assert_eq!(boxed_parts(&strip, &[Some((4000, 200))], &bars, &[]), None);
+        assert!(boxed_parts(&strip, &[Some((4000, 2000))], &bars, &[]).is_some());
     }
 
     #[test]
@@ -2081,15 +2092,15 @@ mod tests {
         let boxed = Boxed { boxes: vec![((0.31640625, 1.0), vec![(32.0, 64.0), (70.5, 80.25)])], frame: (1280, 720) };
         assert_eq!(text(check_args(Path::new("out.mp4"), false, Vec::new(), Some(&boxed))),
             "-nostdin -hide_banner -loglevel level+info -nostats -progress pipe:1 -i out.mp4 -filter_complex \
-[0:v:0]split=2[vw][vm0];[vw]scale=320:180,setsar=1[vb0];[vm0]crop=w='trunc(iw*0.316406/2)*2':h='trunc(ih*1/2)*2',scale=320:180,setsar=1[vc0];\
-[vb0][vc0]overlay=enable='between(t,32,64)+between(t,70.5,80.25)',blackdetect=d=2:pic_th=0.98:pix_th=0.10,freezedetect=n=0.001:d=2[v] -map [v] -f null -");
+[0:v:0]split=2[vw][vm0];[vw]scale=320:180,setsar=1,blackdetect=d=2:pic_th=0.98:pix_th=0.10[vb0];[vm0]crop=w='trunc(iw*0.316406/2)*2':h='trunc(ih*1/2)*2',scale=320:180,setsar=1[vc0];\
+[vb0][vc0]overlay=enable='between(t,32,64)+between(t,70.5,80.25)',freezedetect=n=0.001:d=2[v] -map [v] -f null -");
         let two = Boxed { boxes: vec![((0.75, 1.0), vec![(0.0, 10.0)]), ((0.316406, 1.0), vec![(10.0, 14.0)])], frame: (1280, 720) };
         assert_eq!(text(check_args(Path::new("out.mp4"), false, Vec::new(), Some(&two))),
             "-nostdin -hide_banner -loglevel level+info -nostats -progress pipe:1 -i out.mp4 -filter_complex \
-[0:v:0]split=3[vw][vm0][vm1];[vw]scale=320:180,setsar=1[vb0];\
+[0:v:0]split=3[vw][vm0][vm1];[vw]scale=320:180,setsar=1,blackdetect=d=2:pic_th=0.98:pix_th=0.10[vb0];\
 [vm0]crop=w='trunc(iw*0.75/2)*2':h='trunc(ih*1/2)*2',scale=320:180,setsar=1[vc0];[vb0][vc0]overlay=enable='between(t,0,10)'[vb1];\
 [vm1]crop=w='trunc(iw*0.316406/2)*2':h='trunc(ih*1/2)*2',scale=320:180,setsar=1[vc1];[vb1][vc1]overlay=enable='between(t,10,14)',\
-blackdetect=d=2:pic_th=0.98:pix_th=0.10,freezedetect=n=0.001:d=2[v] -map [v] -f null -");
+freezedetect=n=0.001:d=2[v] -map [v] -f null -");
     }
 
     fn style(changes: Value) -> SubtitleStyle {
@@ -3732,6 +3743,21 @@ blackdetect=d=2:pic_th=0.98:pix_th=0.10,freezedetect=n=0.001:d=2[v] -map [v] -f 
         two.boxed.as_mut().unwrap().boxes.push(((0.8, 1.0), vec![(0.0, 6.0)]));
         let boxed = frozen(two);
         assert!(matches!(boxed.as_slice(), [(start, end)] if (*start - 12.0).abs() < 0.1 && *end > 15.9), "{boxed:?}");
+        // Hình đen still looks at the whole frame (review of #950): a black turned part under a burned line wider than
+        // its box (1.4 % of the frame white, 2.2 % of the box) is black.
+        let dark = dir.join("dark.mp4");
+        let line = "color=black:s=640x360:r=25:d=4,format=yuv420p,drawbox=x=120:y=320:w=400:h=8:color=white:t=fill";
+        let made = Command::new(&ffmpeg).args(["-v", "error", "-y", "-f", "lavfi", "-i", line, "-f", "lavfi", "-i", quiet,
+            "-filter_complex", "[0:v][1:v]concat=n=2:v=1:a=0[v]", "-map", "[v]", "-c:v", "mpeg4", "-q:v", "3"]).arg(&dark).status().unwrap();
+        assert!(made.success());
+        let edit = Edit { segments: vec![Segment { rotate: 90, ..segment(0, 0.0, 4.0) }, segment(0, 4.0, 10.0)], ..Edit::default() };
+        let planned = plan(&edit, &[false], 10.0, false, &[], &[], &wide, "25/1").with_pictures(&edit, &[Some((640, 360))], &wide, &[]);
+        assert!(planned.boxed.is_some());
+        run(&work, &ffmpeg, planned.for_video(dark.clone(), false, stamp_of(&dark)));
+        let report = read_check(&work, &dark);
+        assert_eq!(report["state"], "DONE", "{report}");
+        let black: Vec<(f64, f64)> = report["black"].as_array().unwrap().iter().map(|span| (span[0].as_f64().unwrap(), span[1].as_f64().unwrap())).collect();
+        assert!(matches!(black.as_slice(), [(start, end)] if *start < 0.1 && (*end - 4.0).abs() < 0.1), "{report}");
         let _ = fs::remove_dir_all(dir);
         println!("boxed-check: ran against real FFmpeg");
     }
