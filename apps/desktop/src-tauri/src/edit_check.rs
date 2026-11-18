@@ -875,10 +875,8 @@ pub(super) fn run(work: &Path, ffmpeg: &Path, plan: Plan) {
     if !unlinked(work) || plain_folder(&work.join(CHECKS_DIR)).is_err() || plain_folder(&dir).is_err() {
         return;
     }
-    // The folder held for the whole check, then its own lease: a new export of the same video is never refused
-    // because of a check.
-    let Some(pinned) = pin(work, &dir) else { return };
-    let Some(lease) = own_lease(work, &dir) else { return };
+    // Registered first, so this window's `attach` knows the check is its own (`ours`) while it waits; a check of
+    // this name already registered runs on alone.
     let running = Arc::new(Running { children: Mutex::new(Vec::new()), cancelled: AtomicBool::new(false) });
     if !register(&CHECKING, &CLOSING, &dir, &running) {
         return; // DubFlow is closing
@@ -886,24 +884,30 @@ pub(super) fn run(work: &Path, ffmpeg: &Path, plan: Plan) {
     if owned(work, &dir) {
         let _ = write_durable(&dir.join("plan.json"), &serde_json::to_vec(&plan).unwrap_or_default());
     }
+    let mut held = None;
     let report = match wait_turn(work, &dir, &plan, &running) {
+        // The folder is held, then the lease taken, only once the turn is this check's: a check waiting its turn
+        // reads nothing and holds nothing, so on Windows the project around it can still be renamed, moved or
+        // deleted (recheck 14). A folder gone or swapped meanwhile is not checked.
         Turn::Taken(turn) => {
-            let report = check_once(work, ffmpeg, &plan, &dir, &running);
+            held = pin(work, &dir).and_then(|pinned| Some((pinned, own_lease(work, &dir)?)));
+            let report = held.as_ref().map(|_| check_once(work, ffmpeg, &plan, &dir, &running));
             drop(turn);
             report
         }
-        Turn::Stopped => ExportCheck::of(&plan, "STOPPED"),
-        Turn::Full => ExportCheck { error: Some(format!("bỏ qua vì đã có {MAX_WAITING} video khác đang chờ kiểm tra")),
-            ..ExportCheck::of(&plan, "UNAVAILABLE") },
+        Turn::Stopped => Some(ExportCheck::of(&plan, "STOPPED")),
+        Turn::Full => Some(ExportCheck { error: Some(format!("bỏ qua vì đã có {MAX_WAITING} video khác đang chờ kiểm tra")),
+            ..ExportCheck::of(&plan, "UNAVAILABLE") }),
     };
-    // Stopped because DubFlow is closing, not by Dừng kiểm tra: said as such.
-    let report = if report.state == "STOPPED" && CLOSING.load(Ordering::SeqCst) { ExportCheck::of(&plan, "INTERRUPTED") } else { report };
-    save(work, &dir, &report);
+    if let Some(report) = report {
+        // Stopped because DubFlow is closing, not by Dừng kiểm tra: said as such.
+        let report = if report.state == "STOPPED" && CLOSING.load(Ordering::SeqCst) { ExportCheck::of(&plan, "INTERRUPTED") } else { report };
+        save(work, &dir, &report);
+    }
     if let Ok(mut checking) = CHECKING.lock() {
         checking.remove(&dir);
     }
-    drop(lease);
-    drop(pinned);
+    drop(held);
     prune(work);
 }
 
@@ -935,11 +939,13 @@ fn own_lease(work: &Path, dir: &Path) -> Option<fs::File> {
     lease.metadata().is_ok_and(|metadata| metadata.is_file() && !is_link(&metadata)).then_some(lease)
 }
 
-/// Put `running` in `checking` under `dir`, unless DubFlow is `closing` (then false).
+/// Put `running` in `checking` under `dir`, unless DubFlow is `closing` or a check of the same folder is already
+/// there (then false: that one keeps its place, its Dừng kiểm tra and its end; recheck 14).
 /// `stop_every` sets `closing` before it takes the lock, so a check either is in the
 /// registry it stops, or sees `closing` and never starts.
 fn register(checking: &Mutex<HashMap<PathBuf, Arc<Running>>>, closing: &AtomicBool, dir: &Path, running: &Arc<Running>) -> bool {
     match checking.lock() {
+        Ok(checking) if checking.contains_key(dir) => false,
         Ok(mut checking) if !closing.load(Ordering::SeqCst) => {
             checking.insert(dir.to_path_buf(), running.clone());
             true
@@ -2442,6 +2448,9 @@ mod tests {
         for (index, entry) in entries.iter().enumerate() {
             assert!(register(&checking, &closing, Path::new(&format!("checks/{index}")), entry));
         }
+        let twin = Arc::new(Running { children: Mutex::new(Vec::new()), cancelled: AtomicBool::new(false) });
+        assert!(!register(&checking, &closing, Path::new("checks/0"), &twin), "a second check of the same folder never takes the first one's place");
+        assert!(Arc::ptr_eq(&checking.lock().unwrap()[Path::new("checks/0")], &entries[0]));
         stop_every(&checking, &closing);
         for entry in &entries {
             assert!(entry.cancelled.load(Ordering::SeqCst));
@@ -2479,6 +2488,12 @@ mod tests {
         let mut exports = vec![json!({"path": display_path(&first)})];
         attach(&work, &mut exports);
         assert_eq!(exports[0]["check"]["state"], "RUNNING", "a waiting check is this window's, never INTERRUPTED");
+        // a check waiting its turn holds nothing: on Windows too, the project's folders can be renamed (so moved or
+        // deleted) meanwhile (recheck 14)
+        assert!(!check_dir(&work, &first).join("lease").exists(), "no lease is taken before the turn");
+        let aside = dir.join("work-aside");
+        fs::rename(&work, &aside).expect("a waiting check holds no folder");
+        fs::rename(&aside, &work).unwrap();
         cancel(&work, &first);
         a.join().unwrap();
         assert_eq!(read_check(&work, &first)["state"], "STOPPED", "Dừng kiểm tra reaches a waiting check");
