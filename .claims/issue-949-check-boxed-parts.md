@@ -1,7 +1,7 @@
 DUBFLOW_PR_V1
 Issue: #949
 Lease-Owner: Claude/issue-949-check-boxed-parts
-Lease-Heartbeat: 2026-11-18T17:58:00Z
+Lease-Heartbeat: 2026-11-18T18:13:55Z
 Tested-Base-SHA: 4255f8ba52d6727c280270df0f15163e0c04bb05
 Conflict-Domains: desktop-edit-export-check,desktop-windows-real-ffmpeg-ci
 Expected-Paths:

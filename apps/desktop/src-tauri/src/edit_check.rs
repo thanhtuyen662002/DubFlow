@@ -39,8 +39,15 @@ const MIN_FROZEN: f64 = 2.0;
 /// `MIN_FROZEN` applies (review of #950). Each copy's events are printed by `metadata` filters named here, since
 /// FFmpeg logs every freezedetect under the same name.
 const FREEZE_PIECES: &str = "freezedetect=n=0.001:d=0.2";
-/// How near a box's edge two pieces count as meeting there (s); several frames at any usual rate.
+/// How far either side of a box's edge the whole copy carries a still stretch (s): more than `FREEZE_PIECES`'s
+/// shortest piece, so a stretch with little on one side is still whole.
 const BOX_EDGE: f64 = 0.25;
+/// How far the whole copy must stay still past an edge to show the picture did not change there (s): more than a
+/// frame at 15 fps and up (at a cut its stretch ends on the first frame after).
+const CROSS: f64 = 0.08;
+/// Burned lines are widened by this much (s) each side: libass draws a line from the frame at (or just before, after
+/// its centisecond rounding) its start, and that frame must not be measured on the box.
+const BURN_PAD: f64 = 0.1;
 const BOX_FREEZE: &str = "metadata@dfbox=mode=print:key=lavfi.freezedetect.freeze_start,metadata@dfboxend=mode=print:key=lavfi.freezedetect.freeze_end";
 const WHOLE_FREEZE: &str = "metadata@dfwhole=mode=print:key=lavfi.freezedetect.freeze_start,metadata@dfwholeend=mode=print:key=lavfi.freezedetect.freeze_end";
 /// = the first `loudnorm` pass `measure.loudness` runs for Final QC; only `input_tp` is read.
@@ -130,10 +137,11 @@ pub(super) struct Boxed {
 }
 
 impl Boxed {
-    /// The still stretches: the boxed copy's pieces while a box shows, the whole copy's elsewhere. Two pieces that
-    /// meet at a box's edge (within `BOX_EDGE`: the copy switches on the frame after it) are one stretch when the
-    /// whole frame stays still from `BOX_EDGE` before that edge to `BOX_EDGE` after it (the copy switched, the
-    /// picture did not); at a cut the whole frame changes, and they stay apart.
+    /// The still stretches: the boxed copy's pieces while a box shows, the whole copy's elsewhere. At a box's edge the
+    /// measured copy switches, which ends a boxed piece there; where the whole copy runs still across the edge (more
+    /// than `CROSS` past it on both sides: a cut ends it on the first frame after) the picture did not change, and the
+    /// whole copy's stretch within `BOX_EDGE` of the edge bridges the two sides, however short either is. Only
+    /// overlapping pieces merge, so the stretches either side of a cut stay apart.
     fn still(&self, boxed: &[(f64, f64)], whole: &[(f64, f64)]) -> Vec<(f64, f64)> {
         let mut shown: Vec<(f64, f64)> = self.boxes.iter().flat_map(|(_, spans)| spans.iter().copied()).collect();
         shown.sort_by(|a, b| a.0.total_cmp(&b.0));
@@ -141,15 +149,14 @@ impl Boxed {
         let mut pieces: Vec<(f64, f64)> = boxed.iter().flat_map(|&(start, end)| shown.iter()
             .map(move |&(from, to)| (start.max(from), end.min(to)))).filter(|(start, end)| end > start).collect();
         pieces.extend(subtract(whole, &shown));
+        pieces.extend(edges.iter().flat_map(|&edge| whole.iter()
+            .filter(move |(start, end)| *start < edge - CROSS && *end > edge + CROSS)
+            .map(move |(start, end)| (start.max(edge - BOX_EDGE), end.min(edge + BOX_EDGE)))));
         pieces.sort_by(|a, b| a.0.total_cmp(&b.0));
-        let across = |edge: f64| whole.iter().any(|(start, end)| *start <= edge - BOX_EDGE && *end >= edge + BOX_EDGE);
         let mut joined: Vec<(f64, f64)> = Vec::new();
         for (start, end) in pieces {
             match joined.last_mut() {
-                Some(last) if start < last.1 - 1e-6
-                    || edges.iter().any(|&edge| (last.1 - edge).abs() <= BOX_EDGE && (start - edge).abs() <= BOX_EDGE && across(edge)) => {
-                    last.1 = last.1.max(end);
-                }
+                Some(last) if start < last.1 - 1e-6 => last.1 = last.1.max(end),
                 _ => joined.push((start, end)),
             }
         }
@@ -447,7 +454,7 @@ fn boxed_parts(edit: &Edit, pictures: &[Option<(u32, u32)>], framing: &Framing, 
     boxes.sort_by(|a, b| length(&b.1).total_cmp(&length(&a.1)));
     boxes.truncate(MAX_BOXES);
     let count: usize = boxes.iter().map(|(_, spans)| spans.len()).sum();
-    let mut lines = burned.to_vec();
+    let mut lines: Vec<(f64, f64)> = burned.iter().map(|(start, end)| ((start - BURN_PAD).max(0.0), end + BURN_PAD)).collect();
     lines.sort_by(|a, b| a.0.total_cmp(&b.0));
     let mut merged: Vec<(f64, f64)> = Vec::new();
     for (start, end) in lines.into_iter().filter(|(start, end)| end > start) {
@@ -2217,6 +2224,11 @@ mod tests {
         let strip = Edit { segments: vec![Segment { crop: Some(Crop { x: 0.0, y: 0.0, w: 1.0, h: 0.1 }), ..segment(0, 0.0, 8.0) }], ..Edit::default() };
         assert_eq!(boxed_parts(&strip, &[Some((4000, 200))], &bars, &[], &[]), None);
         assert!(boxed_parts(&strip, &[Some((4000, 2000))], &bars, &[], &[]).is_some());
+        // burned lines: widened by a frame or two (libass draws from the frame at their start) and joined across gaps
+        // under 2 s, so Hình đen never measures a line's frame on the box
+        let lined = boxed_parts(&edit, &[Some((1280, 720))], &wide, &[], &[(41.0, 42.5), (40.0, 41.0), (50.0, 52.0)]).unwrap();
+        let near = |a: &[(f64, f64)], b: &[(f64, f64)]| a.len() == b.len() && a.iter().zip(b).all(|(x, y)| (x.0 - y.0).abs() < 1e-9 && (x.1 - y.1).abs() < 1e-9);
+        assert!(near(&lined.burned, &[(39.9, 42.6), (49.9, 52.1)]), "{:?}", lined.burned);
     }
 
     #[test]
@@ -2257,6 +2269,11 @@ mod tests {
         assert_eq!(boxed.still(&[(2.96, 4.52)], &[(1.0, 2.0), (2.96, 6.5)]), [(2.96, 6.5)]);
         // a cut at 4.5 s (the whole frame changes on the next frame): the pieces stay apart, each too short on its own
         assert_eq!(boxed.still(&[(2.96, 4.54)], &[(1.0, 4.54), (4.54, 6.0)]), [(2.96, 4.5), (4.5, 4.54), (4.54, 6.0)]);
+        // review of #950, round 4: little on one side of the edge. 0.14 s still in the box (under the pieces' 0.2 s, so
+        // no boxed piece) then 1.9 s after: the whole copy carries it, 2.04 s.
+        assert_eq!(boxed.still(&[], &[(4.36, 6.4)]), [(4.36, 6.4)]);
+        // 1.9 s in the box then 0.14 s after the edge
+        assert_eq!(boxed.still(&[(2.6, 4.52)], &[(2.6, 4.64)]), [(2.6, 4.64)]);
         // the whole copy's diluted "still" inside the box is not used: there the box decides
         assert_eq!(boxed.still(&[], &[(0.0, 4.5)]), Vec::<(f64, f64)>::new());
         // two boxes meeting at 10 s, the picture still across: one stretch
@@ -3957,6 +3974,24 @@ mod tests {
 color=white:s=640x360:r=25:d=0.04,format=yuv420p,tpad=stop_mode=clone:stop_duration=1.46[b];\
 color=gray:s=640x360:r=25:d=0.5,format=yuv420p,noise=c0s=8:c0f=t[c];[a][b][c]concat=n=3:v=1:a=0");
         assert_eq!(still("cut.mp4", held), vec![]);
+        // Little on one side of the edge (review of #950, round 4; lossless, so the frames are exact): a still 2.04 s
+        // with 0.14 s of it in the box, and one with 0.14 s of it after the box.
+        let lossless = |name: &str, graph: String| {
+            let file = dir.join(name);
+            let made = Command::new(&ffmpeg).args(["-v", "error", "-y", "-filter_complex", &graph, "-c:v", "ffv1"]).arg(&file).status().unwrap();
+            assert!(made.success());
+            let planned = plan(&parts, &[false], 6.5, false, &[], &[], &wide, "25/1").with_pictures(&parts, &[Some((640, 360))], &wide, &[], &[]);
+            run(&work, &ffmpeg, planned.for_video(file.clone(), false, stamp_of(&file)));
+            let report = read_check(&work, &file);
+            assert_eq!(report["state"], "DONE", "{report}");
+            report["frozen"].as_array().unwrap().iter().map(|span| (span[0].as_f64().unwrap(), span[1].as_f64().unwrap())).collect::<Vec<_>>()
+        };
+        let noisy = "format=yuv420p,noise=c0s=40:c0f=t";
+        let late = lossless("late.mkv", format!("color=gray:s=640x360:r=25:d=5,{noisy},{fit},trim=end_frame=110,tpad=stop_mode=clone:stop_duration=2.1"));
+        assert!(matches!(late.as_slice(), [(start, end)] if (*start - 4.36).abs() < 0.05 && *end > 6.4), "{late:?}");
+        let early = lossless("early.mkv", format!("color=gray:s=640x360:r=25:d=3,{noisy},{fit},trim=end_frame=66,tpad=stop_mode=clone:stop_duration=2.0[a];\
+color=gray:s=640x360:r=25:d=1.86,{noisy}[b];[a][b]concat=n=2:v=1:a=0"));
+        assert!(matches!(early.as_slice(), [(start, end)] if (*start - 2.6).abs() < 0.05 && (*end - 4.64).abs() < 0.05), "{early:?}");
         let _ = fs::remove_dir_all(dir);
         println!("boxed-check: ran against real FFmpeg");
     }
