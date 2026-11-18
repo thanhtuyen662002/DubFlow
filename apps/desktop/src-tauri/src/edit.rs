@@ -1388,6 +1388,11 @@ fn segment_video(segment: &Segment, fit: &str, frame: &Frame, luts: &[String]) -
     if let Some(zoom) = segment.zoom {
         let frames = (segment_length(segment) * fps_number(&frame.fps)).round().max(2.0);
         let (from, change) = (num(zoom.from), num(zoom.to - zoom.from));
+        // zoompan passes its input's end time on unchanged, read in its own time base (1/fps): after the fit's
+        // AV_TIME_BASE that end lands ~40 000x too late, and an `fps` after the part (Phụ đề, parts) fills the gap
+        // with copies of the last frame for hours (#940). Its input in 1/fps (the frames are already on that grid)
+        // makes the end mean the right time.
+        video.push(format!("fps={}", frame.fps));
         video.push(format!(
             "zoompan=z='{from}+{change}*min(on/{},1)':x='(iw-iw/zoom)*{}':y='(ih-ih/zoom)*{}':d=1:s={}x{}:fps={}",
             num(frames - 1.0), num(zoom.x), num(zoom.y), frame.width, frame.height, frame.fps));
@@ -6544,7 +6549,8 @@ Dialogue: 3,0:00:05.00,0:00:07.00,T1,,256,256,0,,{\\an6\\pos(1024,360)}{\\ko10}G
         assert_eq!(segment_length(&frozen), 3.0);
         let zoomed = Segment { zoom: Some(Zoom { from: 1.0, to: 1.5, x: 0.5, y: 0.25 }), ..segment(0.0, 2.0, 1.0, 1.0) };
         let video = segment_video(&zoomed, fit, &frame, &[]);
-        assert_eq!(video[3], "zoompan=z='1+0.5*min(on/59,1)':x='(iw-iw/zoom)*0.5':y='(ih-ih/zoom)*0.25':d=1:s=1920x1080:fps=30");
+        assert_eq!(video[3], "fps=30", "zoompan gets its input in its own time base (#940)");
+        assert_eq!(video[4], "zoompan=z='1+0.5*min(on/59,1)':x='(iw-iw/zoom)*0.5':y='(ih-ih/zoom)*0.25':d=1:s=1920x1080:fps=30");
         assert_eq!(fps_number("30000/1001"), 30000.0 / 1001.0);
         // Phase 9C: a slight tilt turns and keeps the middle window it fully covers (no empty corner), then fits
         let tilted = Segment { tilt: -1.0, ..segment(0.0, 2.0, 1.0, 1.0) };
@@ -6777,5 +6783,53 @@ aloop=loop=-1:size=144000,atrim=duration=8,adelay=2000:all=1"), "{script}");
         let big = json!({"x": "a".repeat(PROJECT_LIMIT)});
         assert!(saved_write(&dir, 'v', "To", None, "project", &big, 2).is_err());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// With DUBFLOW_TEST_FFMPEG: an export whose parts move (zoom, tilt), the last one included, with a burned
+    /// layer after them ends at the edit's own length (#940). zoompan used to hand on its input's end time in the
+    /// wrong time base, and the `fps` before the burned Phụ đề copied the last frame for hours (rc26: "99%" forever).
+    #[test]
+    fn real_zoomed_parts_with_burned_lines_end() {
+        let Ok(ffmpeg) = std::env::var("DUBFLOW_TEST_FFMPEG") else { return };
+        let ffmpeg = PathBuf::from(ffmpeg);
+        let dir = std::env::temp_dir().join(format!("dubflow-zoom-end-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("source.mp4");
+        let made = Command::new(&ffmpeg).args(["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=320x240:r=30:d=12", "-f", "lavfi", "-i",
+            "sine=f=330:d=12", "-c:v", "mpeg4", "-q:v", "3", "-c:a", "aac", "-shortest"]).arg(&source).status().unwrap();
+        assert!(made.success());
+        let moving = |start: f64, end: f64| Segment { zoom: Some(Zoom { from: 1.0, to: 1.12, x: 0.5, y: 0.5 }), tilt: 1.5, ..segment(start, end, 1.0, 1.0) };
+        let timeline = Edit { segments: vec![moving(0.0, 4.0), segment(4.0, 8.0, 1.0, 1.0), moving(8.0, 12.0)], ..Edit::default() };
+        let frame = Frame { width: 320, height: 240, fps: "25/1".into() };
+        let mix = Mix { main_volume: 1.0, ..Mix::default() };
+        // The burned layer stands in for `subtitles` (it is the `fps` before it that waited for the end).
+        let finish = Finish { burn: Some("null".into()), ..Finish::default() };
+        let (graph, has_audio) = export_script(&timeline, &[Input { has_audio: true }], &frame, "source", &mix, &finish);
+        assert!(has_audio && graph.contains(",fps=25/1,zoompan=") && graph.contains("[vt]fps=25/1,null[v]"), "{graph}");
+        let out = dir.join("out.mp4");
+        let mut child = Command::new(&ffmpeg).args(["-nostdin", "-v", "error", "-y", "-i"]).arg(&source).arg("-filter_complex").arg(&graph)
+            .args(["-map", "[v]", "-map", "[a]", "-c:v", "mpeg4", "-q:v", "5", "-c:a", "aac", "-r", "25/1"]).arg(&out)
+            .stdin(Stdio::null()).stdout(Stdio::null()).spawn().unwrap();
+        let started = Instant::now();
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break Some(status);
+            }
+            if started.elapsed() > Duration::from_secs(120) {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        let status = status.unwrap_or_else(|| panic!("the export never ended (#940): {} bytes after 120 s", fs::metadata(&out).map(|m| m.len()).unwrap_or(0)));
+        assert!(status.success());
+        let probe = Command::new(ffmpeg.with_file_name(ffmpeg.file_name().unwrap().to_string_lossy().replace("ffmpeg", "ffprobe")))
+            .args(["-v", "error", "-select_streams", "v:0", "-count_frames", "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0"])
+            .arg(&out).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&probe.stdout).trim(), "300", "12 s at 25 fps");
+        let _ = fs::remove_dir_all(&dir);
+        println!("zoom-end: ran against real FFmpeg");
     }
 }
