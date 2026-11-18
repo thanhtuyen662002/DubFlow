@@ -2157,7 +2157,9 @@ mod tests {
             assert!(!at_place(&stale, &work, &folder), "the handle opened before the save is not the file at the name");
             assert_eq!(load_check(&work, &folder).unwrap()["percent"], 50.0, "the new report is read");
         }
-        // a save every moment while polls read: every read gets a report
+        // a save every millisecond while polls read (a thousand times as often as a check saves its progress, at
+        // most once a second): every read gets a report. A writer with no pause at all can win all LOAD_TRIES
+        // races on a busy runner, which no real check does (the next poll and the UI's MISSED_POLLS cover it).
         let stop = Arc::new(AtomicBool::new(false));
         let writer = {
             let (work, folder, video, stop) = (work.clone(), folder.clone(), video.clone(), stop.clone());
@@ -2166,6 +2168,7 @@ mod tests {
                 while !stop.load(Ordering::SeqCst) {
                     percent = (percent + 1.0) % 100.0;
                     save(&work, &folder, &ExportCheck { percent, ..ExportCheck::new(&video, "RUNNING") });
+                    std::thread::sleep(Duration::from_millis(1));
                 }
             })
         };
