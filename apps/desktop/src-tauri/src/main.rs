@@ -2086,13 +2086,19 @@ async fn douyin_view_open(app: tauri::AppHandle, sources: tauri::State<'_, std::
     // The link service's first start checks the whole install (a minute or
     // more on a cold disk); start it while the user logs in so "Xong" saves
     // at once. A failure here shows up again, with its message, on "Xong".
+    warm_link_service(std::sync::Arc::clone(&sources));
+    Ok(())
+}
+
+/// Start the link service in the background, without waiting for it. Its first start after an install checks every
+/// file of the install (2 min 39 s on the owner's PC with the antivirus on, #937); started with the app, that check is
+/// usually over before a link is pasted. A failure here shows up again, with its message, when a link starts.
+fn warm_link_service(sources: std::sync::Arc<source::Sources>) {
     if let (Ok(root), Ok(data)) = (version_root(), control_root()) {
         if let Ok(supervisor) = supervisor_binary(&root) {
-            let sources = std::sync::Arc::clone(&sources);
             tauri::async_runtime::spawn_blocking(move || { let _ = sources.warm_up(&supervisor, &root, &data); });
         }
     }
-    Ok(())
 }
 
 /// Keep the login page over the dialog's box when the window changes.
@@ -2421,6 +2427,10 @@ fn main() {
         .manage(sources)
         .setup(|app| {
             tauri::async_runtime::spawn(sync_douyin_login(app.handle().clone()));
+            {
+                use tauri::Manager;
+                warm_link_service(std::sync::Arc::clone(&app.state::<std::sync::Arc<source::Sources>>()));
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![reframe::reframe_render, reframe::reframe_status, reframe::reframe_cancel, reframe::reframe_info, shorts::shorts_render, shorts::shorts_status, shorts::shorts_cancel, package::package_video, package::package_info, package::package_status, package::package_cancel, source_credit::source_credit_get, source_credit::source_credit_set, ai_keys::ai_key_status, ai_keys::ai_key_get, ai_keys::ai_ask, ai_keys::ai_key_set, ai_keys::ai_key_delete, ai_keys::ai_key_page, vibi::vibi_call, vibi::vibi_preview, vibi::vibi_sample, create_report, product::pick_product_files, product::product_image, product::product_render, product::product_status, product::product_cancel, product::product_spec, product::product_runs, product::product_backgrounds, product::product_background_add, product::product_background_delete, product::product_rerender, mastering::mastering_review, mastering::mastering_final_qc, mastering::mastering_keyframe, mastering::dubbing_qc, mastering::dubbing_qc_climax, release_info, voice_catalog, pick_files, pick_edit_files, pick_lut, edit::edit_proxy, start_job, glossary_export, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, link_titled_output, withdraw_fetch, cancel_fetch, keep_download, default_download_dir, open_folder, reveal_download, save_douyin_session, ensure_douyin_session, douyin_account, douyin_logout, douyin_view_open, douyin_view_bounds, douyin_view_close, review_clip, video_frame, allow_media, post_suggestions, discover, open_discovery, discovery_view_show, discovery_view_bounds, discovery_view_hide, discovery_view_close, discovery_view_back, discovery_view_reload, discovery_view_url, scroll_discovery, collect_discovery, translate_terms, translate_query, review_speakers, check_update, download_update, install_update, list_versions, activate_version, restart_app, compilation::compilation_render, compilation::compilation_status, compilation::compilation_cancel, compilation::compilation_description, compilation::compilation_runs, compilation_raw::compilation_raw_render, compilation_raw::compilation_raw_rerender, compilation_raw::compilation_raw_cancel, compilation_raw::compilation_raw_open, compilation_raw::compilation_raw_finalize, compilation_raw::compilation_raw_final_qc, compilation_raw::compilation_review, compilation_raw::compilation_keyframe, compilation_raw::pick_source_folder, projects::project_delete, docu::docu_create, docu::docu_runs, docu::docu_open, docu::docu_check_script, docu::docu_pick_file, docu::docu_voices, docu::docu_narrate, docu::docu_narration_status, docu::docu_narration_cancel, docu::docu_plan, docu::docu_plan_status, docu::docu_plan_cancel, docu::docu_cover, docu::docu_slices, docu::docu_layers,

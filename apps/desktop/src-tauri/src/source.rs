@@ -70,6 +70,12 @@ pub struct Sources {
     /// A start waits for a session save to finish (the service refuses
     /// every request while it saves); one waiter at a time.
     start_deferred: AtomicBool,
+    /// The running service has checked the install and reads requests (`source_ready`). Until then a link that
+    /// starts waits for that check, which takes minutes on the first start after an install (#937).
+    ready: AtomicBool,
+    /// DubFlow is closing: no service starts again (a link waiting when the old one ends would start a new one that
+    /// outlives the app).
+    closed: AtomicBool,
 }
 
 /// What `claim_next` found.
@@ -85,6 +91,10 @@ enum Claimed {
 /// Longest wait for a session save before the next link starts anyway.
 /// What the first waiting link says while a login session is being saved.
 const SAVING_SESSION: &str = "Đang chờ lưu xong phiên đăng nhập…";
+/// A link starts while the service still checks every file of the install: after an install, with the antivirus
+/// scanning each file, that took 2 min 39 s on the owner's PC (#937), warm 1.7 s.
+const CHECKING_INSTALL: &str = "Đang kiểm tra bộ cài DubFlow trước khi tải (lần đầu sau khi cài có thể mất vài phút)…";
+const STARTING: &str = "Đang khởi động dịch vụ tải…";
 const SESSION_SAVE_WAIT: std::time::Duration = std::time::Duration::from_secs(250);
 
 /// The service allows two retries in a row that bring no new bytes; each
@@ -333,6 +343,9 @@ impl Sources {
         *self.launch.lock().map_err(|_| fail("source launch lock poisoned"))? =
             Some((supervisor.to_path_buf(), root.to_path_buf(), data.to_path_buf()));
         let mut guard = self.service.lock().map_err(|_| fail("source service lock poisoned"))?;
+        if self.closed.load(Ordering::SeqCst) {
+            return Err(fail("DubFlow đang đóng."));
+        }
         if let Some(service) = guard.as_mut() {
             if matches!(service.child.try_wait(), Ok(None)) {
                 return Ok(());
@@ -349,6 +362,7 @@ impl Sources {
             command.creation_flags(0x08000000);
         }
         let mut child = command.spawn().map_err(|error| fail(format!("Không khởi động được dịch vụ tải link: {error}")))?;
+        self.ready.store(false, Ordering::SeqCst);
         let stdin = child.stdin.take().ok_or_else(|| fail("source service has no stdin"))?;
         let stdout = child.stdout.take().ok_or_else(|| fail("source service has no stdout"))?;
         *guard = Some(Service { child, stdin });
@@ -361,6 +375,7 @@ impl Sources {
                     this.on_event(&event);
                 }
             }
+            this.ready.store(false, Ordering::SeqCst);
             // Service exited: the running link cannot finish; the next one
             // restarts the service.
             if let Ok(mut fetches) = this.fetches.lock() {
@@ -391,6 +406,16 @@ impl Sources {
     }
 
     fn on_event(self: &Arc<Self>, event: &Value) {
+        if event["event"] == "source_ready" {
+            // The install is checked: a link that waited for it now starts.
+            self.ready.store(true, Ordering::SeqCst);
+            if let Some(scan) = self.queue.lock().ok().and_then(|queue| queue.current.clone()) {
+                self.update(&scan, |s| if s.state == "preparing" && s.detail.as_deref() == Some(CHECKING_INSTALL) {
+                    s.detail = Some(STARTING.into());
+                });
+            }
+            return;
+        }
         // A rejected request names no scan. While a session save waits and no
         // link is starting or being stopped, the rejection is the save's.
         let link_preparing = || self.queue.lock().ok().and_then(|queue| queue.current.clone())
@@ -573,7 +598,10 @@ impl Sources {
             let Some(status) = fetches.get_mut(&next) else { continue };
             status.state = "preparing".into();
             status.queue_position = None;
-            status.detail = Some("Đang khởi động dịch vụ tải…".into());
+            // A service already up has checked the install; another is started now and checks it first.
+            let running = self.ready.load(Ordering::SeqCst) && self.service.lock().ok()
+                .is_some_and(|mut service| service.as_mut().is_some_and(|service| matches!(service.child.try_wait(), Ok(None))));
+            status.detail = Some(if running { STARTING } else { CHECKING_INSTALL }.into());
             status.started_at_ms = Some(now_ms());
             return Claimed::Start(next, status.clone());
         }
@@ -745,10 +773,21 @@ impl Sources {
     }
 
     pub fn shutdown(&self) {
+        // Set before taking the service: a start that holds it now finishes, and this then ends that service.
+        self.closed.store(true, Ordering::SeqCst);
         if let Ok(mut guard) = self.service.lock() {
             if let Some(mut service) = guard.take() {
-                let _ = writeln!(service.stdin, "{}", json!({"command":"shutdown"}));
-                let _ = service.stdin.flush();
+                if self.ready.load(Ordering::SeqCst) {
+                    let _ = writeln!(service.stdin, "{}", json!({"command":"shutdown"}));
+                    let _ = service.stdin.flush();
+                } else {
+                    // Still checking the install (started with the app, #945): it reads no request until that check
+                    // ends, minutes on a cold disk. It may already hold its owner lock and database, but it has started
+                    // no download; the lock is an open file the system frees when the process ends. Waiting would
+                    // keep a closed DubFlow (and its single-instance claim) alive that long, so a reopen or a restart
+                    // after an update fails.
+                    let _ = service.child.kill();
+                }
                 drop(service.stdin);
                 let _ = service.child.wait();
             }
@@ -1379,5 +1418,130 @@ mod tests {
         fs::create_dir_all(&elsewhere).unwrap();
         assert_eq!(retitled_output_dir(&elsewhere, url, "Tôm hùm", "link-8").unwrap(), elsewhere);
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_link_says_it_waits_for_the_install_check_until_the_service_is_ready() {
+        // #937: the first start after an install checks every file of it (minutes with the antivirus on); the link
+        // says so instead of "Đang khởi động dịch vụ tải…" for minutes, and moves on once the service is ready.
+        let sources = Arc::new(Sources::default());
+        queued(&sources, "first", "queued");
+        sources.queue.lock().unwrap().waiting.push_back("first".into());
+        sources.pump();
+        assert_eq!(sources.status("first").unwrap().state, "failed", "no service runs in this test");
+        let mut status = sources.status("first").unwrap();
+        status.state = "preparing".into();
+        status.error = None;
+        status.detail = Some(CHECKING_INSTALL.into());
+        sources.fetches.lock().unwrap().insert("first".into(), status);
+        sources.queue.lock().unwrap().current = Some("first".into());
+        sources.on_event(&json!({"event":"source_ready", "schema_version":1, "single_writer":true}));
+        assert!(sources.ready.load(Ordering::SeqCst));
+        assert_eq!(sources.status("first").unwrap().detail.as_deref(), Some(STARTING));
+        sources.on_event(&json!({"event":"source_preparing", "scan_id":"first"}));
+        assert_eq!(sources.status("first").unwrap().detail.as_deref(), Some("Đang mở trang video…"));
+        // A later ready (a restarted service) never rewrites a link that has moved on.
+        sources.on_event(&json!({"event":"source_ready", "schema_version":1, "single_writer":true}));
+        assert_eq!(sources.status("first").unwrap().detail.as_deref(), Some("Đang mở trang video…"));
+        // Ready but no service running: a start checks the install again.
+        queued(&sources, "second", "queued");
+        sources.fetches.lock().unwrap().get_mut("first").unwrap().state = "done".into();
+        sources.queue.lock().unwrap().waiting.push_back("second".into());
+        assert!(matches!(sources.claim_next(), Claimed::Start(scan, status) if scan == "second" && status.detail.as_deref() == Some(CHECKING_INSTALL)));
+    }
+
+    /// A stand-in for `dubflow-supervisor source-serve`: says `source_ready` once `go` exists, then reads requests until
+    /// its stdin closes. It gives up after about a minute, so a failed test leaves nothing running.
+    fn slow_service(dir: &Path) -> PathBuf {
+        let go = dir.join("go");
+        if cfg!(windows) {
+            let script = dir.join("service.cmd");
+            fs::write(&script, format!("@echo off\r\nset n=0\r\n:wait\r\nset /a n+=1\r\nif %n% gtr 1200 exit /b 1\r\n\
+                if not exist \"{}\" (ping -n 1 -w 50 127.0.0.1 >nul & goto wait)\r\n\
+                echo {{\"event\":\"source_ready\",\"schema_version\":1,\"single_writer\":true}}\r\nfindstr \"^\" >nul\r\n", go.display())).unwrap();
+            script
+        } else {
+            let script = dir.join("service.sh");
+            fs::write(&script, format!("#!/bin/sh\nn=0\nwhile [ ! -f '{}' ]; do n=$((n+1)); [ $n -gt 1200 ] && exit 1; sleep 0.05; done\n\
+                echo '{{\"event\":\"source_ready\",\"schema_version\":1,\"single_writer\":true}}'\ncat >/dev/null\n", go.display())).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            script
+        }
+    }
+
+    fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while !done() {
+            assert!(std::time::Instant::now() < deadline, "timed out waiting for {what}");
+            thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn a_real_service_start_shows_the_install_check_then_the_start() {
+        // #937 through a real child process and the reader thread: a link pasted while the service still checks the
+        // install says so, the same link moves on when the service says it is ready, and a link after that starts at
+        // once with the usual words. Stopping the service clears the ready mark.
+        let dir = std::env::temp_dir().join(format!("dubflow-source-ready-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let (root, data) = (dir.join("root"), dir.join("data"));
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&data).unwrap();
+        fs::write(root.join("release-manifest.json"), "{}").unwrap();
+        let service = slow_service(&dir);
+        let sources = Arc::new(Sources::default());
+        let _stop = Stop(Arc::clone(&sources), dir.clone());
+        sources.warm_up(&service, &root, &data).unwrap();
+        let first = sources.fetch("https://www.bilibili.com/video/BV1ready01/".into(), None, &service, &root, &data).unwrap();
+        assert_eq!(first.state, "preparing");
+        assert_eq!(first.detail.as_deref(), Some(CHECKING_INSTALL));
+        thread::sleep(std::time::Duration::from_millis(300));
+        assert_eq!(sources.status(&first.scan_id).unwrap().detail.as_deref(), Some(CHECKING_INSTALL), "nothing changes before the check ends");
+        fs::write(dir.join("go"), "").unwrap();
+        wait_for("the ready service", || sources.status(&first.scan_id).unwrap().detail.as_deref() == Some(STARTING));
+        assert!(sources.cancel(&first.scan_id));
+        let second = sources.fetch("https://www.bilibili.com/video/BV1ready02/".into(), None, &service, &root, &data).unwrap();
+        assert_eq!((second.state.as_str(), second.detail.as_deref()), ("preparing", Some(STARTING)));
+        sources.shutdown();
+        wait_for("the stopped service", || !sources.ready.load(Ordering::SeqCst));
+    }
+
+    /// Ends a test's service and folder even when an assertion fails first.
+    struct Stop(Arc<Sources>, PathBuf);
+
+    impl Drop for Stop {
+        fn drop(&mut self) {
+            let _ = fs::write(self.1.join("go"), "");
+            self.0.shutdown();
+            let _ = fs::remove_dir_all(&self.1);
+        }
+    }
+
+    #[test]
+    fn closing_the_app_during_the_install_check_does_not_wait_for_it() {
+        // #945 review: the service started with the app reads nothing until its install check ends (minutes cold);
+        // closing DubFlow then must not wait for that check, or the closed app keeps its single-instance claim.
+        let dir = std::env::temp_dir().join(format!("dubflow-source-close-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let (root, data) = (dir.join("root"), dir.join("data"));
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&data).unwrap();
+        fs::write(root.join("release-manifest.json"), "{}").unwrap();
+        let service = slow_service(&dir);
+        let sources = Arc::new(Sources::default());
+        let _stop = Stop(Arc::clone(&sources), dir.clone());
+        sources.warm_up(&service, &root, &data).unwrap();
+        thread::sleep(std::time::Duration::from_millis(300));
+        let started = std::time::Instant::now();
+        sources.shutdown();
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "closing waited {:?} for the install check", started.elapsed());
+        assert!(sources.service.lock().unwrap().is_none());
+        // a link still waiting when the service ends starts no new one after the app closed (review of #946)
+        assert!(sources.warm_up(&service, &root, &data).is_err());
+        assert!(sources.service.lock().unwrap().is_none());
     }
 }
