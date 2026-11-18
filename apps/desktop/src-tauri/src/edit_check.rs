@@ -34,6 +34,15 @@ const BLACK: &str = "blackdetect=d=2:pic_th=0.98:pix_th=0.10";
 const FREEZE: &str = "freezedetect=n=0.001:d=2";
 /// The shortest frozen stretch reported, = `d` of `FREEZE` (what is left after the intended holds are taken out).
 const MIN_FROZEN: f64 = 2.0;
+/// With boxed parts (#949) Hình đứng is read in pieces, on the boxed copy and on the whole small copy: a still stretch
+/// that runs across a box's edge is cut where the measured copy switches, so the pieces are joined there before
+/// `MIN_FROZEN` applies (review of #950). Each copy's events are printed by `metadata` filters named here, since
+/// FFmpeg logs every freezedetect under the same name.
+const FREEZE_PIECES: &str = "freezedetect=n=0.001:d=0.2";
+/// How near a box's edge two pieces count as meeting there (s); several frames at any usual rate.
+const BOX_EDGE: f64 = 0.25;
+const BOX_FREEZE: &str = "metadata@dfbox=mode=print:key=lavfi.freezedetect.freeze_start,metadata@dfboxend=mode=print:key=lavfi.freezedetect.freeze_end";
+const WHOLE_FREEZE: &str = "metadata@dfwhole=mode=print:key=lavfi.freezedetect.freeze_start,metadata@dfwholeend=mode=print:key=lavfi.freezedetect.freeze_end";
 /// = the first `loudnorm` pass `measure.loudness` runs for Final QC; only `input_tp` is read.
 const PEAK: &str = "loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json";
 /// The filters run on a 320-pixel copy (like the documentary shot detector): every frame is still decoded.
@@ -103,7 +112,8 @@ pub(super) struct Plan {
 
 /// Parts whose picture fills only the middle of the finished frame (#949): a turned part, a picture of another shape
 /// than the frame, a Khung hình with bars. Their bars never change and hide how much the picture moves, so a quiet
-/// picture read as frozen: Hình đen and Hình đứng look at the picture's own middle box instead.
+/// picture read as frozen: Hình đen and Hình đứng look at the picture's own middle box instead (Hình đen not while
+/// burned Phụ đề show, `burned`).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(super) struct Boxed {
     /// One box per picture shape: its width and height as fractions of the finished frame, and the output-time
@@ -111,6 +121,54 @@ pub(super) struct Boxed {
     boxes: Vec<((f64, f64), Vec<(f64, f64)>)>,
     /// The finished frame (`Framing::out`), for the size of the copy the filters measure.
     frame: (u32, u32),
+    /// When burned Phụ đề lines show (output time, merged across gaps under `MIN_FROZEN`). They are drawn over the
+    /// bars and not cropped away; in a box their glyphs weigh more against Hình đen's 2 % and would hide a black
+    /// stretch, so Hình đen looks at the whole frame then (review of #950). Hình đứng keeps the box: a line held on
+    /// screen does not move, and one that changes ends a still stretch on the whole frame too.
+    #[serde(default)]
+    burned: Vec<(f64, f64)>,
+}
+
+impl Boxed {
+    /// The still stretches: the boxed copy's pieces while a box shows, the whole copy's elsewhere. Two pieces that
+    /// meet at a box's edge (within `BOX_EDGE`: the copy switches on the frame after it) are one stretch when the
+    /// whole frame stays still from `BOX_EDGE` before that edge to `BOX_EDGE` after it (the copy switched, the
+    /// picture did not); at a cut the whole frame changes, and they stay apart.
+    fn still(&self, boxed: &[(f64, f64)], whole: &[(f64, f64)]) -> Vec<(f64, f64)> {
+        let mut shown: Vec<(f64, f64)> = self.boxes.iter().flat_map(|(_, spans)| spans.iter().copied()).collect();
+        shown.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let edges: Vec<f64> = shown.iter().flat_map(|(start, end)| [*start, *end]).collect();
+        let mut pieces: Vec<(f64, f64)> = boxed.iter().flat_map(|&(start, end)| shown.iter()
+            .map(move |&(from, to)| (start.max(from), end.min(to)))).filter(|(start, end)| end > start).collect();
+        pieces.extend(subtract(whole, &shown));
+        pieces.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let across = |edge: f64| whole.iter().any(|(start, end)| *start <= edge - BOX_EDGE && *end >= edge + BOX_EDGE);
+        let mut joined: Vec<(f64, f64)> = Vec::new();
+        for (start, end) in pieces {
+            match joined.last_mut() {
+                Some(last) if start < last.1 - 1e-6
+                    || edges.iter().any(|&edge| (last.1 - edge).abs() <= BOX_EDGE && (start - edge).abs() <= BOX_EDGE && across(edge)) => {
+                    last.1 = last.1.max(end);
+                }
+                _ => joined.push((start, end)),
+            }
+        }
+        joined
+    }
+
+    /// The boxes Hình đen measures on when they differ from Hình đứng's: each box's spans outside the burned lines.
+    /// None: the same boxes. Some(empty): Hình đen looks at the whole frame throughout (no span left, or too many).
+    fn black_boxes(&self) -> Option<Vec<((f64, f64), Vec<(f64, f64)>)>> {
+        let black: Vec<((f64, f64), Vec<(f64, f64)>)> = self.boxes.iter()
+            .map(|(size, spans)| (*size, subtract(spans, &self.burned).into_iter().filter(|(start, end)| end - start > 1e-3).collect::<Vec<_>>()))
+            .collect();
+        if black == self.boxes {
+            return None;
+        }
+        let black: Vec<_> = black.into_iter().filter(|(_, spans)| !spans.is_empty()).collect();
+        let count: usize = black.iter().map(|(_, spans)| spans.len()).sum();
+        Some(if count > MAX_BOXED_SPANS { Vec::new() } else { black })
+    }
 }
 
 /// A file's size, modified time (ns) and identity on its disk: the volume serial and file index on Windows, the
@@ -163,8 +221,9 @@ impl Plan {
 
     /// The parts that fill only the middle of the frame, from each media's picture size as FFmpeg decodes it
     /// (`pictures[i]`, None when unknown) (#949). `layers`: output-time spans of Chữ, which can stand in the bars.
-    pub(super) fn with_pictures(mut self, edit: &Edit, pictures: &[Option<(u32, u32)>], framing: &Framing, layers: &[(f64, f64)]) -> Self {
-        self.boxed = boxed_parts(edit, pictures, framing, layers);
+    pub(super) fn with_pictures(mut self, edit: &Edit, pictures: &[Option<(u32, u32)>], framing: &Framing, layers: &[(f64, f64)],
+        burned: &[(f64, f64)]) -> Self {
+        self.boxed = boxed_parts(edit, pictures, framing, layers, burned);
         self
     }
 
@@ -343,7 +402,7 @@ fn covered(segment: &Segment, pictures: &[Option<(u32, u32)>], framing: &Framing
 /// Every picture is centred (the fit pads both sides alike, Khung hình centres too), so the smallest width and height
 /// in a group make a middle box inside each of its pictures. Where a picture-in-picture layer or Chữ is shown, which
 /// may stand in the bars, and where two parts overlap in a dissolve, the whole frame is measured as before.
-fn boxed_parts(edit: &Edit, pictures: &[Option<(u32, u32)>], framing: &Framing, layers: &[(f64, f64)]) -> Option<Boxed> {
+fn boxed_parts(edit: &Edit, pictures: &[Option<(u32, u32)>], framing: &Framing, layers: &[(f64, f64)], burned: &[(f64, f64)]) -> Option<Boxed> {
     let at = parts::positions(edit);
     let mut groups: Vec<((i64, i64), (f64, f64), Vec<(f64, f64)>)> = Vec::new();
     let mut whole: Vec<(f64, f64)> = layers.to_vec();
@@ -388,7 +447,16 @@ fn boxed_parts(edit: &Edit, pictures: &[Option<(u32, u32)>], framing: &Framing, 
     boxes.sort_by(|a, b| length(&b.1).total_cmp(&length(&a.1)));
     boxes.truncate(MAX_BOXES);
     let count: usize = boxes.iter().map(|(_, spans)| spans.len()).sum();
-    (count > 0 && count <= MAX_BOXED_SPANS).then(|| Boxed { boxes, frame: framing.out })
+    let mut lines = burned.to_vec();
+    lines.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut merged: Vec<(f64, f64)> = Vec::new();
+    for (start, end) in lines.into_iter().filter(|(start, end)| end > start) {
+        match merged.last_mut() {
+            Some(last) if start < last.1 + MIN_FROZEN => last.1 = last.1.max(end),
+            _ => merged.push((start, end)),
+        }
+    }
+    (count > 0 && count <= MAX_BOXED_SPANS).then(|| Boxed { boxes, frame: framing.out, burned: merged })
 }
 
 /// What to measure: the layers that burn lines, and the window "fill" keeps. Phụ đề is drawn on the export frame
@@ -796,30 +864,47 @@ fn check_args(video: &Path, has_audio: bool, threads: Vec<OsString>, boxed: Opti
     args.push(video.into());
     let mut graph = match boxed {
         None => format!("[0:v:0]{SMALL},{BLACK},{FREEZE}[v]"),
-        // While a boxed part plays, its middle box is laid over the whole small copy: Hình đứng sees only picture.
-        // Hình đen looks at the whole copy first, as before (review of #950): burned Phụ đề are not cropped away, and
-        // in a box their glyphs would weigh more against the black and hide a black stretch.
+        // While a boxed part plays, its middle box is laid over the whole small copy: the filters see only picture.
         Some(boxed) => {
             let (width, height) = (320, even(320.0 * f64::from(boxed.frame.1.max(1)) / f64::from(boxed.frame.0.max(1))));
-            let count = boxed.boxes.len();
-            let mut graph = format!("[0:v:0]split={}[vw]{};[vw]scale={width}:{height},setsar=1,{BLACK}[vb0]", count + 1,
-                (0..count).map(|index| format!("[vm{index}]")).collect::<String>());
-            for (index, (size, spans)) in boxed.boxes.iter().enumerate() {
-                let when = spans.iter().map(|(start, end)| format!("between(t,{},{})", num(*start), num(*end))).collect::<Vec<_>>().join("+");
-                graph.push_str(&format!(";[vm{index}]crop=w='trunc(iw*{}/2)*2':h='trunc(ih*{}/2)*2',scale={width}:{height},setsar=1[vc{index}];\
-                    [vb{index}][vc{index}]overlay=enable='{when}'", num6(size.0), num6(size.1)));
-                if index + 1 < count {
-                    graph.push_str(&format!("[vb{}]", index + 1));
+            let black = boxed.black_boxes();
+            let black_count = black.as_ref().map_or(0, Vec::len);
+            let count = 1 + boxed.boxes.len() + black_count;
+            let sources = format!("[vw]{}{}", (0..boxed.boxes.len()).map(|index| format!("[vm{index}]")).collect::<String>(),
+                (0..black_count).map(|index| format!("[vk{index}]")).collect::<String>());
+            let mut graph = match &black {
+                // Burned Phụ đề lie over the boxed parts at times: Hình đen measures on a copy of its own (below).
+                Some(_) => format!("[0:v:0]split={count}{sources};[vw]scale={width}:{height},setsar=1,split=3[vb0][ww][kb0]"),
+                None => format!("[0:v:0]split={count}{sources};[vw]scale={width}:{height},setsar=1,split=2[vb0][ww]"),
+            };
+            graph.push_str(&box_chain(&boxed.boxes, "vm", "vc", "vb", (width, height)));
+            match &black {
+                Some(black) => {
+                    graph.push_str(&format!(",{FREEZE_PIECES},{BOX_FREEZE}[v]"));
+                    if black.is_empty() {
+                        graph.push_str(&format!(";[kb0]{BLACK}[vk]"));
+                    } else {
+                        graph.push_str(&box_chain(black, "vk", "kc", "kb", (width, height)));
+                        graph.push_str(&format!(",{BLACK}[vk]"));
+                    }
                 }
+                None => graph.push_str(&format!(",{BLACK},{FREEZE_PIECES},{BOX_FREEZE}[v]")),
             }
-            graph.push_str(&format!(",{FREEZE}[v]"));
+            graph.push_str(&format!(";[ww]{FREEZE_PIECES},{WHOLE_FREEZE}[vf]"));
             graph
         }
     };
     if has_audio {
         graph.push_str(&format!(";[0:a:0]{PEAK}[a]"));
     }
+    let black_apart = boxed.is_some_and(|boxed| boxed.black_boxes().is_some());
     args.extend(["-filter_complex".into(), graph.into(), "-map".into(), "[v]".into()]);
+    if boxed.is_some() {
+        args.extend(["-map".into(), "[vf]".into()]);
+    }
+    if black_apart {
+        args.extend(["-map".into(), "[vk]".into()]);
+    }
     if has_audio {
         args.extend(["-map".into(), "[a]".into()]);
     }
@@ -827,11 +912,30 @@ fn check_args(video: &Path, has_audio: bool, threads: Vec<OsString>, boxed: Opti
     args
 }
 
+/// Each box laid over the small copy `{base}0` while its spans play: `[{source}N]` cropped to the box (`[{crop}N]`),
+/// chained `[{base}N]` to `[{base}N+1]`; the last overlay is left open for the filters that follow.
+fn box_chain(boxes: &[((f64, f64), Vec<(f64, f64)>)], source: &str, crop: &str, base: &str, (width, height): (u32, u32)) -> String {
+    let mut graph = String::new();
+    for (index, (size, spans)) in boxes.iter().enumerate() {
+        let when = spans.iter().map(|(start, end)| format!("between(t,{},{})", num(*start), num(*end))).collect::<Vec<_>>().join("+");
+        graph.push_str(&format!(";[{source}{index}]crop=w='trunc(iw*{}/2)*2':h='trunc(ih*{}/2)*2',scale={width}:{height},setsar=1[{crop}{index}];\
+            [{base}{index}][{crop}{index}]overlay=enable='{when}'", num6(size.0), num6(size.1)));
+        if index + 1 < boxes.len() {
+            graph.push_str(&format!("[{base}{}]", index + 1));
+        }
+    }
+    graph
+}
+
 /// What FFmpeg's log (`level+info`) says.
 #[derive(Debug, Default, PartialEq)]
 struct LogFacts {
     black: Vec<(f64, f64)>,
     freeze: Vec<(f64, f64)>,
+    /// With boxed parts: the pieces read on the boxed copy and on the whole copy (`FREEZE_PIECES`); `freeze` then
+    /// mixes both detectors and is not used.
+    box_freeze: Vec<(f64, f64)>,
+    whole_freeze: Vec<(f64, f64)>,
     /// `loudnorm`'s `input_tp`; None when not printed. "-inf" (digital silence) is kept as minus infinity.
     peak: Option<f64>,
     errors: usize,
@@ -863,6 +967,8 @@ const BLOCK_LIMIT: usize = 64 * 1024;
 struct LogReader {
     facts: LogFacts,
     open: Option<f64>,
+    box_open: Option<f64>,
+    whole_open: Option<f64>,
     /// The JSON block being read, from its `{`.
     block: Option<String>,
     /// The last whole block holding `"input_i"` (loudnorm's; measure.py reads the last one the same way).
@@ -876,6 +982,23 @@ impl LogReader {
         // instance as it likes ("[Parsed_blackdetect_1 @"), and that name may change between builds.
         if let (Some(start), Some(end)) = (field(line, "black_start:"), field(line, "black_end:")) {
             facts.black.push((start, end));
+        } else if let Some(start) = field(line, "lavfi.freezedetect.freeze_start=") {
+            // `metadata` prints under the instance names given in the graph (BOX_FREEZE, WHOLE_FREEZE).
+            if line.contains("[metadata@dfbox @") {
+                self.box_open = Some(start);
+            } else if line.contains("[metadata@dfwhole @") {
+                self.whole_open = Some(start);
+            }
+        } else if let Some(end) = field(line, "lavfi.freezedetect.freeze_end=") {
+            if line.contains("[metadata@dfboxend @") {
+                if let Some(start) = self.box_open.take() {
+                    facts.box_freeze.push((start, end));
+                }
+            } else if line.contains("[metadata@dfwholeend @") {
+                if let Some(start) = self.whole_open.take() {
+                    facts.whole_freeze.push((start, end));
+                }
+            }
         } else if let Some(start) = field(line, "freezedetect.freeze_start:") {
             self.open = Some(start);
         } else if let Some(end) = field(line, "freezedetect.freeze_end:") {
@@ -921,6 +1044,12 @@ impl LogReader {
     fn finish(mut self, decoded_end: f64) -> LogFacts {
         if let Some(start) = self.open {
             self.facts.freeze.push((start, decoded_end.max(start)));
+        }
+        if let Some(start) = self.box_open {
+            self.facts.box_freeze.push((start, decoded_end.max(start)));
+        }
+        if let Some(start) = self.whole_open {
+            self.facts.whole_freeze.push((start, decoded_end.max(start)));
         }
         self.facts.peak = self.loudnorm.and_then(|block| serde_json::from_str::<Value>(&block).ok())
             .and_then(|block| block["input_tp"].as_str().and_then(|value| value.trim().parse::<f64>().ok()))
@@ -1069,7 +1198,11 @@ fn checks_of(plan: &Plan, probe: Option<&Probe>, pass: &Pass, log: &LogFacts, su
         if pass.finished { log.peak } else { None }));
     // Without a whole pass the filters saw only part of the picture.
     let (black, frozen) = if pass.finished {
-        (log.black.clone(), frozen_spans(&log.freeze, &log.black, &plan.intended_holds))
+        let freeze = match &plan.boxed {
+            Some(boxed) => boxed.still(&log.box_freeze, &log.whole_freeze),
+            None => log.freeze.clone(),
+        };
+        (log.black.clone(), frozen_spans(&freeze, &log.black, &plan.intended_holds))
     } else {
         (Vec::new(), Vec::new())
     };
@@ -2021,86 +2154,124 @@ mod tests {
         let wide = Framing { export: (1280, 720), out: (1280, 720), fill: "black", aspect: None };
         let turned = Segment { rotate: 90, ..segment(0, 32.0, 64.0) };
         let edit = Edit { segments: vec![segment(0, 0.0, 16.0), Segment { rotate: 180, ..segment(0, 16.0, 32.0) }, turned], ..Edit::default() };
-        let boxed = boxed_parts(&edit, &[Some((1280, 720))], &wide, &[]).unwrap();
+        let boxed = boxed_parts(&edit, &[Some((1280, 720))], &wide, &[], &[]).unwrap();
         assert_eq!(boxed.boxes.len(), 1);
         let ((w, h), spans) = &boxed.boxes[0];
         assert_eq!(spans, &[(32.0, 64.0)]);
         assert!((w - 405.0 / 1280.0).abs() < 1e-3 && *h == 1.0, "{w} {h}");
         assert_eq!(boxed.frame, (1280, 720));
-        assert_eq!(boxed_parts(&Edit { segments: vec![segment(0, 0.0, 16.0)], ..Edit::default() }, &[Some((1280, 720))], &wide, &[]), None);
+        assert_eq!(boxed_parts(&Edit { segments: vec![segment(0, 0.0, 16.0)], ..Edit::default() }, &[Some((1280, 720))], &wide, &[], &[]), None);
         // an unknown picture is measured as before
-        assert_eq!(boxed_parts(&edit, &[None], &wide, &[]), None);
+        assert_eq!(boxed_parts(&edit, &[None], &wide, &[], &[]), None);
         // a portrait clip (media 1) between landscape parts with dissolves: the stretch where the pictures overlap is
         // measured on the whole frame, and two touching parts of one shape make one stretch
         let mixed = Edit { segments: vec![segment(0, 0.0, 10.0), segment(1, 0.0, 5.0), segment(1, 5.0, 8.0), segment(0, 10.0, 20.0)],
             transitions: vec![Transition { after: 0, kind: TransitionKind::Dissolve, duration: 1.0 }, Transition { after: 2, kind: TransitionKind::Dissolve, duration: 0.5 }],
             ..Edit::default() };
         let full = Framing { export: (1920, 1080), out: (1920, 1080), ..wide };
-        let boxed = boxed_parts(&mixed, &[Some((1920, 1080)), Some((1080, 1920))], &full, &[]).unwrap();
+        let boxed = boxed_parts(&mixed, &[Some((1920, 1080)), Some((1080, 1920))], &full, &[], &[]).unwrap();
         assert_eq!(boxed.boxes[0].1, [(10.0, 16.5)]);
         assert!((boxed.boxes[0].0 .0 - 0.316).abs() < 1e-3, "{:?}", boxed.boxes[0].0);
         // Chữ or a picture-in-picture layer may stand in the bars: the whole frame while it is shown
-        assert_eq!(boxed_parts(&mixed, &[Some((1920, 1080)), Some((1080, 1920))], &full, &[(12.0, 13.0)]).unwrap().boxes[0].1, [(10.0, 12.0), (13.0, 16.5)]);
+        assert_eq!(boxed_parts(&mixed, &[Some((1920, 1080)), Some((1080, 1920))], &full, &[(12.0, 13.0)], &[]).unwrap().boxes[0].1, [(10.0, 12.0), (13.0, 16.5)]);
         let layered = Edit { overlays: vec![Overlay { media: 0, at: 9.0, start: 0.0, end: 2.0, ..Overlay::default() }], ..mixed.clone() };
-        assert_eq!(boxed_parts(&layered, &[Some((1920, 1080)), Some((1080, 1920))], &full, &[]).unwrap().boxes[0].1, [(11.0, 16.5)]);
+        assert_eq!(boxed_parts(&layered, &[Some((1920, 1080)), Some((1080, 1920))], &full, &[], &[]).unwrap().boxes[0].1, [(11.0, 16.5)]);
         // cropped to its middle 9:16, or zoomed far enough to fill: no bars
         let cropped = Segment { crop: Some(Crop { x: 0.0, y: 0.0, w: 1.0, h: 0.3164 }), ..segment(1, 0.0, 5.0) };
         let zoomed = Segment { zoom: Some(Zoom { from: 3.2, to: 3.5, x: 0.5, y: 0.5 }), ..segment(1, 0.0, 5.0) };
         // a zoom aimed off the middle slides the picture to a side: not a middle box (review of #950)
         let aside = Segment { zoom: Some(Zoom { from: 1.0, to: 2.0, x: 0.0, y: 0.5 }), ..segment(1, 0.0, 5.0) };
         for part in [cropped, zoomed, aside] {
-            assert_eq!(boxed_parts(&Edit { segments: vec![part], ..Edit::default() }, &[None, Some((1080, 1920))], &wide, &[]), None, "{part:?}");
+            assert_eq!(boxed_parts(&Edit { segments: vec![part], ..Edit::default() }, &[None, Some((1080, 1920))], &wide, &[], &[]), None, "{part:?}");
         }
         let centred = Segment { zoom: Some(Zoom { from: 1.0, to: 2.0, x: 0.5, y: 0.5 }), ..segment(1, 0.0, 5.0) };
-        assert!(boxed_parts(&Edit { segments: vec![centred], ..Edit::default() }, &[None, Some((1080, 1920))], &wide, &[]).is_some());
+        assert!(boxed_parts(&Edit { segments: vec![centred], ..Edit::default() }, &[None, Some((1080, 1920))], &wide, &[], &[]).is_some());
         // parts of other shapes keep boxes of their own: a 4:3 part is not measured on a turned part's narrow box
         let shapes = Edit { segments: vec![segment(1, 0.0, 10.0), Segment { rotate: 90, ..segment(0, 0.0, 4.0) }, segment(1, 10.0, 12.0)], ..Edit::default() };
-        let boxed = boxed_parts(&shapes, &[Some((1280, 720)), Some((960, 720))], &wide, &[]).unwrap();
+        let boxed = boxed_parts(&shapes, &[Some((1280, 720)), Some((960, 720))], &wide, &[], &[]).unwrap();
         assert_eq!(boxed.boxes.len(), 2);
         assert!((boxed.boxes[0].0 .0 - 0.75).abs() < 1e-3 && boxed.boxes[0].1 == [(0.0, 10.0), (14.0, 16.0)], "{boxed:?}");
         assert!((boxed.boxes[1].0 .0 - 0.316).abs() < 1e-3 && boxed.boxes[1].1 == [(10.0, 14.0)], "{boxed:?}");
         // Khung hình 9:16 with bars: a landscape part is letterboxed (0.316 of the height); "fill" crops it to the frame
         let bars = Framing { export: (1280, 720), out: (406, 720), fill: "black", aspect: Some("9:16") };
         let plain = Edit { segments: vec![segment(0, 0.0, 16.0)], ..Edit::default() };
-        let size = boxed_parts(&plain, &[Some((1280, 720))], &bars, &[]).unwrap().boxes[0].0;
+        let size = boxed_parts(&plain, &[Some((1280, 720))], &bars, &[], &[]).unwrap().boxes[0].0;
         assert!((size.0 - 1.0).abs() < 1e-9 && (size.1 - 0.317).abs() < 2e-3, "{size:?}");
-        assert_eq!(boxed_parts(&plain, &[Some((1280, 720))], &Framing { fill: "fill", ..bars }, &[]), None);
+        assert_eq!(boxed_parts(&plain, &[Some((1280, 720))], &Framing { fill: "fill", ..bars }, &[], &[]), None);
         // too many stretches: the whole frame, as before
         let many = Edit { segments: (0..=MAX_BOXED_SPANS).flat_map(|i| [segment(0, i as f64, i as f64 + 0.5), Segment { rotate: 90, ..segment(0, i as f64 + 0.5, i as f64 + 1.0) }]).collect(),
             ..Edit::default() };
-        assert_eq!(boxed_parts(&many, &[Some((1280, 720))], &wide, &[]), None);
+        assert_eq!(boxed_parts(&many, &[Some((1280, 720))], &wide, &[], &[]), None);
         // more shapes than boxes: the longest-playing ones keep theirs
         let crops = [0.5, 0.6, 0.7, 0.8, 0.85];
         let varied = Edit { segments: crops.iter().enumerate().map(|(i, keep)| Segment { crop: Some(Crop { x: 0.0, y: 0.0, w: *keep, h: 1.0 }),
             ..segment(0, i as f64 * 10.0, i as f64 * 10.0 + 1.0 + i as f64) }).collect(), ..Edit::default() };
-        let boxed = boxed_parts(&varied, &[Some((1280, 720))], &wide, &[]).unwrap();
+        let boxed = boxed_parts(&varied, &[Some((1280, 720))], &wide, &[], &[]).unwrap();
         assert_eq!(boxed.boxes.len(), MAX_BOXES);
         assert!(boxed.boxes.iter().all(|(size, _)| (size.0 - 0.5).abs() > 1e-3), "the shortest part keeps the whole frame: {boxed:?}");
         // a turned main video: the plan keeps no box
-        let planned = plan(&edit, &[false], 64.0, true, &[], &[], &wide, "25/1").with_pictures(&edit, &[Some((1280, 720))], &wide, &[]);
+        let planned = plan(&edit, &[false], 64.0, true, &[], &[], &wide, "25/1").with_pictures(&edit, &[Some((1280, 720))], &wide, &[], &[]);
         assert!(planned.boxed.is_some());
         assert_eq!(planned.turned_source(true).boxed, None);
         // a picture a few pixels high (a cropped panorama in a tall frame) would crop to nothing: whole frame (review of #950)
         let strip = Edit { segments: vec![Segment { crop: Some(Crop { x: 0.0, y: 0.0, w: 1.0, h: 0.1 }), ..segment(0, 0.0, 8.0) }], ..Edit::default() };
-        assert_eq!(boxed_parts(&strip, &[Some((4000, 200))], &bars, &[]), None);
-        assert!(boxed_parts(&strip, &[Some((4000, 2000))], &bars, &[]).is_some());
+        assert_eq!(boxed_parts(&strip, &[Some((4000, 200))], &bars, &[], &[]), None);
+        assert!(boxed_parts(&strip, &[Some((4000, 2000))], &bars, &[], &[]).is_some());
     }
 
     #[test]
     fn boxed_parts_are_measured_on_their_middle_box() {
         let text = |args: Vec<OsString>| args.iter().map(|arg| arg.to_string_lossy().into_owned()).collect::<Vec<_>>().join(" ");
-        let boxed = Boxed { boxes: vec![((0.31640625, 1.0), vec![(32.0, 64.0), (70.5, 80.25)])], frame: (1280, 720) };
-        assert_eq!(text(check_args(Path::new("out.mp4"), false, Vec::new(), Some(&boxed))),
-            "-nostdin -hide_banner -loglevel level+info -nostats -progress pipe:1 -i out.mp4 -filter_complex \
-[0:v:0]split=2[vw][vm0];[vw]scale=320:180,setsar=1,blackdetect=d=2:pic_th=0.98:pix_th=0.10[vb0];[vm0]crop=w='trunc(iw*0.316406/2)*2':h='trunc(ih*1/2)*2',scale=320:180,setsar=1[vc0];\
-[vb0][vc0]overlay=enable='between(t,32,64)+between(t,70.5,80.25)',freezedetect=n=0.001:d=2[v] -map [v] -f null -");
-        let two = Boxed { boxes: vec![((0.75, 1.0), vec![(0.0, 10.0)]), ((0.316406, 1.0), vec![(10.0, 14.0)])], frame: (1280, 720) };
-        assert_eq!(text(check_args(Path::new("out.mp4"), false, Vec::new(), Some(&two))),
-            "-nostdin -hide_banner -loglevel level+info -nostats -progress pipe:1 -i out.mp4 -filter_complex \
-[0:v:0]split=3[vw][vm0][vm1];[vw]scale=320:180,setsar=1,blackdetect=d=2:pic_th=0.98:pix_th=0.10[vb0];\
+        let head = "-nostdin -hide_banner -loglevel level+info -nostats -progress pipe:1 -i out.mp4 -filter_complex";
+        let turned = "crop=w='trunc(iw*0.316406/2)*2':h='trunc(ih*1/2)*2',scale=320:180,setsar=1";
+        let whole = format!("[ww]{FREEZE_PIECES},{WHOLE_FREEZE}[vf]");
+        let boxed = Boxed { boxes: vec![((0.31640625, 1.0), vec![(32.0, 64.0), (70.5, 80.25)])], frame: (1280, 720), burned: Vec::new() };
+        assert_eq!(text(check_args(Path::new("out.mp4"), false, Vec::new(), Some(&boxed))), format!("{head} \
+[0:v:0]split=2[vw][vm0];[vw]scale=320:180,setsar=1,split=2[vb0][ww];[vm0]{turned}[vc0];\
+[vb0][vc0]overlay=enable='between(t,32,64)+between(t,70.5,80.25)',{BLACK},{FREEZE_PIECES},{BOX_FREEZE}[v];{whole} -map [v] -map [vf] -f null -"));
+        let two = Boxed { boxes: vec![((0.75, 1.0), vec![(0.0, 10.0)]), ((0.316406, 1.0), vec![(10.0, 14.0)])], frame: (1280, 720), burned: Vec::new() };
+        assert_eq!(text(check_args(Path::new("out.mp4"), false, Vec::new(), Some(&two))), format!("{head} \
+[0:v:0]split=3[vw][vm0][vm1];[vw]scale=320:180,setsar=1,split=2[vb0][ww];\
 [vm0]crop=w='trunc(iw*0.75/2)*2':h='trunc(ih*1/2)*2',scale=320:180,setsar=1[vc0];[vb0][vc0]overlay=enable='between(t,0,10)'[vb1];\
-[vm1]crop=w='trunc(iw*0.316406/2)*2':h='trunc(ih*1/2)*2',scale=320:180,setsar=1[vc1];[vb1][vc1]overlay=enable='between(t,10,14)',\
-freezedetect=n=0.001:d=2[v] -map [v] -f null -");
+[vm1]{turned}[vc1];[vb1][vc1]overlay=enable='between(t,10,14)',{BLACK},{FREEZE_PIECES},{BOX_FREEZE}[v];{whole} -map [v] -map [vf] -f null -"));
+        // Burned Phụ đề inside a box: Hình đen measures on boxes of its own, off while the lines show
+        let lined = Boxed { burned: vec![(40.0, 50.0)], ..boxed.clone() };
+        assert_eq!(text(check_args(Path::new("out.mp4"), true, Vec::new(), Some(&lined))), format!("{head} \
+[0:v:0]split=3[vw][vm0][vk0];[vw]scale=320:180,setsar=1,split=3[vb0][ww][kb0];[vm0]{turned}[vc0];\
+[vb0][vc0]overlay=enable='between(t,32,64)+between(t,70.5,80.25)',{FREEZE_PIECES},{BOX_FREEZE}[v];[vk0]{turned}[kc0];\
+[kb0][kc0]overlay=enable='between(t,32,40)+between(t,50,64)+between(t,70.5,80.25)',{BLACK}[vk];{whole};[0:a:0]{PEAK}[a] \
+-map [v] -map [vf] -map [vk] -map [a] -f null -"));
+        // lines over every boxed stretch: Hình đen on the whole copy
+        let covered = Boxed { burned: vec![(30.0, 90.0)], ..boxed };
+        assert_eq!(text(check_args(Path::new("out.mp4"), false, Vec::new(), Some(&covered))), format!("{head} \
+[0:v:0]split=2[vw][vm0];[vw]scale=320:180,setsar=1,split=3[vb0][ww][kb0];[vm0]{turned}[vc0];\
+[vb0][vc0]overlay=enable='between(t,32,64)+between(t,70.5,80.25)',{FREEZE_PIECES},{BOX_FREEZE}[v];[kb0]{BLACK}[vk];{whole} \
+-map [v] -map [vf] -map [vk] -f null -"));
+    }
+
+    #[test]
+    fn boxed_still_pieces_join_across_a_box_edge_only_where_the_frame_stays() {
+        // review of #950: a box 0–4.5 s; the copy switches at 4.5 s, which ends freezedetect's piece there
+        let boxed = Boxed { boxes: vec![((0.316, 1.0), vec![(0.0, 4.5)])], frame: (1280, 720), burned: Vec::new() };
+        // a cloned tail from 2.96 s: the whole frame stays still across 4.5 s, so the two pieces are one stretch
+        assert_eq!(boxed.still(&[(2.96, 4.52)], &[(1.0, 2.0), (2.96, 6.5)]), [(2.96, 6.5)]);
+        // a cut at 4.5 s (the whole frame changes on the next frame): the pieces stay apart, each too short on its own
+        assert_eq!(boxed.still(&[(2.96, 4.54)], &[(1.0, 4.54), (4.54, 6.0)]), [(2.96, 4.5), (4.5, 4.54), (4.54, 6.0)]);
+        // the whole copy's diluted "still" inside the box is not used: there the box decides
+        assert_eq!(boxed.still(&[], &[(0.0, 4.5)]), Vec::<(f64, f64)>::new());
+        // two boxes meeting at 10 s, the picture still across: one stretch
+        let two = Boxed { boxes: vec![((0.75, 1.0), vec![(0.0, 10.0)]), ((0.316, 1.0), vec![(10.0, 14.0)])], frame: (1280, 720), burned: Vec::new() };
+        assert_eq!(two.still(&[(9.0, 10.04), (10.04, 11.2)], &[(8.5, 11.5)]), [(9.0, 11.2)]);
+        // and apart at a cut there
+        assert_eq!(two.still(&[(9.0, 10.04), (10.04, 11.2)], &[(8.5, 10.04), (10.04, 11.5)]).len(), 3);
+        // the log: each copy's pieces by the metadata filters' names; freezedetect's own lines are not split by copy
+        let log = "[freezedetect @ 0x1] [info] lavfi.freezedetect.freeze_start: 2.96\n\
+[metadata@dfbox @ 0x2] [info] frame:79   pts:79      pts_time:3.16\n\
+[metadata@dfbox @ 0x2] [info] lavfi.freezedetect.freeze_start=2.96\n\
+[metadata@dfwhole @ 0x3] [info] lavfi.freezedetect.freeze_start=2.96\n\
+[metadata@dfboxend @ 0x4] [info] lavfi.freezedetect.freeze_end=4.52\n";
+        let facts = read_log(log, 6.5);
+        assert_eq!((facts.box_freeze, facts.whole_freeze), (vec![(2.96, 4.52)], vec![(2.96, 6.5)]));
     }
 
     fn style(changes: Value) -> SubtitleStyle {
@@ -3734,7 +3905,7 @@ freezedetect=n=0.001:d=2[v] -map [v] -f null -");
         let whole = frozen(plan(&edit, &[false], 16.0, false, &[], &[], &wide, "25/1"));
         assert!(matches!(whole.as_slice(), [(start, end)] if (*start - 6.0).abs() < 0.1 && *end > 15.9), "{whole:?}");
         // Measured on the picture: only the held frame.
-        let planned = plan(&edit, &[false], 16.0, false, &[], &[], &wide, "25/1").with_pictures(&edit, &[Some((640, 360))], &wide, &[]);
+        let planned = plan(&edit, &[false], 16.0, false, &[], &[], &wide, "25/1").with_pictures(&edit, &[Some((640, 360))], &wide, &[], &[]);
         assert_eq!(planned.boxed.as_ref().map(|boxed| boxed.boxes.iter().map(|(_, spans)| spans.clone()).collect::<Vec<_>>()), Some(vec![vec![(6.0, 16.0)]]));
         let mut two = planned.clone();
         let boxed = frozen(planned);
@@ -3743,21 +3914,49 @@ freezedetect=n=0.001:d=2[v] -map [v] -f null -");
         two.boxed.as_mut().unwrap().boxes.push(((0.8, 1.0), vec![(0.0, 6.0)]));
         let boxed = frozen(two);
         assert!(matches!(boxed.as_slice(), [(start, end)] if (*start - 12.0).abs() < 0.1 && *end > 15.9), "{boxed:?}");
-        // Hình đen still looks at the whole frame (review of #950): a black turned part under a burned line wider than
-        // its box (1.4 % of the frame white, 2.2 % of the box) is black.
+        // Hình đen on the box too: a black turned part with a white line wider than its box is 1.4 % white over the
+        // whole frame (the bars make it read black) but 2.2 % of its box, over blackdetect's 2 %: not black.
         let dark = dir.join("dark.mp4");
         let line = "color=black:s=640x360:r=25:d=4,format=yuv420p,drawbox=x=120:y=320:w=400:h=8:color=white:t=fill";
         let made = Command::new(&ffmpeg).args(["-v", "error", "-y", "-f", "lavfi", "-i", line, "-f", "lavfi", "-i", quiet,
             "-filter_complex", "[0:v][1:v]concat=n=2:v=1:a=0[v]", "-map", "[v]", "-c:v", "mpeg4", "-q:v", "3"]).arg(&dark).status().unwrap();
         assert!(made.success());
         let edit = Edit { segments: vec![Segment { rotate: 90, ..segment(0, 0.0, 4.0) }, segment(0, 4.0, 10.0)], ..Edit::default() };
-        let planned = plan(&edit, &[false], 10.0, false, &[], &[], &wide, "25/1").with_pictures(&edit, &[Some((640, 360))], &wide, &[]);
-        assert!(planned.boxed.is_some());
-        run(&work, &ffmpeg, planned.for_video(dark.clone(), false, stamp_of(&dark)));
-        let report = read_check(&work, &dark);
-        assert_eq!(report["state"], "DONE", "{report}");
-        let black: Vec<(f64, f64)> = report["black"].as_array().unwrap().iter().map(|span| (span[0].as_f64().unwrap(), span[1].as_f64().unwrap())).collect();
-        assert!(matches!(black.as_slice(), [(start, end)] if *start < 0.1 && (*end - 4.0).abs() < 0.1), "{report}");
+        let black = |burned: &[(f64, f64)]| {
+            let planned = plan(&edit, &[false], 10.0, false, &[], &[], &wide, "25/1").with_pictures(&edit, &[Some((640, 360))], &wide, &[], burned);
+            assert!(planned.boxed.is_some());
+            run(&work, &ffmpeg, planned.for_video(dark.clone(), false, stamp_of(&dark)));
+            let report = read_check(&work, &dark);
+            assert_eq!(report["state"], "DONE", "{report}");
+            report["black"].as_array().unwrap().iter().map(|span| (span[0].as_f64().unwrap(), span[1].as_f64().unwrap())).collect::<Vec<_>>()
+        };
+        assert_eq!(black(&[]), vec![]);
+        // The same line burned as Phụ đề (not cropped away, so it would weigh more in the box): Hình đen looks at the
+        // whole frame while it shows (review of #950), and the black picture under it is found.
+        let found = black(&[(0.0, 4.0)]);
+        assert!(matches!(found.as_slice(), [(start, end)] if *start < 0.1 && (*end - 4.0).abs() < 0.1), "{found:?}");
+        // A still stretch across a box's edge (review of #950): the export ran short and its last frame was cloned from
+        // 2.96 s, over the edge at 4.5 s where a turned part gives way to a plain one. The copy switches there; the
+        // stretch is still one, and found.
+        let parts = Edit { segments: vec![Segment { rotate: 90, ..segment(0, 0.0, 4.5) }, segment(0, 4.5, 6.5)], ..Edit::default() };
+        let still = |name: &str, source: String| {
+            let file = dir.join(name);
+            let made = Command::new(&ffmpeg).args(["-v", "error", "-y", "-f", "lavfi", "-i", &source, "-c:v", "mpeg4", "-q:v", "3"]).arg(&file).status().unwrap();
+            assert!(made.success());
+            let planned = plan(&parts, &[false], 6.5, false, &[], &[], &wide, "25/1").with_pictures(&parts, &[Some((640, 360))], &wide, &[], &[]);
+            run(&work, &ffmpeg, planned.for_video(file.clone(), false, stamp_of(&file)));
+            let report = read_check(&work, &file);
+            assert_eq!(report["state"], "DONE", "{report}");
+            report["frozen"].as_array().unwrap().iter().map(|span| (span[0].as_f64().unwrap(), span[1].as_f64().unwrap())).collect::<Vec<_>>()
+        };
+        let short = still("short.mp4", format!("color=gray:s=640x360:r=25:d=7,format=yuv420p,noise=c0s=8:c0f=t,{fit},trim=end_frame=74,tpad=stop_mode=clone:stop_duration=3.54"));
+        // (from a few frames later: the encoder still refines the first clones, which the box no longer dilutes)
+        assert!(matches!(short.as_slice(), [(start, end)] if *start > 2.9 && *start < 3.5 && *end > 6.4), "{short:?}");
+        // A cut at the edge between two short holds (1.5 s each): two stretches, neither long enough.
+        let held = format!("color=gray:s=640x360:r=25:d=3,format=yuv420p,noise=c0s=8:c0f=t,{fit},tpad=stop_mode=clone:stop_duration=1.5[a];\
+color=white:s=640x360:r=25:d=0.04,format=yuv420p,tpad=stop_mode=clone:stop_duration=1.46[b];\
+color=gray:s=640x360:r=25:d=0.5,format=yuv420p,noise=c0s=8:c0f=t[c];[a][b][c]concat=n=3:v=1:a=0");
+        assert_eq!(still("cut.mp4", held), vec![]);
         let _ = fs::remove_dir_all(dir);
         println!("boxed-check: ran against real FFmpeg");
     }
