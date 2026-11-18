@@ -173,11 +173,14 @@ assert.equal(checkLine().textContent, "Đang kiểm tra kỹ thuật… 40% — 
 assert.equal(timeouts.size, 1, "and the list is read again while it runs");
 editCheck = { ...checkBase, state: "DONE", percent: 100, warnings: ["black"], black: [[4, 7]], checks: [
   { id: "decode", label: "Giải mã", ok: true, detail: "đọc hết 12,0 giây, không có lỗi" },
-  { id: "black", label: "Hình đen", ok: false, detail: "đen 3,0 giây ở 0:04–0:07" }] };
+  { id: "black", label: "Hình đen", ok: false, detail: "đen 3,0 giây ở 0:04–0:07" },
+  { id: "subtitle_frame", label: "Phụ đề trong khung", ok: null, detail: "không có phụ đề in vào hình" }] };
 await [...timeouts.values()][0](); await flush();
-assert.equal(checkLine().textContent, "Kiểm tra kỹ thuật: 1 điểm cần xem.");
+// a warning does not hide what was not measured, in the line or its tooltip
+assert.equal(checkLine().textContent, "Kiểm tra kỹ thuật: 1 điểm cần xem. Chưa đo: Phụ đề trong khung.");
 assert.ok(checkLine().className.includes("mqc-warn"));
 assert.match(checkLine().title, /Hình đen: đen 3,0 giây ở 0:04–0:07/);
+assert.match(checkLine().title, /Chưa đo — Phụ đề trong khung: không có phụ đề in vào hình/);
 assert.match(checkLine().title, /Chỉ để tham khảo/);
 assert.equal(timeouts.size, 0, "a finished check is not read again");
 const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");

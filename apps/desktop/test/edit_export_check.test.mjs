@@ -1,6 +1,6 @@
 // Kiểm tra kỹ thuật (Issue #935): the advisory check after each editor export, read strictly and never worded like Final QC.
 import assert from "node:assert/strict";
-import { CHECK_NOTE, checkBadge, checkLines, checkRunning, checkSummary, parseExportCheck } from "../src/features/edit/export_check.ts";
+import { CHECK_NOTE, checkBadge, checkLines, checkRunning, checkSummary, checkWarnings, parseExportCheck } from "../src/features/edit/export_check.ts";
 import { previewInvoke } from "../src/shell/preview_invoke.ts";
 
 const base = { schema_version: 1, kind: "export_check", advisory: true, video: "D:/Videos/Phim (sửa 1).mp4", warnings: [], unmeasured: [], black: [], frozen: [],
@@ -45,6 +45,18 @@ const unmeasured = { ...clean, checks: [...clean.checks, { id: "captions", label
   { id: "subtitle_frame", label: "Phụ đề trong khung", ok: null, detail: "không có phụ đề in vào hình" }] };
 assert.deepEqual(summary(unmeasured), { text: "Kiểm tra kỹ thuật: không thấy lỗi. Chưa đo: Phụ đề, Phụ đề trong khung.", tone: "ok" },
   "what was not measured is named, never counted as fine");
+assert.deepEqual(checkLines(parseExportCheck(unmeasured)), ["Chưa đo — Phụ đề: không có tệp phụ đề", "Chưa đo — Phụ đề trong khung: không có phụ đề in vào hình"],
+  "and listed with its reason");
+assert.equal(checkWarnings(parseExportCheck(unmeasured)), 0, "not measured is not a point to look at");
+// A warning and a check not measured in the same report: neither hides the other (#935, Lead review).
+const mixed = { ...done, unmeasured: ["subtitle_frame"], checks: [...done.checks,
+  { id: "subtitle_frame", label: "Phụ đề trong khung", ok: null, detail: "không có phụ đề in vào hình" }] };
+assert.deepEqual(summary(mixed), { text: "Kiểm tra kỹ thuật: 1 điểm cần xem. Chưa đo: Phụ đề trong khung.", tone: "warn" });
+assert.deepEqual(checkLines(parseExportCheck(mixed)), ["Hình đen: đen 3,0 giây ở 0:04–0:07", "Chưa đo — Phụ đề trong khung: không có phụ đề in vào hình"]);
+assert.equal(checkWarnings(parseExportCheck(mixed)), 1);
+assert.equal(checkBadge(mixed).title,
+  `Kiểm tra kỹ thuật: 1 điểm cần xem. Chưa đo: Phụ đề trong khung.\nHình đen: đen 3,0 giây ở 0:04–0:07\nChưa đo — Phụ đề trong khung: không có phụ đề in vào hình\n${CHECK_NOTE}`);
+assert.equal(checkWarnings(parseExportCheck({ ...mixed, state: "RUNNING" })), 0, "only a finished check has points");
 assert.deepEqual(summary({ ...base, state: "STOPPED", percent: 0, checks: [] }),
   { text: "Đã dừng kiểm tra kỹ thuật. Video vẫn được giữ nguyên.", tone: "info" });
 assert.deepEqual(summary({ ...base, state: "INTERRUPTED", percent: 0, checks: [] }),
@@ -54,7 +66,7 @@ assert.deepEqual(summary({ ...base, state: "UNAVAILABLE", percent: 0, checks: []
 assert.equal(CHECK_NOTE, "Chỉ để tham khảo: kiểm tra này không chặn, không xóa và không thay đổi video.");
 
 // Never worded like Final QC, whatever the state.
-for (const value of [done, clean, unmeasured, ...["RUNNING", "STOPPED", "INTERRUPTED", "UNAVAILABLE"].map((state) => ({ ...base, state, percent: 0, checks: [] }))]) {
+for (const value of [done, clean, unmeasured, mixed, ...["RUNNING", "STOPPED", "INTERRUPTED", "UNAVAILABLE"].map((state) => ({ ...base, state, percent: 0, checks: [] }))]) {
   const check = parseExportCheck(value);
   for (const text of [checkSummary(check).text, ...checkLines(check), checkBadge(value).title]) {
     assert.doesNotMatch(text, /đạt|Sẵn sàng|READY|Kiểm tra cuối/i, text);
@@ -92,7 +104,10 @@ try {
   assert.equal(parseExportCheck(status.exports.at(-1).check).state, "RUNNING");
   clock += 2000;
   status = await previewInvoke("edit_status", { outputPath, kind: "job" });
-  assert.equal(checkSummary(parseExportCheck(status.exports.at(-1).check)).text, "Kiểm tra kỹ thuật: 1 điểm cần xem.");
+  // the preview's report has a warning and a check not measured: both are shown
+  assert.equal(checkSummary(parseExportCheck(status.exports.at(-1).check)).text, "Kiểm tra kỹ thuật: 1 điểm cần xem. Chưa đo: Phụ đề trong khung.");
+  assert.deepEqual(checkLines(parseExportCheck(status.exports.at(-1).check)),
+    ["Hình đen: đen 3,0 giây ở 0:04–0:07", "Chưa đo — Phụ đề trong khung: không có phụ đề in vào hình"]);
   const other = "preview/check-stop/final_vi.mp4";
   const started = await previewInvoke("edit_export", { request: { ...request, outputPath: other } });
   clock += 6000;

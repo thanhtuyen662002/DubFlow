@@ -3375,7 +3375,8 @@ fn wait_tracked(running: &Running, id: u32) -> bool {
 
 /// Render, then publish the video and subtitles under names that are free now.
 /// Some((video, whether its .srt was written)) once an edited video is published.
-fn run_export(job: &ExportJob, running: &Running) -> Option<(PathBuf, bool)> {
+/// The published video, whether its .srt was written, and the video's stamp taken as it was published.
+fn run_export(job: &ExportJob, running: &Running) -> Option<(PathBuf, bool, Option<check::Stamp>)> {
     let partial = partial_of(&job.target);
     let mut failure = String::new();
     let mut done = job.parts.as_ref().is_some_and(|source| parts::render(job, source, running).is_ok());
@@ -3416,6 +3417,9 @@ fn run_export(job: &ExportJob, running: &Running) -> Option<(PathBuf, bool)> {
     } else {
         job.target.clone()
     };
+    // The file's identity is taken here, at publication, before the export is listed or marked COMPLETED: the
+    // check that runs later judges only this file, never one put at the name since (#935, Lead review).
+    let stamp = check::stamp_of(&partial);
     if fs::rename(&partial, &target).is_err() {
         let _ = fs::remove_file(&partial);
         write_status(&job.work, "FAILED", 0.0, "Không lưu được video đã xuất vào thư mục đã chọn.", None);
@@ -3433,7 +3437,7 @@ fn run_export(job: &ExportJob, running: &Running) -> Option<(PathBuf, bool)> {
         "media": job.media, "luts": job.edit.luts, "transitions": job.edit.transitions, "overlays": job.edit.overlays, "audio": job.audio, "main_volume": job.main_volume, "main_denoise": job.main_denoise, "main_eq": job.main_eq,
         "stems": job.stems, "texts": job.texts, "aspect": job.aspect, "fill": job.aspect.as_ref().and(job.fill.as_ref())}));
     write_status(&job.work, "COMPLETED", 100.0, "Đã xuất video.", Some(&target));
-    Some((target, srt.is_some()))
+    Some((target, srt.is_some(), stamp))
 }
 
 fn start_export(request: ExportRequest) -> Result<Value, String> {
@@ -3606,8 +3610,8 @@ fn start_export(request: ExportRequest) -> Result<Value, String> {
         drop(lease);
         // Kiểm tra kỹ thuật: only once the video is published and the export's lease is free,
         // so "Xem", "Mở thư mục" and a new export never wait for it.
-        if let (Some((video, srt)), Some(plan)) = (published, job.check) {
-            check::run(&job.work, &job.ffmpeg, plan.for_video(video, srt));
+        if let (Some((video, srt, stamp)), Some(plan)) = (published, job.check) {
+            check::run(&job.work, &job.ffmpeg, plan.for_video(video, srt, stamp));
         }
     });
     Ok(json!({"path": display_path(&target)}))

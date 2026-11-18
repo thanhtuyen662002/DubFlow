@@ -83,11 +83,17 @@ pub(super) struct Plan {
     intended_holds: Vec<(f64, f64)>,
     /// The burned Phụ đề to measure; None when nothing is burned.
     subtitles: Option<SubtitleFrame>,
-    /// The published file's size and modified time (ns) when it was handed over: a file changed or replaced at the
-    /// same name before or during the check is not judged against this export's plan (recheck 8).
+    /// The published file's identity (`Stamp`), taken by `run_export` at publication, before the export is listed or
+    /// marked COMPLETED: a file changed or replaced at the same name before or during the check is not judged
+    /// against this export's plan (recheck 8, Lead review).
     #[serde(default)]
-    stamp: Option<(u64, u64)>,
+    stamp: Option<Stamp>,
 }
+
+/// A file's size, modified time (ns) and identity on its disk: the volume serial and file index on Windows, the
+/// device and inode elsewhere ((0, 0) where neither is known). A file put in place of another at the same name, even
+/// with the same size and time, has another identity.
+pub(super) type Stamp = [u64; 4];
 
 /// Phụ đề to measure (#935): the burned layers as the export drew them, the export frame they were drawn on, and
 /// the part of that frame the finished picture keeps.
@@ -108,9 +114,10 @@ pub(super) struct SubtitleFrame {
 }
 
 impl Plan {
-    /// The plan for the video `run_export` published, and whether its .srt was written.
-    pub(super) fn for_video(mut self, video: PathBuf, srt_written: bool) -> Self {
-        self.stamp = stamp_of(&video);
+    /// The plan for the video `run_export` published, whether its .srt was written, and the file's stamp taken at
+    /// publication (never later: by then another file may already stand at the name).
+    pub(super) fn for_video(mut self, video: PathBuf, srt_written: bool, stamp: Option<Stamp>) -> Self {
+        self.stamp = stamp;
         self.video = video;
         if !srt_written {
             self.srt_end_ms = None;
@@ -133,16 +140,41 @@ impl Plan {
     }
 }
 
-/// A file's size and modified time in ns.
-fn stamp_of(video: &Path) -> Option<(u64, u64)> {
-    let metadata = fs::metadata(video).ok()?;
+/// The stamp of the file at `video` (None when it is not a readable file).
+pub(super) fn stamp_of(video: &Path) -> Option<Stamp> {
+    let file = fs::File::open(video).ok()?;
+    let metadata = file.metadata().ok()?;
+    if !metadata.is_file() {
+        return None;
+    }
     let modified = metadata.modified().ok()?.duration_since(UNIX_EPOCH).ok()?;
-    Some((metadata.len(), u64::try_from(modified.as_nanos()).ok()?))
+    let (volume, index) = identity(&file, &metadata)?;
+    Some([metadata.len(), u64::try_from(modified.as_nanos()).ok()?, volume, index])
+}
+
+/// Where the opened file lives: its device and inode.
+#[cfg(unix)]
+fn identity(_file: &fs::File, metadata: &fs::Metadata) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    Some((metadata.dev(), metadata.ino()))
+}
+
+/// Where the opened file lives: its volume serial and file index.
+#[cfg(windows)]
+fn identity(file: &fs::File, _metadata: &fs::Metadata) -> Option<(u64, u64)> {
+    let info = file_information(file)?;
+    Some((u64::from(info.volume), (u64::from(info.index_high) << 32) | u64::from(info.index_low)))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn identity(_file: &fs::File, _metadata: &fs::Metadata) -> Option<(u64, u64)> {
+    Some((0, 0))
 }
 
 /// The stamp a saved report carries, if any.
-fn stamp_in(report: &Value) -> Option<(u64, u64)> {
-    Some((report["stamp"][0].as_u64()?, report["stamp"][1].as_u64()?))
+fn stamp_in(report: &Value) -> Option<Stamp> {
+    let stamp = report["stamp"].as_array().filter(|stamp| stamp.len() == 4)?;
+    Some([stamp[0].as_u64()?, stamp[1].as_u64()?, stamp[2].as_u64()?, stamp[3].as_u64()?])
 }
 
 /// Said when the main video is shown turned (`Plan::turned_source`).
@@ -635,7 +667,7 @@ pub(super) struct ExportCheck {
     /// The checked file's size and modified time (ns) when it was published: `attach` shows the report only on the
     /// export whose file this still is, never on a later export written to the same name (recheck 9).
     #[serde(skip_serializing_if = "Option::is_none")]
-    stamp: Option<(u64, u64)>,
+    stamp: Option<Stamp>,
 }
 
 impl ExportCheck {
@@ -1200,29 +1232,37 @@ const NO_FOLLOW: i32 = 0x100 | 0x4;
 /// How many names the opened file has.
 #[cfg(windows)]
 fn links(file: &fs::File, _metadata: &fs::Metadata) -> Option<u64> {
+    Some(u64::from(file_information(file)?.links))
+}
+
+/// BY_HANDLE_FILE_INFORMATION of an open file.
+#[cfg(windows)]
+#[repr(C)]
+#[derive(Default)]
+#[allow(dead_code)] // filled by Windows; only some fields are read
+struct FileInformation {
+    attributes: u32,
+    created: [u32; 2],
+    accessed: [u32; 2],
+    written: [u32; 2],
+    volume: u32,
+    size_high: u32,
+    size_low: u32,
+    links: u32,
+    index_high: u32,
+    index_low: u32,
+}
+
+#[cfg(windows)]
+fn file_information(file: &fs::File) -> Option<FileInformation> {
     use std::os::windows::io::AsRawHandle;
-    #[repr(C)]
-    #[derive(Default)]
-    #[allow(dead_code)] // filled by Windows; only `links` is read
-    struct FileInformation {
-        attributes: u32,
-        created: [u32; 2],
-        accessed: [u32; 2],
-        written: [u32; 2],
-        volume: u32,
-        size_high: u32,
-        size_low: u32,
-        links: u32,
-        index_high: u32,
-        index_low: u32,
-    }
     #[link(name = "kernel32")]
     extern "system" {
         fn GetFileInformationByHandle(file: *mut std::ffi::c_void, information: *mut FileInformation) -> i32;
     }
     let mut info = FileInformation::default();
     // SAFETY: the handle is open for the call and `info` is a valid out pointer (as in storage.rs).
-    (unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } != 0).then_some(u64::from(info.links))
+    (unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } != 0).then_some(info)
 }
 
 /// A check of this window runs in `dir`.
@@ -1844,7 +1884,7 @@ mod tests {
         }
         let line = burn(style(json!({})), LONG, 1_000);
         let framing = Framing { export: (640, 360), out: (640, 360), fill: "black", aspect: None };
-        let plan = Plan { subtitles: subtitle_frame(&[&line], &framing), ..plain_plan(1.0, true, None) }.for_video(video.clone(), false);
+        let plan = Plan { subtitles: subtitle_frame(&[&line], &framing), ..plain_plan(1.0, true, None) }.for_video(video.clone(), false, stamp_of(&video));
         run(&work, &fake, plan);
         assert_eq!(before(), start, "the marker was never written");
         for name in ["plan.json", "check.json"] {
@@ -1977,7 +2017,7 @@ mod tests {
         fs::write(&video, b"export one").unwrap();
         let fake = dir.join("ffmpeg");
         fs::write(&fake, b"").unwrap();
-        let plan = plain_plan(1.0, true, None).for_video(video.clone(), false);
+        let plan = plain_plan(1.0, true, None).for_video(video.clone(), false, stamp_of(&video));
         assert!(plan.same_file());
         std::thread::sleep(Duration::from_millis(20));
         fs::write(&video, b"export two, longer").unwrap();
@@ -1992,7 +2032,7 @@ mod tests {
         attach(&work, &mut exports);
         assert!(exports[0].get("check").is_none(), "{}", exports[0]);
         // a report on the file as it is now is shown
-        let now = ExportCheck::of(&plain_plan(1.0, true, None).for_video(video.clone(), false), "DONE");
+        let now = ExportCheck::of(&plain_plan(1.0, true, None).for_video(video.clone(), false, stamp_of(&video)), "DONE");
         save(&work, &check_dir(&work, &video), &now);
         attach(&work, &mut exports);
         assert_eq!(exports[0]["check"]["state"], "DONE");
@@ -2000,6 +2040,51 @@ mod tests {
         let old: Plan = serde_json::from_value(json!({"video": "x.mp4", "expected_seconds": 1.0, "has_audio": false,
             "srt_end_ms": null, "intended_holds": [], "subtitles": null})).unwrap();
         assert_eq!(old.stamp, None);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// The stamp is taken as the export is published (on its partial file, before the rename), so a file put at the
+    /// name after publication but before the check starts is caught, even with the same bytes, size and modified
+    /// time: its identity on the disk differs (Lead review on recheck 11).
+    #[test]
+    fn a_video_replaced_after_publication_is_not_judged_by_the_plan() {
+        let dir = temp("replaced-after-publication");
+        let work = dir.join("work");
+        let video = dir.join("Phim.mp4");
+        let partial = dir.join("Phim.mp4.partial");
+        fs::write(&partial, b"the export").unwrap();
+        let published = stamp_of(&partial);
+        assert!(published.is_some());
+        fs::rename(&partial, &video).unwrap();
+        assert_eq!(stamp_of(&video), published, "a rename keeps the file's stamp");
+        let fake = dir.join("ffmpeg");
+        fs::write(&fake, b"").unwrap();
+        // another file put at the name: same bytes, same size, same modified time
+        let modified = fs::metadata(&video).unwrap().modified().unwrap();
+        let other = dir.join("other.mp4");
+        fs::write(&other, b"the export").unwrap();
+        fs::File::options().write(true).open(&other).unwrap().set_modified(modified).unwrap();
+        fs::remove_file(&video).unwrap();
+        fs::rename(&other, &video).unwrap();
+        let now = stamp_of(&video).unwrap();
+        let before = published.unwrap();
+        assert_eq!((now[0], now[1]), (before[0], before[1]), "size and modified time alone cannot tell them apart");
+        assert_ne!(now, before);
+        let plan = plain_plan(1.0, true, None).for_video(video.clone(), false, published);
+        assert!(!plan.same_file());
+        run(&work, &fake, plan);
+        let report = read_check(&work, &video);
+        assert_eq!((report["state"].as_str(), report["error"].as_str()), (Some("UNAVAILABLE"), Some(CHANGED)), "{report}");
+        assert_eq!(stamp_in(&report), published, "the report names the file it was for");
+        assert_eq!(fs::read(&video).unwrap(), b"the export", "the file at the name is untouched");
+        let mut exports = vec![json!({ "path": display_path(&video) })];
+        attach(&work, &mut exports);
+        assert!(exports[0].get("check").is_none(), "{}", exports[0]);
+        // the file that was published, untouched, is judged
+        let kept = plain_plan(1.0, true, None).for_video(video.clone(), false, stamp_of(&video));
+        assert!(kept.same_file());
+        // a report written before the identity was in the stamp is not read as one
+        assert_eq!(stamp_in(&json!({ "stamp": [1, 2] })), None);
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -2078,7 +2163,7 @@ mod tests {
             fs::set_permissions(file, fs::Permissions::from_mode(0o755)).unwrap();
         }
         let worker = {
-            let (work, ffmpeg, plan) = (work.clone(), ffmpeg.clone(), plain_plan(1.0, true, None).for_video(video.clone(), false));
+            let (work, ffmpeg, plan) = (work.clone(), ffmpeg.clone(), plain_plan(1.0, true, None).for_video(video.clone(), false, stamp_of(&video)));
             std::thread::spawn(move || run(&work, &ffmpeg, plan))
         };
         let deadline = Instant::now() + Duration::from_secs(20);
@@ -2132,7 +2217,7 @@ mod tests {
         fs::write(work.join("status.json"), b"{\"state\":\"COMPLETED\"}").unwrap();
         let before = |path: &Path| (fs::read(path).unwrap(), fs::metadata(path).unwrap().modified().unwrap());
         let (video_before, exports_before, status_before) = (before(&video), before(&work.join("exports.json")), before(&work.join("status.json")));
-        let plan = plain_plan(1.0, true, None).for_video(video.clone(), false);
+        let plan = plain_plan(1.0, true, None).for_video(video.clone(), false, stamp_of(&video));
         run(&work, &dir.join("missing").join("ffmpeg"), plan);
         let report = read_check(&work, &video);
         assert_eq!((report["state"].as_str(), report["kind"].as_str(), report["advisory"].as_bool()), (Some("UNAVAILABLE"), Some("export_check"), Some(true)));
@@ -2219,7 +2304,7 @@ mod tests {
         let (first, second) = (dir.join("first.mp4"), dir.join("second.mp4"));
         let turn = TURN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let start = |video: &PathBuf| {
-            let (work, missing, plan) = (work.clone(), missing.clone(), plain_plan(1.0, false, None).for_video(video.clone(), false));
+            let (work, missing, plan) = (work.clone(), missing.clone(), plain_plan(1.0, false, None).for_video(video.clone(), false, stamp_of(video)));
             std::thread::spawn(move || run(&work, &missing, plan))
         };
         let (a, b) = (start(&first), start(&second));
@@ -2336,14 +2421,14 @@ mod tests {
         fs::write(&video, b"v").unwrap();
         let missing = dir.join("missing").join("ffmpeg");
         link_dir(&elsewhere, &work.join(CHECKS_DIR));
-        run(&work, &missing, plain_plan(1.0, false, None).for_video(video.clone(), false));
+        run(&work, &missing, plain_plan(1.0, false, None).for_video(video.clone(), false, stamp_of(&video)));
         assert_eq!(fs::read_dir(&elsewhere).unwrap().count(), 0, "nothing written through the link");
         unlink_dir(&work.join(CHECKS_DIR));
         // a check folder that is a link is refused too, and never read
         fs::create_dir(work.join(CHECKS_DIR)).unwrap();
         link_dir(&elsewhere, &check_dir(&work, &video));
         fs::write(elsewhere.join("check.json"), serde_json::to_vec(&ExportCheck::new(&video, "DONE")).unwrap()).unwrap();
-        run(&work, &missing, plain_plan(1.0, false, None).for_video(video.clone(), false));
+        run(&work, &missing, plain_plan(1.0, false, None).for_video(video.clone(), false, stamp_of(&video)));
         let mut exports = vec![json!({"path": display_path(&video)})];
         attach(&work, &mut exports);
         assert_eq!(fs::read_dir(&elsewhere).unwrap().count(), 1, "only the planted file is there");
@@ -2371,7 +2456,7 @@ mod tests {
         assert!(made.success());
         let bytes = fs::read(&video).unwrap();
         let plan = plain_plan(12.0, true, Some(11_500));
-        run(&work, &ffmpeg, plan.clone().for_video(video.clone(), true));
+        run(&work, &ffmpeg, plan.clone().for_video(video.clone(), true, stamp_of(&video)));
         let report = read_check(&work, &video);
         assert_eq!(report["state"], "DONE", "{report}");
         let checks: HashMap<String, Value> = report["checks"].as_array().unwrap().iter().map(|check| (check["id"].as_str().unwrap().to_owned(), check.clone())).collect();
@@ -2387,7 +2472,7 @@ mod tests {
         assert_eq!(report["warnings"], json!(["black", "frozen"]));
         // held on purpose: not reported
         let held = Plan { intended_holds: vec![(7.0, 10.0)], ..plan.clone() };
-        run(&work, &ffmpeg, held.clone().for_video(video.clone(), true));
+        run(&work, &ffmpeg, held.clone().for_video(video.clone(), true, stamp_of(&video)));
         assert_eq!(read_check(&work, &video)["frozen"], json!([]));
         assert_eq!(fs::read(&video).unwrap(), bytes, "the video is never changed");
         // a sound track that is there but silent (#935): a warning when the edit has sound, fine when it has none
@@ -2395,12 +2480,12 @@ mod tests {
         let made = Command::new(&ffmpeg).args(["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=320x240:r=25:d=3", "-f", "lavfi", "-i",
             "anullsrc=r=48000:cl=stereo", "-c:v", "mpeg4", "-q:v", "5", "-c:a", "aac", "-t", "3"]).arg(&silent).status().unwrap();
         assert!(made.success());
-        run(&work, &ffmpeg, plain_plan(3.0, true, None).for_video(silent.clone(), false));
+        run(&work, &ffmpeg, plain_plan(3.0, true, None).for_video(silent.clone(), false, stamp_of(&silent)));
         let report = read_check(&work, &silent);
         let audio = |report: &Value| report["checks"].as_array().unwrap().iter().find(|check| check["id"] == "audio").unwrap().clone();
         assert_eq!((report["state"].as_str(), audio(&report)["ok"].as_bool()), (Some("DONE"), Some(false)), "{report}");
         assert!(audio(&report)["detail"].as_str().unwrap().starts_with("bản sửa có tiếng nhưng âm thanh xuất ra im lặng"), "{report}");
-        run(&work, &ffmpeg, plain_plan(3.0, false, None).for_video(silent.clone(), false));
+        run(&work, &ffmpeg, plain_plan(3.0, false, None).for_video(silent.clone(), false, stamp_of(&silent)));
         assert_eq!(audio(&read_check(&work, &silent))["ok"], true, "an edit without sound exported silent is fine");
         // zeroed bytes: FFmpeg exits 0 but logs decode errors
         let zeroed = dir.join("zeroed.mp4");
@@ -2408,14 +2493,14 @@ mod tests {
         let third = damaged.len() / 3;
         damaged[third..third + 20_000].fill(0);
         fs::write(&zeroed, &damaged).unwrap();
-        run(&work, &ffmpeg, held.clone().for_video(zeroed.clone(), true));
+        run(&work, &ffmpeg, held.clone().for_video(zeroed.clone(), true, stamp_of(&zeroed)));
         let report = read_check(&work, &zeroed);
         assert_eq!(report["checks"][0]["id"], "decode");
         assert_eq!(report["checks"][0]["ok"], false, "{report}");
         // no moov: FFmpeg fails; the file is left as it was
         let truncated = dir.join("truncated.mp4");
         fs::write(&truncated, &bytes[..bytes.len() / 2]).unwrap();
-        run(&work, &ffmpeg, held.clone().for_video(truncated.clone(), true));
+        run(&work, &ffmpeg, held.clone().for_video(truncated.clone(), true, stamp_of(&truncated)));
         let report = read_check(&work, &truncated);
         assert_eq!((report["state"].as_str(), report["checks"][0]["ok"].as_bool()), (Some("DONE"), Some(false)), "{report}");
         assert_eq!(fs::read(&truncated).unwrap(), &bytes[..bytes.len() / 2]);
@@ -2427,7 +2512,7 @@ mod tests {
         assert!(made.success());
         let long_bytes = fs::read(&long).unwrap();
         let worker = {
-            let (work, ffmpeg, plan) = (work.clone(), ffmpeg.clone(), plain_plan(600.0, true, None).for_video(long.clone(), false));
+            let (work, ffmpeg, plan) = (work.clone(), ffmpeg.clone(), plain_plan(600.0, true, None).for_video(long.clone(), false, stamp_of(&long)));
             std::thread::spawn(move || run(&work, &ffmpeg, plan))
         };
         let deadline = Instant::now() + Duration::from_secs(120);

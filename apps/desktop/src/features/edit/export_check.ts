@@ -52,18 +52,28 @@ export function checkSummary(check: ExportCheck): { text: string; tone: CheckTon
     case "UNAVAILABLE":
       return { text: `Không chạy được kiểm tra kỹ thuật (${check.error || "không rõ lỗi"}). Video vẫn được giữ nguyên.`, tone: "info" };
     case "DONE": {
-      const warnings = check.checks.filter((item) => item.ok === false).length;
-      if (warnings) return { text: `Kiểm tra kỹ thuật: ${warnings} điểm cần xem.`, tone: "warn" };
-      // not measured is named, never counted as fine
+      const warnings = checkWarnings(check);
+      // not measured is named, never counted as fine, and never hidden behind a warning (#935, Lead review)
       const unmeasured = check.checks.filter((item) => item.ok === null).map((item) => item.label);
-      return { text: `Kiểm tra kỹ thuật: không thấy lỗi.${unmeasured.length ? ` Chưa đo: ${unmeasured.join(", ")}.` : ""}`, tone: "ok" };
+      const notMeasured = unmeasured.length ? ` Chưa đo: ${unmeasured.join(", ")}.` : "";
+      if (warnings) return { text: `Kiểm tra kỹ thuật: ${warnings} điểm cần xem.${notMeasured}`, tone: "warn" };
+      return { text: `Kiểm tra kỹ thuật: không thấy lỗi.${notMeasured}`, tone: "ok" };
     }
   }
 }
 
-/** "{nhãn}: {chi tiết}" for each point to look at. */
+/** How many points of a finished check are worth a look (not measured is not counted here). */
+export function checkWarnings(check: ExportCheck): number {
+  return check.state === "DONE" ? check.checks.filter((item) => item.ok === false).length : 0;
+}
+
+/** "{nhãn}: {chi tiết}" for each point to look at, then "Chưa đo — {nhãn}: {lý do}" for each check that was not measured. */
 export function checkLines(check: ExportCheck): string[] {
-  return check.state === "DONE" ? check.checks.filter((item) => item.ok === false).map((item) => `${item.label}: ${item.detail}`) : [];
+  if (check.state !== "DONE") return [];
+  const warnings = check.checks.filter((item) => item.ok === false).map((item) => `${item.label}: ${item.detail}`);
+  const unmeasured = check.checks.filter((item) => item.ok === null)
+    .map((item) => `Chưa đo — ${item.label}${item.detail ? `: ${item.detail}` : ""}`);
+  return [...warnings, ...unmeasured];
 }
 
 /** Whether some export's check still runs, so its result is worth polling for. */

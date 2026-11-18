@@ -49,7 +49,7 @@ import { packHistory, unpackHistory } from "./undo_store.ts";
 import { DraftSavers, windowTimers } from "./autosave.ts";
 import { askAlone, CLOSE_WAIT_MS, flushWithin, unsavedPrompt } from "./close_guard.ts";
 import { mountThumbnail } from "./thumbnail_view.ts";
-import { CHECK_NOTE, checkBadge, checkLines, checkRunning, checkSummary, parseExportCheck } from "./export_check.ts";
+import { CHECK_NOTE, checkBadge, checkLines, checkRunning, checkSummary, checkWarnings, parseExportCheck } from "./export_check.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 type Facts = { duration: number; width: number; height: number; fps?: number; size_bytes: number; has_audio: boolean; cues: Cue[] };
@@ -3891,7 +3891,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     if (previous === "RUNNING" && state === "COMPLETED") checkWait = Date.now() + CHECK_WAIT_MS;
     for (const entry of response.exports) {
       const check = parseExportCheck(entry.check);
-      const warnings = check?.state === "DONE" ? checkLines(check).length : 0;
+      const warnings = check ? checkWarnings(check) : 0;
       if (session && checking.has(entry.path) && warnings) note(`«${fileName(entry.path)}»: ${warnings} điểm cần xem — mở Xuất video để xem.`);
     }
     if (previous === "RUNNING" && state === "COMPLETED" && session?.target.id === job.id && session.exporting) {
