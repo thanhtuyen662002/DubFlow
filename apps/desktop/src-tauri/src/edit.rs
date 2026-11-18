@@ -622,6 +622,9 @@ struct Probe {
     fps: String,
     has_audio: bool,
     size: u64,
+    /// Shown turned a quarter (a phone video's display rotation of 90 or 270 degrees): FFmpeg hands the filters the
+    /// turned picture, height by width.
+    turned: bool,
 }
 
 /// What kind of finished video an edit is of.
@@ -922,6 +925,8 @@ fn parse_probe(text: &str) -> Option<Probe> {
         fps: frame_rate(&video["avg_frame_rate"]).or_else(|| frame_rate(&video["r_frame_rate"])).unwrap_or_else(|| "30/1".into()),
         has_audio: streams.iter().any(|stream| stream["codec_type"] == "audio"),
         size: number(&value["format"]["size"]).map_or(0, |bytes| bytes.max(0.0) as u64),
+        turned: video["side_data_list"].as_array().is_some_and(|list| list.iter()
+            .filter_map(|data| data["rotation"].as_f64()).any(|degrees| (degrees.abs().round() as i64) % 180 == 90)),
     })
 }
 
@@ -937,6 +942,7 @@ fn parse_still(text: &str) -> Option<Probe> {
         fps: "30/1".into(),
         has_audio: false,
         size,
+        turned: false,
     })
 }
 
@@ -946,7 +952,7 @@ fn probe(video: &Path) -> Result<Probe, String> {
 
 /// `probe` with a given FFprobe (Kiểm tra kỹ thuật uses the one beside its FFmpeg).
 /// What `probe_with` (and Kiểm tra kỹ thuật's tracked probe) asks ffprobe for.
-const PROBE_ARGS: [&str; 6] = ["-v", "error", "-show_entries", "format=duration,size:stream=codec_type,width,height,avg_frame_rate,r_frame_rate", "-of", "json"];
+const PROBE_ARGS: [&str; 6] = ["-v", "error", "-show_entries", "format=duration,size:stream=codec_type,width,height,avg_frame_rate,r_frame_rate:stream_side_data=rotation", "-of", "json"];
 
 fn probe_with(ffprobe: &Path, video: &Path) -> Result<Probe, String> {
     let mut command = Command::new(ffprobe);
@@ -3571,6 +3577,7 @@ fn start_export(request: ExportRequest) -> Result<Value, String> {
         let framing = check::Framing { export: (width, height), out: (out_width, out_height),
             fill: request.fill.as_deref().unwrap_or("black"), aspect: request.aspect.as_deref() };
         check::plan(&edit, &stills, output_seconds(&edit.segments, &edit.transitions), has_audio, &request.cues, &burns, &framing, &fps)
+            .turned_source(facts.turned)
     });
     let job = ExportJob {
         work: work.clone(), inputs, media: request.media, script, folder, name, target: target.clone(),
@@ -5486,7 +5493,7 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
 
     #[test]
     fn heavy_videos_get_a_light_copy_and_old_copies_go() {
-        let probe = |width, height, size: u64| Probe { duration: 10.0, width, height, fps: "30/1".into(), has_audio: true, size };
+        let probe = |width, height, size: u64| Probe { duration: 10.0, width, height, fps: "30/1".into(), has_audio: true, size, turned: false };
         assert!(!heavy(&probe(1920, 1080, 20_000_000)));
         assert!(!heavy(&probe(1080, 1920, 20_000_000)));
         assert!(heavy(&probe(3840, 2160, 20_000_000)));
@@ -5555,11 +5562,14 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
     fn reads_ffprobe_output() {
         let probe = parse_probe(r#"{"streams":[{"codec_type":"video","width":1024,"height":576,"avg_frame_rate":"25/1","r_frame_rate":"25/1"},
             {"codec_type":"audio","r_frame_rate":"0/0"}],"format":{"duration":"154.200000","size":"48000000"}}"#).unwrap();
-        assert_eq!(probe, Probe { duration: 154.2, width: 1024, height: 576, fps: "25/1".into(), has_audio: true, size: 48_000_000 });
+        assert_eq!(probe, Probe { duration: 154.2, width: 1024, height: 576, fps: "25/1".into(), has_audio: true, size: 48_000_000, turned: false });
         let silent = parse_probe(r#"{"streams":[{"codec_type":"video","width":720,"height":1280,"avg_frame_rate":"0/0","r_frame_rate":"30000/1001"}],
             "format":{"duration":"10"}}"#).unwrap();
         assert_eq!((silent.fps.as_str(), silent.has_audio, silent.size), ("30000/1001", false, 0));
         assert_eq!(parse_probe(r#"{"streams":[{"codec_type":"video","width":2,"height":2,"r_frame_rate":"9000/1"}],"format":{"duration":"1"}}"#).unwrap().fps, "30/1");
+        // a phone video's display rotation (#935): shown turned at 90 and -90 (270), not at 180
+        let rotated = |degrees: i64| parse_probe(&format!(r#"{{"streams":[{{"codec_type":"video","width":640,"height":360,"r_frame_rate":"30/1","side_data_list":[{{"rotation":{degrees}}}]}}],"format":{{"duration":"1"}}}}"#)).unwrap().turned;
+        assert_eq!((rotated(90), rotated(-90), rotated(270), rotated(180), rotated(0)), (true, true, true, false, false));
         assert!(parse_probe(r#"{"streams":[{"codec_type":"audio"}],"format":{"duration":"10"}}"#).is_none());
         assert!(parse_probe(r#"{"streams":[{"codec_type":"video","width":2,"height":2}],"format":{"duration":"N/A"}}"#).is_none());
         assert!(parse_probe("not json").is_none());

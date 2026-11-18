@@ -99,6 +99,9 @@ pub(super) struct SubtitleFrame {
     /// The export's frame rate (num, den), the clock Phụ đề is drawn on; (0, 0) when unknown.
     #[serde(default)]
     rate: (u64, u64),
+    /// Why the burned lines cannot be measured for this export, said instead of a measure on the wrong frame.
+    #[serde(default)]
+    unmeasurable: Option<String>,
 }
 
 impl Plan {
@@ -108,6 +111,15 @@ impl Plan {
         self.video = video;
         if !srt_written {
             self.srt_end_ms = None;
+        }
+        self
+    }
+
+    /// The main video is shown turned a quarter (a phone video): FFmpeg may hand Phụ đề a frame of another shape
+    /// than the export frame the plan knows, so the burned lines are not measured (recheck 10).
+    pub(super) fn turned_source(mut self, turned: bool) -> Self {
+        if let Some(frame) = self.subtitles.as_mut().filter(|_| turned) {
+            frame.unmeasurable = Some(TURNED.into());
         }
         self
     }
@@ -129,6 +141,9 @@ fn stamp_of(video: &Path) -> Option<(u64, u64)> {
 fn stamp_in(report: &Value) -> Option<(u64, u64)> {
     Some((report["stamp"][0].as_u64()?, report["stamp"][1].as_u64()?))
 }
+
+/// Said when the main video is shown turned (`Plan::turned_source`).
+const TURNED: &str = "video gốc quay dọc bằng điện thoại (được xoay khi phát), khung vẽ phụ đề có thể khác khung xuất";
 
 /// Said when the published file changed before its check could judge it.
 const CHANGED: &str = "video đã bị thay đổi hoặc thay bằng tệp khác sau khi xuất, nên không kiểm tra theo bản xuất này";
@@ -182,7 +197,7 @@ fn subtitle_frame(burns: &[&BurnSubtitles], framing: &Framing) -> Option<Subtitl
         (true, None) => "cắt cho đầy khung".to_owned(),
         (false, _) => EDGE.to_owned(),
     };
-    Some(SubtitleFrame { burns, export: framing.export, window, why, rate: (0, 0) })
+    Some(SubtitleFrame { burns, export: framing.export, window, why, rate: (0, 0), unmeasurable: None })
 }
 
 /// The part of the export frame `reframe_filter`'s "fill" keeps, in export pixels, as FFmpeg computes it: `scale`
@@ -369,6 +384,9 @@ const EDGE: &str = "chữ vượt ra ngoài khung hình";
 /// around what was drawn. Never decodes or changes the video.
 fn measure_subtitles(work: &Path, ffmpeg: &Path, frame: &SubtitleFrame, video: &Path, dir: &Path, running: &Running) -> SubtitleFit {
     let unmeasured = |why: String| SubtitleFit { ok: None, detail: format!("chưa đo được phụ đề: {why}"), at_ms: Vec::new() };
+    if let Some(why) = &frame.unmeasurable {
+        return unmeasured(why.clone());
+    }
     let Some(frames) = frame_times(&ffprobe_beside(ffmpeg), video, running, frame.rate) else {
         return unmeasured("không đọc được thời điểm các khung hình".into());
     };
@@ -790,7 +808,9 @@ pub(super) fn run(work: &Path, ffmpeg: &Path, plan: Plan) {
     if !unlinked(work) || plain_folder(&work.join(CHECKS_DIR)).is_err() || plain_folder(&dir).is_err() {
         return;
     }
-    // Its own lease: a new export of the same video is never refused because of a check.
+    // The folder held for the whole check, then its own lease: a new export of the same video is never refused
+    // because of a check.
+    let Some(pinned) = pin(work, &dir) else { return };
     let Some(lease) = own_lease(work, &dir) else { return };
     let running = Arc::new(Running { children: Mutex::new(Vec::new()), cancelled: AtomicBool::new(false) });
     if !register(&CHECKING, &CLOSING, &dir, &running) {
@@ -816,6 +836,7 @@ pub(super) fn run(work: &Path, ffmpeg: &Path, plan: Plan) {
         checking.remove(&dir);
     }
     drop(lease);
+    drop(pinned);
     prune(work);
 }
 
@@ -1032,18 +1053,38 @@ fn own_place(work: &Path, dir: &Path) -> Option<PathBuf> {
     Some(fs::canonicalize(work).ok()?.join(CHECKS_DIR).join(dir.file_name()?).join("check.json"))
 }
 
-/// The opened file is `work`'s own check.json of `dir`, by the handle's own path (Linux: /proc/self/fd).
-#[cfg(target_os = "linux")]
+/// The opened file is `work`'s own check.json of `dir`, by the handle's own path.
+#[cfg(any(windows, target_os = "linux"))]
 fn at_place(file: &fs::File, work: &Path, dir: &Path) -> bool {
-    use std::os::unix::io::AsRawFd;
-    let real = fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd()));
-    own_place(work, dir).is_some_and(|place| real.is_ok_and(|real| real == place))
+    same_place(real_path(file), own_place(work, dir))
 }
 
-/// The opened file is `work`'s own check.json of `dir`, by the handle's own path (GetFinalPathNameByHandleW, as
-/// `fs::canonicalize` gives `work`'s).
+/// Elsewhere the folders are looked at again after the read (`load_check`).
+#[cfg(all(unix, not(target_os = "linux")))]
+fn at_place(_file: &fs::File, _work: &Path, _dir: &Path) -> bool {
+    true
+}
+
+/// Two real paths are the same place (Windows compares them as its file system does, ignoring case).
+fn same_place(real: Option<PathBuf>, place: Option<PathBuf>) -> bool {
+    match (real, place) {
+        (Some(real), Some(place)) if cfg!(windows) => real.to_string_lossy().eq_ignore_ascii_case(&place.to_string_lossy()),
+        (Some(real), Some(place)) => real == place,
+        _ => false,
+    }
+}
+
+/// Where an opened file really is, from its handle (Linux: /proc/self/fd).
+#[cfg(target_os = "linux")]
+fn real_path(file: &fs::File) -> Option<PathBuf> {
+    use std::os::unix::io::AsRawFd;
+    fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())).ok()
+}
+
+/// Where an opened file or folder really is, from its handle (GetFinalPathNameByHandleW, the form
+/// `fs::canonicalize` gives).
 #[cfg(windows)]
-fn at_place(file: &fs::File, work: &Path, dir: &Path) -> bool {
+fn real_path(file: &fs::File) -> Option<PathBuf> {
     use std::os::windows::ffi::OsStringExt;
     use std::os::windows::io::AsRawHandle;
     #[link(name = "kernel32")]
@@ -1053,17 +1094,42 @@ fn at_place(file: &fs::File, work: &Path, dir: &Path) -> bool {
     let mut buffer = vec![0u16; 32_768];
     // SAFETY: the handle is open for the call and the buffer holds `buffer.len()` wide characters.
     let length = unsafe { GetFinalPathNameByHandleW(file.as_raw_handle(), buffer.as_mut_ptr(), buffer.len() as u32, 0) } as usize;
-    if length == 0 || length >= buffer.len() {
-        return false;
-    }
-    let real = PathBuf::from(std::ffi::OsString::from_wide(&buffer[..length]));
-    own_place(work, dir).is_some_and(|place| real.to_string_lossy().eq_ignore_ascii_case(&place.to_string_lossy()))
+    (length > 0 && length < buffer.len()).then(|| PathBuf::from(std::ffi::OsString::from_wide(&buffer[..length])))
 }
 
-/// Elsewhere the folders are looked at again after the read (`load_check`).
-#[cfg(all(unix, not(target_os = "linux")))]
-fn at_place(_file: &fs::File, _work: &Path, _dir: &Path) -> bool {
-    true
+/// The check folder `dir` held open for as long as the check writes in it (recheck 10). On Windows it is opened
+/// without delete sharing, so neither it nor any folder above it (`checks`, `work`) can be renamed, removed or
+/// swapped for a link while it is held: every path the check then writes, removes or renames by stays in
+/// `work`'s own `checks/<key>`. It is taken only when the handle itself is that plain folder at that place.
+/// (Unix, a development platform only, cannot hold a folder this way; there the folders are looked at again
+/// before each write.)
+fn pin(work: &Path, dir: &Path) -> Option<fs::File> {
+    if !owned(work, dir) {
+        return None;
+    }
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_SHARE_READ_WRITE: u32 = 0x1 | 0x2;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        options.share_mode(FILE_SHARE_READ_WRITE).custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let pinned = options.open(dir).ok()?;
+    let metadata = pinned.metadata().ok()?;
+    if !metadata.is_dir() || is_link(&metadata) {
+        return None;
+    }
+    #[cfg(any(windows, target_os = "linux"))]
+    {
+        let place = fs::canonicalize(work).ok().zip(dir.file_name()).map(|(work, key)| work.join(CHECKS_DIR).join(key));
+        if !same_place(real_path(&pinned), place) {
+            return None;
+        }
+    }
+    owned(work, dir).then_some(pinned)
 }
 
 /// A check.json file at `path` read as `load_check` reads one, without the folder checks (tests).
@@ -1184,9 +1250,9 @@ pub(super) fn attach(work: &Path, exports: &mut [Value]) {
         // The lease file is only made in `work/checks/<key>` while all three are plain folders.
         if value["state"] == "RUNNING" && !ours(&dir) && unlinked(work) && plain(&work.join(CHECKS_DIR)) {
             // A free lease means no window is checking: the app closed mid-check.
-            if let Some(lease) = own_lease(work, &dir) {
+            if let Some((pinned, lease)) = pin(work, &dir).and_then(|pinned| Some((pinned, own_lease(work, &dir)?))) {
                 value = settle(work, &dir, &video).unwrap_or(value);
-                drop(lease);
+                drop((lease, pinned));
             }
         }
         entry["check"] = value;
@@ -1548,6 +1614,15 @@ mod tests {
         assert_eq!(planned.subtitles, subtitle_frame(&[&line], &wide).map(|frame| SubtitleFrame { rate: (30, 1), ..frame }));
         assert_eq!(planned.subtitles.unwrap().window, (0.0, 0.0, 1920.0, 1080.0));
         assert_eq!((rate_of("30000/1001"), rate_of("25"), rate_of("x"), rate_of("30/0")), ((30_000, 1001), (25, 1), (0, 0), (0, 0)));
+        // a phone video shown turned: the burned lines are said unmeasured, never measured on the wrong frame
+        let turned = plan(&edit, &[false], 20.0, true, &[], &[&line], &wide, "30/1").turned_source(true);
+        assert_eq!(turned.subtitles.as_ref().unwrap().unmeasurable.as_deref(), Some(TURNED));
+        let running = Running { children: Mutex::new(Vec::new()), cancelled: AtomicBool::new(false) };
+        let dir = temp("turned");
+        let fit = measure_subtitles(&dir.join("work"), &dir.join("ffmpeg"), turned.subtitles.as_ref().unwrap(), &dir.join("v.mp4"), &dir, &running);
+        assert_eq!((fit.ok, fit.detail), (None, format!("chưa đo được phụ đề: {TURNED}")));
+        assert_eq!(plan(&edit, &[false], 20.0, true, &[], &[&line], &wide, "30/1").turned_source(false).subtitles.unwrap().unmeasurable, None);
+        let _ = fs::remove_dir_all(dir);
     }
 
     /// With DUBFLOW_TEST_FFMPEG: libass itself says where the lines land.
@@ -1798,12 +1873,21 @@ mod tests {
         assert!(exports[0].get("check").is_none(), "{}", exports[0]);
         assert_eq!(fs::read(&elsewhere).unwrap(), running, "nothing was written through the link");
         assert!(!folder.join("lease").exists(), "no lease was taken for a file that was never read");
+        // a file symlink to a valid check outside: never followed (O_NOFOLLOW / FILE_FLAG_OPEN_REPARSE_POINT), by
+        // load_check and attach either, and the outside file is left as it was
+        fs::remove_file(folder.join("check.json")).unwrap();
+        let outside_stamp = fs::metadata(&own).unwrap().modified().unwrap();
+        if file_symlink(&own, &folder.join("check.json")) {
+            assert_eq!(read_check_file(&folder.join("check.json")), None, "a symlink is never followed");
+            assert_eq!(load_check(&work, &folder), None);
+            attach(&work, &mut exports);
+            assert!(exports[0].get("check").is_none(), "{}", exports[0]);
+            assert_eq!((fs::read(&own).unwrap(), fs::metadata(&own).unwrap().modified().unwrap()), (running.to_vec(), outside_stamp));
+            assert!(!folder.join("lease").exists());
+            fs::remove_file(folder.join("check.json")).unwrap();
+        }
         #[cfg(unix)]
         {
-            fs::remove_file(folder.join("check.json")).unwrap();
-            std::os::unix::fs::symlink(&own, folder.join("check.json")).unwrap();
-            assert_eq!(read_check_file(&folder.join("check.json")), None, "a symlink is never followed");
-            fs::remove_file(folder.join("check.json")).unwrap();
             let fifo = folder.join("check.json");
             assert!(Command::new("mkfifo").arg(&fifo).status().unwrap().success());
             let started = Instant::now();
@@ -1815,7 +1899,7 @@ mod tests {
 
     /// A `checks` folder that is a link (or is swapped for one between the look and the open) never leads a read of
     /// check.json elsewhere, by `attach` either: a valid check there is not attached, and nothing there changes.
-    #[cfg(unix)]
+    /// On Windows `work/checks` is a junction (mklink /J), on Unix a symlink; both runners run it.
     #[test]
     fn a_linked_checks_folder_is_never_read_through() {
         let dir = temp("readlinked");
@@ -1834,7 +1918,7 @@ mod tests {
         fs::write(&outside, &running).unwrap();
         let stamp = fs::metadata(&outside).unwrap().modified().unwrap();
         fs::rename(work.join(CHECKS_DIR), dir.join("old-checks")).unwrap();
-        std::os::unix::fs::symlink(&elsewhere, work.join(CHECKS_DIR)).unwrap();
+        link_dir(&elsewhere, &work.join(CHECKS_DIR));
         assert!(plain(&folder), "the last step alone looks plain");
         assert_eq!(load_check(&work, &folder), None);
         let mut exports = vec![json!({ "path": display_path(&video) })];
@@ -1844,14 +1928,16 @@ mod tests {
         assert_eq!((fs::read(&outside).unwrap(), fs::metadata(&outside).unwrap().modified().unwrap()), (running.clone(), stamp));
         assert_eq!(fs::read_dir(elsewhere.join(key)).unwrap().count(), 1, "nothing was made there");
         // the race itself: a handle opened through the swapped `checks` is caught by where it really is
-        #[cfg(target_os = "linux")]
-        {
-            let through = open_own(&folder.join("check.json")).expect("the final step alone is a plain single-name file");
-            assert!(!at_place(&through, &work, &folder));
-            fs::remove_file(work.join(CHECKS_DIR)).unwrap();
-            fs::rename(dir.join("old-checks"), work.join(CHECKS_DIR)).unwrap();
-            assert!(at_place(&open_own(&folder.join("check.json")).unwrap(), &work, &folder));
-        }
+        // (GetFinalPathNameByHandleW on Windows, /proc/self/fd on Linux)
+        let through = open_own(&folder.join("check.json")).expect("the final step alone is a plain single-name file");
+        #[cfg(any(windows, target_os = "linux"))]
+        assert!(!at_place(&through, &work, &folder));
+        drop(through);
+        unlink_dir(&work.join(CHECKS_DIR));
+        fs::rename(dir.join("old-checks"), work.join(CHECKS_DIR)).unwrap();
+        assert!(at_place(&open_own(&folder.join("check.json")).unwrap(), &work, &folder), "the real file is accepted");
+        assert_eq!(load_check(&work, &folder).unwrap()["state"], "DONE");
+        assert_eq!(fs::read(&outside).unwrap(), running, "the outside file is unchanged");
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -1891,9 +1977,38 @@ mod tests {
         let _ = fs::remove_dir_all(dir);
     }
 
+    /// While the check holds its folder, the folder, `checks` and `work` cannot be renamed aside (and so not swapped
+    /// for a link) on Windows; a pin is only ever taken on the own plain folder (recheck 10).
+    #[test]
+    fn the_check_folder_is_held_while_the_check_writes() {
+        let dir = temp("pinned");
+        let work = dir.join("work");
+        let video = dir.join("Phim.mp4");
+        let folder = check_dir(&work, &video);
+        fs::create_dir_all(&folder).unwrap();
+        let pinned = pin(&work, &folder).expect("the own plain folder is held");
+        #[cfg(windows)]
+        {
+            assert!(fs::rename(&folder, dir.join("aside")).is_err(), "the check folder stays");
+            assert!(fs::rename(work.join(CHECKS_DIR), dir.join("aside")).is_err(), "checks stays");
+            assert!(fs::rename(&work, dir.join("aside")).is_err(), "work stays");
+            // writing in it is unaffected
+            save(&work, &folder, &ExportCheck::new(&video, "RUNNING"));
+            assert_eq!(load_check(&work, &folder).unwrap()["state"], "RUNNING");
+        }
+        drop(pinned);
+        // a linked `checks` is never held
+        let elsewhere = dir.join("elsewhere");
+        fs::create_dir_all(elsewhere.join(folder.file_name().unwrap())).unwrap();
+        fs::rename(work.join(CHECKS_DIR), dir.join("old-checks")).unwrap();
+        link_dir(&elsewhere, &work.join(CHECKS_DIR));
+        assert!(pin(&work, &folder).is_none());
+        unlink_dir(&work.join(CHECKS_DIR));
+        let _ = fs::remove_dir_all(dir);
+    }
+
     /// `checks` swapped for a link after the check started (a long decode): nothing is removed, made or written
     /// through it (recheck 8).
-    #[cfg(unix)]
     #[test]
     fn a_checks_folder_swapped_for_a_link_is_never_written_through() {
         let dir = temp("swapped");
@@ -1908,7 +2023,7 @@ mod tests {
         let marker = elsewhere.join(key).join("measure.log");
         fs::write(&marker, b"user data").unwrap();
         fs::rename(work.join(CHECKS_DIR), dir.join("old-checks")).unwrap();
-        std::os::unix::fs::symlink(&elsewhere, work.join(CHECKS_DIR)).unwrap();
+        link_dir(&elsewhere, &work.join(CHECKS_DIR));
         assert!(plain(&folder), "the last step alone looks plain");
         assert!(!owned(&work, &folder));
         assert!(fresh_file(&work, &folder, "measure.log").is_none());
@@ -2148,6 +2263,23 @@ mod tests {
         assert_eq!(left.len(), EXPORTS_KEPT + 1, "{}", left.len());
         assert!(left.contains(&"not-a-check".to_owned()));
         let _ = fs::remove_dir_all(dir);
+    }
+
+    /// A file symlink at `link` to `target`: true when made. Windows needs the symlink privilege (an elevated or
+    /// Developer Mode account); without it the case is skipped locally and fails under CI, which has it.
+    fn file_symlink(target: &Path, link: &Path) -> bool {
+        #[cfg(unix)]
+        let made = std::os::unix::fs::symlink(target, link);
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_file(target, link);
+        match made {
+            Ok(()) => true,
+            Err(error) if std::env::var_os("CI").is_none() => {
+                println!("file symlink skipped: {error}");
+                false
+            }
+            Err(error) => panic!("file symlink: {error}"),
+        }
     }
 
     /// A directory link: an NTFS junction on Windows, a symlink elsewhere (as edit.rs's link tests make them).
