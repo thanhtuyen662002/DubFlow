@@ -2540,8 +2540,26 @@ queue.subscribe((snapshot) => {
   const selected = snapshot.jobs.find((job) => job.id === snapshot.selected_job_id);
   if (selected && ["RUNNING", "RECOVERED", "WORKER_LOST"].includes(selected.status.state)) beginPolling(selected.id);
 });
+/**
+ * A job the page marked RUNNING ("starting") but never handed to the host: DubFlow closed or reloaded while it waited,
+ * for example on the one-time AI translation question (#934). The host has no status for it, so it goes back to
+ * QUEUED and can be started again; one the host did receive is polled as usual.
+ */
+async function restoreStartingJob(jobId: string): Promise<void> {
+  try {
+    if (await invoke<StatusResponse | null>("job_status", { jobId })) return beginPolling(jobId);
+  } catch {
+    return beginPolling(jobId);
+  }
+  const job = queue.getSnapshot().jobs.find((candidate) => candidate.id === jobId);
+  if (!job || job.status.state !== "RUNNING" || job.status.reason !== "starting") return;
+  queue.updateStatus(jobId, { ...job.status, state: "QUEUED", reason: "not_started",
+    message: "Chưa bắt đầu xử lý: DubFlow đã đóng trước khi bắt đầu. Bấm Bắt đầu để chạy lại." });
+  stopPolling(jobId);
+}
 for (const job of queue.getSnapshot().jobs) {
-  if (!["QUEUED", "COMPLETED", "FAILED"].includes(job.status.state)) beginPolling(job.id);
+  if (job.status.state === "RUNNING" && job.status.reason === "starting") void restoreStartingJob(job.id);
+  else if (!["QUEUED", "COMPLETED", "FAILED"].includes(job.status.state)) beginPolling(job.id);
 }
 
 sourceLanguageSelect.addEventListener("change", () => {

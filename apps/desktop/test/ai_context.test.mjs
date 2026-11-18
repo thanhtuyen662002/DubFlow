@@ -310,5 +310,23 @@ const none = { saved: () => null, options: () => ({}) };
   });
 }
 
+// 9. A job left RUNNING ("starting") while the question waited, then DubFlow closed: on the next launch it goes back to
+// QUEUED unless the host did receive it (then it is polled), so it is never stuck. And the media picker, the other
+// dialog on .confirm-backdrop, takes Esc only when it is on top, so one Esc never also answers the question.
+{
+  const strip = (path) => readFileSync(new URL(`../src/${path}`, import.meta.url), "utf8").replace(/\r\n/g, "\n")
+    .replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  const main = strip("main.ts");
+  assert.match(main, /if \(job\.status\.state === "RUNNING" && job\.status\.reason === "starting"\) void restoreStartingJob\(job\.id\);\s*else if/);
+  const restore = main.slice(main.indexOf("async function restoreStartingJob"), main.indexOf("for (const job of queue.getSnapshot().jobs) {\n  if (job.status.state === \"RUNNING\""));
+  assert.match(restore, /if \(await invoke<StatusResponse \| null>\("job_status", \{ jobId \}\)\) return beginPolling\(jobId\);/);
+  assert.match(restore, /catch \{\s*return beginPolling\(jobId\);/, "a failed status read keeps the job polled, never re-queued");
+  assert.match(restore, /job\.status\.state !== "RUNNING" \|\| job\.status\.reason !== "starting"\) return;/);
+  assert.match(restore, /state: "QUEUED", reason: "not_started"/);
+  assert.ok(main.indexOf('reason: "starting"') < main.indexOf("await decideAiContext(claudeKey, \"start\")"), "the job is RUNNING while it waits, so no second start");
+  const picker = strip("features/media/picker.ts");
+  assert.match(picker, /if \(event\.key !== "Escape" \|\| !isTopmostDialog\(backdrop, document\.body\.children\)\) return;\s*event\.preventDefault\(\);\s*event\.stopImmediatePropagation\(\);/);
+}
+
 globalThis.fetch = realFetch;
 console.log("ai context ok");

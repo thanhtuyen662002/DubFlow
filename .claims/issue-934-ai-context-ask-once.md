@@ -1,7 +1,7 @@
 DUBFLOW_PR_V1
 Issue: #934
 Lease-Owner: Claude/issue-934-ai-context-ask-once
-Lease-Heartbeat: 2026-11-18T03:47:01Z
+Lease-Heartbeat: 2026-11-18T03:54:17Z
 Tested-Base-SHA: 0e84ab4aa9a972b6fe0f7f948f77915da0980825
 Conflict-Domains: desktop-ai-settings,desktop-edit-subtitles,desktop-shell-confirm
 Expected-Paths:
@@ -15,6 +15,7 @@ Expected-Paths:
 - apps/desktop/src/features/ai/translation_prefs.ts
 - apps/desktop/src/features/edit/subtitles_view.ts
 - apps/desktop/src/features/edit/view.ts
+- apps/desktop/src/features/media/picker.ts
 - apps/desktop/src/main.ts
 - apps/desktop/src/shell/confirm.ts
 - apps/desktop/test/ai_context.test.mjs
