@@ -5,6 +5,9 @@ name: PR Desktop Editor Windows
 # the Linux PR Integration job (#417). Read-only: no secrets, signing,
 # release, upload or publish step. The push trigger only bootstraps the lane
 # on its own task branch before the file exists on Main.
+# One bounded Linux job runs only the export check's Unix path-confinement
+# regressions (#935: races that only Linux lets happen, FIFOs, symlinks), which
+# the Windows job cannot run; it is not Linux evidence for anything else.
 on:
   push:
     branches: [agent/issue-417-desktop-editor-subtitles-ci]
@@ -251,3 +254,66 @@ jobs:
           if ($text -match '\.\.\. skipped') { throw 'Mastering planted-link tests skipped some cases' }
           if ($text -notmatch '(?m)^Ran 4 tests in ') { throw 'Expected 4 mastering planted-link tests (symlinks and junctions, the whole worker with a linked mastering folder included)' }
           Write-Host 'Mastering planted-link tests passed on Windows through the pinned FFmpeg: 4 (3 helper tests and 1 whole-worker run with a junction at the mastering folder), none skipped'
+
+  desktop-check-linux:
+    name: desktop-check-linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22.14.0"
+
+      - name: Record source and toolchain
+        run: |
+          head="$(git rev-parse HEAD)"
+          if [ "$head" != "$SOURCE_SHA" ]; then echo "Checked out $head, expected $SOURCE_SHA"; exit 1; fi
+          echo "Source SHA: $head"
+          echo "Runner: $ImageOS $ImageVersion ($(uname -sr))"
+          node --version
+          rustc --version
+
+      - name: Install the desktop host's Linux build libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
+
+      - name: Run the export check's Unix path-confinement regressions (#935)
+        run: |
+          set -o pipefail
+          npm ci --prefix apps/desktop
+          npm run build --prefix apps/desktop
+          # Tauri's context wants icons/icon.png on Linux; only icon.ico is tracked (Windows product).
+          # A plain 32x32 PNG made here, never committed.
+          python3 - <<'PNG'
+          import struct, zlib
+          def chunk(kind, data):
+              return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data) & 0xffffffff)
+          raw = b''.join(b'\x00' + b'\x00\x00\x00\xff' * 32 for _ in range(32))
+          png = b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', 32, 32, 8, 6, 0, 0, 0)) + chunk(b'IDAT', zlib.compress(raw)) + chunk(b'IEND', b'')
+          open('apps/desktop/src-tauri/icons/icon.png', 'wb').write(png)
+          PNG
+          log="$RUNNER_TEMP/export-check-linux.log"
+          cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --locked check::tests:: 2>&1 | tee "$log"
+          grep -Eq '^test result: ok\. [0-9]+ passed; 0 failed;' "$log" || { echo 'Export check test summary missing'; exit 1; }
+          # Each of these must really run and pass here: the Linux swap races (the swap is asserted to happen),
+          # the FIFO and symlink cases.
+          for name in \
+            lease_logs_and_measure_scripts_never_go_through_checks_swapped_mid_write \
+            plan_and_waiting_writes_never_go_through_checks_swapped_mid_write \
+            prune_never_removes_through_checks_swapped_mid_prune \
+            a_checks_folder_swapped_for_a_link_is_never_written_through \
+            planted_links_in_a_check_folder_are_never_written_through \
+            a_planted_check_json_is_never_read \
+            a_linked_checks_folder_is_never_read_through; do
+            grep -Eq "^test edit::check::tests::$name \.\.\. ok$" "$log" || { echo "Not run or not passed on Linux: $name"; exit 1; }
+          done
+          echo "Export check Unix path-confinement regressions passed on Linux: $(grep -Eo '^test result: ok\. [0-9]+ passed' "$log")"
