@@ -769,8 +769,15 @@ impl Sources {
     pub fn shutdown(&self) {
         if let Ok(mut guard) = self.service.lock() {
             if let Some(mut service) = guard.take() {
-                let _ = writeln!(service.stdin, "{}", json!({"command":"shutdown"}));
-                let _ = service.stdin.flush();
+                if self.ready.load(Ordering::SeqCst) {
+                    let _ = writeln!(service.stdin, "{}", json!({"command":"shutdown"}));
+                    let _ = service.stdin.flush();
+                } else {
+                    // Still checking the install (started with the app, #945): it reads no request until that check
+                    // ends, minutes on a cold disk, and has opened nothing yet. Waiting would keep a closed DubFlow
+                    // (and its single-instance claim) alive that long, so a reopen or a restart after an update fails.
+                    let _ = service.child.kill();
+                }
                 drop(service.stdin);
                 let _ = service.child.wait();
             }
@@ -1434,17 +1441,18 @@ mod tests {
     }
 
     /// A stand-in for `dubflow-supervisor source-serve`: says `source_ready` once `go` exists, then reads requests until
-    /// its stdin closes.
+    /// its stdin closes. It gives up after about a minute, so a failed test leaves nothing running.
     fn slow_service(dir: &Path) -> PathBuf {
         let go = dir.join("go");
         if cfg!(windows) {
             let script = dir.join("service.cmd");
-            fs::write(&script, format!("@echo off\r\n:wait\r\nif not exist \"{}\" (ping -n 1 -w 50 127.0.0.1 >nul & goto wait)\r\n\
+            fs::write(&script, format!("@echo off\r\nset n=0\r\n:wait\r\nset /a n+=1\r\nif %n% gtr 1200 exit /b 1\r\n\
+                if not exist \"{}\" (ping -n 1 -w 50 127.0.0.1 >nul & goto wait)\r\n\
                 echo {{\"event\":\"source_ready\",\"schema_version\":1,\"single_writer\":true}}\r\nfindstr \"^\" >nul\r\n", go.display())).unwrap();
             script
         } else {
             let script = dir.join("service.sh");
-            fs::write(&script, format!("#!/bin/sh\nwhile [ ! -f '{}' ]; do sleep 0.05; done\n\
+            fs::write(&script, format!("#!/bin/sh\nn=0\nwhile [ ! -f '{}' ]; do n=$((n+1)); [ $n -gt 1200 ] && exit 1; sleep 0.05; done\n\
                 echo '{{\"event\":\"source_ready\",\"schema_version\":1,\"single_writer\":true}}'\ncat >/dev/null\n", go.display())).unwrap();
             #[cfg(unix)]
             {
@@ -1476,6 +1484,7 @@ mod tests {
         fs::write(root.join("release-manifest.json"), "{}").unwrap();
         let service = slow_service(&dir);
         let sources = Arc::new(Sources::default());
+        let _stop = Stop(Arc::clone(&sources), dir.clone());
         sources.warm_up(&service, &root, &data).unwrap();
         let first = sources.fetch("https://www.bilibili.com/video/BV1ready01/".into(), None, &service, &root, &data).unwrap();
         assert_eq!(first.state, "preparing");
@@ -1489,6 +1498,37 @@ mod tests {
         assert_eq!((second.state.as_str(), second.detail.as_deref()), ("preparing", Some(STARTING)));
         sources.shutdown();
         wait_for("the stopped service", || !sources.ready.load(Ordering::SeqCst));
+    }
+
+    /// Ends a test's service and folder even when an assertion fails first.
+    struct Stop(Arc<Sources>, PathBuf);
+
+    impl Drop for Stop {
+        fn drop(&mut self) {
+            let _ = fs::write(self.1.join("go"), "");
+            self.0.shutdown();
+            let _ = fs::remove_dir_all(&self.1);
+        }
+    }
+
+    #[test]
+    fn closing_the_app_during_the_install_check_does_not_wait_for_it() {
+        // #945 review: the service started with the app reads nothing until its install check ends (minutes cold);
+        // closing DubFlow then must not wait for that check, or the closed app keeps its single-instance claim.
+        let dir = std::env::temp_dir().join(format!("dubflow-source-close-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
+        let (root, data) = (dir.join("root"), dir.join("data"));
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&data).unwrap();
+        fs::write(root.join("release-manifest.json"), "{}").unwrap();
+        let service = slow_service(&dir);
+        let sources = Arc::new(Sources::default());
+        let _stop = Stop(Arc::clone(&sources), dir.clone());
+        sources.warm_up(&service, &root, &data).unwrap();
+        thread::sleep(std::time::Duration::from_millis(300));
+        let started = std::time::Instant::now();
+        sources.shutdown();
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "closing waited {:?} for the install check", started.elapsed());
+        assert!(sources.service.lock().unwrap().is_none());
     }
 }
