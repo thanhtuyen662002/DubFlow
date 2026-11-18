@@ -1,10 +1,12 @@
 import { isLevel, levelText } from "./features/mastering/model.ts";
 import { renderDubbingQc } from "./features/mastering/qc_card.ts";
-import { convertFileSrc, invoke as tauriInvoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke as tauriInvoke, transformCallback } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { connectDesktopShell, type DesktopShellModel } from "./shell/desktop_shell.ts";
 import { confirmDialog } from "./shell/confirm.ts";
+import { askAlone, closeGuard, closeRequests, editorGuard, storageIds, unsavedPrompt, wireWindowClose, type EventBridge } from "./features/edit/close_guard.ts";
+import { windowTimers } from "./features/edit/autosave.ts";
 import { mountLayoutPanels, refitPanels, resetPanels } from "./shell/layout_panels.ts";
 import { mountListTools } from "./shell/list_tools.ts";
 import { mountNamedHeading, mountRenames } from "./shell/names.ts";
@@ -595,6 +597,23 @@ function renderPlayButton(): void {
   $("#player-time").textContent = editor.timeLabel() ?? `${duration(playerVideo.currentTime * 1000)} / ${duration(length * 1000)}`;
 }
 
+// Whether every window close goes through the editing draft check now (set where the window's close is wired, below);
+// without a window (the browser preview) there is nothing to guard.
+let windowCloseReady: () => Promise<boolean> = async () => true;
+let windowCloseNow: () => boolean = () => true;
+/** Whether DubFlow may quit now (the window close guard's answer); without a window there is nothing to guard. */
+let mayQuit: () => Promise<boolean> = async () => true;
+/**
+ * Installing an update or restarting quits at once (the host's app.exit sends no close request): the editing draft
+ * is written first, and a change that could not be saved is asked about, as for a close (Issue #929).
+ */
+async function quitInvoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  if ((command === "install_update" || command === "restart_app") && !(await mayQuit())) {
+    throw new Error("DubFlow ở lại để lưu bản nháp chỉnh sửa chưa lưu được; hãy thử lại sau.");
+  }
+  return invoke<T>(command, args);
+}
+
 // Edit mode (Cắt ghép, Chèn): the player previews the edit; the panel and timeline replace the list and details.
 const editor = mountEditor(invoke, {
   video: playerVideo,
@@ -669,6 +688,8 @@ const editor = mountEditor(invoke, {
     : previewInvoke<string>("thumbnail_save", { bytes: bytes.byteLength, folder, name, format }),
   openReview: () => void openReview(),
   cpuOnly: () => cpuOnly(),
+  closeGuarded: () => windowCloseReady(),
+  closeGuardedNow: () => windowCloseNow(),
   outputRoot: () => outputRoot(),
   // Back to the page the video was opened from: the Chỉnh sửa list, the queue or another page.
   left: () => {
@@ -2037,7 +2058,8 @@ function showView(view: View, highlight: View = view): void {
 }
 /** Go to a page; editing another page's video ends first (asking when something is not saved). */
 async function navigate(view: View): Promise<void> {
-  if (editor.target) {
+  // a video being opened again (a reload of the film) counts as open: leaving it goes through the editor's close
+  if (editor.target || editor.reopening) {
     // "Chỉnh sửa" shows the open edit; another page ends it first.
     if (view === "edit") return showView("queue", "edit");
     const origin = editOrigin;
@@ -2757,7 +2779,7 @@ void invoke<ReleaseInfo>("release_info")
   .catch(() => {
     $("#release-version").textContent = "development";
   })
-  .finally(() => mountUpdates(invoke, (version) => {
+  .finally(() => mountUpdates(quitInvoke, (version) => {
     // A found update also shows as a compact button in the header and a dot on Cài đặt.
     updateVersion = version;
     $("#header-update").hidden = version === null;
@@ -2998,8 +3020,39 @@ async function syncMaximized(): Promise<void> {
 }
 $("#window-minimize").addEventListener("click", () => void appWindow?.minimize());
 $("#window-maximize").addEventListener("click", () => void appWindow?.toggleMaximize());
-// A pending edit autosave is written first.
-$("#window-close").addEventListener("click", () => void editor.flush().finally(() => appWindow?.close()));
+// Closing (the × button, Alt+F4, the taskbar) writes the editing draft first; a change that could not be saved is
+// not lost without asking (Issue #929).
+if (appWindow) {
+  const mayClose = closeGuard({ before: () => editor.closing(), flush: () => editor.flush(),
+    ask: () => askAlone(() => confirmDialog(unsavedPrompt("close", false, editor.unsaved()))), timers: windowTimers });
+  mayQuit = mayClose;
+  // Tauri's event plugin by listener id, the commands its own listen and unlisten use: a reload finds and removes the
+  // close listener the page before it left (see closeRequests)
+  const events: EventBridge = {
+    listen: (event, label, handler) => tauriInvoke<number>("plugin:event|listen",
+      { event, target: { kind: "Window", label }, handler: transformCallback(handler) }),
+    unlisten: async (event, id) => {
+      await tauriInvoke("plugin:event|unlisten", { event, eventId: id });
+      // the page's side, as Tauri's unlisten does (nothing there for a listener of the page before a reload); the
+      // listener is gone either way
+      try {
+        (window as unknown as { __TAURI_EVENT_PLUGIN_INTERNALS__?: { unregisterListener(event: string, id: number): void } })
+          .__TAURI_EVENT_PLUGIN_INTERNALS__?.unregisterListener(event, id);
+      } catch {
+        // only a callback left in the page
+      }
+    },
+  };
+  const closable = { close: () => appWindow.close(), onCloseRequested: closeRequests(appWindow.label, events, storageIds(() => window.sessionStorage)) };
+  // a close that failed and could not put the guard back: Alt+F4 and the taskbar would close at once, so the open
+  // editor closes (its draft written first, or asked about) or, when the user stays, takes no input until the guard
+  // is back (tried again); no editor opens meanwhile
+  const held = editorGuard({ open: () => editor.target !== null || editor.reopening, close: () => editor.close(false),
+    hold: (on) => editor.hold(on), tell: showError });
+  const wiring = wireWindowClose(closable, $("#window-close"), mayClose, { timers: windowTimers, ...held });
+  windowCloseReady = () => wiring.ready();
+  windowCloseNow = () => wiring.now();
+}
 $("#app-header").addEventListener("mousedown", (event) => {
   if (!appWindow || event.button !== 0) return;
   if ((event.target as Element).closest("button, a, input, select, textarea, label, form")) return;
