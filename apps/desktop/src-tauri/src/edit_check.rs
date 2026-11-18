@@ -159,70 +159,86 @@ fn subtitle_frame(burns: &[&BurnSubtitles], framing: &Framing) -> Option<Subtitl
 
 /// The part of the export frame `reframe_filter`'s "fill" keeps, in export pixels, as FFmpeg computes it: `scale`
 /// with force_original_aspect_ratio=increase (`av_rescale` rounds to the nearest pixel), then `crop`'s centred offset,
-/// which it rounds down to an even pixel for yuv420p.
+/// which it rounds to an even pixel for yuv420p.
 fn fill_window(export: (u32, u32), out: (u32, u32)) -> (f64, f64, f64, f64) {
     let (ew, eh) = (u64::from(export.0.max(1)), u64::from(export.1.max(1)));
     let (ow, oh) = (u64::from(out.0.max(1)), u64::from(out.1.max(1)));
     let rescale = |a: u64, b: u64, c: u64| (a * b + c / 2) / c;
     let (sw, sh) = (rescale(oh, ew, eh).max(ow), rescale(ow, eh, ew).max(oh));
-    let (x, y) = ((sw - ow) / 2 & !1, (sh - oh) / 2 & !1);
+    // `crop` evaluates (in - out) / 2, rounds it half to even (lrint), then clears the odd bit.
+    let centre = |extra: u64| { let half = extra / 2; (if extra % 2 == 1 && half % 2 == 1 { half + 1 } else { half }) & !1 };
+    let (x, y) = (centre(sw - ow), centre(sh - oh));
     let (fx, fy) = (ew as f64 / sw as f64, eh as f64 / sh as f64);
     (x as f64 * fx, y as f64 * fy, (x + ow) as f64 * fx, (y + oh) as f64 * fy)
 }
 
-/// The first frame of a `fps` video that libass draws at or after `ms`: `burn_ass` writes times in centiseconds, and
-/// FFmpeg's subtitles filter asks for each frame at its time in whole milliseconds (rounded down).
-fn first_frame_at(ms: u64, fps: f64) -> u64 {
-    let fps = if fps.is_finite() && fps > 0.0 { fps } else { 30.0 };
-    let ms = (ms + 5) / 10 * 10;
-    let at = |frame: u64| (frame as f64 * 1000.0 / fps + 1e-6).floor() as u64;
-    let mut frame = (ms as f64 * fps / 1000.0).ceil() as u64;
-    while frame > 0 && at(frame - 1) >= ms {
-        frame -= 1;
-    }
-    while at(frame) < ms {
-        frame += 1;
-    }
-    frame
+/// A line's time as `burn_ass` writes it: `ass_time` rounds seconds to centiseconds in floating point.
+fn burn_ms(ms: u64) -> u64 {
+    ((ms as f64 / 1000.0) * 100.0).round() as u64 * 10
 }
 
-/// The burned lines on a shortened clock: each run of frames of the export (at `fps`) that shows the same lines
-/// becomes one second, in order, and every line covers the same runs as in the export; a line or an overlap no frame
-/// shows is left out, as libass never draws it there. libass then draws one frame per run with exactly that run's
-/// lines, which appear in the export's order, so lines shown together stack as libass stacks them there (a line keeps
-/// the place it took when it appeared). One script line per line: no growth with overlaps. Returns when each run
-/// starts in the export (ms), and for each layer its lines with their first and past-the-last run, in `burn_ass`'s
-/// order.
-fn stretches(burns: &[BurnSubtitles], fps: f64) -> (Vec<u64>, Vec<Vec<(usize, usize, &Cue)>>) {
-    let frames = |line: &Cue| (first_frame_at(line.start_ms, fps), first_frame_at(line.end_ms, fps));
-    let mut bounds: Vec<u64> = burns.iter().flat_map(|burn| burn.lines.iter()).map(frames).filter(|(first, end)| end > first)
+/// The burned lines on a shortened clock, from the exported video's own frame times (`frames`, in whole ms, sorted):
+/// libass draws a line on the frames whose time is within its [start, end) as `burn_ass` wrote them. Each run of
+/// frames showing the same lines becomes one second, in order, and every line covers the same runs as in the export;
+/// a line or an overlap no frame shows is left out, as libass never draws it. libass then draws one frame per run with
+/// exactly that run's lines, which appear in the export's order, so lines shown together stack as libass stacks them
+/// there (a line keeps the place it took when it appeared). One script line per line: no growth with overlaps.
+/// Returns when each run starts in the export (ms), and for each layer its lines with their first and past-the-last
+/// run, in `burn_ass`'s order.
+fn stretches<'a>(burns: &'a [BurnSubtitles], frames: &[u64]) -> (Vec<u64>, Vec<Vec<(usize, usize, &'a Cue)>>) {
+    let range = |line: &Cue| {
+        let (start, end) = (burn_ms(line.start_ms), burn_ms(line.end_ms));
+        (frames.partition_point(|&at| at < start) as u64, frames.partition_point(|&at| at < end) as u64)
+    };
+    let mut bounds: Vec<u64> = burns.iter().flat_map(|burn| burn.lines.iter()).map(range).filter(|(first, end)| end > first)
         .flat_map(|(first, end)| [first, end]).collect();
     bounds.sort_unstable();
     bounds.dedup();
     let index = |frame: u64| bounds.binary_search(&frame).unwrap_or(0);
     // How many lines are on screen in frames [bounds[k], bounds[k + 1]).
     let mut change = vec![0_i64; bounds.len() + 1];
-    for (first, end) in burns.iter().flat_map(|burn| burn.lines.iter()).map(frames).filter(|(first, end)| end > first) {
+    for (first, end) in burns.iter().flat_map(|burn| burn.lines.iter()).map(range).filter(|(first, end)| end > first) {
         change[index(first)] += 1;
         change[index(end)] -= 1;
     }
-    let fps = if fps.is_finite() && fps > 0.0 { fps } else { 30.0 };
     let (mut shown, mut slot, mut starts) = (0_i64, vec![usize::MAX; bounds.len()], Vec::new());
     for (k, bound) in bounds.iter().enumerate() {
         shown += change[k];
         if shown > 0 {
             slot[k] = starts.len();
-            starts.push((*bound as f64 * 1000.0 / fps).floor() as u64);
+            starts.push(frames.get(*bound as usize).copied().unwrap_or_default());
         }
     }
     let layers = burns.iter().map(|burn| {
-        let mut lines: Vec<(u64, u64, &Cue)> = burn.lines.iter().map(|line| { let (first, end) = frames(line); (first, end, line) })
+        let mut lines: Vec<(u64, u64, &Cue)> = burn.lines.iter().map(|line| { let (first, end) = range(line); (first, end, line) })
             .filter(|(first, end, _)| end > first).collect();
         lines.sort_by_key(|(_, _, line)| (line.start_ms, line.end_ms));
         // a line's own runs are all on screen, so they are consecutive seconds
         lines.into_iter().map(|(first, end, line)| (slot[index(first)], slot[index(end) - 1] + 1, line)).collect()
     }).collect();
     (starts, layers)
+}
+
+/// The exported video's frame times in whole ms, sorted, read by ffprobe from its packets (no decoding), tracked by
+/// `running`. FFmpeg's subtitles filter drew each frame at its time in ms, rounded down.
+fn frame_times(ffprobe: &Path, video: &Path, running: &Running) -> Option<Vec<u64>> {
+    use std::io::Read;
+    let mut command = Command::new(ffprobe);
+    command.args(["-v", "error", "-select_streams", "v:0", "-show_entries", "packet=pts_time", "-of", "csv=p=0"]).arg(video)
+        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    let (stdout, id) = spawn_tracked(command, running).ok()?;
+    let mut text = String::new();
+    if let Some(stdout) = stdout {
+        // About 12 bytes a frame: six hours at 60 fps.
+        let _ = stdout.take(64 * 1024 * 1024).read_to_string(&mut text);
+    }
+    if !wait_tracked(running, id) {
+        return None;
+    }
+    let mut times: Vec<u64> = text.lines().filter_map(|line| line.trim().trim_end_matches(',').parse::<f64>().ok())
+        .filter(|seconds| seconds.is_finite() && *seconds >= 0.0).map(|seconds| (seconds * 1e6).round() as u64 / 1000).collect();
+    times.sort_unstable();
+    (!times.is_empty()).then_some(times)
 }
 
 /// `bbox`'s log: for each frame where something was drawn, its frame number and the drawn area (x0, y0, x1, y1,
@@ -288,11 +304,14 @@ fn fit_of(frame: &SubtitleFrame, starts: &[u64], boxes: &HashMap<usize, (i64, i6
 const EDGE: &str = "chữ vượt ra ngoài khung hình";
 
 /// Where libass draws the burned lines: the export's own layers painted white (`measure_ass`) on a black frame of
-/// the export's size, one frame per stretch (`stretches`), and FFmpeg's `bbox` around what was drawn. Reads no part
-/// of the video.
-fn measure_subtitles(work: &Path, ffmpeg: &Path, frame: &SubtitleFrame, fps: f64, dir: &Path, running: &Running) -> SubtitleFit {
+/// the export's size, one frame per stretch (`stretches`, on the video's own frame times), and FFmpeg's `bbox`
+/// around what was drawn. Never decodes or changes the video.
+fn measure_subtitles(work: &Path, ffmpeg: &Path, frame: &SubtitleFrame, video: &Path, dir: &Path, running: &Running) -> SubtitleFit {
     let unmeasured = |why: String| SubtitleFit { ok: None, detail: format!("chưa đo được phụ đề: {why}"), at_ms: Vec::new() };
-    let (starts, layers) = stretches(&frame.burns, fps);
+    let Some(frames) = frame_times(&ffprobe_beside(ffmpeg), video, running) else {
+        return unmeasured("không đọc được thời điểm các khung hình".into());
+    };
+    let (starts, layers) = stretches(&frame.burns, &frames);
     if starts.is_empty() {
         return SubtitleFit { ok: None, detail: "không câu phụ đề nào hiện đủ một khung hình".into(), at_ms: Vec::new() };
     }
@@ -347,10 +366,15 @@ fn fresh_file(work: &Path, dir: &Path, name: &str) -> Option<fs::File> {
 fn run_logged(ffmpeg: &Path, args: Vec<OsString>, work: &Path, dir: &Path, name: &str, limit: u64, running: &Running,
               mut line: impl FnMut(&str)) -> (Result<(), String>, String) {
     use std::io::{Read, Seek};
-    let mut log = fresh_file(work, dir, name);
-    let stderr = log.as_ref().and_then(|file| file.try_clone().ok()).map_or_else(Stdio::null, Stdio::from);
+    // Without its log FFmpeg's findings would be lost and the pass would look clean: then it does not run.
+    let Some(mut log) = fresh_file(work, dir, name) else {
+        return (Err(fail("Không tạo được nhật ký kiểm tra")), String::new());
+    };
+    let Ok(stderr) = log.try_clone() else {
+        return (Err(fail("Không tạo được nhật ký kiểm tra")), String::new());
+    };
     let mut command = Command::new(ffmpeg);
-    command.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(stderr);
+    command.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::from(stderr));
     let Ok((stdout, id)) = spawn_tracked(command, running) else {
         return (Err(fail("Không chạy được FFmpeg")), String::new());
     };
@@ -359,10 +383,8 @@ fn run_logged(ffmpeg: &Path, args: Vec<OsString>, work: &Path, dir: &Path, name:
     }
     let ok = wait_tracked(running, id);
     let mut bytes = Vec::new();
-    if let Some(file) = log.as_mut() {
-        if file.rewind().is_ok() {
-            let _ = file.take(limit).read_to_end(&mut bytes);
-        }
+    if log.rewind().is_ok() {
+        let _ = (&mut log).take(limit).read_to_end(&mut bytes);
     }
     let text = String::from_utf8_lossy(&bytes).into_owned();
     let last = || text.lines().rev().find(|line| !line.trim().is_empty()).map(|line| line.trim().chars().take(240).collect::<String>());
@@ -691,13 +713,8 @@ pub(super) fn run(work: &Path, ffmpeg: &Path, plan: Plan) {
     if !unlinked(work) || plain_folder(&work.join(CHECKS_DIR)).is_err() || plain_folder(&dir).is_err() {
         return;
     }
-    // Its own lease: a new export of the same video is never refused because of a check. `work_lease` opens "lease"
-    // without truncating or writing it; a link put at that name is removed first, so no file elsewhere is held.
-    let lease_path = dir.join("lease");
-    if fs::symlink_metadata(&lease_path).is_ok_and(|metadata| is_link(&metadata)) {
-        let _ = fs::remove_file(&lease_path).or_else(|_| fs::remove_dir(&lease_path));
-    }
-    let Ok(lease) = crate::work_lease::take(&dir, BUSY_CHECK) else { return };
+    // Its own lease: a new export of the same video is never refused because of a check.
+    let Some(lease) = own_lease(work, &dir) else { return };
     let running = Arc::new(Running { children: Mutex::new(Vec::new()), cancelled: AtomicBool::new(false) });
     if !register(&CHECKING, &CLOSING, &dir, &running) {
         return; // DubFlow is closing
@@ -715,12 +732,38 @@ pub(super) fn run(work: &Path, ffmpeg: &Path, plan: Plan) {
         Turn::Full => ExportCheck { error: Some(format!("bỏ qua vì đã có {MAX_WAITING} video khác đang chờ kiểm tra")),
             ..ExportCheck::new(&plan.video, "UNAVAILABLE") },
     };
+    // Stopped because DubFlow is closing, not by Dừng kiểm tra: said as such.
+    let report = if report.state == "STOPPED" && CLOSING.load(Ordering::SeqCst) { ExportCheck::new(&plan.video, "INTERRUPTED") } else { report };
     save(work, &dir, &report);
     if let Ok(mut checking) = CHECKING.lock() {
         checking.remove(&dir);
     }
     drop(lease);
     prune(work);
+}
+
+/// The check folder's lease. `work_lease` opens "lease" without truncating or writing it, and on Windows holds it
+/// with no sharing. Whatever is at that name is removed first (a link, or another name of a file elsewhere, which only
+/// loses this name) and a new empty file made with `create_new`, so the lease is always the check's own file and no
+/// file elsewhere is ever held. A lease another window holds cannot be removed on Windows, and `take` then reports it
+/// busy.
+fn own_lease(work: &Path, dir: &Path) -> Option<fs::File> {
+    if !(unlinked(work) && plain(dir)) {
+        return None;
+    }
+    let path = dir.join("lease");
+    if let Ok(metadata) = fs::symlink_metadata(&path) {
+        if metadata.is_dir() && !is_link(&metadata) {
+            return None;
+        }
+        let _ = fs::remove_file(&path).or_else(|_| fs::remove_dir(&path));
+    }
+    let _ = fs::OpenOptions::new().write(true).create_new(true).open(&path);
+    // Only our own plain file is ever taken.
+    if !fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.is_file() && !is_link(&metadata)) {
+        return None;
+    }
+    crate::work_lease::take(dir, BUSY_CHECK).ok()
 }
 
 /// Put `running` in `checking` under `dir`, unless DubFlow is `closing` (then false).
@@ -833,7 +876,7 @@ fn check_once(work: &Path, ffmpeg: &Path, plan: &Plan, dir: &Path, running: &Run
     let log = read_log(&text, decoded_end);
     let pass = Pass { finished: result.is_ok(), decoded_end, last_line: result.err().unwrap_or_default() };
     let subtitles = match &plan.subtitles {
-        Some(frame) => measure_subtitles(work, ffmpeg, frame, fps, dir, running),
+        Some(frame) => measure_subtitles(work, ffmpeg, frame, &plan.video, dir, running),
         None => SubtitleFit { ok: None, detail: "không có phụ đề in vào hình".into(), at_ms: Vec::new() },
     };
     if running.cancelled.load(Ordering::SeqCst) {
@@ -926,7 +969,7 @@ pub(super) fn attach(work: &Path, exports: &mut [Value]) {
         // The lease file is only made in `work/checks/<key>` while all three are plain folders.
         if value["state"] == "RUNNING" && !ours(&dir) && unlinked(work) && plain(&work.join(CHECKS_DIR)) {
             // A free lease means no window is checking: the app closed mid-check.
-            if let Ok(lease) = crate::work_lease::take(&dir, BUSY_CHECK) {
+            if let Some(lease) = own_lease(work, &dir) {
                 value = settle(work, &dir, &video).unwrap_or(value);
                 drop(lease);
             }
@@ -1133,7 +1176,7 @@ mod tests {
         let first = BurnSubtitles { style: style(json!({})), lines: vec![cue(4_000, 6_000, "B"), cue(0, 10_000, "A"), cue(12_000, 13_000, "C")] };
         let second = BurnSubtitles { style: style(json!({})), lines: vec![cue(5_000, 7_000, "x")] };
         let burns = [first, second];
-        let (starts, layers) = stretches(&burns, 25.0);
+        let (starts, layers) = stretches(&burns, &grid(25.0, 15.0));
         // A | A B | A B x | A x | A | (nothing: left out) | C
         assert_eq!(starts, [0, 4_000, 5_000, 6_000, 7_000, 12_000]);
         let spans = |layer: &Vec<(usize, usize, &Cue)>| layer.iter().map(|(first, last, line)| (*first, *last, line.text.clone())).collect::<Vec<_>>();
@@ -1152,37 +1195,54 @@ mod tests {
         assert!(clear.contains(",&HFFFFFFFF,-1,"), "{clear}");
         // 2 000 lines that all run to the end (a broken .srt): one script line each, at most one stretch per frame
         let piled = BurnSubtitles { style: style(json!({})), lines: (0..2_000).map(|index| cue(index * 10, 60_000, "x")).collect() };
-        let (starts, layers) = stretches(std::slice::from_ref(&piled), 25.0);
+        let (starts, layers) = stretches(std::slice::from_ref(&piled), &grid(25.0, 70.0));
         assert_eq!((starts.len(), layers[0].len()), (501, 2_000), "20 s of starts at 25 fps");
         assert!(layers[0].iter().all(|(_, last, _)| *last == 501));
         assert_eq!(measure_ass(&piled.style, &layers[0]).matches("Dialogue:").count(), 2_000);
     }
 
-    /// Only what a frame of the export shows is measured together (recheck 6): times are centiseconds in the burn,
-    /// and an overlap shorter than a frame is never drawn.
+    /// Frame times of a constant-rate video, as FFmpeg's subtitles filter sees them (whole ms, rounded down).
+    fn grid(fps: f64, seconds: f64) -> Vec<u64> {
+        (0..(fps * seconds) as u64).map(|frame| (frame as f64 * 1000.0 / fps + 1e-6).floor() as u64).collect()
+    }
+
+    /// Only what a frame of the export shows is measured together (rechecks 6 and 7): times as `burn_ass` writes
+    /// them, on the video's own frame times.
     #[test]
     fn stretches_follow_the_frames_libass_draws() {
-        // frames every 40 ms; 41 ms is written 0:00:00.04, 45 ms 0:00:00.05
-        assert_eq!([0, 39, 40, 41, 45].map(|ms| first_frame_at(ms, 25.0)), [0, 1, 1, 1, 2]);
-        assert_eq!(first_frame_at(1_004, 25.0), 25, "1.004 s is written 0:00:01.00");
-        assert_eq!(first_frame_at(1_005, 25.0), 26, "1.005 s is written 0:00:01.01");
-        // 29.97 fps: frame 30 is at 1001 ms
-        assert_eq!((first_frame_at(1_000, 30_000.0 / 1001.0), first_frame_at(1_001, 30_000.0 / 1001.0)), (30, 30));
+        // the times burn_ass writes, floating point included
+        for ms in (0..20_000_u64).chain([1_005, 3_725_250]) {
+            let written = ass_time(ms as f64 / 1000.0);
+            let (clock, cs) = written.rsplit_once('.').unwrap();
+            let seconds: Vec<u64> = clock.split(':').map(|part| part.parse().unwrap()).collect();
+            let back = ((seconds[0] * 60 + seconds[1]) * 60 + seconds[2]) * 1000 + cs.parse::<u64>().unwrap() * 10;
+            assert_eq!(burn_ms(ms), back, "{ms} ms is written {written}");
+        }
+        assert_eq!(burn_ms(1_005), 1_000, "1.005 s is written 0:00:01.00 (100.49999… cs)");
         let lines = |list: Vec<Cue>| BurnSubtitles { style: style(json!({})), lines: list };
+        let pairs = |layer: &Vec<(usize, usize, &Cue)>| layer.iter().map(|(first, last, _)| (*first, *last)).collect::<Vec<_>>();
+        let frames = grid(25.0, 10.0);
         // 3 ms of overlap, the same centisecond: never on screen together
         let burns = [lines(vec![cue(0, 1_004, "A"), cue(1_001, 3_000, "B")])];
-        let (starts, layers) = stretches(&burns, 25.0);
-        assert_eq!(starts, [0, 1_000]);
-        assert_eq!(layers[0].iter().map(|(first, last, _)| (*first, *last)).collect::<Vec<_>>(), [(0, 1), (1, 2)]);
+        let (starts, layers) = stretches(&burns, &frames);
+        assert_eq!((starts, pairs(&layers[0])), (vec![0, 1_000], vec![(0, 1), (1, 2)]));
         // 10 ms of overlap between two frames at 25 fps: the same
         let burns = [lines(vec![cue(0, 4_000, "A"), cue(3_990, 7_000, "B")])];
-        let (starts, layers) = stretches(&burns, 25.0);
-        assert_eq!(starts, [0, 4_000]);
-        assert_eq!(layers[0].iter().map(|(first, last, _)| (*first, *last)).collect::<Vec<_>>(), [(0, 1), (1, 2)]);
+        let (starts, layers) = stretches(&burns, &frames);
+        assert_eq!((starts, pairs(&layers[0])), (vec![0, 4_000], vec![(0, 1), (1, 2)]));
+        // B written 0:00:00.28 starts on the frame at 280 ms, where A still shows: measured together
+        let burns = [lines(vec![cue(0, 300, "A"), cue(285, 1_000, "B")])];
+        let (starts, layers) = stretches(&burns, &frames);
+        assert_eq!((starts, pairs(&layers[0])), (vec![0, 280, 320], vec![(0, 2), (1, 3)]));
         // a line shorter than a frame is never drawn, so never measured
         let burns = [lines(vec![cue(1_010, 1_030, "flash"), cue(2_000, 3_000, "C")])];
-        let (starts, layers) = stretches(&burns, 25.0);
+        let (starts, layers) = stretches(&burns, &frames);
         assert_eq!((starts, layers[0].len()), (vec![2_000], 1));
+        // after a cut the frames drift off any fixed rate: the video's own times decide (frame at 11 380 ms)
+        let drifted = [11_344, 11_377, 11_380, 11_413, 11_447];
+        let burns = [lines(vec![cue(11_000, 11_390, "A"), cue(11_380, 12_000, "B")])];
+        let (starts, layers) = stretches(&burns, &drifted);
+        assert_eq!((starts, pairs(&layers[0])), (vec![11_344, 11_380, 11_413], vec![(0, 2), (1, 3)]));
     }
 
     #[test]
@@ -1270,10 +1330,17 @@ mod tests {
         let folder = work.join(CHECKS_DIR).join("00000000000000000000");
         fs::create_dir_all(&folder).unwrap();
         let running = Running { children: Mutex::new(Vec::new()), cancelled: AtomicBool::new(false) };
+        // the export whose frame times the measure follows: 12 s at 25 fps
+        let clip = dir.join("clip.mp4");
+        let made = Command::new(&ffmpeg).args(["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=320x240:r=25:d=12", "-c:v", "mpeg4", "-q:v", "10"])
+            .arg(&clip).status().unwrap();
+        assert!(made.success());
         let measure = |lines: Vec<Cue>, style: SubtitleStyle, framing: &Framing| {
             let burn = BurnSubtitles { style, lines };
-            measure_subtitles(&work, &ffmpeg, &subtitle_frame(&[&burn], framing).unwrap(), 25.0, &folder, &running)
+            measure_subtitles(&work, &ffmpeg, &subtitle_frame(&[&burn], framing).unwrap(), &clip, &folder, &running)
         };
+        let frames = frame_times(&ffprobe_beside(&ffmpeg), &clip, &running).unwrap();
+        assert_eq!((frames.len(), frames[0], frames[1], frames[299]), (300, 0, 40, 11_960), "the clip's own frame times");
         let wide = Framing { export: (1920, 1080), out: (1920, 1080), fill: "black", aspect: None };
         let four_three = Framing { export: (1920, 1080), out: (1440, 1080), fill: "fill", aspect: Some("4:3") };
         // short lines at the bottom, one with a box: inside
@@ -1407,6 +1474,11 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             fs::write(&fake, "#!/bin/sh\necho boom >&2\nexit 1\n").unwrap();
             fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+            // and a fake FFprobe that knows only the frame times (one frame each 40 ms for 2 s)
+            let probe = dir.join("ffprobe");
+            let times: String = (0..50).map(|k| format!("{:.6}\\n", k as f64 * 0.04)).collect();
+            fs::write(&probe, format!("#!/bin/sh\ncase \"$*\" in *packet=pts_time*) printf '{times}';; *) exit 1;; esac\n")).unwrap();
+            fs::set_permissions(&probe, fs::Permissions::from_mode(0o755)).unwrap();
         }
         let line = burn(style(json!({})), LONG, 1_000);
         let framing = Framing { export: (640, 360), out: (640, 360), fill: "black", aspect: None };
