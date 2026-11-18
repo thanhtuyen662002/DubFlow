@@ -1,8 +1,8 @@
 DUBFLOW_PR_V1
 Issue: #935
 Lease-Owner: Claude/issue-935-export-check
-Lease-Heartbeat: 2026-11-18T04:11:29Z
-Tested-Base-SHA: 0e84ab4aa9a972b6fe0f7f948f77915da0980825
+Lease-Heartbeat: 2026-11-18T04:12:56Z
+Tested-Base-SHA: b3a786f96fc806d77f3602bc2e54ac0c70aeb1c3
 Conflict-Domains: desktop-edit-export,desktop-compilation
 Expected-Paths:
 - .claims/issue-935-export-check.md
