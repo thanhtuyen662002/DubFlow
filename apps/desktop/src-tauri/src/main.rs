@@ -2444,6 +2444,7 @@ fn main() {
         .expect("error while building DubFlow desktop host")
         .run(move |_, event| {
             if let tauri::RunEvent::Exit = event {
+                edit::stop_exports();
                 edit::stop_checks();
                 on_exit.shutdown();
             }

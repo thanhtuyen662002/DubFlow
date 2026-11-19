@@ -24,7 +24,7 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(windows)]
@@ -94,6 +94,8 @@ mod parts;
 mod check;
 
 static RUNNING: LazyLock<Mutex<HashMap<PathBuf, Arc<Running>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+/// Set when DubFlow closes (`stop_exports`): no export starts after that, and a stopped one is not "Đã hủy" (#971).
+static EXPORTS_CLOSING: AtomicBool = AtomicBool::new(false);
 
 /// One part of the output: `[start, end)` of media `media` (0 = the main video),
 /// with its look (Issue #518): crop, rotation, flips, a slow zoom, colour,
@@ -3341,10 +3343,9 @@ struct ExportJob {
 
 fn stop(running: &Running) {
     running.cancelled.store(true, Ordering::SeqCst);
-    if let Ok(mut children) = running.children.lock() {
-        for child in children.iter_mut() {
-            let _ = child.kill();
-        }
+    // A worker that panicked while holding the lock must not keep its FFmpeg alive (#971 review).
+    for child in running.children.lock().unwrap_or_else(PoisonError::into_inner).iter_mut() {
+        let _ = child.kill();
     }
 }
 
@@ -3404,9 +3405,8 @@ fn spawn_tracked(mut command: Command, running: &Running) -> std::io::Result<(Op
     let mut child = command.spawn()?;
     let stdout = child.stdout.take();
     let id = child.id();
-    if let Ok(mut children) = running.children.lock() {
-        children.push(child);
-    }
+    // Always registered, even behind a lock a panicked part worker poisoned, so `stop` can always reach it (#971).
+    running.children.lock().unwrap_or_else(PoisonError::into_inner).push(child);
     if running.cancelled.load(Ordering::SeqCst) {
         stop(running);
     }
@@ -3415,9 +3415,20 @@ fn spawn_tracked(mut command: Command, running: &Running) -> std::io::Result<(Op
 
 /// Wait for the child `spawn_tracked` started as `id`, taking it out of `running`: whether it exited 0.
 fn wait_tracked(running: &Running, id: u32) -> bool {
-    let child = running.children.lock().ok()
-        .and_then(|mut children| children.iter().position(|child| child.id() == id).map(|at| children.swap_remove(at)));
+    let child = {
+        let mut children = running.children.lock().unwrap_or_else(PoisonError::into_inner);
+        children.iter().position(|child| child.id() == id).map(|at| children.swap_remove(at))
+    };
     matches!(child.map(|mut child| child.wait()), Some(Ok(code)) if code.success())
+}
+
+/// A stopped export: its `.partial` goes. "Hủy" says "Đã hủy xuất video."; closing DubFlow (`closing`) is not "Hủy",
+/// so the status stays RUNNING and the next start reports "Lần xuất trước bị gián đoạn" (`recover_interrupted`, #971).
+fn finish_stopped(work: &Path, partial: &Path, closing: bool) {
+    let _ = fs::remove_file(partial);
+    if !closing {
+        write_status(work, "CANCELLED", 0.0, "Đã hủy xuất video.", None);
+    }
 }
 
 /// Render, then publish the video and subtitles under names that are free now.
@@ -3449,8 +3460,7 @@ fn run_export(job: &ExportJob, running: &Running) -> Option<(PathBuf, bool, Opti
         }
     }
     if running.cancelled.load(Ordering::SeqCst) || job.work.join("cancel").exists() {
-        let _ = fs::remove_file(&partial);
-        write_status(&job.work, "CANCELLED", 0.0, "Đã hủy xuất video.", None);
+        finish_stopped(&job.work, &partial, EXPORTS_CLOSING.load(Ordering::SeqCst));
         return None;
     }
     if !done {
@@ -3552,6 +3562,10 @@ fn start_export(request: ExportRequest) -> Result<Value, String> {
     let ffmpeg = media_tool("ffmpeg.exe")?;
     let name = base_name(&request.file_name);
     let mut running = RUNNING.lock().map_err(|_| fail("Hãy mở lại ứng dụng"))?;
+    // `stop_exports` sets this before it takes the lock: an export either is in RUNNING when DubFlow closes, or never starts.
+    if EXPORTS_CLOSING.load(Ordering::SeqCst) {
+        return Err(fail("DubFlow đang đóng"));
+    }
     // One render per video: a product run's videos each have their own work folder.
     let key = target.work.clone();
     if running.contains_key(&key) {
@@ -3664,10 +3678,10 @@ fn start_export(request: ExportRequest) -> Result<Value, String> {
     drop(running);
     std::thread::spawn(move || {
         let published = run_export(&job, &entry);
-        if let Ok(mut running) = RUNNING.lock() {
-            running.remove(&key);
-        }
+        // The lease goes before the registry entry: once an export is out of RUNNING its cleanup is done and its
+        // lease is free, which is what `stop_exports` waits for when DubFlow closes (#971).
         drop(lease);
+        leave(&RUNNING, &key);
         // Kiểm tra kỹ thuật: only once the video is published and the export's lease is free,
         // so "Xem", "Mở thư mục" and a new export never wait for it.
         if let (Some((video, srt, stamp, cuts)), Some(plan)) = (published, job.check) {
@@ -3692,20 +3706,26 @@ pub fn edit_status(output_path: String, kind: String) -> Result<Value, String> {
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok()).filter(Value::is_object);
     let ours = RUNNING.lock().is_ok_and(|running| running.contains_key(&work));
     if let Some(value) = status.as_mut().filter(|value| value["state"] == "RUNNING" && !ours) {
-        // A free lease means no window is rendering: the app closed mid-export.
-        if let Some(lease) = target.confined().ok().and_then(|()| crate::work_lease::take(&work, BUSY).ok()) {
-            if let Some(target) = value["output_path"].as_str() {
-                let _ = fs::remove_file(partial_of(Path::new(target)));
-            }
-            *value = json!({"schema_version": 1, "state": "FAILED", "percent": 0, "message": "Lần xuất trước bị gián đoạn. Hãy xuất lại.", "output_path": null});
-            write_status(&work, "FAILED", 0.0, "Lần xuất trước bị gián đoạn. Hãy xuất lại.", None);
-            drop(lease);
+        if target.confined().is_ok() {
+            recover_interrupted(&work, value);
         }
     }
     let mut exports: Vec<Value> = read_exports(&work).into_iter()
         .filter(|entry| entry["path"].as_str().is_some_and(|path| Path::new(path).is_file())).collect();
     check::attach(&work, &mut exports);
     Ok(json!({"status": status, "exports": exports}))
+}
+
+/// A RUNNING `status` of `work` that no window renders: a free lease means the app closed mid-export, so its
+/// `.partial` goes and it becomes "Lần xuất trước bị gián đoạn. Hãy xuất lại."; a held lease leaves it RUNNING.
+fn recover_interrupted(work: &Path, status: &mut Value) {
+    let Ok(lease) = crate::work_lease::take(work, BUSY) else { return };
+    if let Some(target) = status["output_path"].as_str() {
+        let _ = fs::remove_file(partial_of(Path::new(target)));
+    }
+    *status = json!({"schema_version": 1, "state": "FAILED", "percent": 0, "message": "Lần xuất trước bị gián đoạn. Hãy xuất lại.", "output_path": null});
+    write_status(work, "FAILED", 0.0, "Lần xuất trước bị gián đoạn. Hãy xuất lại.", None);
+    drop(lease);
 }
 
 #[tauri::command]
@@ -3719,6 +3739,47 @@ pub fn edit_cancel(output_path: String, kind: String) -> Result<(), String> {
         stop(&entry);
     }
     Ok(())
+}
+
+/// The export of `key` is over (its `.partial` and status handled, its lease dropped): out of `running`.
+fn leave(running: &Mutex<HashMap<PathBuf, Arc<Running>>>, key: &Path) {
+    running.lock().unwrap_or_else(PoisonError::into_inner).remove(key);
+}
+
+/// How long closing DubFlow waits for the stopped exports to finish their cleanup once their FFmpeg has ended.
+const CLOSE_CLEANUP_WAIT: Duration = Duration::from_secs(10);
+
+/// Kill every FFmpeg of every export in `running`, wait for each to end, then wait (up to `cleanup`)
+/// until each export has left `running`, i.e. removed its `.partial` and dropped its lease (`leave`). `closing` is
+/// set first, before the lock, so an export either is in `running` here or sees `closing` and never starts.
+/// A worker that has not left by then (a disk that hangs on the delete) is not waited for: the app closes anyway, its
+/// FFmpeg is already gone, and its `.partial` (if still there) is removed by the next start's `recover_interrupted`,
+/// which also reports the export as interrupted. The registry lock and FFmpeg waits are only ever held briefly.
+fn stop_exports_in(running: &Mutex<HashMap<PathBuf, Arc<Running>>>, closing: &AtomicBool, cleanup: Duration) {
+    closing.store(true, Ordering::SeqCst);
+    // A poisoned lock (a worker panicked holding it) still lists every export and every FFmpeg (#971 review).
+    let entries: Vec<Arc<Running>> = running.lock().unwrap_or_else(PoisonError::into_inner).values().cloned().collect();
+    for entry in &entries {
+        stop(entry);
+        for child in entry.children.lock().unwrap_or_else(PoisonError::into_inner).iter_mut() {
+            let _ = child.wait();
+        }
+    }
+    let deadline = Instant::now() + cleanup;
+    let pending = || {
+        let running = running.lock().unwrap_or_else(PoisonError::into_inner);
+        entries.iter().any(|entry| running.values().any(|other| Arc::ptr_eq(entry, other)))
+    };
+    while pending() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// DubFlow is closing: stop every export of this window (#971), so no export's FFmpeg outlives the app, keeps
+/// writing its `.partial` with no window, or writes it again beside the next export of the same video. Its
+/// status.json stays RUNNING and its lease ends with the app, so the next start says "Lần xuất trước bị gián đoạn".
+pub fn stop_exports() {
+    stop_exports_in(&RUNNING, &EXPORTS_CLOSING, CLOSE_CLEANUP_WAIT);
 }
 
 /// DubFlow is closing: stop every Kiểm tra kỹ thuật of this window, so no check's FFmpeg
@@ -4448,6 +4509,232 @@ pub async fn edit_proxy(app: tauri::AppHandle, path: String, start: bool) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A process that runs until it is killed.
+    fn export_child() -> Child {
+        #[cfg(windows)]
+        let mut command = {
+            let mut command = Command::new("ping");
+            command.args(["-n", "60", "127.0.0.1"]);
+            command
+        };
+        #[cfg(not(windows))]
+        let mut command = {
+            let mut command = Command::new("sleep");
+            command.arg("60");
+            command
+        };
+        command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap()
+    }
+
+    fn ended(entry: &Running) -> bool {
+        let mut children = entry.children.lock().unwrap_or_else(PoisonError::into_inner);
+        !children.is_empty() && children.iter_mut().all(|child| child.try_wait().unwrap().is_some())
+    }
+
+    /// #971: closing DubFlow kills every export's FFmpeg (one, or the parts side by side) and waits for it, and no
+    /// export starts after that.
+    #[test]
+    fn closing_stops_every_export_ffmpeg() {
+        // A registry of its own: the app's RUNNING and EXPORTS_CLOSING stay open for the other tests.
+        let (running, closing) = (Mutex::new(HashMap::new()), AtomicBool::new(false));
+        let single = Arc::new(Running { children: Mutex::new(vec![export_child()]), cancelled: AtomicBool::new(false) });
+        let parts = Arc::new(Running { children: Mutex::new(vec![export_child(), export_child()]), cancelled: AtomicBool::new(false) });
+        running.lock().unwrap().insert(PathBuf::from("work/a"), single.clone());
+        running.lock().unwrap().insert(PathBuf::from("work/b"), parts.clone());
+        let started = Instant::now();
+        // No worker here to leave the registry: only the FFmpeg part of the close is under test.
+        stop_exports_in(&running, &closing, Duration::ZERO);
+        assert!(started.elapsed() < Duration::from_secs(30), "the close does not wait for the exports to finish");
+        assert!(closing.load(Ordering::SeqCst), "no export starts after the close");
+        for entry in [&single, &parts] {
+            assert!(entry.cancelled.load(Ordering::SeqCst));
+            assert!(ended(entry), "the export's FFmpeg has ended when the close returns");
+        }
+        assert!(!EXPORTS_CLOSING.load(Ordering::SeqCst), "the app's own flag is untouched by the test");
+    }
+
+    /// #971 review: a worker that panicked while holding the registry lock or its export's lock does not let the
+    /// close skip that export: every tracked FFmpeg is still killed and waited for.
+    #[test]
+    fn closing_stops_exports_behind_poisoned_locks() {
+        let (running, closing) = (Arc::new(Mutex::new(HashMap::new())), AtomicBool::new(false));
+        let entry = Arc::new(Running { children: Mutex::new(vec![export_child()]), cancelled: AtomicBool::new(false) });
+        running.lock().unwrap().insert(PathBuf::from("work/poisoned"), entry.clone());
+        let (registry, held) = (running.clone(), entry.clone());
+        let panicked = std::thread::spawn(move || {
+            let _registry = registry.lock().unwrap();
+            let _children = held.children.lock().unwrap();
+            panic!("a worker panics holding both locks");
+        }).join();
+        assert!(panicked.is_err() && running.is_poisoned() && entry.children.is_poisoned());
+        stop_exports_in(&running, &closing, Duration::ZERO);
+        assert!(entry.cancelled.load(Ordering::SeqCst));
+        assert!(ended(&entry), "the FFmpeg behind a poisoned lock is killed, not left running");
+    }
+
+    /// #971 review: after a part worker panicked holding its export's lock, another part's FFmpeg is still
+    /// registered when it starts (so the close kills and reaps it), and still found and reaped when it ends.
+    #[test]
+    fn every_ffmpeg_is_tracked_behind_a_poisoned_lock() {
+        let entry = Arc::new(Running { children: Mutex::new(Vec::new()), cancelled: AtomicBool::new(false) });
+        let held = entry.clone();
+        let panicked = std::thread::spawn(move || {
+            let _children = held.children.lock().unwrap();
+            panic!("a part worker panics holding the lock");
+        }).join();
+        assert!(panicked.is_err() && entry.children.is_poisoned());
+        let long = || {
+            let mut command = if cfg!(windows) { Command::new("ping") } else { Command::new("sleep") };
+            if cfg!(windows) { command.args(["-n", "60", "127.0.0.1"]); } else { command.arg("60"); }
+            command.stderr(Stdio::null());
+            command
+        };
+        // Another part starts its FFmpeg: it is registered despite the poison.
+        let (_, first) = spawn_tracked(long(), &entry).unwrap();
+        assert_eq!(entry.children.lock().unwrap_or_else(PoisonError::into_inner).len(), 1, "the new FFmpeg is tracked");
+        // The close: every tracked FFmpeg is killed and reaped.
+        let (running, closing) = (Mutex::new(HashMap::new()), AtomicBool::new(false));
+        running.lock().unwrap().insert(PathBuf::from("work/parts"), entry.clone());
+        stop_exports_in(&running, &closing, Duration::ZERO);
+        assert!(ended(&entry), "the part's FFmpeg is killed, not orphaned");
+        // A part spawning after the close is stopped at once (cancelled is set), and is found when it is waited for.
+        let (_, late) = spawn_tracked(long(), &entry).unwrap();
+        assert!(!wait_tracked(&entry, late), "the late FFmpeg was killed, so it did not succeed");
+        assert!(!wait_tracked(&entry, first), "the first one ended by the kill");
+        assert!(entry.children.lock().unwrap_or_else(PoisonError::into_inner).is_empty(), "both were found and taken out");
+    }
+
+    /// #971 review: an export stopped by "Hủy" is "Đã hủy"; one stopped because DubFlow closed stays RUNNING, and
+    /// once the app's lease is gone the next start reports it as "Lần xuất trước bị gián đoạn" (never CANCELLED).
+    /// Both remove the `.partial`.
+    #[test]
+    fn a_close_is_reported_as_interrupted_and_a_cancel_as_cancelled() {
+        let base = std::env::temp_dir().join(format!("dubflow-971-stopped-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let read = |work: &Path| serde_json::from_slice::<Value>(&fs::read(work.join("status.json")).unwrap()).unwrap();
+        for (closing, name) in [(true, "close"), (false, "cancel")] {
+            let work = base.join(name);
+            fs::create_dir_all(&work).unwrap();
+            let target = base.join(format!("Phim {name} (sửa 1).mp4"));
+            let partial = partial_of(&target);
+            fs::write(&partial, b"half").unwrap();
+            write_status(&work, "RUNNING", 34.0, "Đang xuất video… 34%", Some(&target));
+            finish_stopped(&work, &partial, closing);
+            assert!(!partial.exists(), "{name}: the .partial goes");
+            let mut status = read(&work);
+            if closing {
+                assert_eq!(status["state"], "RUNNING", "closing DubFlow is not Hủy");
+                // While the closing app still holds the lease (Windows file sharing), it stays RUNNING.
+                if cfg!(windows) {
+                    let lease = crate::work_lease::take(&work, BUSY).unwrap();
+                    recover_interrupted(&work, &mut status);
+                    assert_eq!(status["state"], "RUNNING");
+                    drop(lease);
+                }
+                fs::write(&partial, b"left by a killed FFmpeg").unwrap();
+                recover_interrupted(&work, &mut status);
+                assert_eq!(status["state"], "FAILED");
+                assert_eq!(status["message"], "Lần xuất trước bị gián đoạn. Hãy xuất lại.");
+                assert_eq!(read(&work)["message"], "Lần xuất trước bị gián đoạn. Hãy xuất lại.", "and it is saved");
+                assert!(!partial.exists(), "the next start removes a .partial left behind");
+            } else {
+                assert_eq!(status["state"], "CANCELLED");
+                assert_eq!(status["message"], "Đã hủy xuất video.");
+            }
+        }
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// #971 review: the close returns only after each stopped export's worker has finished its cleanup. A worker
+    /// running its FFmpeg through `run_tracked` (here a process that never ends by itself), as `start_export`'s
+    /// does, is stopped by the close; when `stop_exports_in` returns its FFmpeg has ended, its `.partial` is gone,
+    /// its status is still RUNNING, its lease is free and it has left the registry.
+    #[test]
+    fn closing_waits_for_each_export_to_clean_up() {
+        let base = std::env::temp_dir().join(format!("dubflow-971-barrier-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let work = base.join("work");
+        fs::create_dir_all(&work).unwrap();
+        let target = base.join("Phim (sửa 1).mp4");
+        let partial = partial_of(&target);
+        write_status(&work, "RUNNING", 34.0, "Đang xuất video… 34%", Some(&target));
+        let (running, closing) = (Arc::new(Mutex::new(HashMap::new())), Arc::new(AtomicBool::new(false)));
+        let entry = Arc::new(Running { children: Mutex::new(Vec::new()), cancelled: AtomicBool::new(false) });
+        running.lock().unwrap().insert(work.clone(), entry.clone());
+        let lease = crate::work_lease::take(&work, BUSY).unwrap();
+        let (program, args): (&str, Vec<OsString>) = if cfg!(windows) { ("ping", vec!["-n".into(), "60".into(), "127.0.0.1".into()]) }
+            else { ("sleep", vec!["60".into()]) };
+        let worker = {
+            let (running, closing, entry, work, partial) = (running.clone(), closing.clone(), entry.clone(), work.clone(), partial.clone());
+            std::thread::spawn(move || {
+                fs::write(&partial, b"half").unwrap();
+                let ended = run_tracked(Path::new(program), args, &work, &work.join("ffmpeg.log"), &entry, |_| {});
+                assert!(ended.is_err(), "the FFmpeg was stopped, not finished");
+                // What run_export and start_export's worker do after a stopped FFmpeg (with a slow disk).
+                std::thread::sleep(Duration::from_millis(300));
+                finish_stopped(&work, &partial, closing.load(Ordering::SeqCst));
+                drop(lease);
+                leave(&running, &work);
+            })
+        };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while entry.children.lock().unwrap().is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(partial.exists() && !entry.children.lock().unwrap().is_empty(), "the export is running");
+        stop_exports_in(&running, &closing, CLOSE_CLEANUP_WAIT);
+        assert!(running.lock().unwrap().is_empty(), "the close waited for the export to leave the registry");
+        assert!(!partial.exists(), "no .partial is left when the close returns");
+        let status: Value = serde_json::from_slice(&fs::read(work.join("status.json")).unwrap()).unwrap();
+        assert_eq!(status["state"], "RUNNING", "closing is not Hủy: the next start says it was interrupted");
+        assert!(crate::work_lease::take(&work, BUSY).is_ok(), "the export's lease is free");
+        worker.join().unwrap();
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// #971 review: a worker that never finishes its cleanup does not hold the close: once its FFmpeg is gone,
+    /// `stop_exports_in` returns after `cleanup` with that export still listed, and what it left (status RUNNING,
+    /// a `.partial`) is recovered on the next start as "Lần xuất trước bị gián đoạn", with the `.partial` removed.
+    #[test]
+    fn a_stuck_cleanup_does_not_hold_the_close_and_is_recovered_next_start() {
+        let base = std::env::temp_dir().join(format!("dubflow-971-stuck-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let work = base.join("work");
+        fs::create_dir_all(&work).unwrap();
+        let target = base.join("Phim (sửa 1).mp4");
+        let partial = partial_of(&target);
+        fs::write(&partial, b"half").unwrap();
+        write_status(&work, "RUNNING", 34.0, "Đang xuất video… 34%", Some(&target));
+        let (running, closing) = (Mutex::new(HashMap::new()), AtomicBool::new(false));
+        let stuck = Arc::new(Running { children: Mutex::new(vec![export_child()]), cancelled: AtomicBool::new(false) });
+        running.lock().unwrap().insert(work.clone(), stuck.clone());
+        // The stuck worker still owns its export's lease until the old process exits.
+        let lease = crate::work_lease::take(&work, BUSY).unwrap();
+        let started = Instant::now();
+        stop_exports_in(&running, &closing, Duration::from_millis(200));
+        let took = started.elapsed();
+        assert!(took >= Duration::from_millis(200) && took < Duration::from_secs(5), "bounded: {took:?}");
+        assert!(ended(&stuck), "its FFmpeg is gone even though its cleanup never ran");
+        assert_eq!(running.lock().unwrap().len(), 1, "the close returned with the stuck export still listed");
+        assert!(partial.exists(), "its .partial may be left when the close returns");
+        let mut status: Value = serde_json::from_slice(&fs::read(work.join("status.json")).unwrap()).unwrap();
+        // While the worker's lease is held (Windows file sharing), recovery touches nothing: no live export's output
+        // is ever marked interrupted or deleted.
+        if cfg!(windows) {
+            recover_interrupted(&work, &mut status);
+            assert_eq!(status["state"], "RUNNING");
+            assert!(partial.exists());
+            let saved: Value = serde_json::from_slice(&fs::read(work.join("status.json")).unwrap()).unwrap();
+            assert_eq!(saved["state"], "RUNNING");
+        }
+        // The old process exits (its lease goes); the next start finds it interrupted and the .partial goes.
+        drop(lease);
+        recover_interrupted(&work, &mut status);
+        assert_eq!(status["message"], "Lần xuất trước bị gián đoạn. Hãy xuất lại.");
+        assert!(!partial.exists());
+        fs::remove_dir_all(&base).unwrap();
+    }
 
     // Phase 9A: a draft the app cannot read (empty after a power cut, a newer DubFlow's) is set aside, never replaced
     #[test]
