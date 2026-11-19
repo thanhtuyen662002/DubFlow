@@ -310,6 +310,11 @@ fn scan_id(url: &str) -> String {
 fn human_error(code: &str, provider: &str) -> String {
     match code {
         "AUTH_REQUIRED" | "PRIVATE" if provider == "douyin" => "Douyin yêu cầu đăng nhập để tải video này. Bấm “Đăng nhập Douyin”, đăng nhập rồi thử lại.".into(),
+        // A direct link or any other site is fetched without a sign-in, so a refusal (HTTP 401/403) is the site turning
+        // the downloader away, not proof that the video is private: rc29, a public-domain Wikimedia file (Issue #964).
+        "AUTH_REQUIRED" | "PRIVATE" if provider == "generic" => "Trang này từ chối cho DubFlow tải tự động (có thể trang chặn trình \
+            tải, cần đăng nhập, hoặc video riêng tư). Hãy mở link trong trình duyệt để kiểm tra; nếu tải được bằng trình \
+            duyệt, lưu file về máy rồi dùng “Thêm video từ máy”.".into(),
         "AUTH_REQUIRED" | "PRIVATE" => "Video yêu cầu đăng nhập hoặc là video riêng tư.".into(),
         "RATE_LIMITED" => "Trang nguồn đang giới hạn truy cập. Hãy thử lại sau ít phút.".into(),
         "NOT_FOUND" => "Không tìm thấy video (có thể đã bị xóa).".into(),
@@ -1250,6 +1255,20 @@ mod tests {
         sources.on_event(&json!({"event":"source_error", "scan_id":"d", "code":"AUTH_REQUIRED"}));
         let status = sources.status("d").unwrap();
         assert_eq!((status.state.as_str(), status.error_code.as_deref()), ("failed", Some("AUTH_REQUIRED")));
+    }
+
+    #[test]
+    fn a_refused_direct_link_is_not_called_private() {
+        // Issue #964: a public file whose host turns the downloader away (HTTP 403 → AUTH_REQUIRED) on a direct link
+        let generic = human_error("AUTH_REQUIRED", "generic");
+        assert!(generic.contains("từ chối cho DubFlow tải tự động") && generic.contains("trình duyệt") && generic.contains("Thêm video từ máy"), "{generic}");
+        assert!(!generic.starts_with("Video yêu cầu đăng nhập"), "{generic}");
+        assert!(!generic.contains("  "), "no run of spaces from the line breaks: {generic}");
+        assert_eq!(human_error("PRIVATE", "generic"), generic);
+        // the providers with a sign-in keep their messages
+        assert_eq!(human_error("AUTH_REQUIRED", "bilibili"), "Video yêu cầu đăng nhập hoặc là video riêng tư.");
+        assert!(human_error("AUTH_REQUIRED", "douyin").contains("Đăng nhập Douyin"));
+        assert!(human_error("RATE_LIMITED", "generic").contains("thử lại sau"));
     }
 
     #[test]
