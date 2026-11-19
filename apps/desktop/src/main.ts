@@ -51,7 +51,7 @@ import { pickFromMedia } from "./features/media/picker.ts";
 import { COVER_STORAGE_KEY, describeCoverStyle, normalizeCoverStyle, storedCoverStyle, type CoverMode, type CoverStyle } from "./features/edit/cover.ts";
 import { configureHostAi, createAiSession, isKeyError, PROVIDERS } from "./features/ai/provider.ts";
 import { loadPrefs, translationJobArgs } from "./features/ai/translation_prefs.ts";
-import { decideAiContext, setKeysClosed, type AiContext } from "./features/ai/ai_context.ts";
+import { decideAiContext, providerReady, setKeysClosed, type AiContext } from "./features/ai/ai_context.ts";
 import { glossaryArgs, resolveGuide } from "./features/ai/glossary.ts";
 import { mountGlossaryBooks, mountJobGlossary } from "./features/ai/glossary_view.ts";
 import { narrationTermsNote, rewriteAsNarration, type NarrationStyle, type NarrationTerms } from "./features/narration/ai.ts";
@@ -138,8 +138,10 @@ configureHostAi(invoke, (provider) => claudeKey.options(provider));
 /** Saved keys and model choices, and whether this run may use saved keys; a job started before they load waits for them. */
 const aiRestored = Promise.all([
   claudeKey.restore().catch(() => undefined),
-  // DUBFLOW_NO_SAVED_KEYS (a candidate or test run): no AI translation and no question about it, custom server included.
-  invoke<Record<string, unknown> | null>("ai_key_status").then((status) => setKeysClosed(status?.keysClosed === true), () => undefined),
+  // DUBFLOW_NO_SAVED_KEYS (a candidate or test run): no AI translation and no question about it, custom server included,
+  // except the run's own keyless loopback test endpoint (Issue #960).
+  invoke<Record<string, unknown> | null>("ai_key_status")
+    .then((status) => setKeysClosed(status?.keysClosed === true, status?.testEndpoint), () => undefined),
 ]).then(() => undefined);
 // The sound-effect pack and the user's sound folder (editor Âm thanh, Cài đặt).
 const sfxLibrary = createSfxLibrary(invoke);
@@ -2487,8 +2489,11 @@ $("#review-narrate").addEventListener("click", async () => {
   const provider = claudeKey.provider();
   const { name, company } = PROVIDERS[provider];
   const key = claudeKey.read();
-  if (!key) {
-    hint.textContent = `Chưa có khóa ${name}. Hãy lưu khóa trong “Cài đặt › Tài khoản” rồi thử lại.`;
+  // A custom server on this machine needs no key, only its address and model (Issue #960).
+  if (provider === "custom" ? !providerReady(claudeKey, provider) : !key) {
+    hint.textContent = provider === "custom"
+      ? "Chưa nhập địa chỉ và model của máy chủ AI riêng. Hãy nhập trong “Cài đặt › Tài khoản” rồi thử lại."
+      : `Chưa có khóa ${name}. Hãy lưu khóa trong “Cài đặt › Tài khoản” rồi thử lại.`;
     aiSettings.open();
     return;
   }

@@ -58,6 +58,40 @@ fn closed_by(value: Option<&str>) -> bool {
 
 const CLOSED: &str = "Bản chạy thử này không dùng khóa AI đã lưu (DUBFLOW_NO_SAVED_KEYS)";
 
+/// Read only while keys are closed (Issue #960), for a $0 check of the AI paths against a local mock: the one keyless
+/// OpenAI-compatible server on this machine, `http://127.0.0.1:<port>/…` or `http://[::1]:<port>/…`, that this run may
+/// call as the "custom" provider. Saved keys stay closed, no key is ever sent, and every other provider or address is
+/// refused as before. Any other value (another host, https, user info, a query) is ignored.
+pub(crate) const TEST_ENDPOINT_ENV: &str = "DUBFLOW_TEST_AI_ENDPOINT";
+
+/// The test endpoint for this run, if keys are closed and the variable names a loopback server.
+pub(crate) fn test_endpoint() -> Option<String> {
+    test_endpoint_from(keys_closed(), std::env::var(TEST_ENDPOINT_ENV).ok().as_deref())
+}
+
+fn test_endpoint_from(closed: bool, value: Option<&str>) -> Option<String> {
+    if !closed {
+        return None;
+    }
+    let value = value?.trim();
+    if value.len() > 200 || value.chars().any(|ch| ch.is_whitespace() || ch.is_control() || matches!(ch, '@' | '?' | '#' | '\\')) {
+        return None;
+    }
+    let rest = value.strip_prefix("http://")?;
+    let authority = rest.split('/').next().unwrap_or_default();
+    let port = authority.strip_prefix("127.0.0.1:").or_else(|| authority.strip_prefix("[::1]:"))?;
+    if port.is_empty() || !port.bytes().all(|byte| byte.is_ascii_digit()) || !matches!(port.parse::<u16>(), Ok(1..)) {
+        return None;
+    }
+    Some(value.trim_end_matches('/').to_owned())
+}
+
+/// Whether a closed run may make this call: only the "custom" provider at exactly the test endpoint, without a key.
+pub(crate) fn test_call_allowed(endpoint: Option<&str>, provider: &str, base_url: Option<&str>, with_key: bool) -> bool {
+    endpoint.is_some_and(|endpoint| provider == "custom" && !with_key
+        && base_url.map(|url| url.trim().trim_end_matches('/')) == Some(endpoint))
+}
+
 /// Where saved keys are kept: Windows Credential Manager, or a test's stand-in (so the closed mode is proved
 /// without touching the real user's entries).
 struct Store {
@@ -80,7 +114,7 @@ fn saved(target: &str) -> Result<Option<String>, String> {
     saved_in(keys_closed(), &WINDOWS, target)
 }
 
-fn status_in(closed: bool, from: &Store) -> Result<Value, String> {
+fn status_in(closed: bool, test: Option<&str>, from: &Store) -> Result<Value, String> {
     let mut status = serde_json::Map::new();
     for provider in PROVIDERS.iter().chain(VOICE_PROVIDERS.iter()).copied() {
         let key = saved_in(closed, from, &target(provider)?)?;
@@ -88,6 +122,8 @@ fn status_in(closed: bool, from: &Store) -> Result<Value, String> {
     }
     // So the webview neither asks about nor sends AI translation in such a run (a custom server needs no key).
     status.insert("keysClosed".to_owned(), json!(closed));
+    // The one keyless loopback server a closed run may still use (Issue #960), or null.
+    status.insert("testEndpoint".to_owned(), json!(test.filter(|_| closed)));
     Ok(Value::Object(status))
 }
 
@@ -220,7 +256,7 @@ mod store {
 /// Which providers have a saved key, masked to the last four characters.
 #[tauri::command]
 pub fn ai_key_status() -> Result<Value, String> {
-    status_in(keys_closed(), &WINDOWS)
+    status_in(keys_closed(), test_endpoint().as_deref(), &WINDOWS)
 }
 
 /// The saved key for one provider, for the webview's call to that provider.
@@ -279,12 +315,12 @@ pub(crate) fn job_key(provider: &str) -> Result<Option<String>, String> {
 /// or `{ok: false, code, message}`. The key goes through the environment.
 #[tauri::command]
 pub async fn ai_ask(request: Value, key: Option<String>) -> Result<Value, String> {
-    ask(request, key, keys_closed()).await
+    ask(request, key, keys_closed(), test_endpoint()).await
 }
 
 /// `ai_ask` with the closed mode given: while keys are closed to this run no provider process is started, also
-/// for a key the caller hands in.
-async fn ask(request: Value, key: Option<String>, closed: bool) -> Result<Value, String> {
+/// for a key the caller hands in, except a keyless call to the run's test endpoint (Issue #960).
+async fn ask(request: Value, key: Option<String>, closed: bool, test: Option<String>) -> Result<Value, String> {
     let provider = request.get("provider").and_then(Value::as_str).unwrap_or_default().to_owned();
     if !PROVIDERS.contains(&provider.as_str()) {
         return Err(fail("Nhà cung cấp AI không hợp lệ"));
@@ -292,7 +328,8 @@ async fn ask(request: Value, key: Option<String>, closed: bool) -> Result<Value,
     if !matches!(request.get("action").and_then(Value::as_str), Some("ask" | "models")) {
         return Err(fail("Yêu cầu AI không hợp lệ"));
     }
-    if closed {
+    let with_key = key.as_deref().is_some_and(|key| !key.trim().is_empty());
+    if closed && !test_call_allowed(test.as_deref(), &provider, request.get("base_url").and_then(Value::as_str), with_key) {
         return Err(fail(CLOSED));
     }
     let key = match key.map(|key| key.trim().to_owned()).filter(|key| !key.is_empty()) {
@@ -370,7 +407,7 @@ mod tests {
     fn closed_keys_are_never_asked_for_saved_or_removed() {
         // closed: every provider reads as "no key saved" and the store is not called once
         assert_eq!(saved_in(true, &STAND_IN, "DubFlow/ai-key/claude").unwrap(), None);
-        let status = status_in(true, &STAND_IN).unwrap();
+        let status = status_in(true, None, &STAND_IN).unwrap();
         assert!(PROVIDERS.iter().chain(VOICE_PROVIDERS.iter()).all(|provider| status[*provider].is_null()));
         assert_eq!(status["keysClosed"], json!(true));
         let refused = set_in(true, &STAND_IN, "claude", "stand-in-key-not-real-0042").unwrap_err();
@@ -379,8 +416,8 @@ mod tests {
         assert!(calls().is_empty(), "the store was touched while closed: {:?}", calls());
         // open: the same calls reach the store (so the test above proves the guard, not a broken stand-in)
         assert_eq!(saved_in(false, &STAND_IN, "DubFlow/ai-key/claude").unwrap().as_deref(), Some("stand-in-key-not-real-0042"));
-        assert_eq!(status_in(false, &STAND_IN).unwrap()["gemini"], "…0042");
-        assert_eq!(status_in(false, &STAND_IN).unwrap()["keysClosed"], json!(false));
+        assert_eq!(status_in(false, None, &STAND_IN).unwrap()["gemini"], "…0042");
+        assert_eq!(status_in(false, None, &STAND_IN).unwrap()["keysClosed"], json!(false));
         assert_eq!(set_in(false, &STAND_IN, "claude", "stand-in-key-not-real-0042").unwrap(), "…0042");
         delete_in(false, &STAND_IN, "vibi").unwrap();
         let seen = calls();
@@ -402,14 +439,58 @@ mod tests {
     #[test]
     fn closed_keys_start_no_provider_call_even_with_a_key_handed_in() {
         let request = json!({"provider": "deepseek", "action": "ask", "messages": []});
-        let refused = tauri::async_runtime::block_on(ask(request.clone(), Some("stand-in-key-not-real-0042".to_owned()), true))
+        let refused = tauri::async_runtime::block_on(ask(request.clone(), Some("stand-in-key-not-real-0042".to_owned()), true, None))
             .unwrap_err();
         assert!(refused.contains(NO_SAVED_KEYS_ENV), "{refused}");
         let models = json!({"provider": "openai", "action": "models"});
-        assert!(tauri::async_runtime::block_on(ask(models, None, true)).unwrap_err().contains(NO_SAVED_KEYS_ENV));
+        assert!(tauri::async_runtime::block_on(ask(models, None, true, None)).unwrap_err().contains(NO_SAVED_KEYS_ENV));
         // the request checks still come first: a bad request is named as such
-        let bad = tauri::async_runtime::block_on(ask(json!({"provider": "nobody", "action": "ask"}), None, true)).unwrap_err();
+        let bad = tauri::async_runtime::block_on(ask(json!({"provider": "nobody", "action": "ask"}), None, true, None)).unwrap_err();
         assert!(!bad.contains(NO_SAVED_KEYS_ENV), "{bad}");
+    }
+
+    #[test]
+    fn a_closed_run_reaches_only_its_keyless_loopback_test_endpoint() {
+        // Issue #960: the variable is read only while keys are closed, and only a plain http loopback address counts.
+        let mock = "http://127.0.0.1:8765/v1";
+        assert_eq!(test_endpoint_from(true, Some(" http://127.0.0.1:8765/v1/ ")).as_deref(), Some(mock));
+        assert_eq!(test_endpoint_from(true, Some("http://[::1]:8765/v1")).as_deref(), Some("http://[::1]:8765/v1"));
+        assert_eq!(test_endpoint_from(false, Some(mock)), None);
+        for refused in [None, Some(""), Some("http://localhost:8765/v1"), Some("https://127.0.0.1:8765/v1"), Some("http://127.0.0.1/v1"),
+            Some("http://127.0.0.1:0/v1"), Some("http://127.0.0.1:99999/v1"), Some("http://127.0.0.1:8765@api.openai.com/v1"),
+            Some("http://user@127.0.0.1:8765/v1"), Some("http://127.0.0.1:8765/v1?x=1"), Some("http://127.0.0.10:8765/v1"),
+            Some("http://127.0.0.1.example.com:8765/v1"), Some("http://10.0.0.5:8765/v1"), Some("http://api.deepseek.com/v1"),
+            Some("http://127.0.0.1:8765 /v1"), Some("http://127.0.0.1:8765\\v1")] {
+            assert_eq!(test_endpoint_from(true, refused), None, "{refused:?}");
+        }
+        // the status names it only while closed
+        let status = status_in(true, Some(mock), &STAND_IN).unwrap();
+        assert_eq!(status["testEndpoint"], json!(mock));
+        assert!(PROVIDERS.iter().all(|provider| status[*provider].is_null()));
+        assert_eq!(status_in(false, Some(mock), &STAND_IN).unwrap()["testEndpoint"], Value::Null);
+        assert_eq!(status_in(true, None, &STAND_IN).unwrap()["testEndpoint"], Value::Null);
+        // a call: only custom, only at exactly that address, only without a key
+        assert!(test_call_allowed(Some(mock), "custom", Some("http://127.0.0.1:8765/v1/"), false));
+        assert!(!test_call_allowed(None, "custom", Some(mock), false));
+        assert!(!test_call_allowed(Some(mock), "custom", Some(mock), true));
+        assert!(!test_call_allowed(Some(mock), "openai", Some(mock), false));
+        assert!(!test_call_allowed(Some(mock), "custom", Some("http://127.0.0.1:8766/v1"), false));
+        assert!(!test_call_allowed(Some(mock), "custom", None, false));
+        let to_mock = json!({"provider": "custom", "action": "models", "base_url": mock, "model": "mock"});
+        let ask_with = |request: &Value, key: Option<&str>, test: Option<&str>| tauri::async_runtime::block_on(
+            ask(request.clone(), key.map(str::to_owned), true, test.map(str::to_owned)));
+        // allowed: it goes past the closed check (and then fails here only because no DubFlow runtime is installed)
+        if let Err(error) = ask_with(&to_mock, None, Some(mock)) {
+            assert!(!error.contains(NO_SAVED_KEYS_ENV), "{error}");
+        }
+        for (request, key, test) in [
+            (to_mock.clone(), None, None),
+            (to_mock.clone(), Some("stand-in-key-not-real-0042"), Some(mock)),
+            (json!({"provider": "custom", "action": "ask", "base_url": "http://127.0.0.1:11434/v1"}), None, Some(mock)),
+            (json!({"provider": "deepseek", "action": "ask", "base_url": mock}), None, Some(mock)),
+        ] {
+            assert!(ask_with(&request, key, test).unwrap_err().contains(NO_SAVED_KEYS_ENV), "{request} {key:?} {test:?}");
+        }
     }
 
     #[test]

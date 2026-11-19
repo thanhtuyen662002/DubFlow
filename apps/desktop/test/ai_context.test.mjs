@@ -145,10 +145,41 @@ const asker = (answers) => {
   }
   assert.equal(calls.length, 0);
   assert.deepEqual([asked.writes, on.writes], [[], []]);
+  // Issue #960: a test endpoint given with keys open means nothing; an empty or non-string one is none
+  setKeysClosed(false, "http://localhost:1234/v1");
+  setKeysClosed(true, "");
+  assert.equal(await decideAiContext(customServer, "start", confirm, on), "off");
+  setKeysClosed(true, 42);
+  assert.equal(await decideAiContext(customServer, "start", confirm, on), "off");
+  assert.equal(calls.length, 0);
   setKeysClosed(false);
   assert.equal(await decideAiContext(customServer, "start", confirm, on), "on");
   assert.equal(await decideAiContext(customServer, "start", confirm, asked), "on");
   assert.equal(calls.length, 1);
+}
+{
+  // Issue #960: a closed run with a test endpoint (DUBFLOW_TEST_AI_ENDPOINT, a local mock) asks and uses only the
+  // custom provider at exactly that address; every other provider or address stays off, nothing kept for them.
+  const endpoint = "http://127.0.0.1:8765/v1";
+  const mock = fake("custom", null, { baseUrl: "http://127.0.0.1:8765/v1/", model: "mock" });
+  const elsewhere = fake("custom", null, { baseUrl: "http://127.0.0.1:11434/v1", model: "qwen2.5" });
+  setKeysClosed(true, endpoint);
+  const { calls, confirm } = asker([true, false]);
+  const kept = memory(), other = memory({ [AI_CONTEXT_KEY]: "on" }), plain = memory();
+  assert.equal(await decideAiContext(elsewhere, "start", confirm, other), "off");
+  assert.equal(await decideAiContext(deepseek, "start", confirm, other), "off");
+  assert.equal(await decideAiContext(fake("custom", null, { model: "mock" }), "start", confirm, other), "off");
+  assert.equal(calls.length, 0);
+  assert.equal(await decideAiContext(mock, "saved", confirm, kept), "on");
+  assert.equal(calls.length, 1);
+  assert.match(JSON.stringify(calls[0]), /máy chủ AI riêng/);
+  assert.deepEqual(kept.writes, [[AI_CONTEXT_KEY, "on"]]);
+  assert.equal(await decideAiContext(mock, "start", confirm, kept), "on");
+  assert.equal(calls.length, 1, "asked once");
+  assert.equal(await decideAiContext(mock, "start", confirm, plain), "off", "the second answer (Không) is kept as off");
+  assert.deepEqual(plain.writes, [[AI_CONTEXT_KEY, "off"]]);
+  assert.deepEqual(other.writes, []);
+  setKeysClosed(false);
 }
 {
   // Already decided, in either direction (an older "off" included): no question.
@@ -284,7 +315,16 @@ const none = { saved: () => null, options: () => ({}) };
     "...translationJobArgs(loadPrefs(), claudeKey, current.displayName, aiContext),",
   ], "startJob");
   assert.equal(startJob.match(/\baiContext\b/g).length, 3, "startJob: the answer is only declared (off), set from the question and passed on");
-  has(main, /const aiRestored = Promise\.all\(\[\s*claudeKey\.restore\(\)\.catch\(\(\) => undefined\),\s*invoke<Record<string, unknown> \| null>\("ai_key_status"\)\.then\(\(status\) => setKeysClosed\(status\?\.keysClosed === true\)/, "aiRestored");
+  has(main, /const aiRestored = Promise\.all\(\[\s*claudeKey\.restore\(\)\.catch\(\(\) => undefined\),\s*invoke<Record<string, unknown> \| null>\("ai_key_status"\)\s*\.then\(\(status\) => setKeysClosed\(status\?\.keysClosed === true, status\?\.testEndpoint\)/, "aiRestored");
+  // Issue #960: "Viết lại kiểu thuyết minh" takes a ready custom server without a key, every other provider needs one.
+  const narrate = between(read("main.ts"), "$(\"#review-narrate\").addEventListener(\"click\"", "\n});\n");
+  inOrder(narrate, [
+    "const key = claudeKey.read();",
+    "if (provider === \"custom\" ? !providerReady(claudeKey, provider) : !key) {",
+    "aiSettings.open();",
+    "return;",
+    "await rewriteAsNarration(provider, key,",
+  ], "narration rewrite");
   // Tách phụ đề: the editor host asks the same way, after the same load.
   has(main, /decideAi: async \(\) => \{\s*await aiRestored;\s*return decideAiContext\(claudeKey, "start"\);\s*\},/, "editor host");
   const view = read("features/edit/view.ts");
