@@ -731,4 +731,16 @@ assert.deepEqual(blobOps.ops, shown, "the saved image draws exactly what the win
 assert.deepEqual(savedFiles.at(-1), { bytes: 8, folder: "D:\\out", name: `${longTitle} TRUNG QUỐC - thumbnail`, format: "png" });
 assert.ok(changes > 0);
 
+// #925: the frame button says what it takes, the plain source frame at the playhead, without the edit's layers.
+{
+  const { readFileSync } = await import("node:fs");
+  const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  const button = html.match(/<button id="thumb-frame"[^>]*>([^<]*)<\/button>/);
+  assert.ok(button, "the frame button is in the page");
+  assert.equal(button[1], "Lấy khung gốc tại đầu phát");
+  assert.match(button[0], /title="Khung hình gốc của video tại đầu phát, chưa có lớp chồng, chữ, màu hay hiệu ứng của bản sửa"/);
+  assert.doesNotMatch(html, /Lấy khung hình đang xem/, "no label that promises the edited picture");
+  assert.match(html, /<small id="thumb-frame-note" class="hint">Nền là khung hình gốc, chưa có lớp chồng, chữ hay hiệu ứng\. Muốn dùng hình đã chỉnh: xuất video rồi dùng nút Chọn ảnh…<\/small>/);
+}
+
 console.log("edit thumbnail tests passed");
