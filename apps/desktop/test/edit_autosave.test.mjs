@@ -2197,4 +2197,47 @@ for (const action of ["close", "exit"]) {
   assert.match(view, /if \(stayedFor !== id\) void close\(false\)\.then\(\(left\) => \{ if \(!left && session\) stayedFor = id; \}\);/);
 }
 
+// Issue #952: the title bar's × answers the first click over any dialog. Every full-window backdrop that takes clicks
+// (position fixed, inset 0, pointer events on) stacks below the window controls, and nothing between the controls and
+// the page root starts a stacking context that would cap them. The click itself still goes through the close guard.
+{
+  const { readFileSync } = await import("node:fs");
+  const css = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(([, selector, body]) => ({ selector: selector.trim(), body }));
+  const zOf = (body) => Number(body.match(/(?:^|;)\s*z-index:\s*(-?\d+)/)?.[1] ?? NaN);
+  const controls = rules.filter((rule) => rule.selector.split(",").some((part) => part.trim() === ".window-controls"));
+  const controlsZ = Math.max(...controls.map((rule) => zOf(rule.body)).filter(Number.isFinite));
+  assert.ok(Number.isFinite(controlsZ), ".window-controls has a z-index");
+  assert.ok(controls.some((rule) => /(?:^|;)\s*position:\s*(relative|absolute|fixed|sticky)/.test(rule.body)), "and is positioned, so the z-index applies");
+  const backdrops = rules.filter((rule) => /position:\s*fixed/.test(rule.body) && /inset:\s*0/.test(rule.body)
+    && !/pointer-events:\s*none/.test(rule.body));
+  assert.ok(backdrops.some((rule) => rule.selector === ".review"), "the dialog backdrop is among them");
+  assert.ok(backdrops.some((rule) => rule.selector === ".confirm-backdrop"), "and the confirm backdrop");
+  for (const rule of rules) {
+    const z = zOf(rule.body);
+    if (!Number.isFinite(z)) continue;
+    // a dialog's own z-index rule (.settings-dialog, #versions-dialog …) raises a .review backdrop
+    const dialog = backdrops.some((backdrop) => backdrop === rule) || /dialog\b/.test(rule.selector);
+    if (dialog) assert.ok(z < controlsZ, `${rule.selector} (z-index ${z}) stays below the window controls (${controlsZ})`);
+  }
+  // the controls' ancestors start no stacking context of their own
+  const start = html.indexOf('class="window-controls"');
+  assert.ok(start > 0, "the window controls are in the page");
+  const open = [];
+  for (const tag of html.slice(html.indexOf("<body"), start).matchAll(/<(\/?)(\w+)([^>]*?)(\/?)>/g)) {
+    const [, closing, name, attrs, selfClosing] = tag;
+    if (selfClosing || /^(input|img|br|meta|link|source|hr)$/i.test(name)) continue;
+    if (closing) open.pop(); else open.push(attrs);
+  }
+  const ancestorClasses = open.flatMap((attrs) => (attrs.match(/class="([^"]*)"/)?.[1] ?? "").split(/\s+/).filter(Boolean));
+  assert.ok(ancestorClasses.includes("app-header"), `the walk found the header (${ancestorClasses.join(" ")})`);
+  for (const name of ancestorClasses) {
+    for (const rule of rules.filter((r) => r.selector.split(",").some((part) => part.trim() === `.${name}`))) {
+      assert.doesNotMatch(rule.body, /(?:^|;)\s*(z-index|transform|filter|isolation|contain|will-change)\s*:/, `.${name} starts no stacking context`);
+      assert.doesNotMatch(rule.body, /(?:^|;)\s*opacity:\s*0?\.\d/, `.${name} is not translucent`);
+    }
+  }
+}
+
 console.log("edit autosave tests passed");
