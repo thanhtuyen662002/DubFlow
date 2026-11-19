@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { Autosaver, DraftSavers, MAX_WAIT_MS, QUIET_MS, RETRY_FIRST_MS, RETRY_MAX_MS, retryDelay, saveDelay } from "../src/features/edit/autosave.ts";
-import { askAlone, CLOSE_EVENT, CLOSE_LISTENERS_KEY, CLOSE_WAIT_MS, closeGuard, closeRequests, EDITOR_HELD, EDITOR_LEFT, editorGuard, flushWithin,
+import { answerStay, askAlone, CLOSE_EVENT, CLOSE_LISTENERS_KEY, CLOSE_WAIT_MS, closeGuard, closeRequests, EDITOR_HELD, EDITOR_LEFT, editorGuard, flushWithin,
   pageQuestions, StaleCloseListeners, storageIds, unsavedPrompt, wireWindowClose } from "../src/features/edit/close_guard.ts";
 
 // A fake clock: timers run when the test moves time on. `fire` is when a timer set for `ms` really fires (a browser
@@ -492,6 +492,69 @@ for (const ok of [false, true]) {
   assert.equal(asked, 0, "no second question");
   // nothing closing: no wait at all
   assert.equal(await closeGuard({ before: () => null, flush: async () => true, ask: async () => false, timers })(), true);
+}
+
+// Issue #952, case (b): a window close never waits behind a question that is not about closing the window. On rc28 the
+// first × after "Thoát" landed on the "Thoát chỉnh sửa?" backdrop (dismissed it, app stayed); with the × above every
+// backdrop it would instead wait, invisibly, behind that open question (the test above: nothing until it is answered),
+// and a later "Ở lại" there would close the app. Now the close answers the open questions "stay" first (as a press on
+// their dimmed area did), the editor's close settles at once, and the window close goes on with one question at most.
+{
+  const { timers } = clock();
+  let answer, flushed = 0, asked = 0, settled = 0;
+  const editorClosing = new Promise((resolve) => { answer = resolve; });
+  const order = [];
+  const mayClose = closeGuard({
+    settle: () => { settled += 1; order.push("settle"); answer(false); },  // "Ở lại" on "Thoát chỉnh sửa?"
+    before: () => { order.push("before"); return editorClosing; },
+    flush: async () => { flushed += 1; return true; }, ask: async () => { asked += 1; return false; }, timers });
+  let closed;
+  void mayClose().then((value) => { closed = value; });
+  for (let turn = 0; turn < 5; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(closed, true, "one × closes at once, not after the open question is answered: the draft is on disk");
+  assert.deepEqual(order, ["settle", "before"], "the open question is answered before the close waits for it");
+  assert.equal(flushed, 1);
+  assert.equal(asked, 0, "no question at all when the draft is on disk");
+  // while a close waits or asks, a second close shares it and answers nothing (its own question stays open)
+  let release;
+  const slow = closeGuard({ settle: () => { settled += 1; }, flush: () => new Promise((resolve) => { release = resolve; }),
+    ask: async () => false, timers });
+  settled = 0;
+  const first = slow(), second = slow();
+  assert.equal(settled, 1, "settled once per close, never under its own question");
+  release(true);
+  assert.deepEqual(await Promise.all([first, second]), [true, true]);
+  // the save is failing: the open question is answered "stay", then the close asks its own, alone
+  let asks = 0;
+  const failing = closeGuard({ settle: () => { order.length = 0; order.push("settle"); }, flush: async () => false,
+    ask: async () => { asks += 1; order.push("ask"); return false; }, timers });
+  assert.equal(await failing(), false, "Ở lại: the window stays");
+  assert.deepEqual(order, ["settle", "ask"], "a visible question, never a silent no-op");
+  // a settle that throws never closes the window by itself, nor stops the guard
+  assert.equal(await closeGuard({ settle: () => { throw new Error("x"); }, flush: async () => false, ask: async () => false, timers })(), false);
+  assert.equal(await closeGuard({ settle: () => { throw new Error("x"); }, flush: async () => true, ask: async () => false, timers })(), true);
+}
+
+// answerStay: every open question in the page gets its first button (confirmDialog's cancel, the media picker's Hủy),
+// newest first, like a press on its dimmed area; nothing else is pressed.
+{
+  const pressed = [];
+  const button = (name) => ({ click: () => pressed.push(name) });
+  const actions = (...names) => ({ querySelector: (selector) => {
+    assert.equal(selector, "button");
+    return names.length ? button(names[0]) : null;
+  } });
+  const page = (list) => ({ querySelectorAll: (selector) => {
+    assert.equal(selector, ".confirm-backdrop .confirm-actions");
+    return list;
+  } });
+  assert.equal(answerStay(page([actions("Ở lại (Thoát chỉnh sửa?)", "Thoát"), actions("Hủy (picker)", "Thêm")])), 2);
+  assert.deepEqual(pressed, ["Hủy (picker)", "Ở lại (Thoát chỉnh sửa?)"], "newest first, the stay button only");
+  pressed.length = 0;
+  assert.equal(answerStay(page([actions()])), 0, "a panel without buttons is left alone");
+  assert.equal(answerStay(page([])), 0);
+  assert.equal(answerStay(null), 0, "no page: nothing to answer");
+  assert.deepEqual(pressed, []);
 }
 
 // A timer that fires a little early (setTimeout drops the fraction of a millisecond, the steady clock has one) never
@@ -2177,8 +2240,8 @@ for (const action of ["close", "exit"]) {
   assert.match(main, /closeGuarded: \(\) => windowCloseReady\(\),\s*closeGuardedNow: \(\) => windowCloseNow\(\),/);
   assert.ok(main.indexOf("let windowCloseReady") < main.indexOf("const editor = mountEditor("), "set before the editor can open");
   assert.doesNotMatch(main, /editor\.flush\(\)\.finally\(/, "no close that ignores a failed save");
-  assert.match(main, /closeGuard\(\{ before: \(\) => editor\.closing\(\), flush: \(\) => editor\.flush\(\),\s*ask: \(\) => askAlone\(\(\) => confirmDialog\(unsavedPrompt\("close", false, editor\.unsaved\(\)\)\)\)/,
-    "the window close waits for an editor close in progress, then asks one question at a time");
+  assert.match(main, /closeGuard\(\{ settle: \(\) => answerStay\(\), before: \(\) => editor\.closing\(\), flush: \(\) => editor\.flush\(\),\s*ask: \(\) => askAlone\(\(\) => confirmDialog\(unsavedPrompt\("close", false, editor\.unsaved\(\)\)\)\)/,
+    "the window close answers open questions 'stay' (Issue #952), waits for an editor close in progress, then asks one question at a time");
   assert.doesNotMatch(main + view + code("../src/features/edit/close_guard.ts"), /\.destroy\(\)/, "never destroys the window");
   assert.ok(!capabilities.permissions.includes("core:window:allow-destroy"), "no new window permission (Issue #929 contract)");
   // every save goes through the saver (a direct save() would neither be retried nor seen by a close)
@@ -2195,6 +2258,49 @@ for (const action of ["close", "exit"]) {
   assert.doesNotMatch(view, /reload: async/, "no reload of its own");
   // a refused close from a queue selection is not asked again on every render
   assert.match(view, /if \(stayedFor !== id\) void close\(false\)\.then\(\(left\) => \{ if \(!left && session\) stayedFor = id; \}\);/);
+}
+
+// Issue #952: the title bar's × answers the first click over any dialog. Every full-window backdrop that takes clicks
+// (position fixed, inset 0, pointer events on) stacks below the window controls, and nothing between the controls and
+// the page root starts a stacking context that would cap them. The click itself still goes through the close guard.
+{
+  const { readFileSync } = await import("node:fs");
+  const css = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(([, selector, body]) => ({ selector: selector.trim(), body }));
+  const zOf = (body) => Number(body.match(/(?:^|;)\s*z-index:\s*(-?\d+)/)?.[1] ?? NaN);
+  const controls = rules.filter((rule) => rule.selector.split(",").some((part) => part.trim() === ".window-controls"));
+  const controlsZ = Math.max(...controls.map((rule) => zOf(rule.body)).filter(Number.isFinite));
+  assert.ok(Number.isFinite(controlsZ), ".window-controls has a z-index");
+  assert.ok(controls.some((rule) => /(?:^|;)\s*position:\s*(relative|absolute|fixed|sticky)/.test(rule.body)), "and is positioned, so the z-index applies");
+  const backdrops = rules.filter((rule) => /position:\s*fixed/.test(rule.body) && /inset:\s*0/.test(rule.body)
+    && !/pointer-events:\s*none/.test(rule.body));
+  assert.ok(backdrops.some((rule) => rule.selector === ".review"), "the dialog backdrop is among them");
+  assert.ok(backdrops.some((rule) => rule.selector === ".confirm-backdrop"), "and the confirm backdrop");
+  for (const rule of rules) {
+    const z = zOf(rule.body);
+    if (!Number.isFinite(z)) continue;
+    // a dialog's own z-index rule (.settings-dialog, #versions-dialog …) raises a .review backdrop
+    const dialog = backdrops.some((backdrop) => backdrop === rule) || /dialog\b/.test(rule.selector);
+    if (dialog) assert.ok(z < controlsZ, `${rule.selector} (z-index ${z}) stays below the window controls (${controlsZ})`);
+  }
+  // the controls' ancestors start no stacking context of their own
+  const start = html.indexOf('class="window-controls"');
+  assert.ok(start > 0, "the window controls are in the page");
+  const open = [];
+  for (const tag of html.slice(html.indexOf("<body"), start).matchAll(/<(\/?)(\w+)([^>]*?)(\/?)>/g)) {
+    const [, closing, name, attrs, selfClosing] = tag;
+    if (selfClosing || /^(input|img|br|meta|link|source|hr)$/i.test(name)) continue;
+    if (closing) open.pop(); else open.push(attrs);
+  }
+  const ancestorClasses = open.flatMap((attrs) => (attrs.match(/class="([^"]*)"/)?.[1] ?? "").split(/\s+/).filter(Boolean));
+  assert.ok(ancestorClasses.includes("app-header"), `the walk found the header (${ancestorClasses.join(" ")})`);
+  for (const name of ancestorClasses) {
+    for (const rule of rules.filter((r) => r.selector.split(",").some((part) => part.trim() === `.${name}`))) {
+      assert.doesNotMatch(rule.body, /(?:^|;)\s*(z-index|transform|filter|isolation|contain|will-change)\s*:/, `.${name} starts no stacking context`);
+      assert.doesNotMatch(rule.body, /(?:^|;)\s*opacity:\s*0?\.\d/, `.${name} is not translucent`);
+    }
+  }
 }
 
 console.log("edit autosave tests passed");
