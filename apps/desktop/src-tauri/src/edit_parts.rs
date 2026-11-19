@@ -612,6 +612,65 @@ mod tests {
 -map_chapters -1 -movflags +faststart -progress pipe:1 -nostats -f mp4 out.mp4");
     }
 
+    /// With DUBFLOW_TEST_FFMPEG: the sound pass of a parts export is the edit's own length, with no silence added at
+    /// a cut (Issue #942). It decodes only key frames; the source has one every 0.68 s and each cut falls between two,
+    /// as on rc28, where one Tách made the sound 341 ms long and every later sound late against the picture.
+    #[test]
+    fn real_sound_pass_keeps_the_edit_length() {
+        let Ok(ffmpeg) = std::env::var("DUBFLOW_TEST_FFMPEG") else { return };
+        let ffmpeg = PathBuf::from(ffmpeg);
+        let dir = std::env::temp_dir().join(format!("dubflow-sound-pass-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("work")).unwrap();
+        struct Gone(PathBuf);
+        impl Drop for Gone {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let _gone = Gone(dir.clone());
+        let source_file = dir.join("source.mp4");
+        let made = Command::new(&ffmpeg).args(["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=320x240:r=25:d=60", "-f", "lavfi", "-i",
+            "sine=f=330:r=48000:d=60", "-c:v", "mpeg4", "-q:v", "5", "-g", "17", "-c:a", "aac", "-shortest"]).arg(&source_file).status().unwrap();
+        assert!(made.success());
+        let ffprobe = ffmpeg.with_file_name(ffmpeg.file_name().unwrap().to_string_lossy().replace("ffmpeg", "ffprobe"));
+        let frame = Frame { width: 320, height: 240, fps: "25/1".into() };
+        let mix = Mix { main_volume: 1.0, ..Mix::default() };
+        let plain = edit(vec![segment(0, 0.0, 20.3), segment(0, 20.3, 41.1), segment(0, 41.1, 60.0)]);
+        // a look on a segment takes the other graph (each segment fitted to the frame, at the sound pass's 5 fps)
+        let mut fitted = plain.clone();
+        fitted.segments[1].volume = 0.9;
+        for (name, timeline) in [("plain", plain), ("fitted", fitted)] {
+            let total = output_seconds(&timeline.segments, &timeline.transitions);
+            let work = dir.join("work");
+            let (sound, has_audio) = export_script(&timeline, &[Input { has_audio: true }], &sound_frame(&frame), "source", &mix,
+                &Finish { audio_only: true, ..Finish::default() });
+            assert!(has_audio);
+            let script = work.join(format!("filter-sound-{name}.txt"));
+            fs::write(&script, sound).unwrap();
+            let job = ExportJob { work: work.clone(), inputs: vec![source_file.clone()], media: vec![], script: script.clone(), folder: dir.clone(),
+                name: "out".into(), target: dir.join("out.mp4"), srt: None, seconds: total, has_audio, bitrate: 1_500_000, fps: "25/1".into(),
+                ffmpeg: ffmpeg.clone(), quality: "source".into(), edit: timeline.clone(), audio: vec![], main_volume: 1.0, main_denoise: false,
+                main_eq: None, stems: None, texts: vec![], aspect: None, fill: None, audio_only: false, parts: None, check: None };
+            let source = Source { media_count: 1, frame: frame.clone(), burn: None, texts: None, reframe: None, prefilter: None, sound_script: Some(script.clone()) };
+            let output = dir.join(format!("sound-{name}.m4a"));
+            let args = sound_args(&job, &source, &script, &output);
+            assert!(args.windows(2).any(|pair| pair[0] == "-skip_frame" && pair[1] == "nokey"), "the pass under test decodes key frames only");
+            let running = Running { children: Mutex::new(Vec::new()), cancelled: AtomicBool::new(false) };
+            run_tracked(&ffmpeg, args, &work, &dir.join(format!("sound-{name}.log")), &running, |_| {}).unwrap();
+            let probed = Command::new(&ffprobe).args(["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=duration", "-of", "csv=p=0"])
+                .arg(&output).output().unwrap();
+            let seconds: f64 = String::from_utf8_lossy(&probed.stdout).trim().parse().unwrap();
+            // within one AAC frame (1024 samples at 48 kHz) of the edit; rc28's pass was up to a key frame interval per cut long
+            assert!((seconds - total).abs() <= 1024.0 / 48000.0 + 1e-6, "{name}: sound {seconds} s, edit {total} s");
+            let silence = Command::new(&ffmpeg).args(["-v", "info", "-nostdin", "-i"]).arg(&output)
+                .args(["-af", "silencedetect=n=-50dB:d=0.02", "-f", "null", "-"]).output().unwrap();
+            let log = String::from_utf8_lossy(&silence.stderr);
+            assert!(!log.contains("silence_start"), "{name}: silence added in the sound: {log}");
+        }
+        println!("sound-pass: ran against real FFmpeg");
+    }
+
     /// With DUBFLOW_TEST_FFMPEG (and an encoder named by DUBFLOW_TEST_ENCODER,
     /// libx264 by default): the parts joined are the single run, frame for frame.
     #[test]
