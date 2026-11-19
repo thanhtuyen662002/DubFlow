@@ -1,7 +1,7 @@
 DUBFLOW_PR_V1
 Issue: #952
 Lease-Owner: Claude/issue-952-close-and-check-status
-Lease-Heartbeat: 2026-11-19T02:37:06Z
+Lease-Heartbeat: 2026-11-19T02:40:05Z
 Tested-Base-SHA: 0f9c9d29aaea642db0b87683d3c405ddbaeb9d01
 Conflict-Domains: desktop-window-close,desktop-edit-export-check
 Expected-Paths:

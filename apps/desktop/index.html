@@ -1406,9 +1406,10 @@
                       <div class="thumb-body">
                         <div class="thumb-stage"><canvas id="thumb-canvas" width="1280" height="720" tabindex="0" aria-label="Xem trước thumbnail: kéo chữ để đổi chỗ, kéo nền để chọn phần hình giữ lại"></canvas></div>
                         <div class="button-row">
-                          <button id="thumb-frame" class="btn" type="button">Lấy khung hình đang xem</button>
+                          <button id="thumb-frame" class="btn" type="button" title="Khung hình gốc của video tại đầu phát, chưa có lớp chồng, chữ, màu hay hiệu ứng của bản sửa">Lấy khung gốc tại đầu phát</button>
                           <button id="thumb-image" class="btn" type="button">Chọn ảnh…</button>
                         </div>
+                        <small id="thumb-frame-note" class="hint">Nền là khung hình gốc, chưa có lớp chồng, chữ hay hiệu ứng. Muốn dùng hình đã chỉnh: xuất video rồi dùng nút Chọn ảnh…</small>
                         <label>Mẫu<select id="thumb-template"><option value="">Chọn mẫu…</option></select></label>
                         <label>Phóng to<input id="thumb-zoom" type="range" min="100" max="300" step="1" value="100" /></label>
                         <label>Làm tối nền<input id="thumb-darken" type="range" min="0" max="70" step="1" value="0" /></label>
