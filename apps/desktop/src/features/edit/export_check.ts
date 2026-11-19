@@ -113,3 +113,38 @@ export function checkBadge(raw: unknown): { text: string; className: string; tit
   const className = `edit-export-check${tone === "warn" ? " mqc-warn" : tone === "ok" ? " mqc-ok" : ""}`;
   return { text, className, title: [text, ...checkLines(check), CHECK_NOTE].join("\n") };
 }
+
+/** The contract's states as the header names them (#952): no state is "passed"; a finished check is "không thấy lỗi". */
+export type CheckPhase = "PENDING" | "RUNNING" | "NO_FINDINGS" | "WARNING" | "STOPPED" | "INTERRUPTED" | "UNAVAILABLE";
+
+export function checkPhase(check: ExportCheck): CheckPhase {
+  if (check.state === "RUNNING") return check.waiting ? "PENDING" : "RUNNING";
+  if (check.state === "DONE") return checkWarnings(check) ? "WARNING" : "NO_FINDINGS";
+  return check.state;
+}
+
+/**
+ * The newest export's check in the editor's header (#952): every kind of video, not only the queue's Kết quả list, so
+ * a check that is waiting, running, unfinished or has points to look at is seen without opening Xuất video. A click
+ * opens Xuất video, which has the details. Null when the newest export has no readable check.
+ */
+export function checkChip(exports: ReadonlyArray<{ path: string; check?: unknown }>): { text: string; className: string; title: string; phase: CheckPhase } | null {
+  const newest = exports[exports.length - 1];
+  const check = newest ? parseExportCheck(newest.check) : null;
+  if (!newest || !check) return null;
+  const phase = checkPhase(check);
+  const unmeasured = check.checks.filter((item) => item.ok === null).length;
+  const text = {
+    PENDING: "Chờ kiểm tra kỹ thuật",
+    RUNNING: `Đang kiểm tra kỹ thuật ${Math.floor(check.percent)}%`,
+    WARNING: `Kiểm tra kỹ thuật: ${checkWarnings(check)} điểm cần xem`,
+    NO_FINDINGS: `Kiểm tra kỹ thuật: không thấy lỗi${unmeasured ? ` · ${unmeasured} mục chưa đo` : ""}`,
+    STOPPED: "Đã dừng kiểm tra kỹ thuật",
+    INTERRUPTED: "Kiểm tra kỹ thuật chưa xong",
+    UNAVAILABLE: "Không chạy được kiểm tra kỹ thuật",
+  }[phase];
+  const tone = phase === "WARNING" ? " mqc-warn" : phase === "NO_FINDINGS" ? " mqc-ok" : "";
+  const { text: summary } = checkSummary(check);
+  return { text, phase, className: `edit-check-chip${tone}`,
+           title: [`Bản xuất gần nhất (${newest.path.split(/[\\/]/).pop() ?? newest.path}): ${summary}`, ...checkLines(check), CHECK_NOTE, "Bấm để xem trong Xuất video."].join("\n") };
+}

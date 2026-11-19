@@ -1,6 +1,6 @@
 // Kiểm tra kỹ thuật (Issue #935): the advisory check after each editor export, read strictly and never worded like Final QC.
 import assert from "node:assert/strict";
-import { CHECK_NOTE, checkBadge, checkHolding, checkLines, checkRunning, checkSummary, checkWarnings, keepRunningChecks, parseExportCheck } from "../src/features/edit/export_check.ts";
+import { CHECK_NOTE, checkBadge, checkChip, checkHolding, checkPhase, checkLines, checkRunning, checkSummary, checkWarnings, keepRunningChecks, parseExportCheck } from "../src/features/edit/export_check.ts";
 import { previewInvoke } from "../src/shell/preview_invoke.ts";
 
 const base = { schema_version: 1, kind: "export_check", advisory: true, video: "D:/Videos/Phim (sửa 1).mp4", warnings: [], unmeasured: [], black: [], frozen: [],
@@ -137,5 +137,36 @@ try {
   assert.equal(parseExportCheck(status.exports.at(-1).check).state, "STOPPED");
   assert.equal(path, `${request.folder}/Phim (sửa 1).mp4`);
 } finally { Date.now = now; }
+
+// #952: the newest export's check in the editor header, for every kind of video, in the contract's states.
+{
+  const entry = (check) => ({ path: "D:/Videos/Phim (sửa 1).mp4", check });
+  const clean = { ...done, warnings: [], black: [], checks: done.checks.map((item) => ({ ...item, ok: true })) };
+  const unmeasured = { ...clean, checks: [...clean.checks, { id: "subs", label: "Phụ đề", ok: null, detail: "không có phụ đề" }] };
+  const cases = [
+    [{ ...base, state: "RUNNING", percent: 0, checks: [], waiting: true }, "PENDING", "Chờ kiểm tra kỹ thuật", "edit-check-chip"],
+    [{ ...base, state: "RUNNING", percent: 41.7, checks: [] }, "RUNNING", "Đang kiểm tra kỹ thuật 41%", "edit-check-chip"],
+    [done, "WARNING", "Kiểm tra kỹ thuật: 1 điểm cần xem", "edit-check-chip mqc-warn"],
+    [clean, "NO_FINDINGS", "Kiểm tra kỹ thuật: không thấy lỗi", "edit-check-chip mqc-ok"],
+    [unmeasured, "NO_FINDINGS", "Kiểm tra kỹ thuật: không thấy lỗi · 1 mục chưa đo", "edit-check-chip mqc-ok"],
+    [{ ...base, state: "STOPPED", percent: 30, checks: [] }, "STOPPED", "Đã dừng kiểm tra kỹ thuật", "edit-check-chip"],
+    [{ ...base, state: "INTERRUPTED", percent: 17, checks: [] }, "INTERRUPTED", "Kiểm tra kỹ thuật chưa xong", "edit-check-chip"],
+    [{ ...base, state: "UNAVAILABLE", percent: 0, checks: [], error: "không có FFmpeg" }, "UNAVAILABLE", "Không chạy được kiểm tra kỹ thuật", "edit-check-chip"],
+  ];
+  for (const [check, phase, text, className] of cases) {
+    assert.equal(checkPhase(parseExportCheck(check)), phase);
+    const chip = checkChip([entry(clean), entry(check)]);
+    assert.deepEqual([chip.phase, chip.text, chip.className], [phase, text, className]);
+    assert.match(chip.title, /^Bản xuất gần nhất \(Phim \(sửa 1\)\.mp4\): /);
+    assert.ok(chip.title.includes(CHECK_NOTE) && chip.title.endsWith("Bấm để xem trong Xuất video."));
+    // never worded as a pass or as Final QC
+    assert.doesNotMatch(`${chip.text}\n${chip.title}`, /đạt|Sẵn sàng|READY|PASS|Kiểm tra cuối/i);
+  }
+  assert.match(checkChip([entry(done)]).title, /Hình đen: đen 3,0 giây ở 0:04–0:07/);
+  // the newest export only; none, or one without a readable check, shows nothing
+  assert.equal(checkChip([]), null);
+  assert.equal(checkChip([entry(done), entry(undefined)]), null);
+  assert.equal(checkChip([entry({ ...done, kind: "final_qc" })]), null);
+}
 
 console.log("edit export check tests passed");
