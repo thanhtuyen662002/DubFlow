@@ -94,6 +94,8 @@ mod parts;
 mod check;
 
 static RUNNING: LazyLock<Mutex<HashMap<PathBuf, Arc<Running>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+/// Set when DubFlow closes (`stop_exports`): no export starts after that, and a stopped one is not "Đã hủy" (#971).
+static EXPORTS_CLOSING: AtomicBool = AtomicBool::new(false);
 
 /// One part of the output: `[start, end)` of media `media` (0 = the main video),
 /// with its look (Issue #518): crop, rotation, flips, a slow zoom, colour,
@@ -3450,7 +3452,10 @@ fn run_export(job: &ExportJob, running: &Running) -> Option<(PathBuf, bool, Opti
     }
     if running.cancelled.load(Ordering::SeqCst) || job.work.join("cancel").exists() {
         let _ = fs::remove_file(&partial);
-        write_status(&job.work, "CANCELLED", 0.0, "Đã hủy xuất video.", None);
+        // Closing DubFlow is not "Hủy": the status stays RUNNING, so the next start says "Lần xuất trước bị gián đoạn".
+        if !EXPORTS_CLOSING.load(Ordering::SeqCst) {
+            write_status(&job.work, "CANCELLED", 0.0, "Đã hủy xuất video.", None);
+        }
         return None;
     }
     if !done {
@@ -3552,6 +3557,10 @@ fn start_export(request: ExportRequest) -> Result<Value, String> {
     let ffmpeg = media_tool("ffmpeg.exe")?;
     let name = base_name(&request.file_name);
     let mut running = RUNNING.lock().map_err(|_| fail("Hãy mở lại ứng dụng"))?;
+    // `stop_exports` sets this before it takes the lock: an export either is in RUNNING when DubFlow closes, or never starts.
+    if EXPORTS_CLOSING.load(Ordering::SeqCst) {
+        return Err(fail("DubFlow đang đóng"));
+    }
     // One render per video: a product run's videos each have their own work folder.
     let key = target.work.clone();
     if running.contains_key(&key) {
@@ -3719,6 +3728,28 @@ pub fn edit_cancel(output_path: String, kind: String) -> Result<(), String> {
         stop(&entry);
     }
     Ok(())
+}
+
+/// Kill every FFmpeg of every export in `running` and wait for each to end, after setting `closing`
+/// (before the lock, so an export either is in `running` here or sees `closing` and never starts).
+fn stop_exports_in(running: &Mutex<HashMap<PathBuf, Arc<Running>>>, closing: &AtomicBool) {
+    closing.store(true, Ordering::SeqCst);
+    let entries: Vec<Arc<Running>> = running.lock().map(|running| running.values().cloned().collect()).unwrap_or_default();
+    for entry in entries {
+        stop(&entry);
+        if let Ok(mut children) = entry.children.lock() {
+            for child in children.iter_mut() {
+                let _ = child.wait();
+            }
+        }
+    }
+}
+
+/// DubFlow is closing: stop every export of this window (#971), so no export's FFmpeg outlives the app, keeps
+/// writing its `.partial` with no window, or writes it again beside the next export of the same video. Its
+/// status.json stays RUNNING and its lease ends with the app, so the next start says "Lần xuất trước bị gián đoạn".
+pub fn stop_exports() {
+    stop_exports_in(&RUNNING, &EXPORTS_CLOSING);
 }
 
 /// DubFlow is closing: stop every Kiểm tra kỹ thuật of this window, so no check's FFmpeg
@@ -4448,6 +4479,44 @@ pub async fn edit_proxy(app: tauri::AppHandle, path: String, start: bool) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #971: closing DubFlow kills every export's FFmpeg (one, or the parts side by side) and waits for it,
+    /// and marks the exports as stopped by the close, not by "Hủy".
+    #[test]
+    fn closing_stops_every_export_ffmpeg() {
+        fn long_child() -> Child {
+            #[cfg(windows)]
+            let mut command = {
+                let mut command = Command::new("ping");
+                command.args(["-n", "60", "127.0.0.1"]);
+                command
+            };
+            #[cfg(not(windows))]
+            let mut command = {
+                let mut command = Command::new("sleep");
+                command.arg("60");
+                command
+            };
+            command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap()
+        }
+        // A registry of its own: the app's RUNNING and EXPORTS_CLOSING stay open for the other tests.
+        let (running, closing) = (Mutex::new(HashMap::new()), AtomicBool::new(false));
+        let single = Arc::new(Running { children: Mutex::new(vec![long_child()]), cancelled: AtomicBool::new(false) });
+        let parts = Arc::new(Running { children: Mutex::new(vec![long_child(), long_child()]), cancelled: AtomicBool::new(false) });
+        running.lock().unwrap().insert(PathBuf::from("work/a"), single.clone());
+        running.lock().unwrap().insert(PathBuf::from("work/b"), parts.clone());
+        let started = Instant::now();
+        stop_exports_in(&running, &closing);
+        assert!(started.elapsed() < Duration::from_secs(30), "the close does not wait for the exports to finish");
+        assert!(closing.load(Ordering::SeqCst), "no export starts after the close");
+        for entry in [&single, &parts] {
+            assert!(entry.cancelled.load(Ordering::SeqCst));
+            for child in entry.children.lock().unwrap().iter_mut() {
+                assert!(child.try_wait().unwrap().is_some(), "the export's FFmpeg has ended when the close returns");
+            }
+        }
+        assert!(!EXPORTS_CLOSING.load(Ordering::SeqCst), "the app's own flag is untouched by the test");
+    }
 
     // Phase 9A: a draft the app cannot read (empty after a power cut, a newer DubFlow's) is set aside, never replaced
     #[test]
