@@ -1,7 +1,7 @@
 DUBFLOW_PR_V1
 Issue: #971
 Lease-Owner: Claude/issue-971-export-stops-on-close
-Lease-Heartbeat: 2026-11-19T13:47:23Z
+Lease-Heartbeat: 2026-11-19T13:52:32Z
 Tested-Base-SHA: a37d2aee339a7a8ccb7288c1cc01d9c88de40903
 Conflict-Domains: desktop-edit-export
 Expected-Paths:

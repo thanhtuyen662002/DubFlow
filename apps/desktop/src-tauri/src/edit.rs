@@ -3677,10 +3677,10 @@ fn start_export(request: ExportRequest) -> Result<Value, String> {
     drop(running);
     std::thread::spawn(move || {
         let published = run_export(&job, &entry);
-        if let Ok(mut running) = RUNNING.lock() {
-            running.remove(&key);
-        }
+        // The lease goes before the registry entry: once an export is out of RUNNING its cleanup is done and its
+        // lease is free, which is what `stop_exports` waits for when DubFlow closes (#971).
         drop(lease);
+        leave(&RUNNING, &key);
         // Kiểm tra kỹ thuật: only once the video is published and the export's lease is free,
         // so "Xem", "Mở thư mục" and a new export never wait for it.
         if let (Some((video, srt, stamp, cuts)), Some(plan)) = (published, job.check) {
@@ -3740,17 +3740,34 @@ pub fn edit_cancel(output_path: String, kind: String) -> Result<(), String> {
     Ok(())
 }
 
-/// Kill every FFmpeg of every export in `running` and wait for each to end, after setting `closing`
-/// (before the lock, so an export either is in `running` here or sees `closing` and never starts).
-fn stop_exports_in(running: &Mutex<HashMap<PathBuf, Arc<Running>>>, closing: &AtomicBool) {
+/// The export of `key` is over (its `.partial` and status handled, its lease dropped): out of `running`.
+fn leave(running: &Mutex<HashMap<PathBuf, Arc<Running>>>, key: &Path) {
+    running.lock().unwrap_or_else(PoisonError::into_inner).remove(key);
+}
+
+/// How long closing DubFlow waits for the stopped exports to finish their cleanup once their FFmpeg has ended.
+const CLOSE_CLEANUP_WAIT: Duration = Duration::from_secs(10);
+
+/// Kill every FFmpeg of every export in `running`, wait for each to end, then wait (up to `cleanup`)
+/// until each export has left `running`, i.e. removed its `.partial` and dropped its lease (`leave`). `closing` is
+/// set first, before the lock, so an export either is in `running` here or sees `closing` and never starts.
+fn stop_exports_in(running: &Mutex<HashMap<PathBuf, Arc<Running>>>, closing: &AtomicBool, cleanup: Duration) {
     closing.store(true, Ordering::SeqCst);
     // A poisoned lock (a worker panicked holding it) still lists every export and every FFmpeg (#971 review).
     let entries: Vec<Arc<Running>> = running.lock().unwrap_or_else(PoisonError::into_inner).values().cloned().collect();
-    for entry in entries {
-        stop(&entry);
+    for entry in &entries {
+        stop(entry);
         for child in entry.children.lock().unwrap_or_else(PoisonError::into_inner).iter_mut() {
             let _ = child.wait();
         }
+    }
+    let deadline = Instant::now() + cleanup;
+    let pending = || {
+        let running = running.lock().unwrap_or_else(PoisonError::into_inner);
+        entries.iter().any(|entry| running.values().any(|other| Arc::ptr_eq(entry, other)))
+    };
+    while pending() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
     }
 }
 
@@ -3758,7 +3775,7 @@ fn stop_exports_in(running: &Mutex<HashMap<PathBuf, Arc<Running>>>, closing: &At
 /// writing its `.partial` with no window, or writes it again beside the next export of the same video. Its
 /// status.json stays RUNNING and its lease ends with the app, so the next start says "Lần xuất trước bị gián đoạn".
 pub fn stop_exports() {
-    stop_exports_in(&RUNNING, &EXPORTS_CLOSING);
+    stop_exports_in(&RUNNING, &EXPORTS_CLOSING, CLOSE_CLEANUP_WAIT);
 }
 
 /// DubFlow is closing: stop every Kiểm tra kỹ thuật of this window, so no check's FFmpeg
@@ -4522,7 +4539,8 @@ mod tests {
         running.lock().unwrap().insert(PathBuf::from("work/a"), single.clone());
         running.lock().unwrap().insert(PathBuf::from("work/b"), parts.clone());
         let started = Instant::now();
-        stop_exports_in(&running, &closing);
+        // No worker here to leave the registry: only the FFmpeg part of the close is under test.
+        stop_exports_in(&running, &closing, Duration::ZERO);
         assert!(started.elapsed() < Duration::from_secs(30), "the close does not wait for the exports to finish");
         assert!(closing.load(Ordering::SeqCst), "no export starts after the close");
         for entry in [&single, &parts] {
@@ -4546,7 +4564,7 @@ mod tests {
             panic!("a worker panics holding both locks");
         }).join();
         assert!(panicked.is_err() && running.is_poisoned() && entry.children.is_poisoned());
-        stop_exports_in(&running, &closing);
+        stop_exports_in(&running, &closing, Duration::ZERO);
         assert!(entry.cancelled.load(Ordering::SeqCst));
         assert!(ended(&entry), "the FFmpeg behind a poisoned lock is killed, not left running");
     }
@@ -4589,6 +4607,53 @@ mod tests {
                 assert_eq!(status["message"], "Đã hủy xuất video.");
             }
         }
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// #971 review: the close returns only after each stopped export's worker has finished its cleanup. A worker
+    /// running its FFmpeg through `run_tracked` (here a process that never ends by itself), as `start_export`'s
+    /// does, is stopped by the close; when `stop_exports_in` returns its FFmpeg has ended, its `.partial` is gone,
+    /// its status is still RUNNING, its lease is free and it has left the registry.
+    #[test]
+    fn closing_waits_for_each_export_to_clean_up() {
+        let base = std::env::temp_dir().join(format!("dubflow-971-barrier-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let work = base.join("work");
+        fs::create_dir_all(&work).unwrap();
+        let target = base.join("Phim (sửa 1).mp4");
+        let partial = partial_of(&target);
+        write_status(&work, "RUNNING", 34.0, "Đang xuất video… 34%", Some(&target));
+        let (running, closing) = (Arc::new(Mutex::new(HashMap::new())), Arc::new(AtomicBool::new(false)));
+        let entry = Arc::new(Running { children: Mutex::new(Vec::new()), cancelled: AtomicBool::new(false) });
+        running.lock().unwrap().insert(work.clone(), entry.clone());
+        let lease = crate::work_lease::take(&work, BUSY).unwrap();
+        let (program, args): (&str, Vec<OsString>) = if cfg!(windows) { ("ping", vec!["-n".into(), "60".into(), "127.0.0.1".into()]) }
+            else { ("sleep", vec!["60".into()]) };
+        let worker = {
+            let (running, closing, entry, work, partial) = (running.clone(), closing.clone(), entry.clone(), work.clone(), partial.clone());
+            std::thread::spawn(move || {
+                fs::write(&partial, b"half").unwrap();
+                let ended = run_tracked(Path::new(program), args, &work, &work.join("ffmpeg.log"), &entry, |_| {});
+                assert!(ended.is_err(), "the FFmpeg was stopped, not finished");
+                // What run_export and start_export's worker do after a stopped FFmpeg (with a slow disk).
+                std::thread::sleep(Duration::from_millis(300));
+                finish_stopped(&work, &partial, closing.load(Ordering::SeqCst));
+                drop(lease);
+                leave(&running, &work);
+            })
+        };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while entry.children.lock().unwrap().is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(partial.exists() && !entry.children.lock().unwrap().is_empty(), "the export is running");
+        stop_exports_in(&running, &closing, CLOSE_CLEANUP_WAIT);
+        assert!(running.lock().unwrap().is_empty(), "the close waited for the export to leave the registry");
+        assert!(!partial.exists(), "no .partial is left when the close returns");
+        let status: Value = serde_json::from_slice(&fs::read(work.join("status.json")).unwrap()).unwrap();
+        assert_eq!(status["state"], "RUNNING", "closing is not Hủy: the next start says it was interrupted");
+        assert!(crate::work_lease::take(&work, BUSY).is_ok(), "the export's lease is free");
+        worker.join().unwrap();
         fs::remove_dir_all(&base).unwrap();
     }
 
