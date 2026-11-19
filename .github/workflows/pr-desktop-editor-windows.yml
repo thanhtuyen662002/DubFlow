@@ -186,6 +186,20 @@ jobs:
           if ($text -notmatch '(?m)^test result: ok\. 1 passed; 0 failed;') { throw 'Expected exactly one zoomed-parts export end test to pass' }
           Write-Host 'Zoomed parts (zoom + tilt, the last part included) with Phụ đề burned by libass export to their own length through the pinned FFmpeg'
 
+      - name: Run the editor's parts sound-pass length test against the pinned FFmpeg (#942)
+        shell: pwsh
+        run: |
+          # The sound pass of a parts export decodes key frames only; one concat of picture and sound padded the sound
+          # to each segment's picture (rc28: one Tách made the sound 341 ms long). It must be the edit's own length.
+          if (-not $env:DUBFLOW_TEST_FFMPEG -or -not (Test-Path -LiteralPath $env:DUBFLOW_TEST_FFMPEG)) { throw 'DUBFLOW_TEST_FFMPEG is not set to the pinned ffmpeg.exe' }
+          $log = Join-Path $env:RUNNER_TEMP 'sound-pass-test.log'
+          cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --locked edit::parts::tests::real_sound_pass_keeps_the_edit_length -- --exact --nocapture 2>&1 | Tee-Object -FilePath $log
+          if ($LASTEXITCODE -ne 0) { throw 'Parts sound-pass length test against real FFmpeg failed' }
+          $text = Get-Content -LiteralPath $log -Raw
+          if ($text -notmatch '(?m)sound-pass: ran against real FFmpeg\s*$') { throw 'Parts sound-pass length test did not run against real FFmpeg (marker missing)' }
+          if ($text -notmatch '(?m)^test result: ok\. 1 passed; 0 failed;') { throw 'Expected exactly one parts sound-pass length test to pass' }
+          Write-Host 'The sound pass of a parts export (key frames only) is the edit own length at every cut, through the pinned FFmpeg'
+
       - name: Run the media adapter tests against real FFmpeg
         shell: pwsh
         run: |

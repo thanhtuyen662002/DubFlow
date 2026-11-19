@@ -1777,9 +1777,49 @@ fn export_script(edit: &Edit, inputs: &[Input], frame: &Frame, quality: &str, mi
         graph.push_str(&format!(";\n[an]{LOUDNESS}[a]"));
     }
     if finish.audio_only {
+        graph = sound_apart(&graph);
         graph.push_str(";\n[v]nullsink");
     }
     (graph, has_audio)
+}
+
+/// A graph with no picture to export (the sound pass of a parts export, Xuất chỉ âm thanh) joins the pictures and the
+/// sounds in two `concat`s instead of one (Issue #942). One `concat` of both makes each segment as long as its longer
+/// stream, padding the sound with silence up to the picture. The sound pass decodes only key frames (`-skip_frame
+/// nokey`), so each segment's picture ran on to a key frame, and every cut added up to one key frame interval of
+/// silence (rc28: 341 ms at one Tách of a 10:40 export), every later sound late against the picture. Apart, the sound
+/// is the edit's own length; the picture is dropped (`nullsink`). Any other line is left as it is.
+fn sound_apart(graph: &str) -> String {
+    graph.split(";\n").map(|line| apart_line(line).unwrap_or_else(|| line.to_owned())).collect::<Vec<_>>().join(";\n")
+}
+
+/// `[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]` → `[v0][v1]concat=n=2:v=1:a=0[v];\n[a0][a1]concat=n=2:v=0:a=1[a]`.
+fn apart_line(line: &str) -> Option<String> {
+    let (pads, rest) = line.split_once("concat=n=")?;
+    let (count, outs) = rest.split_once(":v=1:a=1")?;
+    let count: usize = count.parse().ok()?;
+    let (pads, outs) = (pad_labels(pads)?, pad_labels(outs)?);
+    if count == 0 || pads.len() != 2 * count || outs.len() != 2 {
+        return None;
+    }
+    let pictures: String = pads.iter().step_by(2).map(|label| format!("[{label}]")).collect();
+    let sounds: String = pads.iter().skip(1).step_by(2).map(|label| format!("[{label}]")).collect();
+    Some(format!("{pictures}concat=n={count}:v=1:a=0[{}];\n{sounds}concat=n={count}:v=0:a=1[{}]", outs[0], outs[1]))
+}
+
+/// The labels of `[a][b]…`, None unless the text is only labels.
+fn pad_labels(text: &str) -> Option<Vec<&str>> {
+    let mut labels = Vec::new();
+    let mut rest = text;
+    while !rest.is_empty() {
+        let (label, after) = rest.strip_prefix('[')?.split_once(']')?;
+        if label.is_empty() || label.contains('[') {
+            return None;
+        }
+        labels.push(label);
+        rest = after;
+    }
+    Some(labels)
 }
 
 /// The picture (ending as `[video_out]`) and the mixed sound (`[audio_out]`).
@@ -5509,6 +5549,52 @@ anullsrc=r=48000:cl=stereo,atrim=duration=4,{af}[a1];
 [0:v]trim=start=1.235:end=2,setpts=(PTS-STARTPTS)/0.75[v0];
 [v0]concat=n=1:v=1:a=0[vc];
 [vc]scale=w='if(gte(iw,ih),-2,1080)':h='if(gte(iw,ih),1080,-2)',setsar=1[v]");
+    }
+
+    /// Issue #942: a graph with no picture to export (the sound pass of a parts export, Xuất chỉ âm thanh) joins the
+    /// pictures and the sounds in two `concat`s, so no segment's sound is padded to its picture. The sound pass decodes
+    /// only key frames: one `concat` of both made every cut add up to a key frame interval of silence (rc28: 341 ms
+    /// at one Tách of a 10:40 export, every later sound late against the picture).
+    #[test]
+    fn a_picture_less_graph_joins_the_sound_apart_from_the_picture() {
+        let mix = Mix { main_volume: 1.0, ..Default::default() };
+        let no_picture = Finish { audio_only: true, ..Finish::default() };
+        let two = Edit { segments: vec![segment(0.0, 399.973, 1.0, 1.0), segment(399.973, 640.021, 1.0, 1.0)], ..Edit::default() };
+        let (graph, audio) = export_script(&two, &[Input { has_audio: true }], &frame(), "source", &mix, &no_picture);
+        assert!(audio);
+        assert_eq!(graph, "\
+[0:v]trim=start=0:end=399.973,setpts=PTS-STARTPTS[v0];
+[0:a]atrim=start=0:end=399.973,asetpts=PTS-STARTPTS[a0];
+[0:v]trim=start=399.973:end=640.021,setpts=PTS-STARTPTS[v1];
+[0:a]atrim=start=399.973:end=640.021,asetpts=PTS-STARTPTS[a1];
+[v0][v1]concat=n=2:v=1:a=0[v];
+[a0][a1]concat=n=2:v=0:a=1[a];
+[v]nullsink");
+        // with the picture exported the joint concat stays: the sound follows the picture's whole frames at each cut
+        let (shown, _) = export_script(&two, &[Input { has_audio: true }], &frame(), "source", &mix, &Finish::default());
+        assert!(shown.contains("[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]"), "{shown}");
+        // runs between dissolves, a clip of another video, a freeze (silence) and added sounds: every joint concat is apart
+        let mut busy = Edit { segments: vec![segment(0.0, 10.0, 1.0, 1.0), clip(1, 2.0, 6.0), segment(20.0, 30.0, 2.0, 0.5), segment(40.0, 50.0, 1.0, 1.0)],
+            transitions: vec![joint(1, TransitionKind::Dissolve, 1.0)], ..Edit::default() };
+        busy.segments[1].freeze = Some(3.0);
+        let added = Mix { sounds: vec![sound(2, 5.0, 0.0, 3.0)], main_volume: 0.8, ..Default::default() };
+        let inputs = [Input { has_audio: true }, Input { has_audio: true }, Input { has_audio: true }];
+        let (apart, _) = export_script(&busy, &inputs, &frame(), "source", &added, &no_picture);
+        let (joined, _) = export_script(&busy, &inputs, &frame(), "source", &added, &Finish::default());
+        assert!(!apart.contains(":v=1:a=1"), "{apart}");
+        assert_eq!(apart.matches(":v=0:a=1[").count(), joined.matches(":v=1:a=1[").count(), "{joined}\n{apart}");
+        assert!(apart.contains("[v0][v1]concat=n=2:v=1:a=0[vr0];\n[a0][a1]concat=n=2:v=0:a=1[ar0]"), "{apart}");
+        assert!(apart.contains("[v2][v3]concat=n=2:v=1:a=0[vr1];\n[a2][a3]concat=n=2:v=0:a=1[ar1]"), "{apart}");
+        assert!(apart.ends_with("[v]nullsink"), "{apart}");
+        // apart from the concats the graphs are the same, line for line
+        let rest = |graph: &str| graph.split(";\n").filter(|line| !line.contains("concat=")).filter(|line| *line != "[v]nullsink")
+            .map(str::to_owned).collect::<Vec<_>>();
+        assert_eq!(rest(&apart), rest(&joined));
+        // what is not a joint concat of pictures and sounds is left as it is
+        for line in ["[v0]concat=n=1:v=1:a=0[vc]", "[v0][a0]concat=n=2:v=1:a=1[v][a]", "[v0][a0][v1]concat=n=2:v=1:a=1[v][a]", "[a0]anull[a]"] {
+            assert_eq!(sound_apart(line), line);
+        }
+        assert_eq!(sound_apart("[v0][a0]concat=n=1:v=1:a=1[vt][a]"), "[v0]concat=n=1:v=1:a=0[vt];\n[a0]concat=n=1:v=0:a=1[a]");
     }
 
     #[test]
