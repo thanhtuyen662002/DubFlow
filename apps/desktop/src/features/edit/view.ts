@@ -49,7 +49,7 @@ import { packHistory, unpackHistory } from "./undo_store.ts";
 import { DraftSavers, windowTimers } from "./autosave.ts";
 import { askAlone, CLOSE_WAIT_MS, flushWithin, unsavedPrompt } from "./close_guard.ts";
 import { mountThumbnail } from "./thumbnail_view.ts";
-import { CHECK_NOTE, checkBadge, checkHolding, checkLines, checkRunning, checkSummary, checkWarnings, keepRunningChecks, parseExportCheck } from "./export_check.ts";
+import { CHECK_NOTE, checkBadge, checkChip, checkHolding, checkLines, checkRunning, checkSummary, checkWarnings, keepRunningChecks, parseExportCheck } from "./export_check.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 type Facts = { duration: number; width: number; height: number; fps?: number; size_bytes: number; has_audio: boolean; cues: Cue[] };
@@ -3392,6 +3392,12 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   openButton.addEventListener("click", () => { if (listJob) void open(jobTarget(listJob)); });
   $("#subs-full-review").addEventListener("click", () => host.openReview());
   exportButton.addEventListener("click", openDialog);
+  // the check's details are in Xuất video; it opens also when there is nothing new to export
+  $("#edit-check-chip").addEventListener("click", () => {
+    if (!session) return;
+    if (exportButton.disabled) { dialog.hidden = false; renderDialog(); $<HTMLButtonElement>("#export-later").focus(); }
+    else openDialog();
+  });
 
   /**
    * A slider's live preview (`input`) waits for its `change` to be kept; if that
@@ -3668,6 +3674,9 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
       host.refresh();
       seekOutput(start);
       render();
+      renderCheckChip();
+      // a check still waiting or running when the editor opens keeps its header line up to date
+      if (checkRunning(listStatus?.exports ?? [])) schedulePoll(1500);
       // Heavy videos preview from a light copy (Bản xem nhẹ); the export reads the originals.
       lightReset();
       lightCheck(outputPath);
@@ -3861,6 +3870,7 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     }
     host.refresh();
     renderList();
+    renderCheckChip();
     host.left(leaving);
   }
 
@@ -3917,10 +3927,23 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
     if (state !== "RUNNING") dialogWaiting = false;
     renderList();
     renderDialog();
+    renderCheckChip();
     const newest = response.exports[response.exports.length - 1];
     const awaiting = state === "COMPLETED" && Date.now() < checkWait && !!newest && newest.check === undefined;
     if (state === "RUNNING") schedulePoll(700);
     else if (checkRunning(response.exports) || awaiting) schedulePoll(1500);
+  }
+
+  /** The header's line for the newest export's Kiểm tra kỹ thuật (#957), for every kind of video. */
+  function renderCheckChip(): void {
+    const chip = $<HTMLButtonElement>("#edit-check-chip");
+    const value = session ? checkChip(listStatus?.exports ?? []) : null;
+    chip.hidden = !value;
+    if (!value) return;
+    chip.textContent = value.text;
+    chip.className = value.className;
+    chip.title = value.title;
+    chip.dataset.phase = value.phase;
   }
 
   function renderList(): void {

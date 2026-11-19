@@ -1035,6 +1035,11 @@ button.job.selected { background: var(--select); }
 .edit-panel-head .icon-btn { width: 30px; }
 .edit-changes { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--text-3); font-size: 12.5px; white-space: nowrap; }
 .edit-changes > span:last-child { overflow: hidden; text-overflow: ellipsis; }
+/* The newest export's Kiểm tra kỹ thuật (#957); a click opens Xuất video. */
+.edit-check-chip { flex: none; height: 24px; padding: 0 10px; border: 1px solid var(--line); border-radius: 12px; background: transparent; color: var(--text-3); font-size: 12px; white-space: nowrap; cursor: pointer; }
+.edit-check-chip:hover { background: var(--hover); color: var(--text); }
+.edit-check-chip.mqc-warn { border-color: var(--warn); color: var(--warn); }
+.edit-check-chip.mqc-ok { color: var(--ok); }
 .edit-changes .dot { width: 6px; height: 6px; }
 .edit-export-btn { flex: none; gap: 6px; height: 32px; padding: 0 11px; }
 .edit-panel-body { display: flex; flex: 1; flex-direction: column; gap: 14px; min-height: 0; padding: 16px; overflow: auto; }
