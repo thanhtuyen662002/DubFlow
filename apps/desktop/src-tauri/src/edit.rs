@@ -3751,6 +3751,9 @@ const CLOSE_CLEANUP_WAIT: Duration = Duration::from_secs(10);
 /// Kill every FFmpeg of every export in `running`, wait for each to end, then wait (up to `cleanup`)
 /// until each export has left `running`, i.e. removed its `.partial` and dropped its lease (`leave`). `closing` is
 /// set first, before the lock, so an export either is in `running` here or sees `closing` and never starts.
+/// A worker that has not left by then (a disk that hangs on the delete) is not waited for: the app closes anyway, its
+/// FFmpeg is already gone, and its `.partial` (if still there) is removed by the next start's `recover_interrupted`,
+/// which also reports the export as interrupted. The registry lock and FFmpeg waits are only ever held briefly.
 fn stop_exports_in(running: &Mutex<HashMap<PathBuf, Arc<Running>>>, closing: &AtomicBool, cleanup: Duration) {
     closing.store(true, Ordering::SeqCst);
     // A poisoned lock (a worker panicked holding it) still lists every export and every FFmpeg (#971 review).
@@ -4654,6 +4657,37 @@ mod tests {
         assert_eq!(status["state"], "RUNNING", "closing is not Hủy: the next start says it was interrupted");
         assert!(crate::work_lease::take(&work, BUSY).is_ok(), "the export's lease is free");
         worker.join().unwrap();
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// #971 review: a worker that never finishes its cleanup does not hold the close: once its FFmpeg is gone,
+    /// `stop_exports_in` returns after `cleanup` with that export still listed, and what it left (status RUNNING,
+    /// a `.partial`) is recovered on the next start as "Lần xuất trước bị gián đoạn", with the `.partial` removed.
+    #[test]
+    fn a_stuck_cleanup_does_not_hold_the_close_and_is_recovered_next_start() {
+        let base = std::env::temp_dir().join(format!("dubflow-971-stuck-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let work = base.join("work");
+        fs::create_dir_all(&work).unwrap();
+        let target = base.join("Phim (sửa 1).mp4");
+        let partial = partial_of(&target);
+        fs::write(&partial, b"half").unwrap();
+        write_status(&work, "RUNNING", 34.0, "Đang xuất video… 34%", Some(&target));
+        let (running, closing) = (Mutex::new(HashMap::new()), AtomicBool::new(false));
+        let stuck = Arc::new(Running { children: Mutex::new(vec![export_child()]), cancelled: AtomicBool::new(false) });
+        running.lock().unwrap().insert(work.clone(), stuck.clone());
+        let started = Instant::now();
+        stop_exports_in(&running, &closing, Duration::from_millis(200));
+        let took = started.elapsed();
+        assert!(took >= Duration::from_millis(200) && took < Duration::from_secs(5), "bounded: {took:?}");
+        assert!(ended(&stuck), "its FFmpeg is gone even though its cleanup never ran");
+        assert_eq!(running.lock().unwrap().len(), 1, "the close returned with the stuck export still listed");
+        assert!(partial.exists(), "its .partial may be left when the close returns");
+        // The next start: no window holds the lease, so it is interrupted and the .partial goes.
+        let mut status: Value = serde_json::from_slice(&fs::read(work.join("status.json")).unwrap()).unwrap();
+        recover_interrupted(&work, &mut status);
+        assert_eq!(status["message"], "Lần xuất trước bị gián đoạn. Hãy xuất lại.");
+        assert!(!partial.exists());
         fs::remove_dir_all(&base).unwrap();
     }
 
