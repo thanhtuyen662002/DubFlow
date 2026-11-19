@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { Autosaver, DraftSavers, MAX_WAIT_MS, QUIET_MS, RETRY_FIRST_MS, RETRY_MAX_MS, retryDelay, saveDelay } from "../src/features/edit/autosave.ts";
-import { askAlone, CLOSE_EVENT, CLOSE_LISTENERS_KEY, CLOSE_WAIT_MS, closeGuard, closeRequests, EDITOR_HELD, EDITOR_LEFT, editorGuard, flushWithin,
+import { answerStay, askAlone, CLOSE_EVENT, CLOSE_LISTENERS_KEY, CLOSE_WAIT_MS, closeGuard, closeRequests, EDITOR_HELD, EDITOR_LEFT, editorGuard, flushWithin,
   pageQuestions, StaleCloseListeners, storageIds, unsavedPrompt, wireWindowClose } from "../src/features/edit/close_guard.ts";
 
 // A fake clock: timers run when the test moves time on. `fire` is when a timer set for `ms` really fires (a browser
@@ -492,6 +492,69 @@ for (const ok of [false, true]) {
   assert.equal(asked, 0, "no second question");
   // nothing closing: no wait at all
   assert.equal(await closeGuard({ before: () => null, flush: async () => true, ask: async () => false, timers })(), true);
+}
+
+// Issue #952, case (b): a window close never waits behind a question that is not about closing the window. On rc28 the
+// first × after "Thoát" landed on the "Thoát chỉnh sửa?" backdrop (dismissed it, app stayed); with the × above every
+// backdrop it would instead wait, invisibly, behind that open question (the test above: nothing until it is answered),
+// and a later "Ở lại" there would close the app. Now the close answers the open questions "stay" first (as a press on
+// their dimmed area did), the editor's close settles at once, and the window close goes on with one question at most.
+{
+  const { timers } = clock();
+  let answer, flushed = 0, asked = 0, settled = 0;
+  const editorClosing = new Promise((resolve) => { answer = resolve; });
+  const order = [];
+  const mayClose = closeGuard({
+    settle: () => { settled += 1; order.push("settle"); answer(false); },  // "Ở lại" on "Thoát chỉnh sửa?"
+    before: () => { order.push("before"); return editorClosing; },
+    flush: async () => { flushed += 1; return true; }, ask: async () => { asked += 1; return false; }, timers });
+  let closed;
+  void mayClose().then((value) => { closed = value; });
+  for (let turn = 0; turn < 5; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(closed, true, "one × closes at once, not after the open question is answered: the draft is on disk");
+  assert.deepEqual(order, ["settle", "before"], "the open question is answered before the close waits for it");
+  assert.equal(flushed, 1);
+  assert.equal(asked, 0, "no question at all when the draft is on disk");
+  // while a close waits or asks, a second close shares it and answers nothing (its own question stays open)
+  let release;
+  const slow = closeGuard({ settle: () => { settled += 1; }, flush: () => new Promise((resolve) => { release = resolve; }),
+    ask: async () => false, timers });
+  settled = 0;
+  const first = slow(), second = slow();
+  assert.equal(settled, 1, "settled once per close, never under its own question");
+  release(true);
+  assert.deepEqual(await Promise.all([first, second]), [true, true]);
+  // the save is failing: the open question is answered "stay", then the close asks its own, alone
+  let asks = 0;
+  const failing = closeGuard({ settle: () => { order.length = 0; order.push("settle"); }, flush: async () => false,
+    ask: async () => { asks += 1; order.push("ask"); return false; }, timers });
+  assert.equal(await failing(), false, "Ở lại: the window stays");
+  assert.deepEqual(order, ["settle", "ask"], "a visible question, never a silent no-op");
+  // a settle that throws never closes the window by itself, nor stops the guard
+  assert.equal(await closeGuard({ settle: () => { throw new Error("x"); }, flush: async () => false, ask: async () => false, timers })(), false);
+  assert.equal(await closeGuard({ settle: () => { throw new Error("x"); }, flush: async () => true, ask: async () => false, timers })(), true);
+}
+
+// answerStay: every open question in the page gets its first button (confirmDialog's cancel, the media picker's Hủy),
+// newest first, like a press on its dimmed area; nothing else is pressed.
+{
+  const pressed = [];
+  const button = (name) => ({ click: () => pressed.push(name) });
+  const actions = (...names) => ({ querySelector: (selector) => {
+    assert.equal(selector, "button");
+    return names.length ? button(names[0]) : null;
+  } });
+  const page = (list) => ({ querySelectorAll: (selector) => {
+    assert.equal(selector, ".confirm-backdrop .confirm-actions");
+    return list;
+  } });
+  assert.equal(answerStay(page([actions("Ở lại (Thoát chỉnh sửa?)", "Thoát"), actions("Hủy (picker)", "Thêm")])), 2);
+  assert.deepEqual(pressed, ["Hủy (picker)", "Ở lại (Thoát chỉnh sửa?)"], "newest first, the stay button only");
+  pressed.length = 0;
+  assert.equal(answerStay(page([actions()])), 0, "a panel without buttons is left alone");
+  assert.equal(answerStay(page([])), 0);
+  assert.equal(answerStay(null), 0, "no page: nothing to answer");
+  assert.deepEqual(pressed, []);
 }
 
 // A timer that fires a little early (setTimeout drops the fraction of a millisecond, the steady clock has one) never
@@ -2177,8 +2240,8 @@ for (const action of ["close", "exit"]) {
   assert.match(main, /closeGuarded: \(\) => windowCloseReady\(\),\s*closeGuardedNow: \(\) => windowCloseNow\(\),/);
   assert.ok(main.indexOf("let windowCloseReady") < main.indexOf("const editor = mountEditor("), "set before the editor can open");
   assert.doesNotMatch(main, /editor\.flush\(\)\.finally\(/, "no close that ignores a failed save");
-  assert.match(main, /closeGuard\(\{ before: \(\) => editor\.closing\(\), flush: \(\) => editor\.flush\(\),\s*ask: \(\) => askAlone\(\(\) => confirmDialog\(unsavedPrompt\("close", false, editor\.unsaved\(\)\)\)\)/,
-    "the window close waits for an editor close in progress, then asks one question at a time");
+  assert.match(main, /closeGuard\(\{ settle: \(\) => answerStay\(\), before: \(\) => editor\.closing\(\), flush: \(\) => editor\.flush\(\),\s*ask: \(\) => askAlone\(\(\) => confirmDialog\(unsavedPrompt\("close", false, editor\.unsaved\(\)\)\)\)/,
+    "the window close answers open questions 'stay' (Issue #952), waits for an editor close in progress, then asks one question at a time");
   assert.doesNotMatch(main + view + code("../src/features/edit/close_guard.ts"), /\.destroy\(\)/, "never destroys the window");
   assert.ok(!capabilities.permissions.includes("core:window:allow-destroy"), "no new window permission (Issue #929 contract)");
   // every save goes through the saver (a direct save() would neither be retried nor seen by a close)

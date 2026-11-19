@@ -60,6 +60,12 @@ export function unsavedPrompt(action: "close" | "exit", unapplied = false, video
 }
 
 export type CloseGuard = {
+  /**
+   * Called first, once per close: answers the questions open in the page "stay" (`answerStay`), so the close never
+   * waits behind one that is not about closing the window (Issue #952). Not called for a close that shares one under
+   * way, so the close's own question is never answered by it.
+   */
+  settle?: () => unknown;
   /** Something to wait for first: a close of the editor already asking (one question at a time). */
   before?: () => Promise<unknown> | null;
   /** Write the pending draft; true when the disk has every change. */
@@ -80,6 +86,11 @@ export function closeGuard(guard: CloseGuard): () => Promise<boolean> {
   return () => {
     if (running) return running;
     const current = (async () => {
+      try {
+        guard.settle?.();
+      } catch {
+        // whatever is still open, the close below waits for it or asks nothing (askAlone): never closes by itself
+      }
       const first = guard.before?.();
       if (first) await first.catch(() => undefined);  // whatever it answered, the draft is checked below
       if (await flushWithin(guard.flush, guard.waitMs ?? CLOSE_WAIT_MS, guard.timers)) return true;
@@ -439,6 +450,27 @@ export const pageQuestions: QuestionPlace = {
     panels[panels.length - 1]?.querySelector<HTMLButtonElement>(".confirm-actions button")?.focus();
   },
 };
+
+/** What `answerStay` needs of the page. */
+export type StayRoot = { querySelectorAll(selector: string): ArrayLike<{ querySelector(selector: string): { click(): void } | null }> };
+
+/**
+ * Issue #952: answers every question open in the page "stay", newest first, as a press on its dimmed area does: its
+ * first button (confirmDialog puts the cancel button first; the media picker's first button is Hủy). A window close
+ * calls it first, so it never waits, unseen, behind a question that is not about closing the window: the editor's
+ * "Thoát chỉnh sửa?" answered "Ở lại" lets the close go on, with its own question (if any) alone. Returns how many.
+ */
+export function answerStay(root: StayRoot | null = typeof document !== "undefined" ? document : null): number {
+  if (!root) return 0;
+  let answered = 0;
+  for (const actions of Array.from(root.querySelectorAll(".confirm-backdrop .confirm-actions")).reverse()) {
+    const stay = actions.querySelector("button");
+    if (!stay) continue;
+    stay.click();
+    answered += 1;
+  }
+  return answered;
+}
 
 /**
  * The unsaved-draft question, only when no other question is open: two at once would both take the keys, so Enter

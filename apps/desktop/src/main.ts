@@ -5,7 +5,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { connectDesktopShell, type DesktopShellModel } from "./shell/desktop_shell.ts";
 import { confirmDialog } from "./shell/confirm.ts";
-import { askAlone, closeGuard, closeRequests, editorGuard, storageIds, unsavedPrompt, wireWindowClose, type EventBridge } from "./features/edit/close_guard.ts";
+import { answerStay, askAlone, closeGuard, closeRequests, editorGuard, storageIds, unsavedPrompt, wireWindowClose, type EventBridge } from "./features/edit/close_guard.ts";
 import { windowTimers } from "./features/edit/autosave.ts";
 import { mountLayoutPanels, refitPanels, resetPanels } from "./shell/layout_panels.ts";
 import { mountListTools } from "./shell/list_tools.ts";
@@ -3060,9 +3060,10 @@ async function syncMaximized(): Promise<void> {
 $("#window-minimize").addEventListener("click", () => void appWindow?.minimize());
 $("#window-maximize").addEventListener("click", () => void appWindow?.toggleMaximize());
 // Closing (the × button, Alt+F4, the taskbar) writes the editing draft first; a change that could not be saved is
-// not lost without asking (Issue #929).
+// not lost without asking (Issue #929). A question open in the page is answered "stay" first, so one × never waits
+// behind it unseen (Issue #952).
 if (appWindow) {
-  const mayClose = closeGuard({ before: () => editor.closing(), flush: () => editor.flush(),
+  const mayClose = closeGuard({ settle: () => answerStay(), before: () => editor.closing(), flush: () => editor.flush(),
     ask: () => askAlone(() => confirmDialog(unsavedPrompt("close", false, editor.unsaved()))), timers: windowTimers });
   mayQuit = mayClose;
   // Tauri's event plugin by listener id, the commands its own listen and unlisten use: a reload finds and removes the
