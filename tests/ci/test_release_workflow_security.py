@@ -206,6 +206,33 @@ class ReleaseWorkflowSecurityTests(unittest.TestCase):
         self.assertLess(lines.index("python scripts/validate_governance.py"),
                         lines.index("python -m unittest discover -s tests/release -p 'test_*.py'"))
 
+    def test_release_notes_are_prepared_once_and_carried_to_manifest_artifact_and_release(self) -> None:
+        """#969: the notes file is built before signing, fails closed, and is what the manifest, artifact and
+        GitHub Release carry; the publish job refuses to run without it."""
+        notes_file = "dist/DubFlow-$env:RELEASE_VERSION-release-notes.md"
+        names = list(self.steps["build"])
+        prepare = [line.strip() for line in self.steps["build"]["Prepare release notes"]]
+        self.assertLess(names.index("Prepare release notes"), names.index("Sign the in-app update manifest"))
+        self.assertIsNone(_key(self.steps["build"]["Prepare release notes"], "if", 8), "notes run for every build")
+        command = next(i for i, line in enumerate(prepare) if line.startswith("python -m packaging.release.notes "))
+        self.assertIn(f'--out "{notes_file}"', prepare[command])
+        self.assertTrue(prepare[command + 1].startswith("if ($LASTEXITCODE -ne 0) { throw "))
+
+        sign = [line.strip() for line in self.steps["build"]["Sign the in-app update manifest"]]
+        self.assertIn(f'$notes = "{notes_file}"', sign)
+        self.assertTrue(any("--notes-file $notes" in line for line in sign))
+        self.assertFalse([line for line in sign if "RUNNER_TEMP" in line], "the manifest must not use ad hoc notes")
+
+        upload = [line.strip() for line in self.steps["build"]["Upload downloadable build artifact"]]
+        self.assertIn("dist/DubFlow-${{ env.RELEASE_VERSION }}-release-notes.md", upload)
+
+        publish = [line.strip() for line in self.steps["publish"]["Create or update GitHub Release"]]
+        missing = publish.index('if [[ ! -s "$notes" ]]; then')
+        self.assertEqual(publish[missing - 1], 'notes="dist/DubFlow-${RELEASE_VERSION}-release-notes.md"')
+        self.assertIn("exit 1", publish[missing + 1:missing + 4])
+        self.assertLess(missing, next(i for i, line in enumerate(publish) if line.startswith("gh release create ")))
+        self.assertIn('--notes "$body"', publish)
+
 
 if __name__ == "__main__":
     unittest.main()
