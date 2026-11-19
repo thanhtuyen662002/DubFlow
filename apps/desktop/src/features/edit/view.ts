@@ -459,7 +459,8 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
   // Export dialog.
   let folder = "";
   let quality: Quality = "source";
-  /** Tùy chọn khác of the export dialog (Issue #526); kept while the app runs. */
+  /** Tùy chọn khác of the export dialog (Issue #526); kept while the app runs, except "Chỉ xuất âm thanh", which each
+   *  opened video starts without (Issue #962). */
   const options = { fps: "", rate: "", range: "all" as "all" | "marked", audioOnly: false };
   /** Which placement of the selected overlay drag, size and presets change (Chuyển động). */
   let overlayKey: OverlayKey = "start";
@@ -3623,6 +3624,9 @@ export function mountEditor(invoke: Invoke, host: EditorHost): Editor {
         steps: [], redoSteps: [], subsPast: [], subsFuture: [], subsShadow: "", subsAt: 0, subsBurst: null, markIn: null, markOut: null, shuttle: 1,
       };
       session.plainCover = !session.reviewable;
+      // "Chỉ xuất âm thanh" is for one export, not a preference: a video opened afterwards exports its picture again
+      // (rc29: an audio-only export of one draft turned the next draft's export into an .m4a). Issue #962.
+      options.audioOnly = false;
       // The undo steps saved with this draft (Issue #896), around the very edit it opened on.
       if (project && loaded.project && typeof loaded.project === "object") {
         const kept = unpackHistory((loaded.project as Record<string, unknown>).undo, loaded.duration, info);
