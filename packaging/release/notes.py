@@ -37,7 +37,7 @@ def notes_for(version: str, source_root: Path) -> str:
     path = source_root / NOTES_DIR / f"{release_of(version)}.md"
     if not path.is_file():
         return f"DubFlow {version}"
-    text = path.read_text(encoding="utf-8").replace("\r\n", "\n").strip()
+    text = path.read_bytes().decode("utf-8").replace("\r\n", "\n").strip()  # same on every OS
     if not text:
         raise NotesError(f"release notes are empty: {path}")
     if len(text) > MAX_CHARS:
