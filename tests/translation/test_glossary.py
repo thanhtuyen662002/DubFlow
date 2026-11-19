@@ -100,6 +100,26 @@ class EnforceTest(unittest.TestCase):
         self.assertEqual([cue.translated_text for cue in result.cues], ["đổi pin sạc nhé", "đang quay", "Đà Lạt city đẹp"])
         self.assertEqual(result.unconfirmed, ())
 
+    def test_a_term_rendered_shorter_than_the_line_is_not_doubled(self):
+        # rc30 (Issue #966): Argos renders "lighthouse" alone as "hải đăng" but the line says "ngọn hải đăng"
+        guide = glossary.resolve({"project": [term("lighthouse", "ngọn tháp hải đăng"), term("tractor", "máy cày kéo", True)]})
+        offline = {"lighthouse": "hải đăng", "tractor": "máy kéo"}
+        cues = [
+            Cue("1", 0, 1, "The lighthouse stands.", "Ngọn hải đăng đứng đó."),
+            Cue("2", 0, 1, "A lighthouse.", "Một hải đăng."),
+            Cue("3", 0, 1, "The old tractor.", "Chiếc máy kéo cũ."),
+            Cue("4", 0, 1, "The tractor crossed.", "Máy kéo cày kéo qua."),
+        ]
+        result = glossary.enforce(cues, guide, lambda text: offline[text])
+        self.assertEqual([cue.translated_text for cue in result.cues], [
+            "Ngọn tháp hải đăng đứng đó.",
+            "Một ngọn tháp hải đăng.",
+            "Chiếc máy cày kéo cũ.",
+            "Máy cày kéo qua.",
+        ])
+        self.assertEqual(result.replaced, 4)
+        self.assertEqual(result.unconfirmed, ())
+
     def test_a_failing_render_never_stops_the_others(self):
         guide = glossary.resolve({"project": [term("甲", "Giáp", True), term("乙", "Ất", True)]})
 

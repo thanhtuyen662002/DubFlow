@@ -212,6 +212,26 @@ def _pattern(term: str) -> re.Pattern[str]:
     return re.compile(head + text + tail, re.IGNORECASE | re.UNICODE)
 
 
+def _placing(wrong: str, target: str) -> re.Pattern[str]:
+    """``wrong`` as a whole word, together with the target's own words the line already has right beside it.
+
+    The offline rendering of a term alone can be shorter than the line's ("hải đăng" for "lighthouse", where the line
+    says "ngọn hải đăng"), so replacing only it would double the words around it ("ngọn ngọn tháp hải đăng", rc30,
+    Issue #966). A leading run of the target's first words and a trailing run of its last words are replaced with it.
+    """
+    words = _nfc(target).split()
+    if len(words) < 2:
+        return _pattern(wrong)
+
+    def run(parts: list[str]) -> str:
+        return r"\s+".join(re.escape(part) for part in parts)
+
+    heads = "|".join(run(words[:size]) for size in range(len(words) - 1, 0, -1))
+    tails = "|".join(run(words[-size:]) for size in range(len(words) - 1, 0, -1))
+    return re.compile(rf"(?:(?<![{_LATIN}])(?:{heads})\s+)?" + _pattern(wrong).pattern + rf"(?:\s+(?:{tails})(?![{_LATIN}]))?",
+                      re.IGNORECASE | re.UNICODE)
+
+
 def contains(text: str, term: str) -> bool:
     return bool(term.strip()) and bool(_pattern(term).search(_nfc(text)))
 
@@ -260,7 +280,7 @@ def enforce(cues: Sequence[Any], guide: Guide, render: Callable[[str], str] | No
             for wrong in filter(None, (offline, term.source)):
                 if _key(wrong) == _key(term.target) or not contains(text, wrong):
                     continue
-                text = _pattern(wrong).sub(lambda match: _keep_case(match.group(0), term.target), text)
+                text = _placing(wrong, term.target).sub(lambda match: _keep_case(match.group(0), term.target), text)
                 replaced += 1
                 break
             else:
