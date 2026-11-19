@@ -3405,9 +3405,8 @@ fn spawn_tracked(mut command: Command, running: &Running) -> std::io::Result<(Op
     let mut child = command.spawn()?;
     let stdout = child.stdout.take();
     let id = child.id();
-    if let Ok(mut children) = running.children.lock() {
-        children.push(child);
-    }
+    // Always registered, even behind a lock a panicked part worker poisoned, so `stop` can always reach it (#971).
+    running.children.lock().unwrap_or_else(PoisonError::into_inner).push(child);
     if running.cancelled.load(Ordering::SeqCst) {
         stop(running);
     }
@@ -3416,8 +3415,10 @@ fn spawn_tracked(mut command: Command, running: &Running) -> std::io::Result<(Op
 
 /// Wait for the child `spawn_tracked` started as `id`, taking it out of `running`: whether it exited 0.
 fn wait_tracked(running: &Running, id: u32) -> bool {
-    let child = running.children.lock().ok()
-        .and_then(|mut children| children.iter().position(|child| child.id() == id).map(|at| children.swap_remove(at)));
+    let child = {
+        let mut children = running.children.lock().unwrap_or_else(PoisonError::into_inner);
+        children.iter().position(|child| child.id() == id).map(|at| children.swap_remove(at))
+    };
     matches!(child.map(|mut child| child.wait()), Some(Ok(code)) if code.success())
 }
 
@@ -4570,6 +4571,38 @@ mod tests {
         stop_exports_in(&running, &closing, Duration::ZERO);
         assert!(entry.cancelled.load(Ordering::SeqCst));
         assert!(ended(&entry), "the FFmpeg behind a poisoned lock is killed, not left running");
+    }
+
+    /// #971 review: after a part worker panicked holding its export's lock, another part's FFmpeg is still
+    /// registered when it starts (so the close kills and reaps it), and still found and reaped when it ends.
+    #[test]
+    fn every_ffmpeg_is_tracked_behind_a_poisoned_lock() {
+        let entry = Arc::new(Running { children: Mutex::new(Vec::new()), cancelled: AtomicBool::new(false) });
+        let held = entry.clone();
+        let panicked = std::thread::spawn(move || {
+            let _children = held.children.lock().unwrap();
+            panic!("a part worker panics holding the lock");
+        }).join();
+        assert!(panicked.is_err() && entry.children.is_poisoned());
+        let long = || {
+            let mut command = if cfg!(windows) { Command::new("ping") } else { Command::new("sleep") };
+            if cfg!(windows) { command.args(["-n", "60", "127.0.0.1"]); } else { command.arg("60"); }
+            command.stderr(Stdio::null());
+            command
+        };
+        // Another part starts its FFmpeg: it is registered despite the poison.
+        let (_, first) = spawn_tracked(long(), &entry).unwrap();
+        assert_eq!(entry.children.lock().unwrap_or_else(PoisonError::into_inner).len(), 1, "the new FFmpeg is tracked");
+        // The close: every tracked FFmpeg is killed and reaped.
+        let (running, closing) = (Mutex::new(HashMap::new()), AtomicBool::new(false));
+        running.lock().unwrap().insert(PathBuf::from("work/parts"), entry.clone());
+        stop_exports_in(&running, &closing, Duration::ZERO);
+        assert!(ended(&entry), "the part's FFmpeg is killed, not orphaned");
+        // A part spawning after the close is stopped at once (cancelled is set), and is found when it is waited for.
+        let (_, late) = spawn_tracked(long(), &entry).unwrap();
+        assert!(!wait_tracked(&entry, late), "the late FFmpeg was killed, so it did not succeed");
+        assert!(!wait_tracked(&entry, first), "the first one ended by the kill");
+        assert!(entry.children.lock().unwrap_or_else(PoisonError::into_inner).is_empty(), "both were found and taken out");
     }
 
     /// #971 review: an export stopped by "Hủy" is "Đã hủy"; one stopped because DubFlow closed stays RUNNING, and

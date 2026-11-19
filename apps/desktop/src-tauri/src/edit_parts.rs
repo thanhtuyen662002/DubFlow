@@ -477,10 +477,8 @@ fn render_in(job: &ExportJob, source: &Source, running: &Running, dir: &Path, en
         }
         if video.is_err() {
             // Nothing to join: the single run renders the sound again, so this one stops now.
-            if let Ok(mut children) = running.children.lock() {
-                for child in children.iter_mut() {
-                    let _ = child.kill();
-                }
+            for child in running.children.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter_mut() {
+                let _ = child.kill();
             }
         }
         (video, audio.map(|handle| handle.join().unwrap_or_else(|_| Err(String::new()))))
