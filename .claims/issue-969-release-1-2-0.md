@@ -1,7 +1,7 @@
 DUBFLOW_PR_V1
 Issue: #969
 Lease-Owner: Claude/issue-969-release-1-2-0
-Lease-Heartbeat: 2026-11-19T11:07:55Z
+Lease-Heartbeat: 2026-11-19T11:11:14Z
 Tested-Base-SHA: 959f731cce6c5ae30c6d5b4a79eb806edc4372d9
 Conflict-Domains: release-workflow, desktop-host-metadata
 Expected-Paths:
