@@ -4676,6 +4676,8 @@ mod tests {
         let (running, closing) = (Mutex::new(HashMap::new()), AtomicBool::new(false));
         let stuck = Arc::new(Running { children: Mutex::new(vec![export_child()]), cancelled: AtomicBool::new(false) });
         running.lock().unwrap().insert(work.clone(), stuck.clone());
+        // The stuck worker still owns its export's lease until the old process exits.
+        let lease = crate::work_lease::take(&work, BUSY).unwrap();
         let started = Instant::now();
         stop_exports_in(&running, &closing, Duration::from_millis(200));
         let took = started.elapsed();
@@ -4683,8 +4685,18 @@ mod tests {
         assert!(ended(&stuck), "its FFmpeg is gone even though its cleanup never ran");
         assert_eq!(running.lock().unwrap().len(), 1, "the close returned with the stuck export still listed");
         assert!(partial.exists(), "its .partial may be left when the close returns");
-        // The next start: no window holds the lease, so it is interrupted and the .partial goes.
         let mut status: Value = serde_json::from_slice(&fs::read(work.join("status.json")).unwrap()).unwrap();
+        // While the worker's lease is held (Windows file sharing), recovery touches nothing: no live export's output
+        // is ever marked interrupted or deleted.
+        if cfg!(windows) {
+            recover_interrupted(&work, &mut status);
+            assert_eq!(status["state"], "RUNNING");
+            assert!(partial.exists());
+            let saved: Value = serde_json::from_slice(&fs::read(work.join("status.json")).unwrap()).unwrap();
+            assert_eq!(saved["state"], "RUNNING");
+        }
+        // The old process exits (its lease goes); the next start finds it interrupted and the .partial goes.
+        drop(lease);
         recover_interrupted(&work, &mut status);
         assert_eq!(status["message"], "Lần xuất trước bị gián đoạn. Hãy xuất lại.");
         assert!(!partial.exists());
