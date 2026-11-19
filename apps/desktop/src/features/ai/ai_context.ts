@@ -155,24 +155,38 @@ export function aiContextHint(provider: Provider, value: AiContext, inUse: strin
 
 let asking: Promise<AiContext> | null = null;
 let keysClosed = false;
+let testEndpoint: string | null = null;
 
 /**
  * DUBFLOW_NO_SAVED_KEYS (a candidate or test run beside the installed app, from ai_key_status): no question and no AI
  * translation at all for this run, a custom server included (it needs no key, so closing the saved keys alone does
- * not stop it). The host drops it too.
+ * not stop it). The host drops it too. The one exception (Issue #960) is the run's keyless loopback test endpoint
+ * (DUBFLOW_TEST_AI_ENDPOINT, a local mock), as the custom provider at exactly that address; the host checks it again.
  */
-export function setKeysClosed(closed: boolean): void {
+export function setKeysClosed(closed: boolean, endpoint: unknown = null): void {
   keysClosed = closed;
+  testEndpoint = closed && typeof endpoint === "string" && endpoint.trim() ? trimSlash(endpoint) : null;
+}
+
+function trimSlash(url: string): string {
+  return url.trim().replace(/\/+$/, "");
+}
+
+/** Whether a closed run may still use `provider`: only the custom provider at exactly the run's test endpoint. */
+export function closedRunAllows(session: Pick<AiSession, "options">, provider: Provider): boolean {
+  const baseUrl = session.options(provider).baseUrl;
+  return provider === "custom" && testEndpoint !== null && typeof baseUrl === "string" && trimSlash(baseUrl) === testEndpoint;
 }
 
 /**
  * The choice to use now. Still "ask" with the default provider ready: the question, once (callers at the same time
  * share it), and the answer is kept; Esc is "Không", a click outside is no answer. Nothing ready: "ask", which sends
- * no AI. Keys closed to this run: "off" for this run, nothing asked or kept.
+ * no AI. Keys closed to this run: "off" for this run, nothing asked or kept, unless the custom provider points at the
+ * run's test endpoint (Issue #960), which is asked and kept like any custom server.
  */
 export function decideAiContext(session: Pick<AiSession, "provider" | "saved" | "options">, moment: "saved" | "start",
   confirm: (options: ConfirmOptions) => Promise<boolean> = confirmDialog, store: ContextStore | null = browserStore()): Promise<AiContext> {
-  if (keysClosed) return Promise.resolve("off");
+  if (keysClosed && !closedRunAllows(session, session.provider())) return Promise.resolve("off");
   const current = loadAiContext(store);
   const provider = session.provider();
   if (current !== "ask" || !providerReady(session, provider)) return Promise.resolve(current);
