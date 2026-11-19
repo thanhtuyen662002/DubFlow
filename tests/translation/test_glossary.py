@@ -200,6 +200,24 @@ class SettingsTest(unittest.TestCase):
         self.assertEqual(provenance["backend"], "argos")
         self.assertTrue(warnings[0].startswith("GLOSSARY_UNCONFIRMED: 1 câu"))
 
+    def test_a_line_the_user_edited_is_never_rewritten_by_the_glossary(self):
+        # Issue #953: the user's own edit of a line (translation_overrides.json) is applied after the glossary
+        # check and wins over it, even when it does not use the mandatory term.
+        guide = glossary.resolve({"project": [term("李明", "Lý Minh", True)], "context": {"topic": "Phim"}})
+        runtime = SimpleNamespace(translate_text=lambda text: "Li Ming")
+        cues = (production_job.TextCue("1", 0, 1000, "李明来了", "Li Ming đến.", 0.9), production_job.TextCue("2", 0, 1000, "李明走了", "Li Ming đi.", 0.9))
+        fixed, _ = production_job._apply_glossary(cues, guide, runtime, {}, [])
+        self.assertEqual([cue.translated_text for cue in fixed], ["Lý Minh đến.", "Lý Minh đi."])
+        with TemporaryDirectory() as temp:
+            out = Path(temp)
+            (out / production_job.TRANSLATION_OVERRIDES_FILE).write_text(
+                json.dumps({"schema_version": 1, "cues": {"2": "Li Ming rời đi."}}, ensure_ascii=False), encoding="utf-8")
+            final, identity = production_job._apply_translation_overrides(fixed, out)
+        self.assertEqual([cue.translated_text for cue in final], ["Lý Minh đến.", "Li Ming rời đi."])
+        self.assertIsNotNone(identity)
+        # Context is never turned into a term.
+        self.assertEqual([item.source for item in guide.terms], ["李明"])
+
 
 if __name__ == "__main__":
     unittest.main()

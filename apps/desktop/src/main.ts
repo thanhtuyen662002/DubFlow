@@ -52,9 +52,9 @@ import { COVER_STORAGE_KEY, describeCoverStyle, normalizeCoverStyle, storedCover
 import { configureHostAi, createAiSession, isKeyError, PROVIDERS } from "./features/ai/provider.ts";
 import { loadPrefs, translationJobArgs } from "./features/ai/translation_prefs.ts";
 import { decideAiContext, setKeysClosed, type AiContext } from "./features/ai/ai_context.ts";
-import { glossaryArgs } from "./features/ai/glossary.ts";
+import { glossaryArgs, resolveGuide } from "./features/ai/glossary.ts";
 import { mountGlossaryBooks, mountJobGlossary } from "./features/ai/glossary_view.ts";
-import { rewriteAsNarration, type NarrationStyle } from "./features/narration/ai.ts";
+import { narrationTermsNote, rewriteAsNarration, type NarrationStyle, type NarrationTerms } from "./features/narration/ai.ts";
 import { hostKeyStore, mountAiSettings } from "./features/ai/settings.ts";
 import { ReviewDraftHistory } from "./features/review/history.ts";
 import {
@@ -2495,9 +2495,13 @@ $("#review-narrate").addEventListener("click", async () => {
   button.disabled = true;
   hint.textContent = `${name} đang viết lại lời thuyết minh…`;
   try {
+    let terms: NarrationTerms | null = null;
     const lines = await rewriteAsNarration(provider, key, reviewCues.map((cue) => ({ ...cue, text: draftOf(cue) })),
       $<HTMLSelectElement>("#review-narrate-style").value as NarrationStyle, {
         title: job.displayName,
+        // Issue #953: the video's Thuật ngữ & ngữ cảnh, as its translation used them.
+        guide: resolveGuide(job.glossary, glossaryBooks.books()),
+        onTerms: (found) => { terms = found; },
         onProgress: (done, total) => {
           if (total > 1 && done < total) hint.textContent = `${name} đang viết lại lời thuyết minh… (phần ${done + 1}/${total})`;
         },
@@ -2505,7 +2509,8 @@ $("#review-narrate").addEventListener("click", async () => {
     reviewDrafts.replaceDrafts(lines);
     reviewOnlyIssues.checked = false;
     renderReview();
-    hint.textContent = `Đã viết lại ${lines.size} câu (lời thoại đã gửi tới ${company}). Đọc lại và sửa, rồi bấm “Lưu & xử lý lại”; bấm “Hoàn tác” để quay lại bản cũ.`;
+    hint.textContent = `Đã viết lại ${lines.size} câu (lời thoại đã gửi tới ${company}). Đọc lại và sửa, rồi bấm “Lưu & xử lý lại”; bấm “Hoàn tác” để quay lại bản cũ.`
+      + narrationTermsNote(terms);
   } catch (error) {
     hint.textContent = isKeyError(error) ? `Khóa ${name} không hợp lệ; hãy lưu lại trong “Cài đặt › Tài khoản”.` : `Không viết lại được: ${String(error).slice(0, 200)}`;
   } finally {
