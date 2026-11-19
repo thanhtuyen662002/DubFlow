@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   booksFor, cleanText, emptyJobGlossary, exportCsv, exportJson, formatTerms, glossaryArgs, isJobGlossary, normalizeBooks,
   normalizeJobGlossary, parseTerms, searchTerms, termIssues, termKey,
+  checkTerms, containsTerm, guideLines, resolveGuide, termsUsed,
 } from "../src/features/ai/glossary.ts";
 
 const t = (source, target, mandatory = false, note = "") => ({ source, target, mandatory, note });
@@ -88,5 +89,36 @@ assert.equal(isJobGlossary({ ...job, terms: [{ source: "", target: "x", mandator
 assert.equal(isJobGlossary("x"), false);
 assert.deepEqual(normalizeJobGlossary({ terms: [t("a", "b")], books: ["ok", "bad id!"], context: { tone: " vui " } }),
   { terms: [t("a", "b")], books: ["ok"], context: { topic: "", audience: "", tone: "vui", people: "", notes: "" } });
+
+// Issue #953: the engine's priority (glossary.py resolve) for the AI rewrite of a video.
+{
+  const job = { terms: [t("GPU", "card đồ họa"), t("李明", "Lý Minh", true), t("Gpu", "bộ xử lý đồ họa", true)], books: ["s"],
+                context: { topic: "Review", audience: "", tone: "", people: "", notes: "" } };
+  const shared = [{ id: "s", name: "S", auto: false, terms: [t("李明", "Lí Minh", true), t("GPU", "GPU", false), t("Đà Lạt", "Đà Lạt", true)] },
+                  { id: "x", name: "X", auto: true, terms: [t("拖拉机", "xe kéo", true)] }];
+  const guide = resolveGuide(job, shared);
+  // mandatory project > mandatory shared > preferred project > preferred shared; one per source (case and spaces ignored).
+  assert.deepEqual(guide.terms.map((term) => [term.source, term.target, term.mandatory, term.shared]),
+    [["李明", "Lý Minh", true, false], ["Gpu", "bộ xử lý đồ họa", true, false], ["Đà Lạt", "Đà Lạt", true, true]]);
+  // The job chose its books: the auto book "x" is not used. Without a choice, auto books are.
+  assert.equal(resolveGuide({ ...job, books: null }, shared).terms.some((term) => term.source === "拖拉机"), true);
+  assert.equal(guide.context.topic, "Review");
+  assert.deepEqual(resolveGuide(undefined, []), { terms: [], context: emptyJobGlossary().context });
+  // Unicode: CJK anywhere, Latin and Vietnamese as whole words, NFC either way.
+  assert.equal(containsTerm("这块GPU很快", "GPU"), true);
+  assert.equal(containsTerm("GPUs", "GPU"), false);
+  assert.equal(containsTerm("Tôi ở Đà Lạt.", "Đà Lạt".normalize("NFD")), true);
+  assert.equal(containsTerm("Đà Lạtt", "Đà Lạt"), false);
+  assert.equal(containsTerm("李明来了", "李明"), true);
+  assert.deepEqual(termsUsed(guide, ["李明来了"]).map((term) => term.source), ["李明"]);
+  assert.equal(guideLines(guide, ["no terms here"]), "Bối cảnh do người dùng ghi:\n- Chủ đề: Review");
+  // A mandatory term left in its source spelling is replaced (keeping a sentence's capital); an absent one is reported.
+  assert.deepEqual(checkTerms("gpu 很快", "Gpu chạy nhanh, gpu tốt", guide), { text: "Bộ xử lý đồ họa chạy nhanh, bộ xử lý đồ họa tốt", replaced: 1, missing: [] });
+  assert.deepEqual(checkTerms("李明说", "Anh ấy nói", guide), { text: "Anh ấy nói", replaced: 0, missing: ["李明"] });
+  assert.deepEqual(checkTerms("李明说", "Lý Minh nói", guide), { text: "Lý Minh nói", replaced: 0, missing: [] });
+  // A preferred term is a hint: never forced, never reported.
+  assert.deepEqual(checkTerms("GPU", "GPU", resolveGuide({ terms: [t("GPU", "card")], books: [], context: job.context }, [])),
+    { text: "GPU", replaced: 0, missing: [] });
+}
 
 console.log("glossary tests passed");

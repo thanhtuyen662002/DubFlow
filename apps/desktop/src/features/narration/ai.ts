@@ -1,4 +1,5 @@
 import { askJson, type Provider } from "../ai/provider.ts";
+import { checkTerms, guideLines, type Guide } from "../ai/glossary.ts";
 import { NATURAL_SYLLABLES_PER_SECOND } from "../translation_review/flow.ts";
 
 /**
@@ -39,6 +40,7 @@ Quy tắc:
 - Mỗi câu KHÔNG vượt quá số tiếng tối đa đã cho (một tiếng = một âm tiết tiếng Việt), vì giọng đọc phải khớp thời lượng.
 - Các câu nối nhau thành một mạch kể liền lạc; câu đầu tiên của video là câu mở đầu gây tò mò.
 - Chỉ dựa vào nội dung video; không bịa sự kiện, số liệu, tên riêng.
+- Nếu có bối cảnh do người dùng ghi, kể đúng theo bối cảnh đó. Nếu có thuật ngữ BẮT BUỘC, câu nào có từ gốc đó phải viết đúng tiếng Việt đã cho; thuật ngữ nên dùng thì dùng trừ khi sai ngữ cảnh.
 - Không emoji, hashtag, ký hiệu, chú thích dựng cảnh; chỉ lời đọc.`;
 
 /** At most this many Vietnamese syllables (space-separated words) fit the cue at natural pace. */
@@ -66,7 +68,7 @@ export function normalizeLines(value: unknown, cues: readonly NarrationCue[]): M
   return lines;
 }
 
-function prompt(cues: readonly NarrationCue[], style: NarrationStyle, part: number, parts: number, title: string): string {
+function prompt(cues: readonly NarrationCue[], style: NarrationStyle, part: number, parts: number, title: string, guide?: Guide): string {
   const rows = cues.map((cue) => JSON.stringify({
     id: cue.cue_id, giay: Number(((cue.end_ms - cue.start_ms) / 1000).toFixed(1)), toi_da_tieng: syllableBudget(cue),
     goc: cue.source_text.slice(0, 300), dich: cue.text.slice(0, 300), ...(cue.speaker ? { nguoi_noi: cue.speaker } : {}),
@@ -74,19 +76,27 @@ function prompt(cues: readonly NarrationCue[], style: NarrationStyle, part: numb
   return [
     `Phong cách: ${NARRATION_STYLES[style].brief}`,
     title ? `Tên video: ${title}` : "",
+    // Issue #953 (J16): the video's context and only the terms its lines say, as the translation gets them.
+    guide ? guideLines(guide, cues.map((cue) => cue.source_text)) : "",
     parts > 1 ? `Đây là phần ${part}/${parts} của video${part > 1 ? "; tiếp nối mạch kể của phần trước, không mở đầu lại" : ""}.` : "",
     "Các câu (mỗi dòng một JSON):",
     ...rows,
   ].filter(Boolean).join("\n");
 }
 
+/** The mandatory terms a rewrite did not keep: lines fixed (a term left in its source spelling) and lines still missing one. */
+export type NarrationTerms = { replaced: number; missing: Array<{ cueId: string; terms: string[] }> };
+
 /**
  * Narration lines for every cue, by cue id. The cues' source and translated
- * text are sent to the provider. Cues the model skipped are left out, so the
- * caller keeps their current text.
+ * text are sent to the provider, with the video's context and the terms its
+ * lines say (`guide`, Issue #953). Cues the model skipped are left out, so the
+ * caller keeps their current text. Each line is checked against the mandatory
+ * terms of its source; `onTerms` gets what was fixed and what is still missing.
  */
 export async function rewriteAsNarration(provider: Provider, apiKey: string, cues: readonly NarrationCue[], style: NarrationStyle,
-                                         options: { title?: string; onProgress?: (done: number, total: number) => void; ask?: typeof askJson } = {}): Promise<Map<string, string>> {
+                                         options: { title?: string; onProgress?: (done: number, total: number) => void; ask?: typeof askJson;
+                                                    guide?: Guide; onTerms?: (terms: NarrationTerms) => void } = {}): Promise<Map<string, string>> {
   const ask = options.ask ?? askJson;
   const ordered = [...cues].sort((a, b) => a.start_ms - b.start_ms);
   const parts = Math.max(1, Math.ceil(ordered.length / BATCH_CUES));
@@ -95,10 +105,34 @@ export async function rewriteAsNarration(provider: Provider, apiKey: string, cue
     const batch = ordered.slice(part * BATCH_CUES, (part + 1) * BATCH_CUES);
     options.onProgress?.(part, parts);
     const value = await ask(provider, apiKey, { system: SYSTEM, schema: SCHEMA, effort: "medium",
-      parts: [{ text: prompt(batch, style, part + 1, parts, options.title ?? "") }] });
+      parts: [{ text: prompt(batch, style, part + 1, parts, options.title ?? "", options.guide) }] });
     for (const [id, text] of normalizeLines(value, batch)) result.set(id, text);
   }
   options.onProgress?.(parts, parts);
   if (!result.size) throw new Error("AI không trả về lời thuyết minh nào; hãy thử lại.");
+  if (options.guide?.terms.some((term) => term.mandatory)) {
+    const terms: NarrationTerms = { replaced: 0, missing: [] };
+    for (const cue of ordered) {
+      const line = result.get(cue.cue_id);
+      if (line === undefined) continue;
+      const check = checkTerms(cue.source_text, line, options.guide);
+      result.set(cue.cue_id, check.text);
+      terms.replaced += check.replaced;
+      if (check.missing.length) terms.missing.push({ cueId: cue.cue_id, terms: check.missing });
+    }
+    options.onTerms?.(terms);
+  }
   return result;
+}
+
+/** What the hint adds after a rewrite: the mandatory terms put back, and the lines still missing one (never guessed). */
+export function narrationTermsNote(terms: NarrationTerms | null): string {
+  if (!terms) return "";
+  const parts: string[] = [];
+  if (terms.replaced) parts.push(`Đã đặt lại ${terms.replaced} thuật ngữ bắt buộc AI để nguyên chữ gốc.`);
+  if (terms.missing.length) {
+    const names = [...new Set(terms.missing.flatMap((entry) => entry.terms))].slice(0, 5).join(", ");
+    parts.push(`${terms.missing.length} câu chưa có thuật ngữ bắt buộc (${names}); hãy sửa trước khi lưu.`);
+  }
+  return parts.length ? ` ${parts.join(" ")}` : "";
 }

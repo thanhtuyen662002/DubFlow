@@ -249,3 +249,100 @@ export function glossaryArgs(job: JobGlossary | undefined, books: readonly Gloss
     ...(isEmptyContext(context) ? {} : { context }),
   };
 }
+
+/** One term as the translation uses it: `shared` tells a shared glossary's term from the video's own. */
+export type ResolvedTerm = GlossTerm & { shared: boolean };
+/** The video's terms (one per source, highest priority first) and its context, as the engine resolves them. */
+export type Guide = { terms: ResolvedTerm[]; context: GlossContext };
+
+/**
+ * The engine's `resolve` (engine/dubflow/translation/glossary.py) for a video: one term per source,
+ * mandatory of the video > mandatory shared > the video's > shared; within a level the first listed wins.
+ */
+export function resolveGuide(job: JobGlossary | undefined, books: readonly GlossBook[]): Guide {
+  const candidates: ResolvedTerm[] = [
+    ...(job?.terms ?? []).map((term) => ({ ...term, shared: false })),
+    ...booksFor(job, books).flatMap((book) => book.terms.map((term) => ({ ...term, shared: true }))),
+  ];
+  const level = (term: ResolvedTerm): number => (term.mandatory ? 0 : 2) + (term.shared ? 1 : 0);
+  const ordered = candidates.map((term, index) => ({ term, index })).sort((a, b) => level(a.term) - level(b.term) || a.index - b.index);
+  const chosen = new Map<string, ResolvedTerm>();
+  for (const { term } of ordered) {
+    const key = termKey(term.source);
+    if (key && !chosen.has(key)) chosen.set(key, term);
+  }
+  return { terms: [...chosen.values()].slice(0, MAX_TERMS), context: job?.context ?? emptyContext() };
+}
+
+function isCjk(ch: string): boolean {
+  return /[㐀-鿿豈-﫿぀-ヿ가-힯]/u.test(ch);
+}
+
+const LATIN = "0-9A-Za-z_\\u00C0-\\u024F\\u1E00-\\u1EFF";
+
+/** The engine's `_pattern`: a whole word, case-insensitive; CJK text has no spaces, so it matches anywhere. */
+export function termPattern(term: string, flags = "iu"): RegExp {
+  const text = term.normalize("NFC").trim();
+  const body = text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
+  const head = isCjk(text[0] ?? "") ? "" : `(?<![${LATIN}])`;
+  const tail = isCjk(text[text.length - 1] ?? "") ? "" : `(?![${LATIN}])`;
+  return new RegExp(head + body + tail, flags);
+}
+
+export function containsTerm(text: string, term: string): boolean {
+  return Boolean(term.trim()) && termPattern(term).test(text.normalize("NFC"));
+}
+
+/** The terms whose source occurs in `sources` (all of them when `sources` is null). */
+export function termsUsed(guide: Guide, sources: Iterable<string> | null): ResolvedTerm[] {
+  const text = sources === null ? null : [...sources].join("\n");
+  return guide.terms.filter((term) => text === null || containsTerm(text, term.source));
+}
+
+/**
+ * What an AI rewrite is told before the lines (the engine's `brief_lines`): the user's context, then the
+ * mandatory and the preferred terms that occur in `sources`. Context stays context: it is never listed as a term.
+ */
+export function guideLines(guide: Guide, sources: Iterable<string> | null): string {
+  const used = termsUsed(guide, sources);
+  const lines: string[] = [];
+  if (!isEmptyContext(guide.context)) {
+    lines.push("Bối cảnh do người dùng ghi:");
+    for (const name of Object.keys(CONTEXT_LABELS) as Array<keyof GlossContext>) {
+      if (guide.context[name]) lines.push(`- ${CONTEXT_LABELS[name]}: ${guide.context[name]}`);
+    }
+  }
+  const must = used.filter((term) => term.mandatory).map((term) => `${term.source} → ${term.target}`);
+  const prefer = used.filter((term) => !term.mandatory).map((term) => `${term.source} → ${term.target}`);
+  if (must.length) lines.push(`Thuật ngữ BẮT BUỘC, luôn viết đúng như sau: ${must.slice(0, 120).join("; ")}`);
+  if (prefer.length) lines.push(`Thuật ngữ nên dùng (trừ khi sai ngữ cảnh): ${prefer.slice(0, 120).join("; ")}`);
+  return lines.join("\n").slice(0, 6000);
+}
+
+/** "Anh" for "anh" at the start of a sentence; a target with its own capitals is kept as written. */
+function keepCase(found: string, replacement: string): string {
+  if (replacement !== replacement.toLowerCase()) return replacement;
+  return found[0] && found[0] !== found[0].toLowerCase() ? replacement[0].toUpperCase() + replacement.slice(1) : replacement;
+}
+
+export type TermCheck = { text: string; replaced: number; missing: string[] };
+
+/**
+ * One rewritten line checked against the mandatory terms of its source: a term left in its source spelling is
+ * replaced by the user's Vietnamese (as the engine's `enforce` does); one that is simply absent is reported, never guessed.
+ */
+export function checkTerms(source: string, text: string, guide: Guide): TermCheck {
+  let line = text;
+  let replaced = 0;
+  const missing: string[] = [];
+  for (const term of guide.terms) {
+    if (!term.mandatory || !containsTerm(source, term.source) || containsTerm(line, term.target)) continue;
+    if (termKey(term.source) !== termKey(term.target) && containsTerm(line, term.source)) {
+      line = line.normalize("NFC").replace(termPattern(term.source, "giu"), (found) => keepCase(found, term.target));
+      replaced += 1;
+    } else {
+      missing.push(term.source);
+    }
+  }
+  return { text: line, replaced, missing };
+}
