@@ -324,7 +324,17 @@ export function needsExportConfirm(view: ReviewView | null): boolean {
 
 /** One Final QC check: `ok` null means it was not measured (said so, never counted as passed). */
 export interface QcCheck { id: string; label: string; ok: boolean | null; detail: string }
-export interface FinalQc { state: string; passed: boolean; checks: QcCheck[]; unmeasured: string[] }
+/**
+ * `awaitingReview`: the failed checks a review or a re-render still has to settle (the engine's `awaiting_review`,
+ * only its known review ids); `criticalUnits`: how many critical sentences the engine listed (`critical_units`).
+ * Both are read for the message only; `passed` never depends on them.
+ */
+export interface FinalQc {
+  state: string; passed: boolean; checks: QcCheck[]; unmeasured: string[]; awaitingReview: string[]; criticalUnits: number;
+}
+
+/** The checks a review or a re-render settles (engine REVIEW_CHECKS); every other failed check is technical. */
+const QC_REVIEW_CHECKS = ["pending", "decisions", "claims"];
 
 export const QC_STATE_LABELS: Record<string, string> = {
   RENDERING: "Đang dựng", RENDER_PENDING: "Còn lựa chọn chưa render", REVIEW_PENDING: "Chưa duyệt xong",
@@ -343,17 +353,48 @@ export function parseFinalQc(raw: unknown): FinalQc | null {
   });
   // passed only when the engine says so AND no check failed: a successful render is never a passed QC
   const passed = value.passed === true && value.state === "READY_TO_FINALIZE" && checks.every((check) => check.ok !== false);
-  return { state: value.state, passed, checks, unmeasured: strings(value.unmeasured, 40) };
+  const awaitingReview = strings(value.awaiting_review, 10).filter((id) => QC_REVIEW_CHECKS.includes(id));
+  const criticalUnits = Array.isArray(value.critical_units)
+    ? (value.critical_units as unknown[]).filter((unit) => unit !== null && typeof unit === "object" && !Array.isArray(unit)).length
+    : 0;
+  return { state: value.state, passed, checks, unmeasured: strings(value.unmeasured, 40),
+           awaitingReview: [...new Set(awaitingReview)], criticalUnits };
 }
 
-/** What blocks the export, one line per failed check, plus what was not measured. */
+/**
+ * What blocks the export, one line per failed check, plus what was not measured. A technical failure that comes with
+ * an open review (#838) lists the technical failure first and the review in its own summary after it, so the review
+ * never reads as the only thing left and the technical failure is never hidden behind it.
+ */
 export function qcMessage(qc: FinalQc): string {
-  const failed = qc.checks.filter((check) => check.ok === false).map((check) => `${check.label}: ${check.detail}`);
-  const lines = [`${QC_STATE_LABELS[qc.state] ?? qc.state}.`, ...failed];
+  const failedChecks = qc.checks.filter((check) => check.ok === false);
+  const review = qc.state === "FINAL_QC_FAILED"
+    ? failedChecks.filter((check) => qc.awaitingReview.includes(check.id))
+    : [];
+  const technical = failedChecks.filter((check) => !review.includes(check));
+  const lines = [`${QC_STATE_LABELS[qc.state] ?? qc.state}.`];
+  if (review.length && technical.length) {
+    lines.push("Lỗi kỹ thuật (phải sửa trước, duyệt không gỡ được):", ...technical.map(qcLine));
+    lines.push("Ngoài ra còn chờ duyệt:", ...review.map((check) => reviewLine(check, qc.criticalUnits)));
+  } else {
+    lines.push(...failedChecks.map(qcLine));
+  }
   if (qc.state === "RENDER_PENDING") lines.push("Hãy render lại để áp dụng các lựa chọn mới trước khi xuất.");
   const unmeasured = qc.checks.filter((check) => check.ok === null).map((check) => check.label);
   if (unmeasured.length) lines.push(`Chưa đo: ${unmeasured.join(", ")}.`);
   return lines.join("\n");
+}
+
+/** One failed check as a line: its label and the engine's own detail. */
+function qcLine(check: QcCheck): string {
+  return `${check.label}: ${check.detail}`;
+}
+
+/** One line of the review summary: the engine's own detail; a critical count only from `critical_units`. */
+function reviewLine(check: QcCheck, criticalUnits: number): string {
+  if (check.id === "claims" && criticalUnits > 0) return `${check.label} (${criticalUnits} câu): ${check.detail}`;
+  if (check.id === "pending") return `${qcLine(check)}. Hãy render lại sau khi sửa lỗi kỹ thuật.`;
+  return qcLine(check);
 }
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;

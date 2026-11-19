@@ -363,6 +363,70 @@ console.log("mastering qc ok");
 }
 console.log("export gate ok");
 
+// #838: a technical failure that comes with an open review shows the technical failure first and the review in its
+// own Vietnamese summary after it; hard-only, review-only, render-only and all-pass read as before, `passed` unchanged.
+{
+  const { parseFinalQc, qcMessage, exportGate } = await import("../src/features/mastering/model.ts");
+  const check = (id, label, ok, detail) => ({ id, label, ok, detail });
+  const duration = check("duration", "Thời lượng", false, "dài 6500 ms, kế hoạch 6000 ms");
+  const decisions = check("decisions", "Duyệt", false, "3 câu chưa duyệt");
+  const claimsFailed = check("claims", "Mục nghiêm trọng", false, "2 câu chưa xử lý, không được coi là đã kiểm: câu 4, câu 9");
+  const pendingFailed = check("pending", "Lựa chọn đã render", false, "chưa render lại sau khi bạn đổi cảnh: câu 2");
+  const unit = (n) => ({ part: "video-1", unit_id: `s${n}`, number: n, claims: [{ label: "x", status: "contradicted" }] });
+  const both = { kind: "final_qc", state: "FINAL_QC_FAILED", passed: false, unmeasured: ["audio"],
+    checks: [check("render", "Bản dựng", true, "video-1.mp4"), duration, pendingFailed, decisions, claimsFailed,
+             check("audio", "Âm thanh", null, "chưa đo đỉnh âm")],
+    blocking: ["duration"], awaiting_review: ["pending", "decisions", "claims"], critical_units: [unit(4), unit(9)] };
+  const qc = parseFinalQc(both);
+  assert.deepEqual(qc.awaitingReview, ["pending", "decisions", "claims"]);
+  assert.equal(qc.criticalUnits, 2);
+  assert.equal(qc.passed, false);
+  const lines = qcMessage(qc).split("\n");
+  assert.equal(lines[0], "Kiểm tra cuối chưa đạt.");
+  const tech = lines.indexOf("Lỗi kỹ thuật (phải sửa trước, duyệt không gỡ được):");
+  const rev = lines.indexOf("Ngoài ra còn chờ duyệt:");
+  assert.ok(tech === 1 && rev > tech, `technical first, review after: ${lines.join(" | ")}`);
+  assert.equal(lines[tech + 1], "Thời lượng: dài 6500 ms, kế hoạch 6000 ms");
+  const reviewPart = lines.slice(rev + 1);
+  assert.ok(!reviewPart.some((l) => l.startsWith("Thời lượng")), "the technical failure is not repeated as review");
+  assert.ok(!lines.slice(0, rev).some((l) => /Duyệt|Mục nghiêm trọng|Lựa chọn đã render/.test(l)), "no review line before the summary");
+  assert.ok(reviewPart.includes("Duyệt: 3 câu chưa duyệt"), "the pending count is the decisions check's own detail");
+  assert.ok(reviewPart.some((l) => l.startsWith("Mục nghiêm trọng (2 câu): 2 câu chưa xử lý")), "critical count = critical_units.length");
+  assert.ok(reviewPart.some((l) => l.startsWith("Lựa chọn đã render: chưa render lại") && /render lại sau khi sửa lỗi kỹ thuật/.test(l)));
+  assert.equal(lines.at(-1), "Chưa đo: Âm thanh.", "unmeasured still said last");
+  const gate = await exportGate(async (command, args) => command === "mastering_final_qc" ? both
+    : { kind: "mastering_review", ...args }, { outputDir: "D:/run", video: 1 }, async () => true);
+  assert.equal(gate.open, false);
+  // defensive parsing: junk awaiting_review / critical_units never invent a review section or a count
+  for (const junk of [{ awaiting_review: "decisions", critical_units: "2" }, { awaiting_review: [1, null, "render", "x"], critical_units: [null, 3, "s1", []] },
+                      { awaiting_review: undefined, critical_units: undefined }]) {
+    const parsed = parseFinalQc({ ...both, ...junk });
+    assert.deepEqual(parsed.awaitingReview, []);
+    assert.equal(parsed.criticalUnits, 0);
+    assert.ok(!qcMessage(parsed).includes("Ngoài ra còn chờ duyệt"), "no summary without a valid awaiting_review");
+    assert.ok(qcMessage(parsed).includes("Duyệt: 3 câu chưa duyệt"), "every failed check is still listed");
+  }
+  // hard-only: technical lines only, no review summary
+  const hardOnly = qcMessage(parseFinalQc({ ...both, checks: [duration], blocking: ["duration"], awaiting_review: [], critical_units: [] }));
+  assert.equal(hardOnly, "Kiểm tra cuối chưa đạt.\nThời lượng: dài 6500 ms, kế hoạch 6000 ms");
+  // review-only: REVIEW_PENDING reads as before (state label, then the review lines), no technical heading
+  const reviewOnly = qcMessage(parseFinalQc({ ...both, state: "REVIEW_PENDING", checks: [decisions], blocking: [], awaiting_review: ["decisions"], critical_units: [] }));
+  assert.equal(reviewOnly, "Chưa duyệt xong.\nDuyệt: 3 câu chưa duyệt");
+  // render-only: RENDER_PENDING keeps its re-render hint
+  const renderOnly = qcMessage(parseFinalQc({ ...both, state: "RENDER_PENDING", checks: [pendingFailed], blocking: [], awaiting_review: ["pending"], critical_units: [] }));
+  assert.equal(renderOnly, "Còn lựa chọn chưa render.\nLựa chọn đã render: chưa render lại sau khi bạn đổi cảnh: câu 2\nHãy render lại để áp dụng các lựa chọn mới trước khi xuất.");
+  // claims-only FINAL_QC_FAILED (no technical failure): listed as before, no headings
+  const claimsOnly = qcMessage(parseFinalQc({ ...both, checks: [claimsFailed], blocking: [], awaiting_review: ["claims"], critical_units: [unit(4), unit(9)] }));
+  assert.equal(claimsOnly, `Kiểm tra cuối chưa đạt.\nMục nghiêm trọng: ${claimsFailed.detail}`);
+  // all-pass: passed, and only READY_TO_FINALIZE with no failed check passes, whatever awaiting_review says
+  const allPass = parseFinalQc({ kind: "final_qc", state: "READY_TO_FINALIZE", passed: true, unmeasured: [],
+    checks: [check("render", "Bản dựng", true, "video-1.mp4")], blocking: [], awaiting_review: [], critical_units: [] });
+  assert.equal(allPass.passed, true);
+  assert.equal(qcMessage(allPass), "Sẵn sàng xuất bản cuối.");
+  assert.equal(parseFinalQc({ ...both, passed: true }).passed, false, "FINAL_QC_FAILED never passes");
+}
+console.log("final qc technical failure before review ok");
+
 // rc2 Windows check: a run saved beside its clips is remembered (D2); the card says why the voice is quieter (D5).
 {
   const { parseRecentRuns, rememberRun, RECENT_RUNS_MAX } = await import("../src/features/product/model.ts");
