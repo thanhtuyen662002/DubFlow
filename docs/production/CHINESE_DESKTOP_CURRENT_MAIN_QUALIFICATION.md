@@ -100,3 +100,31 @@ As its report says, the harness replays the host file contract (`gui: NOT_RUN`).
 - **Install path.** It was installed with `bootstrap.py`, not the one-click `setup.exe`.
 - **Input.** The drop was the window's native drop event, sent through Tauri's event plugin, not an OS mouse drag. Clicks and typing went through the page's DOM, not physical input.
 - **Not run.** Hachimi, multi-voice, background separation, long-form, batch and GPU were not part of this run; they remain under #175.
+
+
+---
+
+## Lead current-Main prerequisite revalidation — 2026-11-24 18:40 ICT
+
+This is a Lead-only, evidence-boundary update after inspecting the stale Lead-created Draft lease. It does not claim Claude implementation, Windows execution, product testing or acceptance.
+
+- Exact protected Main / PR base / current release source: `f2e67098af3422f1865f3554de8029f2555b1914`.
+- Stable Windows release `v1.2.0` was built and published from this exact Main on 2026-11-19 (Windows bundle and publish workflow run `44558243121`, both successful). This proves an installable artifact exists; it does **not** prove that it is already installed on the Owner-authorized isolated Windows host.
+- The only permitted source remains the already Owner-authorized non-customer file with SHA-256 `bbba2c9be2d6717d694c05eba090b5f85af341123d313732bbf7cef9224785b1`. No evidence available to this Lead establishes that this file and an installed build whose manifest `source_sha=f2e67098af3422f1865f3554de8029f2555b1914` are present on the same authorized host.
+- This Lead runtime has no authorized Windows GUI/host session or access to that host's installed manifest/source filesystem. The GitHub collaborator lookup for `claude` returns `read`, and this runtime exposes no Claude execution endpoint. Therefore the same-host prerequisites are **UNVERIFIED by this Lead runtime**; this is not evidence that the Owner's host or source is absent.
+- The earlier PASS above is historical evidence on Main `99edc85d12c53d536ac56adcf2830cbca8093bda` using candidate `1.1.50-main.99edc85`. It must not be presented as current-Main `v1.2.0` desktop/media acceptance.
+- No media was opened, copied, acquired, downloaded, uploaded or committed. No build/install/release/sign/publish action and no Windows GUI test ran in this revalidation.
+
+### Current phase
+
+ASSIGNED=YES (Coordinator-authorized Claude leaf; Lead-created Draft lease only)  
+STARTED=NO (Claude implementation/evidence execution not observed)  
+CODED=NO  
+TESTED=NOT_RUN (real Desktop/Tauri/media; metadata CI is tracked separately on the PR)  
+INTEGRATED=NO  
+ACCEPTED=NO  
+BLOCKED_EXTERNAL=AUTHORIZED_WINDOWS_HOST_SESSION_AND_SAME_HOST_INSTALLED_BUILD/SOURCE_NOT_VERIFIABLE_FROM_THIS_RUNTIME
+
+### Next action
+
+Claude may resume only through its authorized execution after read-only verification on the already Owner-authorized host. If either prerequisite is absent or cannot be verified there, record that exact host/source limitation; otherwise perform the continuous Desktop UI + Tauri acceptance already defined by Issue #439. No new task, branch, PR, media transfer, build or install is authorized by this Lead note.
