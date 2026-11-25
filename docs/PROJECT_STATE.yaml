@@ -15,8 +15,11 @@ work_graph_source: open_leaf_issues_plus_roadmap
 foundation_epic: 2
 ci_infrastructure_issue: 10
 ci_infrastructure_status: delivered
-# #175 (final production qualification) stays open and not accepted; #291
-# (2-6 h continuous recording) is its open soft-dependency evidence leaf.
+# Live GitHub 2026-11-26: #175/#291/#323 are CLOSED/NOT_PLANNED; #382 is
+# CLOSED/COMPLETED. #175 is not accepted as final production qualification.
+# Current open leaves: #439 (Claude / PR #973) and #489 (Codex / PR #975);
+# #818 is deferred; #463 is the Lead-owned control-state reconciliation PR.
+# #490 is CLOSED/COMPLETED; #884 remains OPEN as the public-egress follow-up.
 critical_path: []
 first_integration_gate: 14
 first_user_value_gate: 56
@@ -24,14 +27,16 @@ baseline_dubbing_gate: 45
 administrative_risks: []
 ruleset_required: true
 direct_main_push_allowed: false
-# Observed against live GitHub on 2026-11-04 at Main bc801585 (#463); this is
-# a dated observation, not permanent truth. Ruleset protect-main-dubflow is
-# active (PR-only, required check: governance, no bypass actors).
-state_validated_base_sha: bc801585b65c893db2269b525e75d9fb155e2aaa
-# Full 59/59 registry, no base and no filter, on 713bd23 (#250, PR #470).
+# Observed against live GitHub on 2026-11-26 at Main f2e67098 (#463 r2).
+# Refresh whenever Main advances; current Main is green/protected.
+state_validated_base_sha: f2e67098af3422f1865f3554de8029f2555b1914
+# Last known full-registry result: 59/59 on 713bd23 (#250 / PR #470).
+# Later product merges mean this is historical, not current-Main 61/61.
 last_full_integration_run: 41780693790
 last_full_integration_sha: 713bd2365db313f0f4ffb662e2190e5c6a5b2394
-# Historical: the last Release / Soak ran on d18084f, not on current Main.
+# Historical Release / Soak on d18084f is retained below.
+# Current-Main Windows Release/Soak run #45017439019: 89 tests, 1 skipped;
+# this is not full release qualification.
 last_release_soak_run: 36726668924
 last_release_soak_sha: d18084f362b22a36514116f87133e35897bac7ae
 release_qualification:
