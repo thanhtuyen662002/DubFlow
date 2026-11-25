@@ -1,18 +1,24 @@
 # DubFlow Foundation Roadmap
 
 ## Current phase
-Foundation is ready to be claimed through leaf Issues. Main CI is green.
+The live Project State remains `production_qualified_cpu_b1`; first user-value gate #56 and baseline-dubbing gate #45 are unchanged. Main is green/protected. GitHub Issues and PRs remain the authoritative live work graph.
 
-**Live snapshot, observed 2026-11-04 at Main `bc801585` (#463).** Re-check GitHub before acting on it; GitHub Issues remain the live work graph.
-- Main is protected by the active ruleset `protect-main-dubflow`: PR-only, no deletion or force-push, strict required check `governance`, 0 required approvals, no bypass actors. Issue #11 is completed. PR Fast and PR Integration also run on every PR, but only `governance` is ruleset-required.
-- Full deterministic Integration registry: 59/59 components passed with no base and no filter on `713bd23` (run 41780693790, #250). Main push Integration is selective and can select zero components; it is not full-registry evidence.
-- Windows-only suites run on their own read-only PR lanes: `release-tests-windows` (#416), `documentary-windows` (#464) and `desktop-editor-windows` (#417).
-- Latest published stable release: v1.1.49 (2026-11-03), built from an earlier Main.
-- Still open: #175 (final production qualification, not accepted) and #291 (one continuous 2–6 h real recording on a current-Main build; earlier 1.1.6 evidence needed a manual state reset after a shutdown, so it is not accepted). Also open: #323 (NVIDIA GPU; only the real-hardware run remains) and #382 (16:9 reframe; see below).
-- #439 accepted one Chinese→Vietnamese desktop review/revision leaf only; it does not accept #175.
-- Residual risk, owner decision: accepted ADR-0008 describes supervisor-owned project DB/artifact/temp locking. #384 was closed with a narrower per-work-folder lease (`work_lease.rs`), so reframe/package/shorts still spawn their Python workers from the desktop host. This is a scope gap against the ADR, not a confirmed data-loss incident; #382's acceptance text still names the stronger supervisor-owned API.
+**Live snapshot, observed 2026-11-26 03:55 ICT at Main `f2e67098af3422f1865f3554de8029f2555b1914`.** Re-check GitHub before acting on this snapshot.
+- Main ruleset `protect-main-dubflow` (#24152712) is ACTIVE, strict PR-only, no bypass actors; required context `governance`. Exact-Main checks: 26 total, 25 SUCCESS, 1 SKIPPED, 0 FAILURE. A skipped publish check is not test evidence.
+- Current registry has 61 components. Main Integration run #44540904280 selected only `desktop-editor-subtitles` (1/61), with BASE_SHA `a37d2aee339a7a8ccb7288c1cc01d9c88de40903`; Worker skipped=6, TTS skipped=2, and `VOICE_MANIFEST_UNAVAILABLE`. There is no current-Main 61/61 full-registry evidence.
+- Last known full-registry evidence remains 59/59 on source SHA `713bd2365db313f0f4ffb662e2190e5c6a5b2394` (run #41780693790 / #250 / PR #470). Later product merges mean this is historical, not current Main.
+- Current-Main Windows source-session #45017439019: 65 tests, 12 skipped (pinned curl_cffi / yt-dlp runtime unavailable). Current-Main Release/Soak on the same run: 89 tests, 1 skipped (Windows Job lifetime). These skips are not passes and do not establish complete release qualification. The previous Release/Soak run/SHA remains historical in Project State.
+- Live OPEN/DRAFT PRs are exactly #463, #973 and #975. #463 is this Lead-owned control-doc reconciliation; #973 is Claude's #439 evidence leaf; #975 is Codex's #489 security leaf. No PR is merged in this snapshot.
+- #439 is OPEN/reopened for one current-Main Chinese-to-Vietnamese review/revision/output evidence leaf only. Historical PR #462 was accepted on old Main `99edc85d...`; it does not accept current Main or Epic #175. Current #439 lease is PR #973, still metadata-only: no Claude-authored commit/report update, real Windows Desktop/Tauri/media evidence NOT_RUN. Claude collaborator permission is `read`; execution endpoint and authorized Windows host session are unavailable to this Lead runtime.
+- #489 is OPEN for MCP documentary project-creation confinement outside reserved `source-media`. Codex's sole current assignment is PR #975, currently a claim-only Draft (no product code). Source review identifies a potential source-store integrity/eviction risk, not a reproduced exploit or data-loss incident. Codex collaborator permission is `read`; Owner-provisioned Codex Cloud Environment / write-capable execution is unavailable.
+- #818 remains OPEN but deferred/not active while Codex's single assignment is #489. Preserve its historical branch/closed PR; do not run #818 concurrently.
+- #490 is CLOSED/COMPLETED. #884 remains OPEN as the peer-binding/public-egress follow-up and has no active lease.
+- #175, #291 and #323 are CLOSED/NOT_PLANNED (not accepted as final production qualification); #382 is CLOSED/COMPLETED. Do not reopen these based on the 2026-11-04 snapshot.
+- #416, #417 and #464 are CLOSED/COMPLETED; their old claim metadata is being marked released in PR #463. #487 is CLOSED/COMPLETED, but its claim file is absent on Main; do not recreate it. #250 is CLOSED/COMPLETED and its 59/59 result remains historical.
+- #463 is OPEN/reopened for this bounded control-state reconciliation. Its previous lease was completed at PR #471 / merge `f76b602ea879cfc41712c1b0879ce821c8975d79`; the new Lead-owned PR #463 r2 is separate and touches only the allowed claim metadata plus Project State/Roadmap.
+- Residual architecture note: ADR-0008 describes supervisor-owned project DB/artifact/temp locking. #384 delivered a narrower per-work-folder lease (`work_lease.rs`); reframe/package/shorts still spawn Python workers from the desktop host. This remains a scope gap against ADR-0008, not a confirmed data-loss incident.
 
-Capability tiers, promotion gates, and fallback semantics are defined in [`docs/CAPABILITY_LADDER.md`](CAPABILITY_LADDER.md). This roadmap keeps the delivery gates and dependency order; GitHub Issues remain the authoritative live work graph.
+Capability tiers, promotion gates, and fallback semantics are defined in [`docs/CAPABILITY_LADDER.md`](CAPABILITY_LADDER.md). This roadmap keeps delivery gates and dependency order; GitHub Issues remain the authoritative live work graph.
 
 ## Foundation Epic
 - #2 — Foundation: resumable one-click vertical slice. Tracking only; do not claim directly.
