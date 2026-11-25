@@ -1,7 +1,7 @@
 DUBFLOW_PR_V1
 Issue: #463
 Lease-Owner: Lead/issue-463-live-control-state-reconciliation-r2
-Lease-Heartbeat: 2026-11-25T20:55:00Z
+Lease-Heartbeat: 2026-11-25T21:06:47Z
 Tested-Base-SHA: f2e67098af3422f1865f3554de8029f2555b1914
 Conflict-Domains: repo-control-state-docs,completed-claim-release-metadata
 Expected-Paths: .claims/issue-463-control-state-reconciliation.md,.claims/issue-416-release-tests-fail-closed.md,.claims/issue-417-desktop-editor-subtitles-ci.md,.claims/issue-464-docu-output-root-confinement.md,.claims/issue-439-current-main-chinese-review-qualification.md,docs/PROJECT_STATE.yaml,docs/ROADMAP.md
@@ -47,7 +47,7 @@ This is Lead-owned control-plane documentation work on paths with no active code
 ## Phase ledger
 ASSIGNED=YES (Lead control-doc writer)
 STARTED=YES (Draft lease only)
-CODED=NO
-TESTED=NOT_RUN
+CODED=YES (Lead docs/control only)
+TESTED=PR Fast pending
 INTEGRATED=NO
 ACCEPTED=NO
