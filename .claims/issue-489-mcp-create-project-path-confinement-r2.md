@@ -4,7 +4,7 @@ Lease-Owner: codex/01a11204/issue-489-mcp-create-project-path-confinement-r2
 Lease-Heartbeat: 2026-11-25T19:35:11Z
 Tested-Base-SHA: f2e67098af3422f1865f3554de8029f2555b1914
 Conflict-Domains: documentary-mcp-create,source-media-path-confinement,documentary-windows-lane
-Expected-Paths: .claims/issue-489-mcp-create-project-path-confinement.md,engine/dubflow/docu/intake.py,engine/dubflow/mcp/server.py,tests/docu/test_intake.py,.github/workflows/pr-documentary-windows.yml,docs/adr/ADR-0049-documentary.md
+Expected-Paths: .claims/issue-489-mcp-create-project-path-confinement-r2.md,engine/dubflow/docu/intake.py,engine/dubflow/mcp/server.py,tests/docu/test_intake.py,.github/workflows/pr-documentary-windows.yml,docs/adr/ADR-0049-documentary.md
 Required-CI: PR Fast + PR Integration (documentary selected) + documentary-windows
 
 ## Bounded assignment — Coder 1 / Codex (sole active task)
@@ -25,7 +25,7 @@ This is Codex's only active DubFlow task under the current Lead/Coordinator prio
 7. PR Fast and PR Integration must pass on final PR HEAD/current Main base; Integration must visibly select documentary; documentary-windows must execute and pass the Python MCP junction regression and existing Rust junction regressions.
 
 ## Allowed paths — exactly six
-1. `.claims/issue-489-mcp-create-project-path-confinement.md`
+1. `.claims/issue-489-mcp-create-project-path-confinement-r2.md`
 2. `engine/dubflow/docu/intake.py`
 3. `engine/dubflow/mcp/server.py`
 4. `tests/docu/test_intake.py`
