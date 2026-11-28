@@ -207,3 +207,13 @@ export function decideAiContext(session: Pick<AiSession, "provider" | "saved" | 
   void run.finally(() => { if (asking === run) asking = null; });
   return run;
 }
+
+/**
+ * The choice for a video nobody is watching start (an agent's, ADR-0058): the user's own "on" or "off", never the
+ * question. Still "ask": "off" this time, nothing kept, so the user is asked at their own next start.
+ */
+export function unattendedAiContext(session: Pick<AiSession, "provider" | "options">, store: ContextStore | null = browserStore()): AiContext {
+  if (keysClosed && !closedRunAllows(session, session.provider())) return "off";
+  const current = loadAiContext(store);
+  return current === "ask" ? "off" : current;
+}

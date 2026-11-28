@@ -310,7 +310,8 @@ const none = { saved: () => null, options: () => ({}) };
   inOrder(startJob, [
     "let aiContext: AiContext = \"off\";",
     "await aiRestored;",
-    "aiContext = await decideAiContext(claudeKey, \"start\");",
+    // An agent's video (ADR-0058) is never asked: the user's own choice, else offline (unattendedAiContext).
+    "aiContext = isAgentJob(job) ? unattendedAiContext(claudeKey) : await decideAiContext(claudeKey, \"start\");",
     "await invoke<{ output_dir: string } | null>(\"start_job\", {",
     "...translationJobArgs(loadPrefs(), claudeKey, current.displayName, aiContext),",
   ], "startJob");
@@ -379,7 +380,7 @@ const none = { saved: () => null, options: () => ({}) };
   order([
     "if (awaitingAnswer || !canStart(job)) return;",
     "awaitingAnswer = true;",
-    "aiContext = await decideAiContext(claudeKey, \"start\");",
+    "aiContext = isAgentJob(job) ? unattendedAiContext(claudeKey) : await decideAiContext(claudeKey, \"start\");",
     "} finally {\n    awaitingAnswer = false;\n  }",
     "const current = queue.getSnapshot().jobs.find((candidate) => candidate.id === job.id);",
     "if (!current || !canStart(current)) {",
@@ -387,7 +388,8 @@ const none = { saved: () => null, options: () => ({}) };
     "invoke<{ output_dir: string } | null>(\"start_job\"",
   ], "startJob");
   assert.equal((start.match(/state: "RUNNING"/g) ?? []).length, 1, "the job is marked running only after the answer");
-  assert.match(main, /function pumpBatch\(\): void \{\s*if \(!batchRunning \|\| awaitingAnswer\) return;/, "no batch start while the question is open");
+  // An agent's video (ADR-0058) starts on its own too, but never while the question is open.
+  assert.match(main, /function pumpBatch\(\): void \{\s*if \(awaitingAnswer\) return;/, "no batch start while the question is open");
   assert.doesNotMatch(main, /restoreStartingJob|reason: "launching"/, "nothing to recover after a close during the question");
   const picker = strip("features/media/picker.ts");
   assert.match(picker, /if \(event\.key !== "Escape" \|\| !isTopmostDialog\(backdrop, document\.body\.children\)\) return;\s*event\.preventDefault\(\);\s*event\.stopImmediatePropagation\(\);/);
