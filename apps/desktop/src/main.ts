@@ -14,6 +14,7 @@ import { PREVIEW_EDIT_LIBRARY, previewInvoke } from "./shell/preview_invoke.ts";
 import { createVoiceSampler } from "./features/voices/sample.ts";
 import { QueueController, type QueueJob, type SnapshotStorage } from "./features/queue/model.ts";
 import { agentJobPlan, isAgentJob, parseInboxRequests, type AgentJobPlan } from "./features/queue/inbox.ts";
+import { applyAgentEdit, parseEditRequests } from "./features/edit/agent.ts";
 import {
   DEFAULTS_KEY, FIRST_RUN_DEFAULTS, LEGACY_DEFAULTS_KEY, readJobDefaults, serializeJobDefaults, type JobDefaults,
 } from "./features/queue/defaults.ts";
@@ -1321,7 +1322,8 @@ async function takeInbox(): Promise<void> {
   takingInbox = true;
   try {
     let added = 0;
-    for (const request of parseInboxRequests(await invoke<unknown>("take_inbox"))) {
+    const taken = await invoke<unknown>("take_inbox");
+    for (const request of parseInboxRequests(taken)) {
       try {
         const id = queue.addAgentJob(request.id, request.source_path, request.title);
         if (!id) continue;
@@ -1334,6 +1336,22 @@ async function takeInbox(): Promise<void> {
     if (added) {
       showNotice(`Agent đã gửi ${added} video vào Hàng đợi lồng tiếng; video sẽ tự chạy lần lượt.`);
       renderRunAll();
+    }
+    // An agent's Chỉnh sửa draft (ADR-0059): saved as the video's draft and, when asked, exported; the answer goes back.
+    for (const request of parseEditRequests(taken)) {
+      const report = await applyAgentEdit(invoke, request, {
+        openPath: () => editor.target?.outputPath ?? null,
+        outputRoot: () => outputRoot(),
+        loudness: () => {
+          try {
+            return window.localStorage.getItem("dubflow.edit.loudness") === "1";
+          } catch {
+            return false;
+          }
+        },
+      });
+      await invoke("inbox_report", { id: request.id, report }).catch(() => undefined);
+      if (report.state === "SAVED" || report.state === "EXPORTING") showNotice(`Agent đã chỉnh sửa video: ${report.message}`);
     }
   } catch {
     // An older host or a busy disk: the requests wait for the next look.
