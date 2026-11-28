@@ -100,17 +100,21 @@ Gợi ý đăng bài sẽ thêm dòng nguồn vào mô tả để sao chép cùn
 
 Ở video đã xong, bấm **Gợi ý tiêu đề & hashtag**: app tạo sẵn vài tiêu đề, mô tả ngắn và hashtag tiếng Việt từ phụ đề (không cần mạng), mỗi mục có nút **Sao chép**. Chọn **AI** (Claude hoặc Gemini) rồi bấm **Viết bằng AI** để AI viết lại hay hơn — cần khóa API của bạn, lưu một lần trong **Cài đặt AI** (Windows Credential Manager); phụ đề tiếng Việt được gửi tới nhà cung cấp đó và tính phí theo tài khoản của bạn.
 
-### Khám phá video (xu hướng, từ khóa, lấy video hàng loạt)
-Bấm **Khám phá** ở thanh bên trái, chọn **Douyin**, **Bilibili** hoặc **Kuaishou**:
-- **Đang hot**: từ khóa đang thịnh hành của nền tảng; bấm một từ để tìm ngay.
-- **Từ khóa**: gõ từ khóa tiếng Trung, app gợi ý từ khóa liên quan (Douyin, Bilibili). Bilibili hiện kết quả ngay trong app (có **Thịnh hành** và **Tải thêm**).
-- **Douyin / Kuaishou**, hoặc khi Bilibili tạm chặn: trang tìm kiếm mở trong cửa sổ **Khám phá video**; cuộn trang (hoặc bấm **Cuộn thêm**) rồi bấm **Lấy video từ trang**.
-- **Trang kênh**: chọn *Trang kênh* và dán link kênh (ví dụ `https://space.bilibili.com/…`, trang người dùng Douyin/Kuaishou) để lấy video của kênh đó.
-- Tích chọn video rồi bấm **Thêm vào hàng đợi**: video được tải về và xếp vào hàng đợi như khi dán link.
+### Khám phá video và footage (một lần tìm, nhiều nguồn)
+Bấm **Khám phá** ở thanh bên trái. Tab đầu tiên là **Tất cả nguồn**:
+- Gõ từ khóa (tiếng Việt, tiếng Trung hoặc tiếng Anh) rồi bấm **Tìm**. App tìm cùng lúc trên **Bilibili**, **YouTube** và **SkyPixel** (flycam DJI) và hiện chung một danh sách. Mỗi video ghi rõ nguồn và độ nét (4K, 2K, 1080p). Hàng nguồn phía trên lọc theo từng nguồn và cho biết nguồn nào lỗi. **Tải thêm** lấy trang tiếp của mọi nguồn.
+- Tiếng Việt được tự dịch sang tiếng Trung cho Bilibili/SkyPixel và sang tiếng Anh cho YouTube.
+- **Hậu tố**: bấm 空镜 (cảnh trống), 航拍 4K (flycam), 无字幕 (không phụ đề), 素材 (tư liệu), 企业宣传片 (phim doanh nghiệp)… để thêm vào cuối câu tìm; bấm lần nữa để bỏ. Với YouTube, app dùng dạng tiếng Anh (B-roll, 4K drone, no text…).
+- **YouTube**: chọn chất lượng 4K, HD, mọi chất lượng, hoặc **CC** (Creative Commons: chủ video cho phép dùng lại kèm ghi nguồn).
+- **SkyPixel**: tải bản MP4 1080p; giấy phép của video hiện trên thẻ sau khi thêm.
+- **Tìm thêm trên trang**: Douyin, Kuaishou và Xinpianchang chỉ tìm được qua trang của chính nó. Bấm tên nguồn để mở trang với cùng từ khóa; video bạn lướt qua tự vào danh sách.
+- **Xinpianchang** (phim quảng cáo, phim doanh nghiệp): lần đầu trang hiện ô xác minh kéo hình, bạn tự kéo cho khớp. Chưa đăng nhập Xinpianchang thì tải được 720p; đăng nhập ngay trên trang để tải 1080p trở lên.
+
+Các tab từng nguồn (Bilibili, YouTube, SkyPixel, Douyin, Kuaishou, Xinpianchang) vẫn có **Đang hot**, gợi ý từ khóa và **Trang kênh** (dán link kênh để lấy video của kênh đó) như trước. Tích chọn video rồi bấm **Thêm vào Hàng đợi**: video được tải về và xếp vào hàng đợi như khi dán link.
 
 ### Link Bilibili / Douyin
 - **Link video trực tiếp** (`.mp4`, …): dán và tải ngay.
-- **Bilibili**: dán link video `bilibili.com/video/BV…`. Nếu trang báo giới hạn truy cập, đợi vài phút rồi thử lại.
+- **Bilibili**: dán link video `bilibili.com/video/BV…`. Chưa đăng nhập, Bilibili chỉ cho tải 480p. Vào **Cài đặt › Tài khoản › Tài khoản Bilibili**, bấm **Đăng nhập**, quét mã QR bằng app Bilibili rồi bấm **Xong** để tải 1080p (tài khoản 大会员: 4K). Nếu trang báo giới hạn truy cập, đợi vài phút rồi thử lại.
 - **Douyin**: lần đầu, dòng tải sẽ báo cần phiên truy cập. Bấm **Mở Douyin**, đợi trang hiện video (có thể đăng nhập nếu muốn), rồi bấm **Lưu phiên & thử lại**. Phiên được mã hóa trên máy và hết hạn sau khoảng 23 giờ.
 
 Chỉ tải và xử lý video bạn có quyền sử dụng.
