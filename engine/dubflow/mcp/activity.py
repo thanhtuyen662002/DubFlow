@@ -22,6 +22,13 @@ def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _folder(video: Any) -> str:
+    """A dubbed video by its folder's title: <title> of …/<title> - vi/run-…/final_vi.mp4."""
+    parts = Path(str(video or "")).parts
+    name = parts[-3] if len(parts) >= 3 else (parts[-1] if parts else "")
+    return (name[:-len(" - vi")] if name.endswith(" - vi") else name)[:80]
+
+
 def label(tool: str, args: dict[str, Any]) -> str:
     """The call in the app's words."""
     def arg(name: str, limit: int = 80) -> str:
@@ -61,6 +68,18 @@ def label(tool: str, args: dict[str, Any]) -> str:
         "queue_dubbing_job": lambda: f"Gửi video vào Hàng đợi lồng tiếng: {Path(str(args.get('video') or '')).name[:100]}",
         "get_dubbing_job": lambda: f"Xem tiến độ lồng tiếng {arg('id', 40)}",
         "list_dubbing_jobs": lambda: "Xem các video lồng tiếng do agent gửi",
+        # #1000: what DubFlow makes from a dubbed video.
+        "list_dubbed_videos": lambda: "Xem các video đã lồng tiếng xong",
+        "get_dubbed_video": lambda: f"Xem video đã lồng tiếng {_folder(args.get('video'))}",
+        "make_shorts": lambda: f"Cắt {len(args.get('items') or [])} Shorts từ {_folder(args.get('video'))}",
+        "make_landscape_16x9": lambda: f"Đổi khung 16:9 ({arg('mode', 20)}): {_folder(args.get('video'))}",
+        "package_video": lambda: f"Đóng gói đăng bài: {_folder(args.get('video'))}",
+        "get_video_job": lambda: f"Xem tiến độ {arg('kind', 10)}: {_folder(args.get('video'))}",
+        "cancel_video_job": lambda: f"Hủy {arg('kind', 10)}: {_folder(args.get('video'))}",
+        "suggest_post": lambda: f"Gợi ý bài đăng cho {_folder(args.get('video'))}",
+        "create_compilation": lambda: f"Ghép video “{arg('title', 80)}” ({len(args.get('items') or [])} phần)",
+        "get_compilation": lambda: "Xem tiến độ ghép video",
+        "list_compilations": lambda: "Xem danh sách video ghép",
     }
     return labels.get(tool, lambda: tool)()
 
