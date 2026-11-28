@@ -1,7 +1,7 @@
 import {
   ALL_SOURCES, GLOSS_BATCH, PAGE_ONLY_SOURCES, PLATFORMS, SOURCE_NAMES, SUFFIXES, TITLE_GLOSS_KEY, TOPICS, YOUTUBE_FILTERS, bilibiliMid, cleanTitle, interleave,
   joinQuery, parseGlosses, discoveryError, formatCount, formatDuration, loadGlossCache, mergeVideos, needsChinese, needsEnglish, needsTitleGloss, pageAddress,
-  parseChinese, parseMedia, qualityLabel, splitSuffixes, toggleSuffix, topicChinese, parseCollected, parseTrends, parseVideos, previewSource, refreshVideos,
+  parseChinese, parseMedia, parseXinpianchangMedia, qualityLabel, splitSuffixes, toggleSuffix, topicChinese, parseCollected, parseTrends, parseVideos, previewSource, refreshVideos,
   rememberGloss, saveGlossCache, seenOnPage,
   type DiscoveredVideo, type Platform, type PreviewSource, type Source, type Trend,
 } from "./model.ts";
@@ -523,10 +523,28 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
    * looked up when the video is added (and kept for the player and the licence line).
    */
   async function fetchUrlOf(video: DiscoveredVideo): Promise<string> {
+    if (video.source === "xinpianchang" && video.fetchUrl === video.pageUrl) return xinpianchangUrl(video);
     if (video.source !== "skypixel" || video.fetchUrl !== video.pageUrl) return video.fetchUrl;
     const known = skypixelMedia.get(video.pageUrl) ?? await resolveSkypixel(video);
     if (!known) throw new Error("Không lấy được bản tải của video SkyPixel này");
     return known.url;
+  }
+
+  /**
+   * A Xinpianchang video's MP4, read from its page when it is added (its links expire after about two hours). Without
+   * a Xinpianchang login the page gives 720p; the note says so once.
+   */
+  let xinpianchangNoted = false;
+  async function xinpianchangUrl(video: DiscoveredVideo): Promise<string> {
+    state.textContent = `Đang lấy bản tải của “${video.title.slice(0, 40)}” từ Xinpianchang…`;
+    const media = parseXinpianchangMedia(await invoke<unknown>("xinpianchang_media", { url: video.pageUrl }));
+    if (!media) throw new Error("Không lấy được bản tải của video Xinpianchang này");
+    if (media.hdLocked && !xinpianchangNoted) {
+      xinpianchangNoted = true;
+      translatedNote.classList.add("warn");
+      translatedNote.textContent = `Xinpianchang chỉ cho tải ${media.quality || "720p"} khi chưa đăng nhập. Đăng nhập Xinpianchang ngay trên trang (tab Xinpianchang) để tải 1080p trở lên.`;
+    }
+    return media.url;
   }
 
   async function resolveSkypixel(video: DiscoveredVideo): Promise<{ url: string; quality: string; license: string } | null> {

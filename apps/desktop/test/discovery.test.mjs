@@ -243,3 +243,23 @@ assert.equal(parseChinese(null), null);
   assert.doesNotMatch(discoveryError("BLOCKED", "youtube"), /Mở trang/);
 }
 console.log("discovery multi-source tests passed");
+
+// Xinpianchang (#982): a page source offered under "Tìm thêm trên trang"; its MP4 is read when added.
+{
+  const { PAGE_ONLY_SOURCES, PLATFORMS, parseXinpianchangMedia } = await import("../src/features/discovery/model.ts");
+  const xpc = PLATFORMS.find((entry) => entry.id === "xinpianchang");
+  assert.deepEqual([xpc?.page, xpc?.apiSearch, xpc?.trends], [true, false, false]);
+  assert.ok(PAGE_ONLY_SOURCES.includes("xinpianchang"));
+  assert.match(discoveryError("BLOCKED", "xinpianchang"), /Mở trang/);
+  assert.deepEqual(parseXinpianchangMedia({ url: "https://us-xpc5.xpccdn.com/a.mp4?e=1&s=2", width: 1280, height: 720, hd_locked: true }),
+    { url: "https://us-xpc5.xpccdn.com/a.mp4?e=1&s=2", quality: "720p", hdLocked: true });
+  assert.equal(parseXinpianchangMedia({ url: "https://us-xpc5.xpccdn.com/b.mp4", width: 3840, height: 2160 }).quality, "4K");
+  assert.equal(parseXinpianchangMedia({ url: "https://evil.example/a.mp4" }), null);
+  assert.equal(parseXinpianchangMedia({ url: "http://us-xpc5.xpccdn.com/a.mp4" }), null);
+  assert.equal(parseXinpianchangMedia(null), null);
+  const page = parseCollected([{ page_url: "https://www.xinpianchang.com/a13885930", fetch_url: "https://www.xinpianchang.com/a13885930", title: "工业" }]);
+  assert.equal(page[0].fetchUrl, page[0].pageUrl);
+  // Its page has no embed player: no preview, no hover.
+  assert.equal(previewSource({ pageUrl: "https://www.xinpianchang.com/a13885930", fetchUrl: "https://www.xinpianchang.com/a13885930" }, { muted: false }), null);
+}
+console.log("discovery xinpianchang tests passed");

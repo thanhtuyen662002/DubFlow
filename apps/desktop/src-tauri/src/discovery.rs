@@ -21,6 +21,8 @@ pub enum Platform {
     Douyin,
     Bilibili,
     Kuaishou,
+    /// 新片场: commercial and corporate films, behind a slider check the user solves in the page (#982).
+    Xinpianchang,
 }
 
 impl Platform {
@@ -29,6 +31,7 @@ impl Platform {
             "douyin" => Ok(Self::Douyin),
             "bilibili" => Ok(Self::Bilibili),
             "kuaishou" => Ok(Self::Kuaishou),
+            "xinpianchang" => Ok(Self::Xinpianchang),
             _ => Err("Nền tảng không được hỗ trợ".into()),
         }
     }
@@ -38,6 +41,7 @@ impl Platform {
             Self::Douyin => "douyin.com",
             Self::Bilibili => "bilibili.com",
             Self::Kuaishou => "kuaishou.com",
+            Self::Xinpianchang => "xinpianchang.com",
         }
     }
 }
@@ -106,6 +110,7 @@ pub fn page_url(platform: Platform, kind: &str, query: &str) -> Result<tauri::Ur
                 Platform::Douyin => format!("https://www.douyin.com/search/{keyword}?type=video"),
                 Platform::Bilibili => format!("https://search.bilibili.com/video?keyword={keyword}"),
                 Platform::Kuaishou => format!("https://www.kuaishou.com/search/video?searchKey={keyword}"),
+                Platform::Xinpianchang => format!("https://www.xinpianchang.com/search?kw={keyword}"),
             }
         }
         "creator" => {
@@ -188,17 +193,20 @@ pub const COLLECT_SCRIPT: &str = r##"(() => {
   const clean = (value) => String(value || "").replace(/\s+/g, " ").trim().slice(0, 200);
   const abs = (value) => { try { return new URL(value, location.href).href; } catch (e) { return ""; } };
   const host = location.hostname;
-  const site = host.endsWith("kuaishou.com") ? "kuaishou" : host.endsWith("bilibili.com") ? "bilibili" : host.endsWith("douyin.com") ? "douyin" : "";
+  const site = host.endsWith("kuaishou.com") ? "kuaishou" : host.endsWith("bilibili.com") ? "bilibili" : host.endsWith("douyin.com") ? "douyin"
+    : host.endsWith("xinpianchang.com") ? "xinpianchang" : "";
   const idOf = (href) => {
     const link = String(href || "");
     let match = null;
     if (site === "bilibili") match = link.match(/\/video\/(BV[0-9A-Za-z]{10})/);
     else if (site === "douyin") match = link.match(/\/video\/(\d{8,24})/) || link.match(/[?&]modal_id=(\d{8,24})/);
     else if (site === "kuaishou") match = link.match(/\/short-video\/([0-9A-Za-z_-]{4,40})/);
+    else if (site === "xinpianchang") match = link.match(/xinpianchang\.com\/(a\d{5,12})(?:[/?#]|$)/);
     return match ? match[1] : "";
   };
   const pageOf = (id) => site === "bilibili" ? "https://www.bilibili.com/video/" + id
-    : site === "douyin" ? "https://www.douyin.com/video/" + id : "https://www.kuaishou.com/short-video/" + id;
+    : site === "douyin" ? "https://www.douyin.com/video/" + id : site === "xinpianchang" ? "https://www.xinpianchang.com/" + id
+    : "https://www.kuaishou.com/short-video/" + id;
   // A title is text, not a duration, a count or a date.
   const titled = (value) => { const text = clean(value); return text.length >= 2 && !/^[\d\s:.,·万亿wW+\-/年月日前小时分钟天]*$/.test(text) ? text : ""; };
   const shown = (el) => {
@@ -269,7 +277,7 @@ pub const COLLECT_SCRIPT: &str = r##"(() => {
     if (playing) {
       const heading = document.querySelector("h1");
       const title = fromCapture(playing).title || titled(heading && (heading.getAttribute("title") || heading.innerText))
-        || titled(meta("og:title").replace(/_哔哩哔哩_bilibili$/, "")) || titled(document.title.replace(/(_哔哩哔哩_bilibili| - 抖音| - 快手)$/, ""));
+        || titled(meta("og:title").replace(/_哔哩哔哩_bilibili$/, "")) || titled(document.title.replace(/(_哔哩哔哩_bilibili| - 抖音| - 快手|-新片场)$/, ""));
       add(playing, { ...fromCapture(playing), title, cover: fromCapture(playing).cover || meta("og:image") || meta("image"),
         author: fromCapture(playing).author || clean((document.querySelector("[class*='up-name'], [class*='author-name'], [data-e2e='video-author'] [class*='name']") || {}).innerText) }, true);
     }
@@ -300,6 +308,57 @@ pub const BACK_SCRIPT: &str = "history.back();";
 /// page instead (web pages only; never a separate window).
 pub fn loads_in_place(url: &tauri::Url) -> bool {
     matches!(url.scheme(), "https" | "http") && url.host_str().is_some() && url.as_str().len() <= 4096
+}
+
+/// A Xinpianchang video page (`https://www.xinpianchang.com/a<digits>`), or None.
+pub fn xinpianchang_page(url: &str) -> Option<tauri::Url> {
+    let parsed = tauri::Url::parse(url).ok()?;
+    let path = parsed.path();
+    let digits = path.strip_prefix("/a")?.trim_end_matches('/');
+    (parsed.scheme() == "https" && matches!(parsed.host_str(), Some("www.xinpianchang.com" | "xinpianchang.com"))
+        && parsed.port().is_none() && (5..=12).contains(&digits.len()) && digits.bytes().all(|b| b.is_ascii_digit()))
+        .then(|| tauri::Url::parse(&format!("https://www.xinpianchang.com/a{digits}")).ok())
+        .flatten()
+}
+
+/// Run inside a Xinpianchang video page (#982): ask for the video's renditions the way the page's own player does
+/// (`mod-api` with the page's vid and appKey, the page's cookies) and leave the answer in `window.__dubflowXpc`.
+/// Returns 0 when the page is not a video page (the slider check, or an error page).
+pub const XINPIANCHANG_MEDIA_SCRIPT: &str = r##"(function(){
+  window.__dubflowXpc = null;
+  try {
+    var data = JSON.parse(document.getElementById("__NEXT_DATA__").textContent);
+    var video = data.props.pageProps.detail.video;
+    if (!video || !/^[0-9A-Za-z]{6,40}$/.test(video.vid) || !/^[0-9A-Za-z]{6,40}$/.test(video.appKey)) return 0;
+    fetch("https://mod-api.xinpianchang.com/mod/api/v2/media/" + video.vid + "?appKey=" + video.appKey + "&extend=userInfo%2CuserStatus", { credentials: "include" })
+      .then(function (response) { return response.text(); })
+      .then(function (text) { window.__dubflowXpc = text; }, function () { window.__dubflowXpc = ""; });
+    return 1;
+  } catch (error) { return 0; }
+})()"##;
+
+/// The best rendition in Xinpianchang's media answer: the most pixels among those with an HTTPS MP4 link on its
+/// CDN. `hd_locked` says a larger one is listed without a link (Xinpianchang keeps 1080p and up for logged-in users).
+pub fn xinpianchang_best(text: &str) -> Result<serde_json::Value, String> {
+    let value: serde_json::Value = serde_json::from_str(text).map_err(|_| "Xinpianchang trả về dữ liệu không đọc được".to_string())?;
+    if value["code"].as_i64().is_some_and(|code| code != 0) || !value["data"].is_object() {
+        return Err("Xinpianchang không trả thông tin video (video riêng tư hoặc đã xóa)".into());
+    }
+    let mut best: Option<(u64, u64, String)> = None;
+    let mut largest = 0;
+    for rendition in value["data"]["resource"]["progressive"].as_array().into_iter().flatten().take(16) {
+        let (width, height) = (rendition["width"].as_u64().unwrap_or(0), rendition["height"].as_u64().unwrap_or(0));
+        largest = largest.max(width * height);
+        let Some(url) = rendition["url"].as_str().and_then(|url| https_on(url, &["xpccdn.com"])) else { continue };
+        if !url.path().to_ascii_lowercase().ends_with(".mp4") {
+            continue;
+        }
+        if best.as_ref().map_or(true, |(w, h, _)| width * height > w * h) {
+            best = Some((width, height, url.to_string()));
+        }
+    }
+    let (width, height, url) = best.ok_or_else(|| "Video Xinpianchang này không có bản tải được".to_string())?;
+    Ok(serde_json::json!({"url": url, "width": width, "height": height, "hd_locked": largest > width * height}))
 }
 
 #[derive(Debug, Deserialize)]
@@ -361,9 +420,10 @@ pub fn parse_collection(platform: Platform, json_text: &str) -> Result<Vec<Disco
         let media = (platform == Platform::Kuaishou && !item.media_url.is_empty())
             .then(|| https_on(&item.media_url, &["kwaicdn.com", "kuaishou.com", "yximgs.com", "kwimgs.com"]))
             .flatten();
-        let cover = https_on(&item.cover_url, &[platform.site(), "hdslb.com", "douyinpic.com", "douyinstatic.com", "byteimg.com", "kwaicdn.com", "yximgs.com", "kwimgs.com"]);
+        let cover = https_on(&item.cover_url, &[platform.site(), "hdslb.com", "douyinpic.com", "douyinstatic.com", "byteimg.com", "kwaicdn.com", "yximgs.com", "kwimgs.com", "xpccdn.com"]);
         let page_url = page.to_string();
-        // Kuaishou pages are not a download source; without a media URL the item cannot be fetched.
+        // Kuaishou pages are not a download source; without a media URL the item cannot be fetched. A Xinpianchang
+        // page is fetched as its page: its signed MP4 link (valid about two hours) is read when the video is added.
         let fetch_url = match (platform, media) {
             (Platform::Kuaishou, Some(media)) => media.to_string(),
             (Platform::Kuaishou, None) => continue,
@@ -395,6 +455,43 @@ mod tests {
         ] {
             assert!(api_args(platform, action, cursor, filter, id).is_err(), "{platform} {action} {cursor:?} {filter:?} {id:?}");
         }
+    }
+
+    #[test]
+    fn xinpianchang_pages_and_renditions() {
+        assert_eq!(page_url(Platform::Xinpianchang, "search", "工业").unwrap().as_str(), "https://www.xinpianchang.com/search?kw=%E5%B7%A5%E4%B8%9A");
+        assert_eq!(Platform::parse("xinpianchang").unwrap(), Platform::Xinpianchang);
+        assert_eq!(xinpianchang_page("https://www.xinpianchang.com/a13885930?from=hotSearch").unwrap().as_str(), "https://www.xinpianchang.com/a13885930");
+        for bad in ["http://www.xinpianchang.com/a13885930", "https://evil.example/a13885930", "https://www.xinpianchang.com/u10357277",
+                    "https://www.xinpianchang.com/a12", "https://www.xinpianchang.com:8443/a13885930"] {
+            assert!(xinpianchang_page(bad).is_none(), "{bad}");
+        }
+        let answer = serde_json::json!({"code": 0, "data": {"resource": {"progressive": [
+            {"profile": "高清 1080p", "width": 1920, "height": 1080, "url": null},
+            {"profile": "标清 720p", "width": 1280, "height": 720, "url": "https://us-xpc5.xpccdn.com/9d49.mp4?e=1&s=2"},
+            {"profile": "流畅 360p", "width": 640, "height": 360, "url": "https://us-xpc5-l2.xpccdn.com/1ea7.mp4?e=1"},
+            {"profile": "evil", "width": 3840, "height": 2160, "url": "https://evil.example/4k.mp4"}]}}}).to_string();
+        let best = xinpianchang_best(&answer).unwrap();
+        assert_eq!(best["url"], "https://us-xpc5.xpccdn.com/9d49.mp4?e=1&s=2");
+        assert_eq!((best["width"].as_u64(), best["height"].as_u64(), best["hd_locked"].as_bool()), (Some(1280), Some(720), Some(true)));
+        let logged_in = serde_json::json!({"code": 0, "data": {"resource": {"progressive": [
+            {"width": 1920, "height": 1080, "url": "https://us-xpc5.xpccdn.com/hd.mp4?e=1"}]}}}).to_string();
+        assert_eq!(xinpianchang_best(&logged_in).unwrap()["hd_locked"], false);
+        for bad in ["", "{}", r#"{"code": 404, "data": null}"#, r#"{"code": 0, "data": {"resource": {"progressive": [{"width": 1, "height": 1, "url": null}]}}}"#] {
+            assert!(xinpianchang_best(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn xinpianchang_cards_are_fetched_as_their_page() {
+        let page = collected(serde_json::json!([
+            {"page_url": "https://www.xinpianchang.com/a13885930", "title": "工业宣传片", "cover_url": "https://oss-xpc0.xpccdn.com/c.jpg"},
+            {"page_url": "https://evil.example/a1", "title": "x"}
+        ]));
+        let items = parse_collection(Platform::Xinpianchang, &page).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].fetch_url, "https://www.xinpianchang.com/a13885930");
+        assert_eq!(items[0].cover_url.as_deref(), Some("https://oss-xpc0.xpccdn.com/c.jpg"));
     }
 
     #[test]
