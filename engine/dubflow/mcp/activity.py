@@ -46,6 +46,12 @@ def label(tool: str, args: dict[str, Any]) -> str:
         "render_rough_cut": lambda: "Dựng bản nháp",
         "sync_to_capcut_draft": lambda: "Xuất sang CapCut",
         "get_frame": lambda: f"Xem khung hình ở {arg('time', 10)} s" + (f" của {arg('source_id', 10)}" if args.get("source_id") else ""),
+        # #994: finding footage on every source.
+        "search_sources": lambda: f"Tìm footage trên {', '.join(args.get('sources') or ['Bilibili', 'YouTube', 'SkyPixel'])[:60]}: "
+                                  + " ".join([arg('query', 60), *(str(item) for item in (args.get('suffixes') or []))])[:90],
+        "list_footage_suffixes": lambda: "Xem các hậu tố tìm footage",
+        "get_trends": lambda: f"Xem đề tài hot trên {arg('platform', 20)}",
+        "suggest_keywords": lambda: f"Gợi ý từ khóa {arg('platform', 20)}: {arg('query', 60)}",
     }
     return labels.get(tool, lambda: tool)()
 
