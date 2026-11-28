@@ -37,6 +37,8 @@ function choice<T extends string>(value: unknown, allowed: readonly T[]): T | nu
 function parseRequest(value: unknown): InboxRequest | null {
   if (!value || typeof value !== "object") return null;
   const item = value as Record<string, unknown>;
+  // An edit request (ADR-0059) is Chỉnh sửa's, not the queue's.
+  if (item.kind !== undefined && item.kind !== "dubbing") return null;
   const raw = (item.options && typeof item.options === "object" ? item.options : {}) as Record<string, unknown>;
   if (typeof item.id !== "string" || !AGENT_JOB_ID.test(item.id) || typeof item.source_path !== "string" || !item.source_path.trim()) return null;
   const options: InboxOptions = {

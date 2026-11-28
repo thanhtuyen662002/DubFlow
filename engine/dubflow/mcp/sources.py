@@ -118,7 +118,7 @@ def probe_size(ffprobe: Path, video: Path) -> dict[str, Any]:
     """Width, height and duration of a downloaded file, so the agent knows what quality it got."""
     try:
         done = subprocess.run([str(ffprobe), "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height:format=duration",
-                               "-of", "json", str(video)], capture_output=True, text=True, timeout=60,
+                               "-of", "json", str(video)], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0)
         value = json.loads(done.stdout or "{}")
         stream = (value.get("streams") or [{}])[0]

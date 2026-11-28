@@ -12,7 +12,7 @@ import traceback
 from pathlib import Path
 from typing import Any, Callable, TextIO
 
-from engine.dubflow.mcp import dubbing, outputs, sources, studio
+from engine.dubflow.mcp import dubbing, editing, outputs, sources, studio
 from engine.dubflow.mcp.activity import Activity, default_path
 from engine.dubflow.docu import capcut_draft, intake, mcp_tools, overlays, roughcut, visual
 from engine.dubflow.docu.project import DocuError, load_spec, spec_path
@@ -29,6 +29,8 @@ INSTRUCTIONS = ("Tools for DubFlow, the video studio on this computer. Finding f
                 "From a dubbed video (list_dubbed_videos, get_dubbed_video for its subtitles): make_shorts, make_landscape_16x9 "
                 "(a vertical video to 16:9), package_video (spoken intro/outro and music), suggest_post, then get_video_job; "
                 "create_compilation joins 2-30 dubbed videos (get_compilation). "
+                "Editing a dubbed video in Chỉnh sửa: get_edit -> change the draft (parts, transitions, texts, overlays, sounds, "
+                "frame) -> save_edit with export true -> get_edit_job until COMPLETED (the app must be open). "
                 "Documentary projects (Phim tài liệu): "
                 "search_sources -> download_video (2-15 sources, 6-12 give the richest B-roll) -> "
                 "create_project (speech is recognised when a source has no .srt) -> get_script_brief -> write the script yourself and "
@@ -138,6 +140,7 @@ TOOLS = [
     *studio.TOOLS,
     *dubbing.TOOLS,
     *outputs.TOOLS,
+    *editing.TOOLS,
 ]
 _SOURCE_TOOLS = {tool["name"] for tool in sources.TOOLS}
 _STUDIO_TOOLS = {tool["name"] for tool in studio.TOOLS}
@@ -265,6 +268,13 @@ class Server:
             return _text(dubbing.dubbing_job(args.get("id"), data_root=install.model_root.parent))
         if name == "list_dubbing_jobs":
             return _text(dubbing.list_dubbing_jobs(data_root=install.model_root.parent))
+        if name == "get_edit":
+            return _text(editing.get_edit(args, ffprobe=install.ffprobe))
+        if name == "save_edit":
+            return _text(editing.save_edit(args, data_root=install.model_root.parent,
+                                           probe=lambda path: editing.probe_media(install.ffprobe, path)))
+        if name == "get_edit_job":
+            return _text(editing.edit_job(args.get("id"), data_root=install.model_root.parent))
         if name in _OUTPUT_TOOLS:
             return _text(self._outputs(name, args))
         if name == "download_video":

@@ -22,6 +22,9 @@ assert.deepEqual(parsed.map((request) => request.id), [ID, "mcp-20261128-100000-
 assert.equal(parsed[0].title, "Đập Tam Hiệp");
 assert.equal(parsed[1].options.dub, null, "an option left out is null: the user's default");
 assert.deepEqual(parseInboxRequests(null), []);
+assert.deepEqual(parseInboxRequests([{ kind: "edit", id: ID, source_path: "D:/x.mp4", output_path: "D:/x.mp4", project: {}, options }]), [],
+  "an edit request is Chỉnh sửa's (ADR-0059), never a queue job");
+assert.equal(parseInboxRequests([{ kind: "dubbing", id: ID, source_path: "D:/x.mp4", title: "", options }]).length, 1);
 assert.deepEqual(parseInboxRequests({ id: ID }), []);
 assert.equal(parseInboxRequests(Array.from({ length: 30 }, (_, index) => ({ id: `mcp-20261128-100000-${String(index).padStart(8, "0")}`,
   source_path: "D:\\x.mp4", title: "", options: {} }))).length, 20);

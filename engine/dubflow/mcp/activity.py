@@ -80,6 +80,10 @@ def label(tool: str, args: dict[str, Any]) -> str:
         "create_compilation": lambda: f"Ghép video “{arg('title', 80)}” ({len(args.get('items') or [])} phần)",
         "get_compilation": lambda: "Xem tiến độ ghép video",
         "list_compilations": lambda: "Xem danh sách video ghép",
+        # #1002: Chỉnh sửa.
+        "get_edit": lambda: f"Mở bản nháp Chỉnh sửa của {_folder(args.get('video'))}",
+        "save_edit": lambda: ("Lưu và xuất" if args.get("export") else "Lưu") + f" bản chỉnh sửa của {_folder(args.get('video'))}",
+        "get_edit_job": lambda: f"Xem kết quả chỉnh sửa {arg('id', 40)}",
     }
     return labels.get(tool, lambda: tool)()
 
