@@ -2,7 +2,7 @@ DUBFLOW_PR_V1
 Issue: #987
 Lease-Owner: Claude/issue-987-refused-source-page
 Lease-Heartbeat: 2026-11-28T19:30:00Z
-Tested-Base-SHA: 84e4bbb8200de7919931d999ab9e7ca06af660de
+Tested-Base-SHA: 3644b3d49a6e0096cd27e910752da1bee31b59a1
 Conflict-Domains: desktop-discovery
 Expected-Paths:
 - .claims/issue-987-refused-source-page.md
