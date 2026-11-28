@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { MAX_LINKS, extractLinks } from "../src/features/links/extract.ts";
-import { clock, fetchBadge, fetchMessage, isDouyinLink, needsDouyinLogin, shortPath } from "../src/features/links/status.ts";
+import { clock, fetchBadge, fetchMessage, isBilibiliLink, isDouyinLink, needsBilibiliLogin, needsDouyinLogin, shortPath } from "../src/features/links/status.ts";
 
 // One per line, Windows line ends, duplicates dropped, URL commas preserved.
 const lines = extractLinks("https://www.bilibili.com/video/BV1gKJ86JEuP\r\nhttps://archive.org/a,b.mp4\nhttps://www.bilibili.com/video/BV1gKJ86JEuP\n  http://x.example/scene//1  ");
@@ -56,6 +56,16 @@ const douyinFailed = { ...base, provider: "douyin", state: "failed", error: "x",
 assert.equal(needsDouyinLogin(douyinFailed), true);
 assert.equal(needsDouyinLogin({ ...douyinFailed, error_code: "NETWORK" }), false);
 assert.equal(needsDouyinLogin({ ...douyinFailed, provider: "bilibili" }), false);
+// Bilibili links wait for the browser's login to become their session (#976); a refusal offers "Đăng nhập Bilibili".
+assert.equal(isBilibiliLink("https://www.bilibili.com/video/BV121Pkz4EsX/"), true);
+assert.equal(isBilibiliLink("https://b23.tv/abc"), true);
+assert.equal(isBilibiliLink("https://m.bilibili.com/video/BV121Pkz4EsX"), true);
+assert.equal(isBilibiliLink("https://evilbilibili.com/video/x"), false);
+assert.equal(isBilibiliLink("không phải link"), false);
+assert.equal(needsBilibiliLogin({ ...douyinFailed, provider: "bilibili" }), true);
+assert.equal(needsBilibiliLogin({ ...douyinFailed, provider: "bilibili", error_code: "PRIVATE" }), true);
+assert.equal(needsBilibiliLogin({ ...douyinFailed, provider: "bilibili", error_code: "RATE_LIMITED" }), false);
+assert.equal(needsBilibiliLogin(douyinFailed), false);
 assert.equal(fetchBadge("cancelled"), "Đã hủy");
 // A bare Bilibili id is read as its video page; never alongside a real link.
 assert.deepEqual(extractLinks("BV121Pkz4EsX").links, ["https://www.bilibili.com/video/BV121Pkz4EsX/"]);

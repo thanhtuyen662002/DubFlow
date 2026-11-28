@@ -484,8 +484,11 @@ def bilibili_api_metadata(downloader, url, original_error):
         raise ValueError("Bilibili part has no cid")
     formats = []
     # DASH (fnval=16) gives split video/audio; html5 progressive MP4 is the
-    # complete audio/video fallback that works without a session.
-    dash = bilibili_api_json(downloader, "/x/player/playurl", {"bvid": bvid, "cid": cid, "qn": 80, "fnval": 16, "fourk": 0})
+    # complete audio/video fallback that works without a session. With 4K
+    # (fnval 128, fourk=1) and qn=120 the list holds every SDR quality the
+    # session may play: 480p anonymous, 1080p logged in, 1080P+ and 4K for a
+    # 大会员 account. HDR/Dolby Vision (64/512) and AV1 (2048) stay out.
+    dash = bilibili_api_json(downloader, "/x/player/playurl", {"bvid": bvid, "cid": cid, "qn": 120, "fnval": 144, "fourk": 1})
     for value in ((dash.get("dash") or {}).get("video") or [])[:64]:
         if isinstance(value, dict) and isinstance(value.get("baseUrl"), str):
             formats.append({"format_id": f"dash-v{value.get('id')}-{value.get('codecid')}", "url": value["baseUrl"],
@@ -622,6 +625,13 @@ def public_metadata(raw, *, generic=False):
     for value in values:
         if not isinstance(value, dict):
             raise ValueError("invalid format")
+    # HDR and Dolby Vision streams (Bilibili 125/126 for a 大会员 session, YouTube HDR) often have the most pixels or the
+    # highest bit rate, so the highest-resolution choice would pick them; the pipeline has no tone mapping and they come
+    # out washed out. They are left out whenever an SDR video stream of the same video is there.
+    standard = [value for value in values if value.get("dynamic_range") in (None, "SDR")]
+    if any(value.get("vcodec") not in (None, "none") for value in standard):
+        values = standard
+    for value in values:
         formats.append({key: value[key] for key in ("format_id", "url", "width", "height", "vcodec", "acodec", "ext", "protocol", "tbr", "abr") if key in value})
     result["formats"] = formats
     subtitles = raw.get("subtitles", {})

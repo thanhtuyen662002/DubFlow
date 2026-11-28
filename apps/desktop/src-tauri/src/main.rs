@@ -4,6 +4,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod ai_keys;
+mod bilibili_session;
 mod compilation;
 mod compilation_raw;
 mod cover_graph;
@@ -2418,6 +2419,144 @@ async fn douyin_logout(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// passport.bilibili.com inside the "Đăng nhập Bilibili" dialog (#976).
+const BILIBILI_LOGIN: &str = "bilibili-login";
+const BILIBILI_LOGIN_WINDOW: &str = "bilibili-login-window";
+const BILIBILI_EMBED: Embed = Embed { child: BILIBILI_LOGIN, window: BILIBILI_LOGIN_WINDOW, title: "Đăng nhập Bilibili", script: None, keep_popups: false };
+
+/// When this app last saved a Bilibili session and for which login (no cookie values here).
+fn bilibili_state_path() -> Result<PathBuf, String> {
+    Ok(control_root()?.join("control").join(bilibili_session::STATE_FILE))
+}
+
+fn bilibili_saved() -> Option<bilibili_session::Saved> {
+    bilibili_session::parse_state(&fs::read_to_string(bilibili_state_path().ok()?).ok()?)
+}
+
+/// bilibili.com cookies of the shared browser profile, read through the main window: the login dialog, the Khám phá
+/// page and every other webview share it.
+fn bilibili_profile_cookies(app: &tauri::AppHandle) -> Result<Vec<(String, String)>, String> {
+    use tauri::Manager;
+    let main = app.get_webview_window(MAIN_WINDOW).ok_or_else(|| fail("Không thấy cửa sổ DubFlow"))?;
+    let home = bilibili_session::HOME.parse::<tauri::Url>().map_err(|error| fail(error.to_string()))?;
+    Ok(main.cookies_for_url(home).map_err(|error| fail(format!("Không đọc được cookie Bilibili: {error}")))?
+        .into_iter().map(|cookie| (cookie.name().to_owned(), cookie.value().to_owned())).collect())
+}
+
+/// Save the profile's Bilibili login as the protected session link downloads use. Returns how many cookies were kept.
+async fn store_bilibili_session(sources: std::sync::Arc<source::Sources>, cookies: Vec<(String, String)>) -> Result<usize, String> {
+    let login = bilibili_session::login_tag(&cookies)
+        .ok_or_else(|| fail("Chưa đăng nhập Bilibili. Hãy quét mã QR bằng app Bilibili trên điện thoại rồi bấm Xong."))?;
+    let header = source::cookie_header(&cookies, &bilibili_session::PRIORITY)
+        .filter(|header| header.starts_with("SESSDATA="))
+        .ok_or_else(|| fail("Cookie Bilibili không hợp lệ; hãy đăng nhập lại"))?;
+    let count = header.split("; ").count();
+    let now = unix_now();
+    let root = version_root()?;
+    let supervisor = supervisor_binary(&root)?;
+    let data = control_root()?;
+    tauri::async_runtime::spawn_blocking(move || sources.save_session("bilibili", header, now + source::SESSION_SECONDS, &supervisor, &root, &data))
+        .await.map_err(|error| fail(error.to_string()))??;
+    let _ = fs::write(bilibili_state_path()?, bilibili_session::state_json(now, &login));
+    Ok(count)
+}
+
+/// Remove the protected Bilibili session: links go out anonymous again.
+async fn clear_bilibili_session(sources: std::sync::Arc<source::Sources>) -> Result<(), String> {
+    let root = version_root()?;
+    let supervisor = supervisor_binary(&root)?;
+    let data = control_root()?;
+    tauri::async_runtime::spawn_blocking(move || sources.clear_session("bilibili", &supervisor, &root, &data))
+        .await.map_err(|error| fail(error.to_string()))??;
+    let _ = fs::remove_file(bilibili_state_path()?);
+    Ok(())
+}
+
+/// Show passport.bilibili.com's QR login inside the "Đăng nhập Bilibili" dialog at `x, y, width, height`.
+#[tauri::command]
+async fn bilibili_view_open(app: tauri::AppHandle, sources: tauri::State<'_, std::sync::Arc<source::Sources>>, x: f64, y: f64, width: f64, height: f64) -> Result<(), String> {
+    let bounds = ViewBounds::new(x, y, width, height)?;
+    let page = bilibili_session::LOGIN_PAGE.parse::<tauri::Url>().map_err(|error| fail(error.to_string()))?;
+    open_embedded(&app, BILIBILI_EMBED, page, false, bounds)?;
+    // "Xong" saves through the link service; its first start checks the install.
+    warm_link_service(std::sync::Arc::clone(&sources));
+    Ok(())
+}
+
+#[tauri::command]
+async fn bilibili_view_bounds(app: tauri::AppHandle, x: f64, y: f64, width: f64, height: f64) -> Result<(), String> {
+    let bounds = ViewBounds::new(x, y, width, height)?;
+    match EmbeddedView::find(&app, BILIBILI_EMBED) {
+        Some(view) => view.place(&app, bounds),
+        None => Ok(()),
+    }
+}
+
+#[tauri::command]
+async fn bilibili_view_close(app: tauri::AppHandle) -> Result<(), String> {
+    match EmbeddedView::find(&app, BILIBILI_EMBED) {
+        Some(view) => view.close().map_err(|error| fail(error.to_string())),
+        None => Ok(()),
+    }
+}
+
+/// "Xong" in the login dialog: save the session and close the page.
+#[tauri::command]
+async fn save_bilibili_session(app: tauri::AppHandle, sources: tauri::State<'_, std::sync::Arc<source::Sources>>) -> Result<usize, String> {
+    let cookies = bilibili_profile_cookies(&app)?;
+    let count = store_bilibili_session(std::sync::Arc::clone(&sources), cookies).await?;
+    let _ = bilibili_view_close(app).await;
+    Ok(count)
+}
+
+fn bilibili_ensure_lock() -> &'static tauri::async_runtime::Mutex<()> {
+    static LOCK: std::sync::OnceLock<tauri::async_runtime::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| tauri::async_runtime::Mutex::new(()))
+}
+
+/// Before a Bilibili link starts: save the profile's login when it is new, another one or older than 20 hours, and
+/// remove a saved session the profile no longer has (a logout on the site). "logged_in" or "anonymous".
+#[tauri::command]
+async fn ensure_bilibili_session(app: tauri::AppHandle, sources: tauri::State<'_, std::sync::Arc<source::Sources>>) -> Result<String, String> {
+    let _one_at_a_time = bilibili_ensure_lock().lock().await;
+    let cookies = bilibili_profile_cookies(&app)?;
+    let login = bilibili_session::login_tag(&cookies);
+    let sources = std::sync::Arc::clone(&sources);
+    Ok(match bilibili_session::plan(login.as_deref(), bilibili_saved().as_ref(), unix_now(), source::session_fresh) {
+        bilibili_session::Plan::Keep => "logged_in",
+        bilibili_session::Plan::Save(_) => {
+            store_bilibili_session(sources, cookies).await?;
+            "logged_in"
+        }
+        bilibili_session::Plan::Clear => {
+            clear_bilibili_session(sources).await?;
+            "anonymous"
+        }
+        bilibili_session::Plan::Anonymous => "anonymous",
+    }.into())
+}
+
+/// Whether the shared browser profile is logged in to Bilibili.
+#[tauri::command]
+async fn bilibili_account(app: tauri::AppHandle) -> Result<Value, String> {
+    let cookies = bilibili_profile_cookies(&app)?;
+    Ok(json!({"logged_in": bilibili_session::login_tag(&cookies).is_some()}))
+}
+
+/// Log out of Bilibili: the protected session first (so no link uses it after a logout that fails half way), then
+/// every bilibili.com cookie of the browser profile.
+#[tauri::command]
+async fn bilibili_logout(app: tauri::AppHandle, sources: tauri::State<'_, std::sync::Arc<source::Sources>>) -> Result<(), String> {
+    use tauri::Manager;
+    clear_bilibili_session(std::sync::Arc::clone(&sources)).await?;
+    let main = app.get_webview_window(MAIN_WINDOW).ok_or_else(|| fail("Không thấy cửa sổ DubFlow"))?;
+    let cookies = main.cookies().map_err(|error| fail(format!("Không đọc được cookie Bilibili: {error}")))?;
+    for cookie in cookies.into_iter().filter(|cookie| cookie.domain().is_some_and(bilibili_session::is_bilibili_domain)) {
+        main.delete_cookie(cookie).map_err(|error| fail(format!("Không xóa được cookie Bilibili: {error}")))?;
+    }
+    Ok(())
+}
+
 fn main() {
     // a candidate run with the saved keys closed keeps no key from its launch environment either (#911)
     ai_keys::drop_inherited_keys();
@@ -2438,7 +2577,7 @@ fn main() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![reframe::reframe_render, reframe::reframe_status, reframe::reframe_cancel, reframe::reframe_info, shorts::shorts_render, shorts::shorts_status, shorts::shorts_cancel, package::package_video, package::package_info, package::package_status, package::package_cancel, source_credit::source_credit_get, source_credit::source_credit_set, ai_keys::ai_key_status, ai_keys::ai_key_get, ai_keys::ai_ask, ai_keys::ai_key_set, ai_keys::ai_key_delete, ai_keys::ai_key_page, vibi::vibi_call, vibi::vibi_preview, vibi::vibi_sample, create_report, product::pick_product_files, product::product_image, product::product_render, product::product_status, product::product_cancel, product::product_spec, product::product_runs, product::product_backgrounds, product::product_background_add, product::product_background_delete, product::product_rerender, mastering::mastering_review, mastering::mastering_final_qc, mastering::mastering_keyframe, mastering::dubbing_qc, mastering::dubbing_qc_climax, release_info, voice_catalog, pick_files, pick_edit_files, pick_lut, edit::edit_proxy, start_job, glossary_export, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, link_titled_output, withdraw_fetch, cancel_fetch, keep_download, default_download_dir, open_folder, reveal_download, save_douyin_session, ensure_douyin_session, douyin_account, douyin_logout, douyin_view_open, douyin_view_bounds, douyin_view_close, review_clip, video_frame, allow_media, post_suggestions, discover, open_discovery, discovery_view_show, discovery_view_bounds, discovery_view_hide, discovery_view_close, discovery_view_back, discovery_view_reload, discovery_view_url, scroll_discovery, collect_discovery, translate_terms, translate_query, review_speakers, check_update, download_update, install_update, list_versions, activate_version, restart_app, compilation::compilation_render, compilation::compilation_status, compilation::compilation_cancel, compilation::compilation_description, compilation::compilation_runs, compilation_raw::compilation_raw_render, compilation_raw::compilation_raw_rerender, compilation_raw::compilation_raw_cancel, compilation_raw::compilation_raw_open, compilation_raw::compilation_raw_finalize, compilation_raw::compilation_raw_final_qc, compilation_raw::compilation_review, compilation_raw::compilation_keyframe, compilation_raw::pick_source_folder, projects::project_delete, docu::docu_create, docu::docu_runs, docu::docu_open, docu::docu_check_script, docu::docu_pick_file, docu::docu_voices, docu::docu_narrate, docu::docu_narration_status, docu::docu_narration_cancel, docu::docu_plan, docu::docu_plan_status, docu::docu_plan_cancel, docu::docu_cover, docu::docu_slices, docu::docu_layers,
+        .invoke_handler(tauri::generate_handler![reframe::reframe_render, reframe::reframe_status, reframe::reframe_cancel, reframe::reframe_info, shorts::shorts_render, shorts::shorts_status, shorts::shorts_cancel, package::package_video, package::package_info, package::package_status, package::package_cancel, source_credit::source_credit_get, source_credit::source_credit_set, ai_keys::ai_key_status, ai_keys::ai_key_get, ai_keys::ai_ask, ai_keys::ai_key_set, ai_keys::ai_key_delete, ai_keys::ai_key_page, vibi::vibi_call, vibi::vibi_preview, vibi::vibi_sample, create_report, product::pick_product_files, product::product_image, product::product_render, product::product_status, product::product_cancel, product::product_spec, product::product_runs, product::product_backgrounds, product::product_background_add, product::product_background_delete, product::product_rerender, mastering::mastering_review, mastering::mastering_final_qc, mastering::mastering_keyframe, mastering::dubbing_qc, mastering::dubbing_qc_climax, release_info, voice_catalog, pick_files, pick_edit_files, pick_lut, edit::edit_proxy, start_job, glossary_export, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, link_titled_output, withdraw_fetch, cancel_fetch, keep_download, default_download_dir, open_folder, reveal_download, save_douyin_session, ensure_douyin_session, douyin_account, douyin_logout, douyin_view_open, douyin_view_bounds, douyin_view_close, save_bilibili_session, ensure_bilibili_session, bilibili_account, bilibili_logout, bilibili_view_open, bilibili_view_bounds, bilibili_view_close, review_clip, video_frame, allow_media, post_suggestions, discover, open_discovery, discovery_view_show, discovery_view_bounds, discovery_view_hide, discovery_view_close, discovery_view_back, discovery_view_reload, discovery_view_url, scroll_discovery, collect_discovery, translate_terms, translate_query, review_speakers, check_update, download_update, install_update, list_versions, activate_version, restart_app, compilation::compilation_render, compilation::compilation_status, compilation::compilation_cancel, compilation::compilation_description, compilation::compilation_runs, compilation_raw::compilation_raw_render, compilation_raw::compilation_raw_rerender, compilation_raw::compilation_raw_cancel, compilation_raw::compilation_raw_open, compilation_raw::compilation_raw_finalize, compilation_raw::compilation_raw_final_qc, compilation_raw::compilation_review, compilation_raw::compilation_keyframe, compilation_raw::pick_source_folder, projects::project_delete, docu::docu_create, docu::docu_runs, docu::docu_open, docu::docu_check_script, docu::docu_pick_file, docu::docu_voices, docu::docu_narrate, docu::docu_narration_status, docu::docu_narration_cancel, docu::docu_plan, docu::docu_plan_status, docu::docu_plan_cancel, docu::docu_cover, docu::docu_slices, docu::docu_layers,
             docu::docu_reframe, docu::docu_render_options, docu::docu_render, docu::docu_render_status, docu::docu_render_cancel, docu::docu_capcut, docu::docu_launch_capcut, docu::docu_mcp_connection, docu::docu_mcp_activity, storage::storage_report, storage::storage_clean, storage::storage_free, edit::edit_project_load, edit::edit_library, edit::edit_file_sizes, edit::edit_project_save, edit::edit_export, edit::edit_status, edit::edit_cancel, edit::edit_check_cancel, edit::edit_stems, voice_sample, edit::edit_separate, edit::edit_split, edit::edit_separate_cancel, edit::edit_subs_extract, edit::edit_subs_extract_status, edit::edit_subs_extract_cancel, edit::edit_media_info, edit::edit_audio_peaks, edit::edit_lut_frame, edit::edit_save_recording, thumbnail::thumbnail_frame, thumbnail::thumbnail_save, thumbnail::thumbnail_reveal, edit::edit_versions, edit::edit_version_save, edit::edit_version_load, edit::edit_version_delete, edit::edit_templates, edit::edit_template_save, edit::edit_template_load, edit::edit_template_delete, edit::edit_subtitles_load, edit::edit_subtitles_apply, sfx::sfx_status, sfx::sfx_install, sfx::sfx_path, sfx::user_audio_list, sfx::audio_info, sfx::pick_audio_folder, sfx::pick_audio_files, sfx::expand_audio_paths, gpu::machine_profile, gpu::set_performance])
         .build(tauri::generate_context!())
         .expect("error while building DubFlow desktop host")

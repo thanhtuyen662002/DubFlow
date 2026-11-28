@@ -20,9 +20,10 @@ import { matchesQueueFilter, type QueueFilter } from "./features/queue/view_mode
 import { mountDiscovery } from "./features/discovery/view.ts";
 import { chineseKeyword } from "./features/discovery/ai.ts";
 import { extractLinks } from "./features/links/extract.ts";
-import { fetchBadge, fetchMessage, isDouyinLink, needsDouyinLogin, shortPath, type FetchStatus } from "./features/links/status.ts";
+import { fetchBadge, fetchMessage, isBilibiliLink, isDouyinLink, needsBilibiliLogin, needsDouyinLogin, shortPath, type FetchStatus } from "./features/links/status.ts";
 import { addSample, fractionDone, progressLine, type Sample } from "./features/fetch/progress.ts";
 import { mountDouyinLogin } from "./features/douyin/view.ts";
+import { mountBilibiliLogin } from "./features/bilibili/view.ts";
 import { mountUpdates } from "./features/update/view.ts";
 import { mountStorage } from "./features/storage/view.ts";
 import { queueOutputs } from "./features/storage/model.ts";
@@ -1757,6 +1758,20 @@ function failedFetchActions(entry: FetchEntry): HTMLButtonElement[] {
       report.disabled = false;
     }
   });
+  if (needsBilibiliLogin(entry.status)) {
+    retry.className = "btn";
+    const bilibiliLogin = actionButton("Đăng nhập Bilibili", "btn primary", async () => {
+      bilibiliLogin.disabled = true;
+      try {
+        if (await bilibili.open()) await refetch(entry, true);
+      } catch (error) {
+        showError(String(error).slice(0, 300));
+      } finally {
+        bilibiliLogin.disabled = false;
+      }
+    });
+    return [bilibiliLogin, retry, report, skip];
+  }
   if (!needsDouyinLogin(entry.status)) return [retry, report, skip];
   retry.className = "btn";
   const login = actionButton("Đăng nhập Douyin", "btn primary", async () => {
@@ -1851,6 +1866,7 @@ const onWindowMoved = (listener: () => void): void => {
   if (isTauri) void getCurrentWindow().onMoved(listener).catch(() => undefined);
 };
 const douyin = mountDouyinLogin(invoke, onWindowMoved);
+const bilibili = mountBilibiliLogin(invoke, onWindowMoved);
 const discovery = mountDiscovery(invoke, async (url, title) => { await startFetch(url, title); }, () => {
   try {
     return window.localStorage.getItem("dubflow.hachimiAck.v1") === "1" ? "hachimi" : "argos";
@@ -2124,6 +2140,19 @@ async function startFetch(url: string, title?: string, authRetried = false): Pro
   if (isDouyinLink(url)) {
     void douyin.ensureSession(false).catch(() => undefined);
     if (!queueState.textContent) showError(note);
+  }
+  // A Bilibili link waits for the browser's Bilibili login to become its session (1080p/4K instead of 480p).
+  // Without one, or when that fails, it goes out anonymous; a refusal then offers "Đăng nhập Bilibili".
+  const bilibiliNote = "Đang chuẩn bị phiên Bilibili…";
+  if (isBilibiliLink(url)) {
+    if (!queueState.textContent) showError(bilibiliNote);
+    try {
+      await bilibili.ensureSession();
+    } catch {
+      // The link still starts.
+    } finally {
+      if (queueState.textContent === bilibiliNote) showError("");
+    }
   }
   let started: { status: FetchStatus; output_dir: string };
   try {
@@ -2956,6 +2985,7 @@ function openSettings(tab?: string): void {
   showSettingsTab(target);
   $<HTMLButtonElement>(`#settings-tab-${settingsTabOf(target) ? target : "account"}`).focus();
   void douyin.refreshAccount();
+  void bilibili.refreshAccount();
   storage.refreshSummary();
   // With an update waiting, Settings opens at it.
   if (target === "update" && updateVersion !== null) {
@@ -2973,8 +3003,8 @@ function closeSettings(): void {
 $("#nav-settings").addEventListener("click", () => openSettings());
 $("#header-update").addEventListener("click", () => openSettings("update"));
 $("#settings-close").addEventListener("click", closeSettings);
-// Esc closes the topmost dialog: one opened from Cài đặt (versions, cleanup, Douyin) before Cài đặt itself.
-const SETTINGS_CHILDREN = ["versions", "cleanup", "douyin"];
+// Esc closes the topmost dialog: one opened from Cài đặt (versions, cleanup, Douyin, Bilibili) before Cài đặt itself.
+const SETTINGS_CHILDREN = ["versions", "cleanup", "douyin", "bilibili"];
 function closeTopSettingsChild(): boolean {
   for (const name of SETTINGS_CHILDREN) {
     if (!$(`#${name}-dialog`).hidden) {

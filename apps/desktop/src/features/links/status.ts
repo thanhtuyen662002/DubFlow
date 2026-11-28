@@ -17,6 +17,21 @@ export function isDouyinLink(url: string): boolean {
   }
 }
 
+/** A Bilibili video link (b23.tv short links included). */
+export function isBilibiliLink(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return ["bilibili.com", "b23.tv"].some((domain) => host === domain || host.endsWith(`.${domain}`));
+  } catch {
+    return false;
+  }
+}
+
+/** A Bilibili link refused for lack of a login: a members-only video, or a saved login that has ended. */
+export function needsBilibiliLogin(status: FetchStatus): boolean {
+  return status.provider === "bilibili" && status.state === "failed" && ["AUTH_REQUIRED", "PRIVATE"].includes(status.error_code ?? "");
+}
+
 /** A Douyin link that failed because it needs a (fresh or logged-in) session. */
 export function needsDouyinLogin(status: FetchStatus): boolean {
   return status.provider === "douyin" && status.state === "failed" && ["AUTH_REQUIRED", "PRIVATE"].includes(status.error_code ?? "");
