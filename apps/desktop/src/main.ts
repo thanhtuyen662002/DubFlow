@@ -1332,13 +1332,14 @@ async function takeInbox(): Promise<void> {
     if (added) {
       showNotice(`Agent đã gửi ${added} video vào Hàng đợi lồng tiếng; video sẽ tự chạy lần lượt.`);
       renderRunAll();
-      window.setTimeout(pumpBatch, 0);
     }
   } catch {
     // An older host or a busy disk: the requests wait for the next look.
   } finally {
     takingInbox = false;
   }
+  // Also an agent's video taken before DubFlow was last closed: it runs once the catalog is here and nothing else runs.
+  if (queue.getSnapshot().jobs.some((job) => isAgentJob(job) && job.status.state === "QUEUED")) window.setTimeout(pumpBatch, 0);
 }
 window.setInterval(() => void takeInbox(), 4000);
 
