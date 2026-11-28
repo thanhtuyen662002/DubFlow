@@ -37,6 +37,20 @@ class FilterTests(unittest.TestCase):
         self.assertIn("drawbox=x=0:y=0:w=iw:h=132", framed)
         tall = roughcut.video_filter(1080, 1920, {"zoom": 1.0, "shift": 0.0, "letterbox": 0.0}, frames=90, ken_burns=False)
         self.assertIn("gblur", tall, "a vertical source is fitted over a blurred fill")
+        # #980: lanczos for every resize of the picture; a light luma unsharp only where the crop is upscaled.
+        self.assertIn("scale=1920:1080:force_original_aspect_ratio=increase:flags=lanczos,crop=1920:1080,setsar=1", plain)
+        self.assertNotIn("unsharp", plain, "a 1:1 picture is not sharpened")
+        self.assertIn("scale=1920:1080:force_original_aspect_ratio=increase:flags=lanczos,crop=1920:1080,unsharp=5:5:0.5:5:5:0.0,setsar=1", framed)
+        overscan = roughcut.video_filter(1920, 1080, {"zoom": 1.08, "shift": 0.0, "letterbox": 0.0, "clear": True}, frames=90, ken_burns=False)
+        self.assertIn(roughcut.UPSCALE_SHARPEN, overscan, "overscan_108 on 1080p footage is an upscale")
+        uhd = roughcut.video_filter(3840, 2160, {"zoom": 1.08, "shift": 0.0, "letterbox": 0.0, "clear": True}, frames=90, ken_burns=False)
+        self.assertIn("flags=lanczos", uhd)
+        self.assertNotIn("unsharp", uhd, "a crop of 4K footage is a downscale")
+        # A vertical 1080x1920 is fitted smaller: no sharpening. A small 4:3 picture is fitted larger: sharpened, its fill not.
+        self.assertIn("force_original_aspect_ratio=decrease:flags=lanczos,setsar=1[fit]", tall)
+        small = roughcut.video_filter(640, 480, {"zoom": 1.0, "shift": 0.0, "letterbox": 0.0}, frames=90, ken_burns=False)
+        self.assertIn("force_original_aspect_ratio=decrease:flags=lanczos,unsharp=5:5:0.5:5:5:0.0,setsar=1[fit]", small)
+        self.assertNotIn("gblur=sigma=24,unsharp", small, "the blurred fill is not sharpened")
         covered = roughcut.video_filter(1920, 1080, {"zoom": 1.14, "shift": 0.06, "letterbox": 0.0, "clear": False,
                                                      "band": {"top": 0.8, "bottom": 0.95, "share": 1.0}}, frames=90, ken_burns=False)
         # Not stretched edge rows any more (#548): the band, from a 38 px feather above it, blurred, darkened and faded in.
