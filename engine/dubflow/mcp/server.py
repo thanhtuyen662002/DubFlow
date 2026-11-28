@@ -12,7 +12,7 @@ import traceback
 from pathlib import Path
 from typing import Any, Callable, TextIO
 
-from engine.dubflow.mcp import dubbing, sources, studio
+from engine.dubflow.mcp import dubbing, outputs, sources, studio
 from engine.dubflow.mcp.activity import Activity, default_path
 from engine.dubflow.docu import capcut_draft, intake, mcp_tools, overlays, roughcut, visual
 from engine.dubflow.docu.project import DocuError, load_spec, spec_path
@@ -26,6 +26,9 @@ INSTRUCTIONS = ("Tools for DubFlow, the video studio on this computer. Finding f
                 "-> create_product_video with the product's photos/clips -> get_product_video until COMPLETED. "
                 "Dubbing (lồng tiếng) a video into Vietnamese: download_video if it is a link -> queue_dubbing_job (the DubFlow app "
                 "must be open; it runs the job in its queue) -> get_dubbing_job until COMPLETED. "
+                "From a dubbed video (list_dubbed_videos, get_dubbed_video for its subtitles): make_shorts, make_landscape_16x9 "
+                "(a vertical video to 16:9), package_video (spoken intro/outro and music), suggest_post, then get_video_job; "
+                "create_compilation joins 2-30 dubbed videos (get_compilation). "
                 "Documentary projects (Phim tài liệu): "
                 "search_sources -> download_video (2-15 sources, 6-12 give the richest B-roll) -> "
                 "create_project (speech is recognised when a source has no .srt) -> get_script_brief -> write the script yourself and "
@@ -134,9 +137,11 @@ TOOLS = [
     *sources.TOOLS,
     *studio.TOOLS,
     *dubbing.TOOLS,
+    *outputs.TOOLS,
 ]
 _SOURCE_TOOLS = {tool["name"] for tool in sources.TOOLS}
 _STUDIO_TOOLS = {tool["name"] for tool in studio.TOOLS}
+_OUTPUT_TOOLS = {tool["name"] for tool in outputs.TOOLS}
 
 
 def _project_of(content: list[dict[str, Any]]) -> str | None:
@@ -182,6 +187,32 @@ class Server:
         self.activity = Activity(default_path(install.model_root) if activity is True else (activity or None))
         self.roots = roots
         self.chosen: list[Path] = []  # roots passed to list_projects, canonical
+
+    def _outputs(self, name: str, args: dict[str, Any]) -> Any:
+        install = self.install
+        probe = lambda video: sources.probe_size(install.ffprobe, video)  # noqa: E731
+        roots = lambda: [mcp_tools.output_root(args["root"])] if args.get("root") else self.allowed_roots()  # noqa: E731
+        if name == "list_dubbed_videos":
+            return outputs.list_dubbed_videos(install.model_root.parent, roots())
+        if name == "get_dubbed_video":
+            return outputs.dubbed_video(args, install, probe=probe)
+        if name == "make_shorts":
+            return outputs.make_shorts(args, install)
+        if name == "make_landscape_16x9":
+            return outputs.make_landscape(args, install, probe=probe)
+        if name == "package_video":
+            return outputs.package(args, install)
+        if name == "get_video_job":
+            return outputs.video_job(args.get("video"), str(args.get("kind") or ""))
+        if name == "cancel_video_job":
+            return outputs.cancel_video_job(args.get("video"), str(args.get("kind") or ""))
+        if name == "suggest_post":
+            return outputs.suggest(args)
+        if name == "create_compilation":
+            return outputs.create_compilation(args, install, record_run=studio.record_run(install.model_root.parent))
+        if name == "get_compilation":
+            return outputs.compilation(args.get("run"))
+        return outputs.list_compilations(roots())
 
     def allowed_roots(self) -> list[Path]:
         """The canonical DubFlow Output folders whose projects the tools may open."""
@@ -234,6 +265,8 @@ class Server:
             return _text(dubbing.dubbing_job(args.get("id"), data_root=install.model_root.parent))
         if name == "list_dubbing_jobs":
             return _text(dubbing.list_dubbing_jobs(data_root=install.model_root.parent))
+        if name in _OUTPUT_TOOLS:
+            return _text(self._outputs(name, args))
         if name == "download_video":
             page = str(args.get("url") or "")
             fetch, extra = sources.resolve_download_url(page)

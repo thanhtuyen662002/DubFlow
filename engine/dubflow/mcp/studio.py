@@ -79,7 +79,7 @@ def voices(app_root: Path) -> list[dict[str, Any]]:
 
 def _folder_title(name: str) -> str:
     cleaned = " ".join("".join(" " if ord(c) < 32 or c in '<>:"/\\|?*' else c for c in name).split())
-    return cleaned[:60].rstrip(" .") or "san pham"
+    return cleaned[:40].rstrip(" .") or "san pham"  # product.rs NAME_CHARS
 
 
 def _absolute_file(value: Any, what: str) -> str:
