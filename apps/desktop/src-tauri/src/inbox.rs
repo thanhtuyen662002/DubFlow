@@ -212,7 +212,8 @@ pub(crate) fn parse_edit(value: &Value, file_id: &str) -> Result<EditRequest, St
                 Some(Value::String(name)) if valid_file_name(name) => Some(name.trim().to_string()),
                 Some(_) => return Err("export.file_name must be a plain file name".into()),
             };
-            Some(EditExport { file_name, quality: optional_choice(options, "quality", &QUALITIES)? })
+            let quality = optional_choice(options, "quality", &QUALITIES).map_err(|_| "export.quality must be source, 1080p or 720p".to_string())?;
+            Some(EditExport { file_name, quality })
         }
         Some(_) => return Err("export must be an object or null".into()),
     };
