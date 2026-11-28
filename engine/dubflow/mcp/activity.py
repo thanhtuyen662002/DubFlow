@@ -57,6 +57,10 @@ def label(tool: str, args: dict[str, Any]) -> str:
         "create_product_video": lambda: f"Tạo video bán hàng “{arg('name', 80)}” ({len(args.get('scripts') or [])} kịch bản)",
         "get_product_video": lambda: "Xem tiến độ video bán hàng",
         "list_product_videos": lambda: "Xem danh sách video bán hàng",
+        # #998: lồng tiếng through the app's queue.
+        "queue_dubbing_job": lambda: f"Gửi video vào Hàng đợi lồng tiếng: {Path(str(args.get('video') or '')).name[:100]}",
+        "get_dubbing_job": lambda: f"Xem tiến độ lồng tiếng {arg('id', 40)}",
+        "list_dubbing_jobs": lambda: "Xem các video lồng tiếng do agent gửi",
     }
     return labels.get(tool, lambda: tool)()
 

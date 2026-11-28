@@ -12,7 +12,7 @@ import traceback
 from pathlib import Path
 from typing import Any, Callable, TextIO
 
-from engine.dubflow.mcp import sources, studio
+from engine.dubflow.mcp import dubbing, sources, studio
 from engine.dubflow.mcp.activity import Activity, default_path
 from engine.dubflow.docu import capcut_draft, intake, mcp_tools, overlays, roughcut, visual
 from engine.dubflow.docu.project import DocuError, load_spec, spec_path
@@ -24,6 +24,8 @@ INSTRUCTIONS = ("Tools for DubFlow, the video studio on this computer. Finding f
                 "once; add list_footage_suffixes such as 空镜 or 航拍 4K for clean B-roll; get_trends for topics) -> download_video "
                 "(reports the quality it got). Sales videos (Bán hàng): list_vietnamese_voices -> write 1-5 Vietnamese scripts yourself "
                 "-> create_product_video with the product's photos/clips -> get_product_video until COMPLETED. "
+                "Dubbing (lồng tiếng) a video into Vietnamese: download_video if it is a link -> queue_dubbing_job (the DubFlow app "
+                "must be open; it runs the job in its queue) -> get_dubbing_job until COMPLETED. "
                 "Documentary projects (Phim tài liệu): "
                 "search_sources -> download_video (2-15 sources, 6-12 give the richest B-roll) -> "
                 "create_project (speech is recognised when a source has no .srt) -> get_script_brief -> write the script yourself and "
@@ -131,6 +133,7 @@ TOOLS = [
           read_only=True),
     *sources.TOOLS,
     *studio.TOOLS,
+    *dubbing.TOOLS,
 ]
 _SOURCE_TOOLS = {tool["name"] for tool in sources.TOOLS}
 _STUDIO_TOOLS = {tool["name"] for tool in studio.TOOLS}
@@ -224,6 +227,13 @@ class Server:
         if name == "list_product_videos":
             roots = [mcp_tools.output_root(args["root"])] if args.get("root") else self.allowed_roots()
             return _text(studio.list_product_videos(roots))
+        if name == "queue_dubbing_job":
+            return _text(dubbing.queue_dubbing_job(args, data_root=install.model_root.parent,
+                                                   voices=lambda: studio.voices(install.app_root)))
+        if name == "get_dubbing_job":
+            return _text(dubbing.dubbing_job(args.get("id"), data_root=install.model_root.parent))
+        if name == "list_dubbing_jobs":
+            return _text(dubbing.list_dubbing_jobs(data_root=install.model_root.parent))
         if name == "download_video":
             page = str(args.get("url") or "")
             fetch, extra = sources.resolve_download_url(page)

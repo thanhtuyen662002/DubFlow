@@ -13,6 +13,7 @@ import { mountNamedHeading, mountRenames } from "./shell/names.ts";
 import { PREVIEW_EDIT_LIBRARY, previewInvoke } from "./shell/preview_invoke.ts";
 import { createVoiceSampler } from "./features/voices/sample.ts";
 import { QueueController, type QueueJob, type SnapshotStorage } from "./features/queue/model.ts";
+import { agentJobPlan, isAgentJob, parseInboxRequests, type AgentJobPlan } from "./features/queue/inbox.ts";
 import {
   DEFAULTS_KEY, FIRST_RUN_DEFAULTS, LEGACY_DEFAULTS_KEY, readJobDefaults, serializeJobDefaults, type JobDefaults,
 } from "./features/queue/defaults.ts";
@@ -52,7 +53,7 @@ import { pickFromMedia } from "./features/media/picker.ts";
 import { COVER_STORAGE_KEY, describeCoverStyle, normalizeCoverStyle, storedCoverStyle, type CoverMode, type CoverStyle } from "./features/edit/cover.ts";
 import { configureHostAi, createAiSession, isKeyError, PROVIDERS } from "./features/ai/provider.ts";
 import { loadPrefs, translationJobArgs } from "./features/ai/translation_prefs.ts";
-import { decideAiContext, providerReady, setKeysClosed, type AiContext } from "./features/ai/ai_context.ts";
+import { decideAiContext, providerReady, setKeysClosed, unattendedAiContext, type AiContext } from "./features/ai/ai_context.ts";
 import { glossaryArgs, resolveGuide } from "./features/ai/glossary.ts";
 import { mountGlossaryBooks, mountJobGlossary } from "./features/ai/glossary_view.ts";
 import { narrationTermsNote, rewriteAsNarration, type NarrationStyle, type NarrationTerms } from "./features/narration/ai.ts";
@@ -1239,9 +1240,12 @@ function renderRunAll(): void {
 }
 
 function pumpBatch(): void {
-  if (!batchRunning || awaitingAnswer) return;
+  if (awaitingAnswer) return;
+  // An agent's video (ADR-0058) starts on its own; the user's own only while "Bắt đầu … video đang chờ" runs.
+  const waiting = runnableJobs().filter((job) => batchRunning || isAgentJob(job));
+  if (!batchRunning && !waiting.length) return;
   if (queue.getSnapshot().jobs.some((job) => isActive(job))) return;
-  const next = runnableJobs()[0];
+  const next = waiting[0];
   if (!next) {
     batchRunning = false;
     renderRunAll();
@@ -1287,6 +1291,57 @@ function startNewJobs(jobs: readonly QueueJob[]): void {
   renderRunAll();
   window.setTimeout(pumpBatch, 0);
 }
+
+// Videos an agent sends through DubFlow's MCP server (ADR-0058, Issue #998): taken every few seconds while the app is
+// open, each a queue job under the request's id, run one at a time after the videos ahead of it, never with a question.
+function applyAgentPlan(id: string, plan: AgentJobPlan): void {
+  if (!plan.burnIn) queue.setBurnIn(id, false);
+  if (plan.sourceLanguage) queue.setSourceLanguage(id, plan.sourceLanguage);
+  if (plan.blurAuto) queue.setBlurAuto(id, true);
+  if (plan.multiVoice) queue.setMultiVoice(id, true);
+  if (plan.separateBackground) queue.setSeparateBackground(id, true);
+  if (plan.mastering) queue.setMastering(id, plan.mastering);
+  // Hachimi only for a user who already accepted its terms in the app.
+  let hachimiAccepted = false;
+  try {
+    hachimiAccepted = window.localStorage.getItem("dubflow.hachimiAck.v1") === "1";
+  } catch {
+    // no storage: the offline route
+  }
+  if (plan.translationEngine === "hachimi" && hachimiAccepted) queue.setTranslationEngine(id, "hachimi");
+  if (plan.dubbing) applyDubbingDefault(id, plan.voiceId);
+}
+
+let takingInbox = false;
+async function takeInbox(): Promise<void> {
+  // After the voice catalog: an agent's voice is checked against it, never swapped for the default later.
+  if (!isTauri || takingInbox || !voiceCatalog) return;
+  takingInbox = true;
+  try {
+    let added = 0;
+    for (const request of parseInboxRequests(await invoke<unknown>("take_inbox"))) {
+      try {
+        const id = queue.addAgentJob(request.id, request.source_path, request.title);
+        if (!id) continue;
+        added += 1;
+        applyAgentPlan(id, agentJobPlan(request.options, currentDefaults()));
+      } catch {
+        // The queue is full, or the job changed meanwhile: it stays as it is.
+      }
+    }
+    if (added) {
+      showNotice(`Agent đã gửi ${added} video vào Hàng đợi lồng tiếng; video sẽ tự chạy lần lượt.`);
+      renderRunAll();
+    }
+  } catch {
+    // An older host or a busy disk: the requests wait for the next look.
+  } finally {
+    takingInbox = false;
+  }
+  // Also an agent's video taken before DubFlow was last closed: it runs once the catalog is here and nothing else runs.
+  if (queue.getSnapshot().jobs.some((job) => isAgentJob(job) && job.status.state === "QUEUED")) window.setTimeout(pumpBatch, 0);
+}
+window.setInterval(() => void takeInbox(), 4000);
 
 // Results folder: next to each source (default) or one chosen folder.
 const OUTPUT_ROOT_KEY = "dubflow.outputRoot.v1";
@@ -1401,7 +1456,8 @@ async function startJob(job: QueueJob): Promise<void> {
   awaitingAnswer = true;
   try {
     await aiRestored;
-    aiContext = await decideAiContext(claudeKey, "start");
+    // An agent's video (ADR-0058): nobody is there to answer, so the user's own choice, else offline.
+    aiContext = isAgentJob(job) ? unattendedAiContext(claudeKey) : await decideAiContext(claudeKey, "start");
   } catch {
     // no answer: no AI
   } finally {
@@ -1412,7 +1468,7 @@ async function startJob(job: QueueJob): Promise<void> {
   if (!current || !canStart(current)) {
     const selected = selectedJob();
     startButton.disabled = !selected || !canStart(selected);
-    if (batchRunning) window.setTimeout(pumpBatch, 0);
+    if (batchRunning || isAgentJob(job)) window.setTimeout(pumpBatch, 0);
     return;
   }
   queue.updateStatus(current.id, { ...current.status, state: "RUNNING", reason: "starting", message: "Đang khởi động xử lý" });
@@ -2596,7 +2652,8 @@ queue.subscribe((snapshot) => {
     }
     lastStates.set(job.id, job.status.state);
   }
-  if (batchRunning && !snapshot.jobs.some((job) => ACTIVE.includes(job.status.state))) window.setTimeout(pumpBatch, 0);
+  if ((batchRunning || snapshot.jobs.some((job) => isAgentJob(job) && job.status.state === "QUEUED"))
+    && !snapshot.jobs.some((job) => ACTIVE.includes(job.status.state))) window.setTimeout(pumpBatch, 0);
   const selected = snapshot.jobs.find((job) => job.id === snapshot.selected_job_id);
   if (selected && ["RUNNING", "RECOVERED", "WORKER_LOST"].includes(selected.status.state)) beginPolling(selected.id);
 });

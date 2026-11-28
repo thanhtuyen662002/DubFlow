@@ -403,6 +403,19 @@ export class QueueController {
     return job.id;
   }
 
+  /** Queue an agent's request (ADR-0058) under its own id; null when that id is already in the list. */
+  addAgentJob(id: string, path: string, title: string): string | null {
+    if (!/^mcp-[0-9a-z-]{8,64}$/.test(id)) throw new Error("An agent job id is mcp-…");
+    if (this.snapshot.jobs.some((job) => job.id === id)) return null;
+    if (this.snapshot.jobs.length >= this.queueLimit) throw new Error(`Queue limit of ${this.queueLimit} jobs reached`);
+    const job = createQueueJob(id, path, this.clock());
+    job.displayName = title.trim() || job.displayName;
+    this.snapshot.jobs.push(job);
+    this.snapshot.selected_job_id ??= job.id;
+    this.commit();
+    return job.id;
+  }
+
   selectJob(jobId: string | null): void {
     if (jobId !== null && !this.snapshot.jobs.some((job) => job.id === jobId)) {
       throw new Error(`Unknown job: ${jobId}`);
