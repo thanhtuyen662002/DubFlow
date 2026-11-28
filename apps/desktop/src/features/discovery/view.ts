@@ -1,13 +1,15 @@
 import {
   ALL_SOURCES, GLOSS_BATCH, PAGE_ONLY_SOURCES, PLATFORMS, SOURCE_NAMES, SUFFIXES, TITLE_GLOSS_KEY, TOPICS, YOUTUBE_FILTERS, bilibiliMid, cleanTitle, interleave,
-  joinQuery, parseGlosses, discoveryError, formatCount, formatDuration, loadGlossCache, mergeVideos, needsChinese, needsEnglish, needsTitleGloss, pageAddress,
+  joinQuery, youtubeQuery, parseGlosses, discoveryError, formatCount, formatDuration, loadGlossCache, mergeVideos, needsChinese, needsEnglish, needsTitleGloss, pageAddress,
   parseChinese, parseMedia, parseXinpianchangMedia, qualityLabel, splitSuffixes, toggleSuffix, topicChinese, parseCollected, parseTrends, parseVideos, previewSource, refreshVideos,
   rememberGloss, saveGlossCache, seenOnPage,
   type DiscoveredVideo, type Platform, type PreviewSource, type Source, type Trend,
 } from "./model.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
-type Mode = { kind: "api"; action: "search" | "popular" | "creator"; query: string; mid?: string; page: number; cursor?: string | null }
+type Mode = { kind: "api"; action: "search" | "popular" | "creator"; query: string; mid?: string; page: number; cursor?: string | null;
+    /** YouTube: the phrase without its suffixes, searched once when the full phrase finds nothing (#990). */
+    fallback?: string | null }
   | { kind: "page" } | { kind: "all" } | null;
 /** One source of "Tất cả nguồn": its own query, how far it got and what went wrong. */
 type SourceState = { status: "loading" | "ok" | "error"; query: string; videos: DiscoveredVideo[]; next: { page: number | null; cursor: string | null } | null; message: string };
@@ -1043,6 +1045,11 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
         if (info().page && next.action !== "popular" && (result.code === "BLOCKED" || result.code === "LOGIN_REQUIRED")) await openPage();
         return;
       }
+      if (!append && forPlatform === "youtube" && !result.items.length && next.fallback && next.fallback !== next.query) {
+        translatedNote.append(translatedNote.textContent ? " · " : "", `YouTube không có kết quả, tìm lại bằng “${next.fallback}”`);
+        await runApi({ ...next, query: next.fallback, fallback: null }, false);
+        return;
+      }
       const found = result.items.map((video) => ({ ...video, source: video.source ?? (forPlatform as Source) }));
       videos = append ? mergeVideos(videos, found) : found;
       nextPage = result.nextPage;
@@ -1061,7 +1068,7 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
    * One search on every source of "Tất cả nguồn" at once (or the next page of each that has one). Each source
    * shows up as it answers; one that fails says why in the source row and never hides the others.
    */
-  async function runAll(queries: { zh: string; en: string } | null, append: boolean): Promise<void> {
+  async function runAll(queries: { zh: string; en: string; enBase?: string } | null, append: boolean): Promise<void> {
     mode = { kind: "all" };
     closePage();
     const request = searchRequest;
@@ -1074,9 +1081,18 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
       sources.set(source, entry);
       renderSources();
       try {
-        const value = await invoke<unknown>("discover", searchArgs(source, text, append ? entry.next?.page ?? 1 : 1, append ? entry.next?.cursor ?? null : null));
+        let value = await invoke<unknown>("discover", searchArgs(source, text, append ? entry.next?.page ?? 1 : 1, append ? entry.next?.cursor ?? null : null));
         if (request !== searchRequest || platform !== "all") return;
-        const result = parseVideos(value);
+        let result = parseVideos(value);
+        // YouTube narrows with every word: a phrase with suffixes that finds nothing is searched once without them (#990).
+        const fallback = queries?.enBase;
+        if (!append && source === "youtube" && result.ok && !result.items.length && fallback && fallback !== text) {
+          entry.query = fallback;
+          value = await invoke<unknown>("discover", searchArgs(source, fallback, 1, null));
+          if (request !== searchRequest || platform !== "all") return;
+          result = parseVideos(value);
+          if (result.ok && result.items.length) translatedNote.append(translatedNote.textContent ? " · " : "", `YouTube tìm lại không hậu tố: “${fallback}”`);
+        }
         if (!result.ok) {
           sources.set(source, { ...entry, status: "error", message: discoveryError(result.code, source), next: append ? entry.next : null });
         } else {
@@ -1230,16 +1246,17 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
     }
     if (platform === "all" || platform === "youtube") {
       state.textContent = "Đang chuẩn bị từ khóa tiếng Anh cho YouTube…";
-      const english = joinQuery(await toEnglish(chineseBase || base), suffixes, "en");
+      const englishBase = await toEnglish(chineseBase || base);
+      const english = youtubeQuery(englishBase, suffixes, youtubeFilter.value);
       if (request !== searchRequest) return;
       state.textContent = "";
       if (platform === "all") {
         if (english !== text) translatedNote.append(translatedNote.textContent ? " · " : "", `YouTube: “${english}”`);
         resetResults();
-        return runAll({ zh: text, en: english }, false);
+        return runAll({ zh: text, en: english, enBase: englishBase }, false);
       }
       resetResults();
-      return runApi({ kind: "api", action: "search", query: english, page: 1, cursor: null }, false);
+      return runApi({ kind: "api", action: "search", query: english, page: 1, cursor: null, fallback: englishBase }, false);
     }
     resetResults();
     if ((platform === "bilibili" || platform === "skypixel") && kind.value === "search") return runApi({ kind: "api", action: "search", query: text, page: 1 }, false);

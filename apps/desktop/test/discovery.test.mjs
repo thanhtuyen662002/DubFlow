@@ -263,3 +263,17 @@ console.log("discovery multi-source tests passed");
   assert.equal(previewSource({ pageUrl: "https://www.xinpianchang.com/a13885930", fetchUrl: "https://www.xinpianchang.com/a13885930" }, { muted: false }), null);
 }
 console.log("discovery xinpianchang tests passed");
+
+// #990: YouTube narrows with every word; its phrase drops quality words its filter covers, and repeats.
+{
+  const { SUFFIXES, youtubeQuery } = await import("../src/features/discovery/model.ts");
+  const [broll, drone, noText, , uhd] = SUFFIXES;
+  assert.equal(youtubeQuery("Baihetan Hydropower Station", [broll, drone], "4k"), "Baihetan Hydropower Station B-roll drone");
+  assert.equal(youtubeQuery("Baihetan Hydropower Station", [broll, drone], "hd"), "Baihetan Hydropower Station B-roll drone");
+  assert.equal(youtubeQuery("Baihetan Hydropower Station", [broll, drone], "any"), "Baihetan Hydropower Station B-roll 4K drone");
+  assert.equal(youtubeQuery("Qingdao port 4K", [uhd, drone], "cc"), "Qingdao port 4K drone");
+  assert.equal(youtubeQuery("Qingdao port", [uhd], "4k"), "Qingdao port");
+  assert.equal(youtubeQuery("dam drone", [drone, noText], "4k"), "dam drone no text");
+  assert.equal(youtubeQuery("", [broll], "4k"), "B-roll");
+}
+console.log("discovery youtube query tests passed");

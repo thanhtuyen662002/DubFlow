@@ -79,6 +79,26 @@ export function joinQuery(base: string, suffixes: readonly Suffix[], language: "
   return [base, ...suffixes.map((suffix) => suffix[language])].filter(Boolean).join(" ").slice(0, 100);
 }
 
+/**
+ * The phrase YouTube gets (#990). Its search narrows with every extra word, so the suffixes' quality words ("4K",
+ * "HD") are left out when YouTube's own quality filter already asks for them, and no word repeats. "Baihetan
+ * Hydropower Station B-roll 4K drone" with the 4K filter found nothing; "… B-roll drone" is what is sent now.
+ */
+export function youtubeQuery(base: string, suffixes: readonly Suffix[], filter: string): string {
+  const quality = filter === "4k" || filter === "hd";
+  const seen = new Set(base.toLowerCase().split(/\s+/).filter(Boolean));
+  const words: string[] = [];
+  for (const suffix of suffixes) {
+    for (const word of suffix.en.split(/\s+/)) {
+      const key = word.toLowerCase();
+      if (!word || seen.has(key) || (quality && /^(4k|hd|uhd|2160p|1080p)$/.test(key))) continue;
+      seen.add(key);
+      words.push(word);
+    }
+  }
+  return [base, ...words].filter(Boolean).join(" ").slice(0, 100);
+}
+
 /** Put a suffix at the end of the search, or take it away when it is there. */
 export function toggleSuffix(text: string, suffix: Suffix, language: "zh" | "en"): string {
   const { base, suffixes } = splitSuffixes(text);

@@ -888,7 +888,8 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
       if (args.platform === "bilibili" && args.action === "search" && /chặn|阻止/.test(String(args.query ?? ""))) {
         return { ok: false, code: "BLOCKED", message: "preview" } as T;
       }
-      return previewDiscover(String(args.platform), String(args.action), Number(args.page ?? 1), args.cursor ? String(args.cursor) : null, args.id ? String(args.id) : null) as T;
+      return previewDiscover(String(args.platform), String(args.action), Number(args.page ?? 1), args.cursor ? String(args.cursor) : null, args.id ? String(args.id) : null,
+        String(args.query ?? "")) as T;
     }
     // The page itself is not shown in a browser: the panel's placeholder box stands in for it.
     case "open_discovery": previewDiscoveryUrl = previewDiscoveryPage(String(args.platform), String(args.kind), String(args.query)); return previewDiscoveryUrl as T;
@@ -1030,7 +1031,7 @@ const PREVIEW_WORDS = ["仙侠剧名场面", "美食探店", "国漫新番", "�
 const PREVIEW_FOOTAGE = ["Baihetan Dam 4K Drone Footage", "China Megaproject B-roll | No Commentary", "Hydropower station aerial timelapse 4K",
   "Inside a Chinese mega factory (4K)", "Automated port cinematic drone", "Bridge construction stock footage 2160p"];
 
-function previewDiscover(platform: string, action: string, page: number, cursor: string | null = null, id: string | null = null): unknown {
+function previewDiscover(platform: string, action: string, page: number, cursor: string | null = null, id: string | null = null, query = ""): unknown {
   if (action === "trends" || action === "suggest") {
     return { ok: true, next_page: null, items: PREVIEW_WORDS.map((keyword, index) => ({ platform, keyword, rank: index + 1, heat: index < 6 ? 9_800_000 - index * 1_250_000 : null, url: "" })) };
   }
@@ -1038,6 +1039,8 @@ function previewDiscover(platform: string, action: string, page: number, cursor:
     return { ok: true, url: `https://cn-videos.dji.net/video_trans/preview${(id ?? "").slice(0, 6)}/1080.mp4`, quality: "1080p", license: "SkyPixel Use", width: 3840, height: 2160 };
   }
   if (platform === "youtube") {
+    // A phrase loaded with suffixes finds nothing, as on the real site (#990).
+    if (!cursor && query.split(/\s+/).length > 5) return { ok: true, next_page: null, items: [] };
     const round = cursor ? 2 : 1;
     return { ok: true, next_page: null, next_cursor: round < 3 ? `PreviewToken${round}` : undefined,
       items: Array.from({ length: 6 }, (_, index) => {
