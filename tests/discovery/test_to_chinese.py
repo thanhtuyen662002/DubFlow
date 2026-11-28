@@ -5,7 +5,7 @@ import json
 import unittest
 from urllib.error import HTTPError, URLError
 
-from engine.dubflow.discovery.to_chinese import TranslateError, main, to_chinese
+from engine.dubflow.discovery.to_chinese import TranslateError, main, to_chinese, to_english
 
 
 def google_body(*parts: str) -> bytes:
@@ -54,6 +54,32 @@ class ToChineseTest(unittest.TestCase):
         with self.assertRaises(TranslateError) as caught:
             to_chinese("tien hiep", send)
         self.assertEqual(caught.exception.code, "UNAVAILABLE")
+
+    def test_english_for_youtube_detects_the_source_language(self):
+        seen = []
+
+        def send(request, timeout):
+            seen.append(request.full_url)
+            return google_body("Baihetan Hydropower Station.")
+
+        self.assertEqual(to_english("白鹤滩水电站", send), ("Baihetan Hydropower Station", "google"))
+        self.assertIn("sl=auto", seen[0])
+        self.assertIn("tl=en", seen[0])
+
+    def test_english_refuses_an_answer_still_in_chinese(self):
+        def send(request, timeout):
+            if "googleapis" in request.full_url:
+                return google_body("白鹤滩")
+            raise HTTPError(request.full_url, 403, "Forbidden", None, None)
+
+        with self.assertRaises(TranslateError) as caught:
+            to_english("白鹤滩", send)
+        self.assertEqual(caught.exception.code, "UNAVAILABLE")
+
+    def test_cli_english_target(self):
+        stdout = io.StringIO()
+        main(["--to", "en", "--", "cảng Thanh Đảo"], send=lambda request, timeout: google_body("Qingdao port"), stdout=stdout)
+        self.assertEqual(json.loads(stdout.getvalue()), {"ok": True, "text": "Qingdao port", "engine": "google"})
 
     def test_no_network(self):
         def send(request, timeout):

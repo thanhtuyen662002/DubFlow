@@ -42,6 +42,9 @@ class DiscoveryAdapter:
     def _unsupported(self):
         raise DiscoveryError("UNSUPPORTED", f"{self.platform} does not support this discovery action; use its browser.")
 
+    def trends(self):
+        return self._unsupported()
+
     def popular(self, page: int = 1):
         return self._unsupported()
 

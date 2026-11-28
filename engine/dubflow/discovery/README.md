@@ -18,6 +18,21 @@ From the repository root, use the app-owned Python runtime:
 | Douyin | `trends`, `suggest --query Q` |
 | Bilibili | `trends`, `suggest --query Q`, `popular`, `ranking`, `search --query Q`, `creator --mid ID` |
 | Kuaishou | `trends` |
+| YouTube | `search --query Q [--filter any\|hd\|4k\|cc] [--cursor TOKEN]` |
+| SkyPixel | `search --query Q [--page N]`, `media --id SLUG` |
+
+YouTube and SkyPixel (#978) serve Khám phá's "Tất cả nguồn". YouTube's search is
+the anonymous `youtubei/v1/search` POST its own results page makes; the next
+page is a continuation token, returned as `next_cursor` (pass it back with
+`--cursor`). `--filter` uses YouTube's own parameters (HD, 4K, Creative
+Commons). SkyPixel's public API gives each upload's `width`/`height`; `media`
+returns the video's best MP4 rendition on DJI's CDN (`url`, `quality`,
+`license`), looked up only when the user adds or plays that video. Video items
+from these sources may carry `width`, `height` and `badges` (`4K`, `CC`, ...);
+older sources keep their exact shape.
+
+`python -m engine.dubflow.discovery.to_chinese --to en -- TEXT` translates a
+phrase to English for YouTube (source language detected).
 
 `ranking` is an additional CLI action for Bilibili's single ranking snapshot.
 `--page` is one-based and applies to popular, search and creator lists.

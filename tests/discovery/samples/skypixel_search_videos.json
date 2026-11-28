@@ -1,0 +1,109 @@
+{
+ "name": "skypixel_search_videos",
+ "platform": "skypixel",
+ "at_utc": "2026-11-28T06:22:08.512624+00:00",
+ "method": "GET",
+ "url": "https://www.skypixel.com/api/v2/search/videos?keyword=%E6%B8%AF%E7%8F%A0%E6%BE%B3%E5%A4%A7%E6%A1%A5&limit=3&offset=0",
+ "request_body": null,
+ "http_status": 200,
+ "content_encoding": "",
+ "response_json": {
+  "data": {
+   "items": [
+    {
+     "type": "video",
+     "slug": "4k-dji-air-3-54c90d82-d0ac-4736-a1f8-9072c4885ea3",
+     "title": "【4K | Dji Air 3】大国重器——港珠澳大桥",
+     "description": "",
+     "width": 3840,
+     "height": 2160,
+     "image": {
+      "small": "https://skp-cn-cdn.djiits.com/uploads/cn_files/video/image/f50f204d-4a91-48ba-9240-f7a68f51922b.jpg@!550",
+      "medium": "https://skp-cn-cdn.djiits.com/uploads/cn_files/video/image/f50f204d-4a91-48ba-9240-f7a68f51922b.jpg@!1200",
+      "large": "https://skp-cn-cdn.djiits.com/uploads/cn_files/video/image/f50f204d-4a91-48ba-9240-f7a68f51922b.jpg@!1920"
+     },
+     "like_count": 88,
+     "comment_count": 1,
+     "liked": false,
+     "user": {
+      "slug": "af3efce",
+      "name": "如澄RuCheng",
+      "avatar": {
+       "small": "https://skp-cn-cdn.djiits.com/uploads/cn_files/account/avatar_image/094bb57f-8588-47d1-bd1d-98b68cc0693c.jpg@!550",
+       "medium": "https://skp-cn-cdn.djiits.com/uploads/cn_files/account/avatar_image/094bb57f-8588-47d1-bd1d-98b68cc0693c.jpg@!1200",
+       "large": "https://skp-cn-cdn.djiits.com/uploads/cn_files/account/avatar_image/094bb57f-8588-47d1-bd1d-98b68cc0693c.jpg@!1920"
+      },
+      "default_avatar": false
+     },
+     "location": null,
+     "aerial_point": {
+      "work_key": "4k-dji-air-3-54c90d82-d0ac-4736-a1f8-9072c4885ea3::video"
+     },
+     "duration": 23
+    },
+    {
+     "type": "video",
+     "slug": "2-mp4-68a5b4ae-4b05-476a-b489-fe2f3a5c471d",
+     "title": "港珠澳大桥海上施工",
+     "description": "港珠澳大桥是一座连接香港、珠海和澳门的巨大桥梁，在促进香港、澳门和珠江三角洲西岸地区经济上的进一步发展具重要的战略意义。\n港珠澳大桥全长为49.968公里，主体工程“海中桥隧”长35.578公里，设计时速为100公里。\n港珠澳大桥主体建造工程于2009年12月15日开工建设，一期计划于2017年完成，大桥投资超1000多亿元，约需8年建成。",
+     "width": 1280,
+     "height": 720,
+     "image": {
+      "small": "https://skp-us-cdn.djiits.com/uploads/usa_files/video/image/70b9226f-47cd-429c-804c-ec1aab13631e.jpeg@!550",
+      "medium": "https://skp-us-cdn.djiits.com/uploads/usa_files/video/image/70b9226f-47cd-429c-804c-ec1aab13631e.jpeg@!1200",
+      "large": "https://skp-us-cdn.djiits.com/uploads/usa_files/video/image/70b9226f-47cd-429c-804c-ec1aab13631e.jpeg@!1920"
+     },
+     "like_count": 6,
+     "comment_count": 1,
+     "liked": false,
+     "user": {
+      "slug": "41268635",
+      "name": "向往美好时光",
+      "avatar": {
+       "small": "https://skp-cn-cdn.djiits.com/uploads/cn_files/account/avatar_image/add5730f-404e-45bc-8abe-a0a1c1ff4803.png@!550",
+       "medium": "https://skp-cn-cdn.djiits.com/uploads/cn_files/account/avatar_image/add5730f-404e-45bc-8abe-a0a1c1ff4803.png@!1200",
+       "large": "https://skp-cn-cdn.djiits.com/uploads/cn_files/account/avatar_image/add5730f-404e-45bc-8abe-a0a1c1ff4803.png@!1920"
+      },
+      "default_avatar": false
+     },
+     "location": null,
+     "aerial_point": {
+      "work_key": "2-mp4-68a5b4ae-4b05-476a-b489-fe2f3a5c471d::video"
+     },
+     "duration": 221
+    },
+    {
+     "type": "video",
+     "slug": "2-rain",
+     "title": "【御2】穿云 • 港珠澳大桥 -RAIN",
+     "description": "",
+     "width": 1920,
+     "height": 818,
+     "image": {
+      "small": "https://skp-cn-cdn.djiits.com/uploads/cn_files/video/image/edd3fbc2-83ef-481c-8e90-7fecf239152a.jpg@!550",
+      "medium": "https://skp-cn-cdn.djiits.com/uploads/cn_files/video/image/edd3fbc2-83ef-481c-8e90-7fecf239152a.jpg@!1200",
+      "large": "https://skp-cn-cdn.djiits.com/uploads/cn_files/video/image/edd3fbc2-83ef-481c-8e90-7fecf239152a.jpg@!1920"
+     },
+     "like_count": 40,
+     "comment_count": 5,
+     "liked": false,
+     "user": {
+      "slug": "444f4b6",
+      "name": "下雨 | RAIN",
+      "avatar": {
+       "small": "https://skp-cn-cdn.djiits.com/uploads/cn_files/account/avatar_image/7b2e68c4-5882-48e9-8d1a-302d7509fa33.png@!550",
+       "medium": "https://skp-cn-cdn.djiits.com/uploads/cn_files/account/avatar_image/7b2e68c4-5882-48e9-8d1a-302d7509fa33.png@!1200",
+       "large": "https://skp-cn-cdn.djiits.com/uploads/cn_files/account/avatar_image/7b2e68c4-5882-48e9-8d1a-302d7509fa33.png@!1920"
+      },
+      "default_avatar": false
+     },
+     "location": null,
+     "aerial_point": {
+      "work_key": "2-rain::video"
+     },
+     "duration": 180
+    }
+   ]
+  }
+ }
+}

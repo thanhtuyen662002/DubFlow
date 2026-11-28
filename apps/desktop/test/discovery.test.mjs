@@ -172,3 +172,74 @@ assert.equal(parseChinese({ ok: true, text: "  养猪  大楼 ", engine: "google
 assert.equal(parseChinese({ ok: true, text: "tien hiep" }), null);
 assert.equal(parseChinese({ ok: false, code: "NETWORK" }), null);
 assert.equal(parseChinese(null), null);
+
+// "Tất cả nguồn" (#978): suffix chips, per-source queries, mixed results and quality labels.
+{
+  const { ALL_SOURCES, PLATFORMS, SUFFIXES, interleave, joinQuery, needsEnglish, parseMedia, qualityLabel, splitSuffixes, toggleSuffix } =
+    await import("../src/features/discovery/model.ts");
+  const [broll, drone, noText] = SUFFIXES;
+  assert.equal(PLATFORMS[0].id, "all");
+  assert.deepEqual(ALL_SOURCES, ["bilibili", "youtube", "skypixel"]);
+  // A chip goes at the end, a second click takes it away; other suffixes keep their order.
+  assert.equal(toggleSuffix("白鹤滩水电站", broll, "zh"), "白鹤滩水电站 空镜");
+  assert.equal(toggleSuffix("白鹤滩水电站 空镜", drone, "zh"), "白鹤滩水电站 空镜 航拍 4K");
+  assert.equal(toggleSuffix("白鹤滩水电站 空镜 航拍 4K", broll, "zh"), "白鹤滩水电站 航拍 4K");
+  assert.equal(toggleSuffix("Baihetan dam", noText, "en"), "Baihetan dam no text");
+  // The phrase is translated without its suffixes, which come back in each source's language.
+  const split = splitSuffixes("đập thủy điện Bạch Hạc Than 空镜  航拍 4K");
+  assert.equal(split.base, "đập thủy điện Bạch Hạc Than");
+  assert.deepEqual(split.suffixes, [broll, drone]);
+  assert.equal(joinQuery("白鹤滩水电站", split.suffixes, "zh"), "白鹤滩水电站 空镜 航拍 4K");
+  assert.equal(joinQuery("Baihetan Hydropower Station", split.suffixes, "en"), "Baihetan Hydropower Station B-roll 4K drone");
+  // English forms count too; a word that merely ends like a suffix does not.
+  assert.deepEqual(splitSuffixes("Qingdao port B-roll").suffixes, [broll]);
+  assert.equal(splitSuffixes("Bigbroll").base, "Bigbroll");
+  assert.equal(splitSuffixes("空镜").base, "");
+  assert.equal(needsEnglish("白鹤滩"), true);
+  assert.equal(needsEnglish("đập thủy điện"), true);
+  assert.equal(needsEnglish("Baihetan dam 4K"), false);
+
+  // Mixed one by one, never the same page twice.
+  const video = (source, id) => ({ title: id, author: "", cover: null, durationS: null, plays: null, pageUrl: `https://x.test/${id}`, fetchUrl: `https://x.test/${id}`, source });
+  assert.deepEqual(interleave([[video("bilibili", "b1"), video("bilibili", "b2"), video("bilibili", "b3")], [video("youtube", "y1")], [video("skypixel", "s1"), video("skypixel", "b2")]])
+    .map((item) => item.title), ["b1", "y1", "s1", "b2", "b3"]);
+
+  // Quality: the short side of the size the source reports, then its labels, then (unsure) the title.
+  assert.deepEqual(qualityLabel({ title: "x", width: 3840, height: 2160 }), { label: "4K", sure: true });
+  assert.deepEqual(qualityLabel({ title: "x", width: 2160, height: 3840 }), { label: "4K", sure: true });
+  assert.deepEqual(qualityLabel({ title: "x", width: 3440, height: 1440 }), { label: "2K", sure: true });
+  assert.deepEqual(qualityLabel({ title: "x", width: 1920, height: 1080 }), { label: "1080p", sure: true });
+  assert.deepEqual(qualityLabel({ title: "x", badges: ["4K", "CC"] }), { label: "4K", sure: true });
+  assert.deepEqual(qualityLabel({ title: "【4K】港珠澳大桥" }), { label: "4K", sure: false });
+  assert.deepEqual(qualityLabel({ title: "超清航拍" }), { label: "4K", sure: false });
+  assert.equal(qualityLabel({ title: "4Kids show 1080" }), null);
+
+  // YouTube and SkyPixel results keep their source, size, labels and next-page token.
+  const youtube = parseVideos({ ok: true, next_page: null, next_cursor: "EqoDEhVCYWloZXRh", items: [
+    { platform: "youtube", title: "Dam", page_url: "https://www.youtube.com/watch?v=93kgTcANF1E", badges: ["4K", "CC", "<b>"] },
+  ] });
+  assert.equal(youtube.nextCursor, "EqoDEhVCYWloZXRh");
+  assert.equal(youtube.items[0].source, "youtube");
+  assert.deepEqual(youtube.items[0].badges, ["4K", "CC"]);
+  assert.equal(parseVideos({ ok: true, next_page: null, next_cursor: "bad token!", items: [] }).nextCursor, null);
+  const sky = parseVideos({ ok: true, next_page: 2, items: [{ platform: "skypixel", title: "桥", width: 3840, height: 2160, page_url: "https://www.skypixel.com/videos/a-b" }] });
+  assert.deepEqual([sky.items[0].source, sky.items[0].width, sky.items[0].height], ["skypixel", 3840, 2160]);
+  assert.equal(parseVideos({ ok: true, items: [{ platform: "evil", page_url: "https://x.test/1" }] }).items[0].source, undefined);
+
+  // The SkyPixel rendition must sit on DJI's video CDN.
+  assert.deepEqual(parseMedia({ ok: true, url: "https://cn-videos.dji.net/video_trans/a/1080.mp4", quality: "1080p", license: "SkyPixel Use" }),
+    { url: "https://cn-videos.dji.net/video_trans/a/1080.mp4", quality: "1080p", license: "SkyPixel Use" });
+  assert.equal(parseMedia({ ok: true, url: "https://evil.example/1080.mp4" }), null);
+  assert.equal(parseMedia({ ok: false, code: "UNSUPPORTED" }), null);
+
+  // Players: YouTube's no-cookie embed (muted for hover), SkyPixel's MP4 once looked up.
+  assert.deepEqual(previewSource({ pageUrl: "https://www.youtube.com/watch?v=93kgTcANF1E", fetchUrl: "https://www.youtube.com/watch?v=93kgTcANF1E" }, { muted: true }),
+    { kind: "iframe", vertical: false, src: "https://www.youtube-nocookie.com/embed/93kgTcANF1E?autoplay=1&mute=1&playsinline=1&rel=0" });
+  assert.equal(previewSource({ pageUrl: "https://www.youtube.com/watch?v=bad", fetchUrl: "https://www.youtube.com/watch?v=bad" }, { muted: false }), null);
+  assert.equal(previewSource({ pageUrl: "https://www.skypixel.com/videos/a", fetchUrl: "https://www.skypixel.com/videos/a" }, { muted: true }), null);
+  assert.deepEqual(previewSource({ pageUrl: "https://www.skypixel.com/videos/a", fetchUrl: "https://cn-videos.dji.net/v/1080.mp4" }, { muted: false }),
+    { kind: "video", vertical: false, src: "https://cn-videos.dji.net/v/1080.mp4" });
+  // Sources without a page say so instead of offering "Mở trang".
+  assert.doesNotMatch(discoveryError("BLOCKED", "youtube"), /Mở trang/);
+}
+console.log("discovery multi-source tests passed");

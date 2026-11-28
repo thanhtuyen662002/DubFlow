@@ -29,19 +29,37 @@ class VideoItem:
     likes: int | None
     cover_url: str
     page_url: str
+    # Only sources that say so (#978): the upload's picture size, and the
+    # source's own quality/licence labels such as "4K" or "CC".
+    width: int | None = None
+    height: int | None = None
+    badges: tuple[str, ...] = ()
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        data = asdict(self)
+        # Unknown sizes and no labels are left out, so older sources keep their exact shape.
+        for key in ("width", "height"):
+            if data[key] is None:
+                del data[key]
+        if data["badges"]:
+            data["badges"] = list(data["badges"])
+        else:
+            del data["badges"]
+        return data
 
 
 @dataclass(frozen=True)
 class DiscoveryPage:
     items: tuple[TrendItem | VideoItem, ...]
     next_page: int | None = None
+    # Sources that page by token (YouTube) instead of by number.
+    next_cursor: str | None = None
 
     def to_dict(self) -> dict:
-        return {"items": [item.to_dict() for item in self.items],
-                "next_page": self.next_page}
+        data = {"items": [item.to_dict() for item in self.items], "next_page": self.next_page}
+        if self.next_cursor is not None:
+            data["next_cursor"] = self.next_cursor
+        return data
 
 
 def optional_int(value: object) -> int | None:
