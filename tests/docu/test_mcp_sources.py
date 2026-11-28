@@ -84,3 +84,22 @@ class SourceToolTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AgentPagesTests(unittest.TestCase):
+    def test_every_studio_tool_has_a_page_for_the_apps_busy_dot(self):
+        """apps/desktop/src/features/agent/model.ts puts the rail's busy dot on a tool's page (#1004); a tool left out
+        there would light Phim tài liệu instead."""
+        import importlib
+
+        from engine.dubflow.mcp import dubbing, outputs, studio
+
+        model = (Path(__file__).resolve().parents[2] / "apps" / "desktop" / "src" / "features" / "agent" / "model.ts").read_text(encoding="utf-8")
+        modules = [sources, studio, dubbing, outputs]
+        try:
+            modules.append(importlib.import_module("engine.dubflow.mcp.editing"))
+        except ImportError:
+            pass
+        for module in modules:
+            for tool in module.TOOLS:
+                self.assertIn(f'"{tool["name"]}"', model, tool["name"])
