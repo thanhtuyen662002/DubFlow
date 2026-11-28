@@ -827,6 +827,7 @@ button.job.selected { background: var(--select); }
 .source-row button { height: 28px; padding: 0 12px; border: 1px solid var(--line); border-radius: 99px; background: var(--surface); color: var(--text-2); font-size: 12.5px; cursor: pointer; }
 .source-row button[aria-pressed="true"] { border-color: var(--accent); color: var(--text); background: oklch(0.66 0.15 var(--accent-h) / .14); }
 .source-row button.failed { border-style: dashed; color: var(--text-3); }
+.source-row .source-pages button.refused { border-color: var(--accent); color: var(--text); }
 .source-notes { flex-basis: 100%; margin: 0; }
 .video-card .thumb .badges { position: absolute; z-index: 2; left: 6px; bottom: 6px; display: flex; gap: 4px; }
 .video-card .thumb .badges span { padding: 1px 6px; border-radius: 4px; background: rgba(0,0,0,.68); color: #fff; font-size: 11px; font-weight: 650; }
