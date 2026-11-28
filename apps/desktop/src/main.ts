@@ -36,6 +36,8 @@ import { mountShorts } from "./features/shorts/view.ts";
 import { mountReframe } from "./features/reframe/view.ts";
 import { mountCompilation } from "./features/compilation/view.ts";
 import { mountDocu } from "./features/docu/view.ts";
+import { mountAgentSettings } from "./features/agent/view.ts";
+import { AGENT_NAV, navOfTool } from "./features/agent/model.ts";
 import { dubbingVoice, loadChoice as loadVibiChoice } from "./features/vibi/model.ts";
 import { createVibiStudio, mountVibiSettings, vibiVoiceRow } from "./features/vibi/view.ts";
 import { mountProductStudio } from "./features/product/view.ts";
@@ -2084,12 +2086,20 @@ $("#media-col .queue-col-head").after($("#link-form"));
 if (openedMedia.notice) showError(openedMedia.notice);
 const docu = mountDocu(invoke, claudeKey, { jobs: () => queue.getSnapshot().jobs, outputRoot, roots: outputRoots, mediaUrl: playableUrl, vibi: vibiStudio,
   edit: (video, seed) => void editVideo({ id: video.outputPath, kind: "docu", outputPath: video.outputPath, displayName: video.displayName, seed }, "docu"),
-  // Claude working over MCP: a pulsing dot on "Phim tài liệu" wherever the user is.
-  mcpBusy: label => {
-    $("#nav-docu").classList.toggle("mcp-busy", Boolean(label));
-    $("#nav-docu").title = label ? `Claude đang làm: ${label}` : "";
+  // Claude working over MCP: a pulsing dot, wherever the user is, on the page of the tool it runs (Issue #1004).
+  mcpBusy: (label, tool) => {
+    const busy = label ? navOfTool(tool) : null;
+    for (const id of AGENT_NAV) {
+      const item = document.getElementById(id);
+      if (!item) continue;
+      item.dataset.baseTitle ??= item.title;
+      item.classList.toggle("mcp-busy", id === busy);
+      item.title = id === busy ? `Claude đang làm: ${label}` : item.dataset.baseTitle;
+    }
   },
 });
+// Cài đặt › Agent AI (MCP): connecting Claude to all of DubFlow, and what it is doing (Issue #1004).
+mountAgentSettings(invoke);
 // Every page's side panels: drag to resize, fold into a strip, sizes remembered.
 mountLayoutPanels();
 // Every list column gets the same count and search box as Hàng đợi.
