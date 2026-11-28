@@ -9,6 +9,8 @@ from .bilibili import Bilibili
 from .douyin import Douyin
 from .http import DiscoveryError, HttpClient
 from .kuaishou import Kuaishou
+from .skypixel import SkyPixel
+from .youtube import FILTERS, YouTube
 
 
 def _positive(value: str) -> int:
@@ -24,20 +26,29 @@ def _positive(value: str) -> int:
 def main(argv: list[str] | None = None, *, client: HttpClient | None = None,
          stdout: TextIO | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("platform", choices=("douyin", "bilibili", "kuaishou"))
-    parser.add_argument("action", choices=("trends", "suggest", "popular", "ranking", "search", "creator"))
+    parser.add_argument("platform", choices=("douyin", "bilibili", "kuaishou", "youtube", "skypixel"))
+    parser.add_argument("action", choices=("trends", "suggest", "popular", "ranking", "search", "creator", "media"))
     parser.add_argument("--query")
     parser.add_argument("--page", type=_positive, default=1)
     parser.add_argument("--mid")
+    # YouTube pages by continuation token and has its own quality filters.
+    parser.add_argument("--cursor")
+    parser.add_argument("--filter", choices=tuple(FILTERS), default="any")
+    # SkyPixel "media": the video whose MP4 rendition to look up.
+    parser.add_argument("--id")
     args = parser.parse_args(argv)
     if args.action in ("suggest", "search") and not (args.query and args.query.strip()):
         parser.error("--query is required for suggest/search")
     if args.action == "creator" and not args.mid:
         parser.error("--mid is required for creator")
+    if args.action == "media" and not (args.platform == "skypixel" and args.id):
+        parser.error("media needs skypixel and --id")
+    if args.cursor is not None and args.platform != "youtube":
+        parser.error("--cursor is only for youtube")
     if args.platform == "bilibili" and args.action == "creator":
         if not args.mid.isascii() or not args.mid.isdigit() or int(args.mid) < 1:
             parser.error("--mid must be a positive numeric Bilibili UID")
-    adapter = {"douyin": Douyin, "bilibili": Bilibili, "kuaishou": Kuaishou}[args.platform](client)
+    adapter = {"douyin": Douyin, "bilibili": Bilibili, "kuaishou": Kuaishou, "youtube": YouTube, "skypixel": SkyPixel}[args.platform](client)
     try:
         if args.action == "ranking":
             if not isinstance(adapter, Bilibili):
@@ -49,11 +60,16 @@ def main(argv: list[str] | None = None, *, client: HttpClient | None = None,
             page = adapter.suggest(args.query)
         elif args.action == "popular":
             page = adapter.popular(args.page)
+        elif args.action == "search" and isinstance(adapter, YouTube):
+            page = adapter.search(args.query, cursor=args.cursor, quality=args.filter)
         elif args.action == "search":
             page = adapter.search(args.query, args.page)
+        elif args.action == "media":
+            page = None
+            media = adapter.media(args.id)
         else:
             page = adapter.creator(args.mid, args.page)
-        result = {"ok": True, **page.to_dict()}
+        result = {"ok": True, **page.to_dict()} if page is not None else {"ok": True, **media}
     except DiscoveryError as error:
         result = {"ok": False, "code": error.code, "message": error.message}
     except Exception as error:  # noqa: BLE001 - the host must always receive one JSON line.

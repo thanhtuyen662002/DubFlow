@@ -875,7 +875,11 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
       titles: ["Tiên hiệp: Bí mật linh kiếm thức tỉnh (Vietsub)", "Thanh linh kiếm này đã ngủ yên suốt 300 năm!", "Linh kiếm khiến ai cũng bất ngờ"],
       description: "Thanh linh kiếm này đã ngủ yên suốt 300 năm! Vì sao một đệ tử tu tiên lại đánh thức được linh kiếm?\n#vietsub",
       hashtags: ["#linhkiem", "#tienhiep", "#phimtienhiep", "#vietsub", "#trungquoc"], keywords: [] } as T;
-    case "discover": return previewDiscover(String(args.platform), String(args.action), Number(args.page ?? 1)) as T;
+    case "discover": {
+      // The real adapters take a second or two; sources answer one after another.
+      await new Promise((resolve) => setTimeout(resolve, args.platform === "youtube" ? 900 : args.platform === "skypixel" ? 600 : 300));
+      return previewDiscover(String(args.platform), String(args.action), Number(args.page ?? 1), args.cursor ? String(args.cursor) : null, args.id ? String(args.id) : null) as T;
+    }
     // The page itself is not shown in a browser: the panel's placeholder box stands in for it.
     case "open_discovery": previewDiscoveryUrl = previewDiscoveryPage(String(args.platform), String(args.kind), String(args.query)); return previewDiscoveryUrl as T;
     case "discovery_view_url": return previewDiscoveryUrl as T;
@@ -894,7 +898,11 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
     case "translate_query": {
       const text = String(args.text ?? "").trim();
       await new Promise((resolve) => setTimeout(resolve, 400));
-      const known: Record<string, string> = { "nuôi lợn": "养猪", "tháp nuôi lợn": "养猪大楼", "ẩm thực": "美食", "tiên hiệp": "仙侠" };
+      if (args.target === "en") {
+        const english: Record<string, string> = { "白鹤滩水电站": "Baihetan Hydropower Station", "养猪大楼": "pig farming building" };
+        return { ok: true, text: english[text] ?? `English ${text.replace(/[^\x00-\x7f]/g, "").trim() || "footage"}`, engine: "preview" } as T;
+      }
+      const known: Record<string, string> = { "nuôi lợn": "养猪", "tháp nuôi lợn": "养猪大楼", "ẩm thực": "美食", "tiên hiệp": "仙侠", "đập thủy điện bạch hạc than": "白鹤滩水电站" };
       return { ok: true, text: known[text.toLowerCase()] ?? `中文 ${text}`, engine: "preview" } as T;
     }
     case "collect_discovery": return previewCollected(String(args.platform)) as T;
@@ -1005,9 +1013,34 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
 /** A short sine tone WAV so the review "listen" buttons work in the browser preview. */
 const PREVIEW_WORDS = ["仙侠剧名场面", "美食探店", "国漫新番", "古装剧高能", "萌宠日常", "搞笑配音", "旅行vlog", "手工制作", "健身打卡", "动画短片"];
 
-function previewDiscover(platform: string, action: string, page: number): unknown {
+const PREVIEW_FOOTAGE = ["Baihetan Dam 4K Drone Footage", "China Megaproject B-roll | No Commentary", "Hydropower station aerial timelapse 4K",
+  "Inside a Chinese mega factory (4K)", "Automated port cinematic drone", "Bridge construction stock footage 2160p"];
+
+function previewDiscover(platform: string, action: string, page: number, cursor: string | null = null, id: string | null = null): unknown {
   if (action === "trends" || action === "suggest") {
     return { ok: true, next_page: null, items: PREVIEW_WORDS.map((keyword, index) => ({ platform, keyword, rank: index + 1, heat: index < 6 ? 9_800_000 - index * 1_250_000 : null, url: "" })) };
+  }
+  if (platform === "skypixel" && action === "media") {
+    return { ok: true, url: `https://cn-videos.dji.net/video_trans/preview${(id ?? "").slice(0, 6)}/1080.mp4`, quality: "1080p", license: "SkyPixel Use", width: 3840, height: 2160 };
+  }
+  if (platform === "youtube") {
+    const round = cursor ? 2 : 1;
+    return { ok: true, next_page: null, next_cursor: round < 3 ? `PreviewToken${round}` : undefined,
+      items: Array.from({ length: 6 }, (_, index) => {
+        const videoId = `prevYT${round}${index}abcd`.slice(0, 11);
+        return { platform, video_id: videoId, title: PREVIEW_FOOTAGE[index], author: ["CGTN", "New China TV", "SANY Group", "DJI Enterprise"][index % 4],
+          author_id: "UCpreview", duration_s: 60 + index * 45, plays: 25_000 * (index + 1), likes: null,
+          cover_url: `https://picsum.photos/seed/${videoId}/480/270`, page_url: `https://www.youtube.com/watch?v=${videoId}`, badges: index % 3 === 2 ? ["4K", "CC"] : ["4K"] };
+      }) };
+  }
+  if (platform === "skypixel") {
+    return { ok: true, next_page: page < 2 ? page + 1 : null,
+      items: Array.from({ length: 5 }, (_, index) => {
+        const slug = `preview-${page}${index}-4k-dji-air-3`;
+        return { platform, video_id: slug, title: `【4K | DJI Air 3】大国重器 航拍 ${page}-${index + 1}`, author: "如澄RuCheng", author_id: "af3efce",
+          duration_s: 23 + index * 30, plays: null, likes: 88 - index, cover_url: `https://picsum.photos/seed/${slug}/480/270`,
+          page_url: `https://www.skypixel.com/videos/${slug}`, width: index % 2 ? 1920 : 3840, height: index % 2 ? 1080 : 2160 };
+      }) };
   }
   if (platform !== "bilibili") return { ok: false, code: "UNSUPPORTED", message: "preview" };
   return {

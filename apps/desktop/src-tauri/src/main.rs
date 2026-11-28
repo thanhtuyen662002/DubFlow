@@ -1556,14 +1556,12 @@ async fn review_clip(output_path: String, start_ms: u64, end_ms: u64, source: bo
 /// discovery adapters (`python -m engine.dubflow.discovery`). Async: network
 /// calls run off the UI thread. Always returns the adapter's JSON object.
 #[tauri::command]
-async fn discover(platform: String, action: String, query: Option<String>, page: Option<u32>, mid: Option<String>) -> Result<Value, String> {
-    discovery::Platform::parse(&platform)?;
-    if !["trends", "suggest", "popular", "search", "creator"].contains(&action.as_str()) {
-        return Err(fail("Thao tác khám phá không hợp lệ"));
-    }
+async fn discover(platform: String, action: String, query: Option<String>, page: Option<u32>, mid: Option<String>,
+                  cursor: Option<String>, filter: Option<String>, id: Option<String>) -> Result<Value, String> {
+    let args = discovery::api_args(&platform, &action, cursor.as_deref(), filter.as_deref(), id.as_deref())?;
     let root = version_root()?;
     let mut command = Command::new(root.join("runtime").join("python.exe"));
-    command.current_dir(root.join("app")).args(["-B", "-m", "engine.dubflow.discovery", &platform, &action]);
+    command.current_dir(root.join("app")).args(["-B", "-m", "engine.dubflow.discovery", &platform, &action]).args(&args);
     if let Some(query) = query.filter(|value| !value.trim().is_empty()) {
         if query.chars().count() > 100 || query.chars().any(char::is_control) {
             return Err(fail("Từ khóa quá dài"));
@@ -1594,16 +1592,22 @@ async fn discover(platform: String, action: String, query: Option<String>, page:
 /// A Vietnamese search phrase in Simplified Chinese, for Khám phá's "Tìm":
 /// `{ok, text, engine}` or `{ok: false, code, message}`. The phrase goes to a
 /// public web translator (see engine/dubflow/discovery/to_chinese.py).
+/// `target` "en" gives the English phrase instead, for YouTube in "Tất cả nguồn" (#978).
 #[tauri::command]
-async fn translate_query(text: String) -> Result<Value, String> {
+async fn translate_query(text: String, target: Option<String>) -> Result<Value, String> {
     let text = text.trim().to_owned();
     if text.is_empty() || text.chars().count() > 100 || text.chars().any(char::is_control) {
         return Err(fail("Từ khóa không hợp lệ"));
     }
+    let target = match target.as_deref() {
+        None | Some("zh") => "zh",
+        Some("en") => "en",
+        Some(_) => return Err(fail("Ngôn ngữ dịch không hợp lệ")),
+    };
     let root = version_root()?;
     let mut command = Command::new(root.join("runtime").join("python.exe"));
     command.current_dir(root.join("app"))
-        .args(["-B", "-m", "engine.dubflow.discovery.to_chinese", "--"])
+        .args(["-B", "-m", "engine.dubflow.discovery.to_chinese", "--to", target, "--"])
         .arg(&text);
     command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
     #[cfg(windows)]

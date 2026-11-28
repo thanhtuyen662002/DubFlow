@@ -42,6 +42,43 @@ impl Platform {
     }
 }
 
+/// Sources the metadata adapters (`engine.dubflow.discovery`) answer for, without the page.
+pub const API_PLATFORMS: [&str; 5] = ["douyin", "bilibili", "kuaishou", "youtube", "skypixel"];
+
+/// Check a `discover` request and return its extra adapter arguments: YouTube's continuation token and quality
+/// filter, and the SkyPixel video whose MP4 rendition "media" looks up (#978).
+pub fn api_args(platform: &str, action: &str, cursor: Option<&str>, filter: Option<&str>, id: Option<&str>) -> Result<Vec<String>, String> {
+    if !API_PLATFORMS.contains(&platform) {
+        return Err("Nền tảng không được hỗ trợ".into());
+    }
+    if !["trends", "suggest", "popular", "search", "creator", "media"].contains(&action) {
+        return Err("Thao tác khám phá không hợp lệ".into());
+    }
+    let mut args = Vec::new();
+    if let Some(cursor) = cursor {
+        let token = cursor.len() <= 4096 && !cursor.is_empty()
+            && cursor.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'=' | b'%'));
+        if platform != "youtube" || action != "search" || !token {
+            return Err("Trang tiếp theo không hợp lệ".into());
+        }
+        args.extend(["--cursor".to_owned(), cursor.to_owned()]);
+    }
+    if let Some(filter) = filter {
+        if platform != "youtube" || !["any", "hd", "4k", "cc"].contains(&filter) {
+            return Err("Bộ lọc không hợp lệ".into());
+        }
+        args.extend(["--filter".to_owned(), filter.to_owned()]);
+    }
+    if action == "media" {
+        let slug = id.filter(|id| !id.is_empty() && id.len() <= 160 && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-')));
+        let Some(slug) = slug.filter(|_| platform == "skypixel") else { return Err("Video SkyPixel không hợp lệ".into()) };
+        args.extend(["--id".to_owned(), slug.to_owned()]);
+    } else if id.is_some() {
+        return Err("Thao tác khám phá không hợp lệ".into());
+    }
+    Ok(args)
+}
+
 /// True when `host` is `domain` or one of its subdomains.
 fn on(host: &str, domain: &str) -> bool {
     host == domain || host.ends_with(&format!(".{domain}"))
@@ -342,6 +379,23 @@ pub fn parse_collection(platform: Platform, json_text: &str) -> Result<Vec<Disco
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn api_requests_are_checked_before_the_adapter_runs() {
+        assert_eq!(api_args("youtube", "search", None, Some("4k"), None).unwrap(), ["--filter", "4k"]);
+        assert_eq!(api_args("youtube", "search", Some("EqoDEhVC-_%3D"), None, None).unwrap(), ["--cursor", "EqoDEhVC-_%3D"]);
+        assert_eq!(api_args("skypixel", "media", None, None, Some("4k-dji-air-3-54c90d82")).unwrap(), ["--id", "4k-dji-air-3-54c90d82"]);
+        assert!(api_args("bilibili", "search", None, None, None).unwrap().is_empty());
+        for (platform, action, cursor, filter, id) in [
+            ("tiktok", "search", None, None, None), ("youtube", "download", None, None, None),
+            ("youtube", "search", Some("a b"), None, None), ("bilibili", "search", Some("abc"), None, None),
+            ("youtube", "search", None, Some("8k"), None), ("skypixel", "search", None, Some("4k"), None),
+            ("skypixel", "media", None, None, Some("../x")), ("skypixel", "media", None, None, None),
+            ("youtube", "media", None, None, Some("abc")), ("skypixel", "search", None, None, Some("abc")),
+        ] {
+            assert!(api_args(platform, action, cursor, filter, id).is_err(), "{platform} {action} {cursor:?} {filter:?} {id:?}");
+        }
+    }
 
     #[test]
     fn search_and_creator_pages_stay_on_the_platform() {

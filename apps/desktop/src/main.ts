@@ -2049,7 +2049,7 @@ type View = "media" | "queue" | "discover" | "product" | "compilation" | "docu" 
 const VIEW_HEADINGS: Record<View, [string, string]> = {
   media: ["Hàng đợi", "Video tải về và từ máy"],
   queue: ["Lồng tiếng", ""],
-  discover: ["Khám phá", "Douyin, Bilibili, Kuaishou"],
+  discover: ["Khám phá", "Bilibili, YouTube, SkyPixel, Douyin, Kuaishou"],
   product: ["Video bán hàng", "Từ mô tả, ảnh hoặc clip"],
   compilation: ["Ghép video", "Từ video đã lồng tiếng"],
   docu: ["Phim tài liệu", "Kịch bản phim tài liệu tiếng Anh"],

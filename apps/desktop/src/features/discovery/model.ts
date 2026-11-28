@@ -1,11 +1,130 @@
 /** Discovery data as returned by the host (`discover`, `collect_discovery`). */
-export type Platform = "douyin" | "bilibili" | "kuaishou";
+export type Platform = "all" | "bilibili" | "youtube" | "skypixel" | "douyin" | "kuaishou";
+/** A real source; "all" searches several of them at once. */
+export type Source = Exclude<Platform, "all">;
 
-export const PLATFORMS: ReadonlyArray<{ id: Platform; name: string; suggest: boolean; apiSearch: boolean }> = [
-  { id: "douyin", name: "Douyin", suggest: true, apiSearch: false },
-  { id: "bilibili", name: "Bilibili", suggest: true, apiSearch: true },
-  { id: "kuaishou", name: "Kuaishou", suggest: false, apiSearch: false },
+/**
+ * The tabs of Khám phá. `trends`: the source has hot keywords; `page`: it can be browsed in the app's
+ * browser (keyword and channel pages); `apiSearch`: its keyword search runs without the page.
+ */
+export const PLATFORMS: ReadonlyArray<{ id: Platform; name: string; suggest: boolean; apiSearch: boolean; trends: boolean; page: boolean }> = [
+  { id: "all", name: "Tất cả nguồn", suggest: false, apiSearch: true, trends: false, page: false },
+  { id: "bilibili", name: "Bilibili", suggest: true, apiSearch: true, trends: true, page: true },
+  { id: "youtube", name: "YouTube", suggest: false, apiSearch: true, trends: false, page: false },
+  { id: "skypixel", name: "SkyPixel", suggest: false, apiSearch: true, trends: false, page: false },
+  { id: "douyin", name: "Douyin", suggest: true, apiSearch: false, trends: true, page: true },
+  { id: "kuaishou", name: "Kuaishou", suggest: false, apiSearch: false, trends: true, page: true },
 ];
+
+/** What "Tất cả nguồn" searches at once, in the order the grid mixes them (#978). */
+export const ALL_SOURCES: readonly Source[] = ["bilibili", "youtube", "skypixel"];
+/** Sources only their own page can search; "Tất cả nguồn" offers them as "Tìm thêm trên trang". */
+export const PAGE_ONLY_SOURCES: readonly Source[] = ["douyin", "kuaishou"];
+
+export const SOURCE_NAMES: Record<Source, string> = {
+  bilibili: "Bilibili", youtube: "YouTube", skypixel: "SkyPixel", douyin: "Douyin", kuaishou: "Kuaishou",
+};
+
+/** YouTube's own search filters; "cc" is Creative Commons, footage its owner allows to be reused. */
+export const YOUTUBE_FILTERS: ReadonlyArray<{ id: "any" | "hd" | "4k" | "cc"; name: string }> = [
+  { id: "4k", name: "4K" }, { id: "hd", name: "HD" }, { id: "any", name: "Mọi chất lượng" }, { id: "cc", name: "CC (được dùng lại)" },
+];
+
+/**
+ * Words that find clean footage (B-roll without people talking, captions or logos), appended to a search
+ * with one click. `zh` goes to the Chinese sources, `en` to YouTube.
+ */
+export type Suffix = { zh: string; en: string; vi: string };
+export const SUFFIXES: readonly Suffix[] = [
+  { zh: "空镜", en: "B-roll", vi: "Cảnh trống: chỉ cảnh vật, máy móc, không người nói, không chữ" },
+  { zh: "航拍 4K", en: "4K drone", vi: "Flycam 4K" },
+  { zh: "无字幕", en: "no text", vi: "Không phụ đề" },
+  { zh: "素材", en: "stock footage", vi: "Tư liệu để dựng phim" },
+  { zh: "4K 超清", en: "4K", vi: "Siêu nét 4K" },
+  { zh: "延时摄影", en: "timelapse", vi: "Quay tua nhanh (timelapse)" },
+  { zh: "纪录片", en: "documentary", vi: "Phim tài liệu" },
+  { zh: "企业宣传片", en: "corporate film", vi: "Phim giới thiệu doanh nghiệp, nhà máy" },
+  { zh: "工业", en: "industrial", vi: "Công nghiệp" },
+  { zh: "工厂", en: "factory", vi: "Nhà máy" },
+];
+
+/** Every form of every suffix, longest first, so "航拍 4K" wins over "4K". */
+const SUFFIX_FORMS: ReadonlyArray<{ form: string; suffix: Suffix }> = SUFFIXES
+  .flatMap((suffix) => [{ form: suffix.zh, suffix }, { form: suffix.en, suffix }])
+  .sort((a, b) => b.form.length - a.form.length);
+
+/** The search phrase and the suffixes at its end (in the order they appear). */
+export function splitSuffixes(text: string): { base: string; suffixes: Suffix[] } {
+  let rest = text.replace(/\s+/g, " ").trim();
+  const suffixes: Suffix[] = [];
+  for (let guard = 0; guard < 20 && rest; guard++) {
+    const lower = rest.toLowerCase();
+    const hit = SUFFIX_FORMS.find(({ form }) => {
+      const key = form.toLowerCase();
+      if (!lower.endsWith(key)) return false;
+      const before = lower.length - key.length;
+      return before === 0 || lower[before - 1] === " ";
+    });
+    if (!hit) break;
+    rest = rest.slice(0, rest.length - hit.form.length).trim();
+    if (!suffixes.includes(hit.suffix)) suffixes.unshift(hit.suffix);
+  }
+  return { base: rest, suffixes };
+}
+
+/** A phrase with its suffixes in one language. */
+export function joinQuery(base: string, suffixes: readonly Suffix[], language: "zh" | "en"): string {
+  return [base, ...suffixes.map((suffix) => suffix[language])].filter(Boolean).join(" ").slice(0, 100);
+}
+
+/** Put a suffix at the end of the search, or take it away when it is there. */
+export function toggleSuffix(text: string, suffix: Suffix, language: "zh" | "en"): string {
+  const { base, suffixes } = splitSuffixes(text);
+  const next = suffixes.includes(suffix) ? suffixes.filter((item) => item !== suffix) : [...suffixes, suffix];
+  return joinQuery(base, next, language);
+}
+
+/** Whether a phrase should go through the English translator for YouTube: it has letters that are not plain English. */
+export function needsEnglish(text: string): boolean {
+  return /[^\x00-\x7f]/.test(text) && /\p{L}/u.test(text);
+}
+
+/** Mix result lists one by one (Bilibili, YouTube, SkyPixel, Bilibili, ...), without repeating a page. */
+export function interleave(lists: ReadonlyArray<readonly DiscoveredVideo[]>): DiscoveredVideo[] {
+  const out: DiscoveredVideo[] = [];
+  const seen = new Set<string>();
+  const longest = Math.max(0, ...lists.map((list) => list.length));
+  for (let index = 0; index < longest; index++) {
+    for (const list of lists) {
+      const video = list[index];
+      if (video && !seen.has(video.pageUrl)) {
+        seen.add(video.pageUrl);
+        out.push(video);
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * The picture quality a card can show: from the size the source reports (the short side, so a vertical
+ * 2160x3840 is 4K too), else the source's own label, else a 4K/超清 in the title (`sure` false).
+ */
+export function qualityLabel(video: Pick<DiscoveredVideo, "title"> & Partial<Pick<DiscoveredVideo, "width" | "height" | "badges">>): { label: string; sure: boolean } | null {
+  const sides = [video.width, video.height].filter((side): side is number => typeof side === "number" && side > 0);
+  if (sides.length) {
+    const short = Math.min(...sides);
+    if (short >= 2000) return { label: "4K", sure: true };
+    if (short >= 1400) return { label: "2K", sure: true };
+    if (short >= 1000) return { label: "1080p", sure: true };
+    if (short >= 700) return { label: "720p", sure: true };
+    return { label: "SD", sure: true };
+  }
+  const badges = video.badges ?? [];
+  for (const label of ["8K", "4K", "HD"]) if (badges.includes(label)) return { label: label === "HD" ? "HD" : label, sure: true };
+  if (/(^|[^0-9a-z])(8k|4k|2160p)([^0-9a-z]|$)|超清|超高清/i.test(video.title)) return { label: "4K", sure: false };
+  return null;
+}
 
 export type Trend = { keyword: string; rank: number; heat: number | null };
 
@@ -70,21 +189,32 @@ export type DiscoveredVideo = {
   pageUrl: string;
   /** What to download; differs from pageUrl when a page is not itself fetchable. */
   fetchUrl: string;
+  /** Where it was found, when a list mixes sources. */
+  source?: Source;
+  /** The upload's picture size and the source's own labels ("4K", "CC"), when the source says. */
+  width?: number | null;
+  height?: number | null;
+  badges?: string[];
+  /** The source's licence for this video (SkyPixel), once known. */
+  license?: string;
 };
 
-export type DiscoverResult<T> = { ok: true; items: T[]; nextPage: number | null } | { ok: false; code: string; message: string };
+export type DiscoverResult<T> = { ok: true; items: T[]; nextPage: number | null; nextCursor?: string | null } | { ok: false; code: string; message: string };
 
 const text = (value: unknown, limit = 200): string => (typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, limit) : "");
 const count = (value: unknown): number | null => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : null);
 const https = (value: unknown): string | null => (typeof value === "string" && /^https:\/\/[^\s]+$/.test(value) && value.length <= 2048 ? value : null);
 
-function envelope(value: unknown): { ok: true; items: unknown[]; nextPage: number | null } | { ok: false; code: string; message: string } {
+function envelope(value: unknown): { ok: true; items: unknown[]; nextPage: number | null; nextCursor: string | null } | { ok: false; code: string; message: string } {
   const object = (value ?? {}) as Record<string, unknown>;
   if (object.ok !== true) {
     return { ok: false, code: text(object.code, 40) || "BAD_RESPONSE", message: text(object.message, 300) || "Không lấy được dữ liệu" };
   }
-  return { ok: true, items: Array.isArray(object.items) ? object.items : [], nextPage: count(object.next_page) };
+  const cursor = typeof object.next_cursor === "string" && /^[0-9A-Za-z_=%-]{8,4096}$/.test(object.next_cursor) ? object.next_cursor : null;
+  return { ok: true, items: Array.isArray(object.items) ? object.items : [], nextPage: count(object.next_page), nextCursor: cursor };
 }
+
+const SOURCES = new Set<string>(["bilibili", "youtube", "skypixel", "douyin", "kuaishou"]);
 
 export function parseTrends(value: unknown): DiscoverResult<Trend> {
   const result = envelope(value);
@@ -104,10 +234,34 @@ export function parseVideos(value: unknown): DiscoverResult<DiscoveredVideo> {
     const item = (raw ?? {}) as Record<string, unknown>;
     const pageUrl = https(item.page_url);
     if (!pageUrl) return [];
-    return [{ title: text(item.title) || "(không có tiêu đề)", author: text(item.author, 80), cover: https(item.cover_url),
-      durationS: count(item.duration_s), plays: count(item.plays), pageUrl, fetchUrl: pageUrl }];
+    const video: DiscoveredVideo = { title: text(item.title) || "(không có tiêu đề)", author: text(item.author, 80), cover: https(item.cover_url),
+      durationS: count(item.duration_s), plays: count(item.plays), pageUrl, fetchUrl: pageUrl };
+    if (typeof item.platform === "string" && SOURCES.has(item.platform)) video.source = item.platform as Source;
+    const width = count(item.width);
+    const height = count(item.height);
+    if (width) video.width = width;
+    if (height) video.height = height;
+    if (Array.isArray(item.badges)) {
+      const badges = item.badges.filter((badge): badge is string => typeof badge === "string" && /^[0-9A-Za-z°]{1,8}$/.test(badge)).slice(0, 6);
+      if (badges.length) video.badges = badges;
+    }
+    return [video];
   });
-  return { ok: true, items, nextPage: result.nextPage };
+  return { ok: true, items, nextPage: result.nextPage, nextCursor: result.nextCursor };
+}
+
+/** The MP4 rendition `discover` "media" found for a SkyPixel video, or null. */
+export function parseMedia(value: unknown): { url: string; quality: string; license: string } | null {
+  const object = (value ?? {}) as Record<string, unknown>;
+  const url = https(object.url);
+  if (object.ok !== true || !url) return null;
+  try {
+    const host = new URL(url).hostname;
+    if (!["dji.net", "djicdn.com", "djivideos.com"].some((domain) => host.endsWith(`.${domain}`))) return null;
+  } catch {
+    return null;
+  }
+  return { url, quality: text(object.quality, 12), license: text(object.license, 80) };
 }
 
 /** A video read from the discovery page; `current` marks the one a video page is playing. */
@@ -190,6 +344,9 @@ export function formatDuration(seconds: number | null): string {
 export type PreviewSource = { kind: "iframe"; src: string; vertical: boolean } | { kind: "video"; src: string; vertical: boolean };
 
 const BILIBILI_HOSTS = new Set(["www.bilibili.com", "bilibili.com", "m.bilibili.com"]);
+const YOUTUBE_HOSTS = new Set(["www.youtube.com", "youtube.com", "m.youtube.com"]);
+/** SkyPixel renditions on DJI's video CDN, allowed by the CSP `media-src`. */
+const DJI_MEDIA = ["dji.net"];
 const DOUYIN_HOSTS = new Set(["www.douyin.com", "douyin.com"]);
 /** Media hosts the CSP `media-src` allows (subdomains only). */
 const KUAISHOU_MEDIA = ["kwaicdn.com", "yximgs.com", "kwimgs.com", "kuaishou.com"];
@@ -217,6 +374,12 @@ export function previewSource(video: Pick<DiscoveredVideo, "pageUrl" | "fetchUrl
     return { kind: "iframe", vertical: false,
       src: `https://player.bilibili.com/player.html?bvid=${match[1]}&autoplay=1&muted=${muted}&danmaku=0&high_quality=0&as_wide=1&page=1` };
   }
+  if (page && YOUTUBE_HOSTS.has(page.hostname)) {
+    const id = page.pathname === "/watch" ? page.searchParams.get("v") ?? "" : "";
+    if (!/^[0-9A-Za-z_-]{11}$/.test(id)) return null;
+    const muted = options.muted ? 1 : 0;
+    return { kind: "iframe", vertical: false, src: `https://www.youtube-nocookie.com/embed/${id}?autoplay=1&mute=${muted}&playsinline=1&rel=0` };
+  }
   if (page && DOUYIN_HOSTS.has(page.hostname)) {
     const match = /^\/video\/(\d{8,24})\/?$/.exec(page.pathname);
     if (!match || options.muted) return null;
@@ -226,6 +389,9 @@ export function previewSource(video: Pick<DiscoveredVideo, "pageUrl" | "fetchUrl
     const media = parseHttps(video.fetchUrl);
     if (media && KUAISHOU_MEDIA.some((domain) => media.hostname.endsWith(`.${domain}`))) {
       return { kind: "video", vertical: true, src: media.href };
+    }
+    if (media && DJI_MEDIA.some((domain) => media.hostname.endsWith(`.${domain}`))) {
+      return { kind: "video", vertical: false, src: media.href };
     }
   }
   return null;
@@ -301,9 +467,10 @@ export function saveGlossCache(cache: ReadonlyMap<string, string>, max = TITLE_G
 
 /** Vietnamese explanation for an adapter failure code. */
 export function discoveryError(code: string, platform: Platform): string {
+  const browsable = PLATFORMS.find((entry) => entry.id === platform)?.page ?? false;
   switch (code) {
-    case "BLOCKED": return "Trang tạm chặn truy cập tự động. Hãy dùng “Mở trang” để xem và lấy video trực tiếp.";
-    case "LOGIN_REQUIRED": return "Trang yêu cầu đăng nhập cho tính năng này. Hãy dùng “Mở trang”.";
+    case "BLOCKED": return browsable ? "Trang tạm chặn truy cập tự động. Hãy dùng “Mở trang” để xem và lấy video trực tiếp." : "Trang tạm chặn truy cập tự động. Thử lại sau ít phút.";
+    case "LOGIN_REQUIRED": return browsable ? "Trang yêu cầu đăng nhập cho tính năng này. Hãy dùng “Mở trang”." : "Trang yêu cầu đăng nhập cho tính năng này.";
     case "UNSUPPORTED": return platform === "kuaishou" ? "Kuaishou chưa hỗ trợ tính năng này qua API." : "Tính năng này chưa hỗ trợ qua API.";
     case "NETWORK": return "Không kết nối được. Kiểm tra mạng rồi thử lại.";
     default: return "Không lấy được dữ liệu. Thử lại sau.";

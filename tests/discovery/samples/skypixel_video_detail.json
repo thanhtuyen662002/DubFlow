@@ -1,0 +1,41 @@
+{
+ "name": "skypixel_video_detail",
+ "platform": "skypixel",
+ "at_utc": "2026-11-28T06:22:10.067465+00:00",
+ "method": "GET",
+ "url": "https://www.skypixel.com/api/v2/videos/4k-dji-air-3-54c90d82-d0ac-4736-a1f8-9072c4885ea3",
+ "request_body": null,
+ "http_status": 200,
+ "content_encoding": "",
+ "response_json": {
+  "data": {
+   "item": {
+    "type": "video",
+    "slug": "4k-dji-air-3-54c90d82-d0ac-4736-a1f8-9072c4885ea3",
+    "title": "【4K | Dji Air 3】大国重器——港珠澳大桥",
+    "width": 3840,
+    "height": 2160,
+    "duration": 23,
+    "license": "SkyPixel Use",
+    "visibility": "public",
+    "status": "accepted",
+    "provider": "dji",
+    "play_url": "https://www.djivideos.com/video_play/d016ae6b-f491-422c-8993-278c5bdf0834",
+    "cdn_url": {
+     "small": "https://cn-videos.dji.net/video_trans/f3833b614b8544b6a11d66514bc60667/sd.mp4",
+     "medium": "https://cn-videos.dji.net/video_trans/f3833b614b8544b6a11d66514bc60667/720.mp4",
+     "large": "https://cn-videos.dji.net/video_trans/f3833b614b8544b6a11d66514bc60667/1080.mp4"
+    },
+    "image": {
+     "small": "https://skp-cn-cdn.djiits.com/uploads/cn_files/video/image/f50f204d-4a91-48ba-9240-f7a68f51922b.jpg@!550",
+     "medium": "https://skp-cn-cdn.djiits.com/uploads/cn_files/video/image/f50f204d-4a91-48ba-9240-f7a68f51922b.jpg@!1200",
+     "large": "https://skp-cn-cdn.djiits.com/uploads/cn_files/video/image/f50f204d-4a91-48ba-9240-f7a68f51922b.jpg@!1920"
+    },
+    "user": {
+     "slug": "af3efce",
+     "name": "如澄RuCheng"
+    }
+   }
+  }
+ }
+}
