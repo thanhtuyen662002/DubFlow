@@ -2278,6 +2278,68 @@ async fn read_douyin_video(app: &tauri::AppHandle, url: &str) -> Result<(String,
     Ok((format!("https://www.douyin.com/video/{id}"), desc))
 }
 
+/// Hidden window that opens a Xinpianchang video page to read its download link (#982).
+const XINPIANCHANG_VIDEO: &str = "xinpianchang-video";
+
+fn xinpianchang_lock() -> &'static tauri::async_runtime::Mutex<()> {
+    static LOCK: std::sync::OnceLock<tauri::async_runtime::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| tauri::async_runtime::Mutex::new(()))
+}
+
+/// The best MP4 of a Xinpianchang video, read when the video is added: its links are signed for about two hours, so
+/// one collected earlier may have expired. A hidden window opens the video page in DubFlow's browser profile (where
+/// the user has passed Xinpianchang's slider check in Khám phá) and asks for the renditions the way the page's own
+/// player does. `{url, width, height, hd_locked}`; 720p unless the profile is logged in to Xinpianchang.
+#[tauri::command]
+async fn xinpianchang_media(app: tauri::AppHandle, url: String) -> Result<Value, String> {
+    use tauri::Manager;
+    let page = discovery::xinpianchang_page(&url).ok_or_else(|| fail("Link Xinpianchang không hợp lệ"))?;
+    let _one_at_a_time = xinpianchang_lock().lock().await;
+    if let Some(stale) = app.get_webview_window(XINPIANCHANG_VIDEO) {
+        let _ = stale.close();
+    }
+    let window = tauri::WebviewWindowBuilder::new(&app, XINPIANCHANG_VIDEO, tauri::WebviewUrl::External(page))
+        .title("Xinpianchang")
+        .visible(false)
+        .skip_taskbar(true)
+        .build()
+        .map_err(|error| fail(format!("Không mở được Xinpianchang: {error}")))?;
+    let result = xinpianchang_read(window.as_ref()).await;
+    let _ = window.close();
+    result
+}
+
+async fn xinpianchang_read(webview: &tauri::Webview) -> Result<Value, String> {
+    // The page is ready when its scripts run; then it has its data, or it is the slider check.
+    for _ in 0..40 {
+        pause(500).await;
+        if page_ready(page_value(webview, "document.readyState").await.as_deref()) {
+            break;
+        }
+    }
+    let mut asked = false;
+    for _ in 0..10 {
+        pause(800).await;
+        if page_value(webview, discovery::XINPIANCHANG_MEDIA_SCRIPT).await.as_deref() == Some("1") {
+            asked = true;
+            break;
+        }
+    }
+    if !asked {
+        return Err(fail("Xinpianchang cần xác minh. Mở tab Xinpianchang trong Khám phá, kéo ô xác minh trên trang rồi thêm video lại."));
+    }
+    for _ in 0..40 {
+        pause(500).await;
+        let Some(value) = page_value(webview, "window.__dubflowXpc").await else { continue };
+        match serde_json::from_str::<Option<String>>(&value) {
+            Ok(Some(text)) if text.is_empty() => break,
+            Ok(Some(text)) => return discovery::xinpianchang_best(&text).map_err(fail),
+            _ => continue,
+        }
+    }
+    Err(fail("Xinpianchang không trả lời; hãy thử lại"))
+}
+
 /// Whether a page's `document.readyState` (as JSON) says its scripts run.
 fn page_ready(state: Option<&str>) -> bool {
     matches!(state, Some("\"interactive\"" | "\"complete\""))
@@ -2581,7 +2643,7 @@ fn main() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![reframe::reframe_render, reframe::reframe_status, reframe::reframe_cancel, reframe::reframe_info, shorts::shorts_render, shorts::shorts_status, shorts::shorts_cancel, package::package_video, package::package_info, package::package_status, package::package_cancel, source_credit::source_credit_get, source_credit::source_credit_set, ai_keys::ai_key_status, ai_keys::ai_key_get, ai_keys::ai_ask, ai_keys::ai_key_set, ai_keys::ai_key_delete, ai_keys::ai_key_page, vibi::vibi_call, vibi::vibi_preview, vibi::vibi_sample, create_report, product::pick_product_files, product::product_image, product::product_render, product::product_status, product::product_cancel, product::product_spec, product::product_runs, product::product_backgrounds, product::product_background_add, product::product_background_delete, product::product_rerender, mastering::mastering_review, mastering::mastering_final_qc, mastering::mastering_keyframe, mastering::dubbing_qc, mastering::dubbing_qc_climax, release_info, voice_catalog, pick_files, pick_edit_files, pick_lut, edit::edit_proxy, start_job, glossary_export, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, link_titled_output, withdraw_fetch, cancel_fetch, keep_download, default_download_dir, open_folder, reveal_download, save_douyin_session, ensure_douyin_session, douyin_account, douyin_logout, douyin_view_open, douyin_view_bounds, douyin_view_close, save_bilibili_session, ensure_bilibili_session, bilibili_account, bilibili_logout, bilibili_view_open, bilibili_view_bounds, bilibili_view_close, review_clip, video_frame, allow_media, post_suggestions, discover, open_discovery, discovery_view_show, discovery_view_bounds, discovery_view_hide, discovery_view_close, discovery_view_back, discovery_view_reload, discovery_view_url, scroll_discovery, collect_discovery, translate_terms, translate_query, review_speakers, check_update, download_update, install_update, list_versions, activate_version, restart_app, compilation::compilation_render, compilation::compilation_status, compilation::compilation_cancel, compilation::compilation_description, compilation::compilation_runs, compilation_raw::compilation_raw_render, compilation_raw::compilation_raw_rerender, compilation_raw::compilation_raw_cancel, compilation_raw::compilation_raw_open, compilation_raw::compilation_raw_finalize, compilation_raw::compilation_raw_final_qc, compilation_raw::compilation_review, compilation_raw::compilation_keyframe, compilation_raw::pick_source_folder, projects::project_delete, docu::docu_create, docu::docu_runs, docu::docu_open, docu::docu_check_script, docu::docu_pick_file, docu::docu_voices, docu::docu_narrate, docu::docu_narration_status, docu::docu_narration_cancel, docu::docu_plan, docu::docu_plan_status, docu::docu_plan_cancel, docu::docu_cover, docu::docu_slices, docu::docu_layers,
+        .invoke_handler(tauri::generate_handler![reframe::reframe_render, reframe::reframe_status, reframe::reframe_cancel, reframe::reframe_info, shorts::shorts_render, shorts::shorts_status, shorts::shorts_cancel, package::package_video, package::package_info, package::package_status, package::package_cancel, source_credit::source_credit_get, source_credit::source_credit_set, ai_keys::ai_key_status, ai_keys::ai_key_get, ai_keys::ai_ask, ai_keys::ai_key_set, ai_keys::ai_key_delete, ai_keys::ai_key_page, vibi::vibi_call, vibi::vibi_preview, vibi::vibi_sample, create_report, product::pick_product_files, product::product_image, product::product_render, product::product_status, product::product_cancel, product::product_spec, product::product_runs, product::product_backgrounds, product::product_background_add, product::product_background_delete, product::product_rerender, mastering::mastering_review, mastering::mastering_final_qc, mastering::mastering_keyframe, mastering::dubbing_qc, mastering::dubbing_qc_climax, release_info, voice_catalog, pick_files, pick_edit_files, pick_lut, edit::edit_proxy, start_job, glossary_export, job_status, cancel_job, pick_folder, expand_video_paths, open_path, reveal_path, review_cues, save_review, fetch_url, fetch_status, link_titled_output, withdraw_fetch, cancel_fetch, keep_download, default_download_dir, open_folder, reveal_download, save_douyin_session, ensure_douyin_session, douyin_account, douyin_logout, douyin_view_open, douyin_view_bounds, douyin_view_close, save_bilibili_session, ensure_bilibili_session, bilibili_account, bilibili_logout, bilibili_view_open, bilibili_view_bounds, bilibili_view_close, review_clip, video_frame, allow_media, post_suggestions, discover, xinpianchang_media, open_discovery, discovery_view_show, discovery_view_bounds, discovery_view_hide, discovery_view_close, discovery_view_back, discovery_view_reload, discovery_view_url, scroll_discovery, collect_discovery, translate_terms, translate_query, review_speakers, check_update, download_update, install_update, list_versions, activate_version, restart_app, compilation::compilation_render, compilation::compilation_status, compilation::compilation_cancel, compilation::compilation_description, compilation::compilation_runs, compilation_raw::compilation_raw_render, compilation_raw::compilation_raw_rerender, compilation_raw::compilation_raw_cancel, compilation_raw::compilation_raw_open, compilation_raw::compilation_raw_finalize, compilation_raw::compilation_raw_final_qc, compilation_raw::compilation_review, compilation_raw::compilation_keyframe, compilation_raw::pick_source_folder, projects::project_delete, docu::docu_create, docu::docu_runs, docu::docu_open, docu::docu_check_script, docu::docu_pick_file, docu::docu_voices, docu::docu_narrate, docu::docu_narration_status, docu::docu_narration_cancel, docu::docu_plan, docu::docu_plan_status, docu::docu_plan_cancel, docu::docu_cover, docu::docu_slices, docu::docu_layers,
             docu::docu_reframe, docu::docu_render_options, docu::docu_render, docu::docu_render_status, docu::docu_render_cancel, docu::docu_capcut, docu::docu_launch_capcut, docu::docu_mcp_connection, docu::docu_mcp_activity, storage::storage_report, storage::storage_clean, storage::storage_free, edit::edit_project_load, edit::edit_library, edit::edit_file_sizes, edit::edit_project_save, edit::edit_export, edit::edit_status, edit::edit_cancel, edit::edit_check_cancel, edit::edit_stems, voice_sample, edit::edit_separate, edit::edit_split, edit::edit_separate_cancel, edit::edit_subs_extract, edit::edit_subs_extract_status, edit::edit_subs_extract_cancel, edit::edit_media_info, edit::edit_audio_peaks, edit::edit_lut_frame, edit::edit_save_recording, thumbnail::thumbnail_frame, thumbnail::thumbnail_save, thumbnail::thumbnail_reveal, edit::edit_versions, edit::edit_version_save, edit::edit_version_load, edit::edit_version_delete, edit::edit_templates, edit::edit_template_save, edit::edit_template_load, edit::edit_template_delete, edit::edit_subtitles_load, edit::edit_subtitles_apply, sfx::sfx_status, sfx::sfx_install, sfx::sfx_path, sfx::user_audio_list, sfx::audio_info, sfx::pick_audio_folder, sfx::pick_audio_files, sfx::expand_audio_paths, gpu::machine_profile, gpu::set_performance])
         .build(tauri::generate_context!())
         .expect("error while building DubFlow desktop host")

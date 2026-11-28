@@ -1,5 +1,5 @@
 /** Discovery data as returned by the host (`discover`, `collect_discovery`). */
-export type Platform = "all" | "bilibili" | "youtube" | "skypixel" | "douyin" | "kuaishou";
+export type Platform = "all" | "bilibili" | "youtube" | "skypixel" | "douyin" | "kuaishou" | "xinpianchang";
 /** A real source; "all" searches several of them at once. */
 export type Source = Exclude<Platform, "all">;
 
@@ -14,15 +14,17 @@ export const PLATFORMS: ReadonlyArray<{ id: Platform; name: string; suggest: boo
   { id: "skypixel", name: "SkyPixel", suggest: false, apiSearch: true, trends: false, page: false },
   { id: "douyin", name: "Douyin", suggest: true, apiSearch: false, trends: true, page: true },
   { id: "kuaishou", name: "Kuaishou", suggest: false, apiSearch: false, trends: true, page: true },
+  // 新片场: production houses' 4K corporate and industrial films; its page asks for a slider check first (#982).
+  { id: "xinpianchang", name: "Xinpianchang", suggest: false, apiSearch: false, trends: false, page: true },
 ];
 
 /** What "Tất cả nguồn" searches at once, in the order the grid mixes them (#978). */
 export const ALL_SOURCES: readonly Source[] = ["bilibili", "youtube", "skypixel"];
 /** Sources only their own page can search; "Tất cả nguồn" offers them as "Tìm thêm trên trang". */
-export const PAGE_ONLY_SOURCES: readonly Source[] = ["douyin", "kuaishou"];
+export const PAGE_ONLY_SOURCES: readonly Source[] = ["douyin", "kuaishou", "xinpianchang"];
 
 export const SOURCE_NAMES: Record<Source, string> = {
-  bilibili: "Bilibili", youtube: "YouTube", skypixel: "SkyPixel", douyin: "Douyin", kuaishou: "Kuaishou",
+  bilibili: "Bilibili", youtube: "YouTube", skypixel: "SkyPixel", douyin: "Douyin", kuaishou: "Kuaishou", xinpianchang: "Xinpianchang",
 };
 
 /** YouTube's own search filters; "cc" is Creative Commons, footage its owner allows to be reused. */
@@ -214,7 +216,7 @@ function envelope(value: unknown): { ok: true; items: unknown[]; nextPage: numbe
   return { ok: true, items: Array.isArray(object.items) ? object.items : [], nextPage: count(object.next_page), nextCursor: cursor };
 }
 
-const SOURCES = new Set<string>(["bilibili", "youtube", "skypixel", "douyin", "kuaishou"]);
+const SOURCES = new Set<string>(["bilibili", "youtube", "skypixel", "douyin", "kuaishou", "xinpianchang"]);
 
 export function parseTrends(value: unknown): DiscoverResult<Trend> {
   const result = envelope(value);
@@ -248,6 +250,26 @@ export function parseVideos(value: unknown): DiscoverResult<DiscoveredVideo> {
     return [video];
   });
   return { ok: true, items, nextPage: result.nextPage, nextCursor: result.nextCursor };
+}
+
+/**
+ * The MP4 `xinpianchang_media` read from a Xinpianchang video page, or null. `hdLocked`: a larger rendition is
+ * listed without a link (Xinpianchang keeps 1080p and up for logged-in users).
+ */
+export function parseXinpianchangMedia(value: unknown): { url: string; quality: string; hdLocked: boolean } | null {
+  const object = (value ?? {}) as Record<string, unknown>;
+  const url = https(object.url);
+  if (!url) return null;
+  try {
+    if (!new URL(url).hostname.endsWith(".xpccdn.com")) return null;
+  } catch {
+    return null;
+  }
+  const height = count(object.height);
+  const width = count(object.width);
+  const short = Math.min(height ?? 0, width ?? height ?? 0);
+  const quality = short >= 2000 ? "4K" : short >= 1000 ? "1080p" : short >= 700 ? "720p" : short ? `${short}p` : "";
+  return { url, quality, hdLocked: object.hd_locked === true };
 }
 
 /** The MP4 rendition `discover` "media" found for a SkyPixel video, or null. */

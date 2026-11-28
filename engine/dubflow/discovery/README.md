@@ -31,6 +31,11 @@ returns the video's best MP4 rendition on DJI's CDN (`url`, `quality`,
 from these sources may carry `width`, `height` and `badges` (`4K`, `CC`, ...);
 older sources keep their exact shape.
 
+Xinpianchang (#982) has no adapter here: its pages sit behind a slider check
+the user passes in Khám phá's page. The desktop reads an added video's MP4 from
+its page (`xinpianchang_media`), and the download engine applies the fixed
+`*.xpccdn.com` rule in `engine/dubflow/download/site_rules.py`.
+
 `python -m engine.dubflow.discovery.to_chinese --to en -- TEXT` translates a
 phrase to English for YouTube (source language detected).
 

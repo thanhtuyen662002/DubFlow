@@ -14,6 +14,7 @@ from .generic import YtDlpRunner, YtDlpTransport
 from .source_adapter import SourceError, SourceErrorCode
 from .authenticated import AuthenticatedYtDlpTransport
 from .materializer import DownloadError, DownloadErrorCode, HttpTransport, UrllibHttpTransport
+from .site_rules import rule_for
 
 
 class PublicProviderHttpTransport:
@@ -28,6 +29,7 @@ class PublicProviderHttpTransport:
                or any(ord(ch) < 32 or ord(ch) > 126 for ch in value) for value in public_headers.values()):
             raise ValueError("invalid public SDK headers")
         self._headers = dict(public_headers)
+        self._provider_id = provider_id
         if provider_id != "generic":
             self._headers["Referer"] = "https://www." + provider_id + ".com/"
         self._transport = transport or UrllibHttpTransport()
@@ -46,7 +48,15 @@ class PublicProviderHttpTransport:
                 or any(ord(ch) < 32 or ord(ch) > 126 for ch in value)):
                 raise DownloadError(DownloadErrorCode.INVALID_SOURCE, "invalid public media request headers")
             safe[key] = value
-        return self._transport.open(url, headers={**self._headers, **safe})
+        headers = dict(self._headers)
+        # A public CDN with a fixed rule (Xinpianchang, #982): its site's Referer, and the whole object asked for as
+        # a range when the caller asks for none (it refuses plain GETs; the materializer accepts 206 from byte 0).
+        rule = rule_for(url) if self._provider_id == "generic" else None
+        if rule is not None:
+            headers["Referer"] = rule.referer
+            if rule.range_only and "Range" not in safe:
+                safe["Range"] = "bytes=0-"
+        return self._transport.open(url, headers={**headers, **safe})
 
 
 class YtDlpProviderTransport:

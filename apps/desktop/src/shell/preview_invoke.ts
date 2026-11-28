@@ -912,6 +912,10 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
       return { ok: true, text: known[text.toLowerCase()] ?? `中文 ${text}`, engine: "preview" } as T;
     }
     case "collect_discovery": return previewCollected(String(args.platform)) as T;
+    case "xinpianchang_media": {
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      return { url: `https://us-xpc5.xpccdn.com/preview-${String(args.url).slice(-8)}.mp4?e=1&s=preview`, width: 1280, height: 720, hd_locked: true } as T;
+    }
     case "review_clip": return previewTone(Number(args.endMs) - Number(args.startMs), Boolean(args.source)) as T;
     // No asset protocol in a browser: the player shows its placeholder.
     case "allow_media": return null as T;
@@ -1086,6 +1090,7 @@ function previewDiscoveryPage(platform: string, kind: string, query: string): st
   const keyword = encodeURIComponent(text);
   if (platform === "bilibili") return `https://search.bilibili.com/video?keyword=${keyword}`;
   if (platform === "kuaishou") return `https://www.kuaishou.com/search/video?searchKey=${keyword}`;
+  if (platform === "xinpianchang") return `https://www.xinpianchang.com/search?kw=${keyword}`;
   return `https://www.douyin.com/search/${keyword}?type=video`;
 }
 
@@ -1097,6 +1102,11 @@ function previewCollected(platform: string): unknown {
       // Kuaishou pages carry a direct media link on its CDN.
       return { page_url: `https://www.kuaishou.com/short-video/${id}`, title, author: PREVIEW_AUTHORS[index % PREVIEW_AUTHORS.length],
         cover_url: `https://picsum.photos/seed/${id}/300/480`, fetch_url: `https://v2.kwaicdn.com/ksc2/preview-${id}.mp4?pkey=preview` };
+    }
+    if (platform === "xinpianchang") {
+      const id = `a1388${String(5930 + index * 37).padStart(4, "0")}`;
+      return { page_url: `https://www.xinpianchang.com/${id}`, title: `工业宣传片 · 智能工厂 4K ${index + 1}`, author: "新片场创作人",
+        cover_url: `https://picsum.photos/seed/${id}/480/270`, fetch_url: `https://www.xinpianchang.com/${id}` };
     }
     const host = platform === "douyin" ? "www.douyin.com/video" : "www.bilibili.com/video";
     const id = platform === "douyin" ? `7431852694117${String(28_610 + index * 7_919).padStart(6, "0")}` : `BV1Kq4y1${index}m7Z`;
