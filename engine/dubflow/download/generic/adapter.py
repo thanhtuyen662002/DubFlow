@@ -24,6 +24,7 @@ from urllib.parse import unquote, urlsplit
 
 from ..materializer import DownloadError, DownloadErrorCode, DownloadResult, EgressPolicy, HttpTransport, MediaMaterializer, PUBLIC_EGRESS, UrllibHttpTransport, _reject_links, validate_http_url
 from ..source_adapter import MediaCandidate, PageCursor, SourceAdapter, SourceError, SourceErrorCode, SourceIdentity, SourceItem, SourcePage, SubtitleCandidate, canonicalize_url
+from ..site_rules import rule_for
 from ..stream_materializer import StreamMaterializer
 from .windows_job import WindowsSourceJob
 
@@ -374,6 +375,9 @@ class GenericUrlAdapter:
         self._transport = transport or DirectUrlTransport()
         self._materializer = materializer or MediaMaterializer()
         self._stream_materializer = stream_materializer
+        # Media on a CDN with a fixed rule (site_rules, #982) is inspected directly through the materializer's own
+        # public transport, which applies the rule; the extractor's plain GET is refused there.
+        self._direct = DirectUrlTransport(self._materializer.transport)
 
     @classmethod
     def can_handle(cls, source_ref: str) -> bool:
@@ -388,8 +392,9 @@ class GenericUrlAdapter:
             canonical = canonicalize_url(source_ref)
         except (SourceError, ValueError) as error:
             raise SourceError(SourceErrorCode.INVALID_INPUT, "generic source URL is malformed", provider_id=self.provider_id) from error
+        transport = self._direct if rule_for(canonical) is not None else self._transport
         try:
-            payload = self._transport.inspect_url(canonical)
+            payload = transport.inspect_url(canonical)
         except SourceError:
             raise
         except DownloadError as error:
