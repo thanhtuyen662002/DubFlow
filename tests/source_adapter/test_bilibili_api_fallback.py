@@ -33,6 +33,18 @@ HTML5 = {"code": 0, "data": {"durl": [{"url": "https://cdn.test/360.mp4"}]}}
 PAGE_STATE = {"videoData": {"bvid": "BV1page00001", "title": "正片", "desc": "d", "duration": 16690, "cid": 11,
                             "pages": [{"page": 1, "cid": 11, "part": "one", "duration": 16690}]}}
 PAGELIST = {"code": 0, "data": [{"page": 1, "cid": 11, "part": "only part", "duration": 120}]}
+# A 大会员 session: the SDK extractor lists HDR10 and Dolby Vision beside 4K SDR.
+def _stream(format_id, height, tbr, dynamic_range=None, vcodec="avc1.640033"):
+    return {"format_id": format_id, "url": f"https://cdn.test/{format_id}.m4s", "width": height * 16 // 9, "height": height,
+            "vcodec": vcodec, "acodec": "none", "ext": "mp4", "protocol": "https", "tbr": tbr, "dynamic_range": dynamic_range}
+AUDIO = {"format_id": "30280", "url": "https://cdn.test/a.m4s", "vcodec": "none", "acodec": "mp4a.40.2", "ext": "m4a", "protocol": "https", "abr": 128}
+EXTRACTED = {
+    "https://www.bilibili.com/video/BV1vip000001": {"id": "BV1vip000001", "title": "4K", "duration": 30, "formats": [
+        _stream("126", 2160, 30000, "DV", "dvh1.08.07"), _stream("125", 2160, 25000, "HDR10", "hev1.2.4.L156"),
+        _stream("120", 2160, 16000), _stream("112", 1080, 6000), _stream("80", 1080, 2500), AUDIO]},
+    "https://www.bilibili.com/video/BV1hdr000001": {"id": "BV1hdr000001", "title": "HDR only", "duration": 30, "formats": [
+        _stream("125", 2160, 25000, "HDR10", "hev1.2.4.L156"), AUDIO]},
+}
 
 class Response:
     def __init__(self, body): self.body = body
@@ -45,6 +57,8 @@ class YoutubeDL:
     def __enter__(self): return self
     def __exit__(self, *args): pass
     def extract_info(self, url, download):
+        if url in EXTRACTED:
+            return EXTRACTED[url]
         raise RuntimeError("[BiliBili] Unable to extract initial state")
     def urlopen(self, request):
         assert request.headers["Referer"] == "https://www.bilibili.com/"
@@ -65,6 +79,9 @@ class YoutubeDL:
         if parts.path == "/x/web-interface/view":
             return Response(json.dumps(VIEW[query["bvid"]]).encode())
         assert query["cid"] in {"11", "12"}
+        if query.get("platform") != "html5":
+            # Every SDR quality the session may play, 4K included; no HDR, Dolby Vision or AV1.
+            assert (query["qn"], query["fnval"], query["fourk"]) == ("120", "144", "1"), query
         return Response(json.dumps(HTML5 if query.get("platform") == "html5" else DASH).encode())
 '''
 NETWORKING = '''
@@ -117,6 +134,17 @@ class BilibiliApiFallbackTests(unittest.TestCase):
         self.assertEqual([value["baseUrl"] for value in payload["dash"]["video"]], ["https://cdn.test/v480.m4s"])
         self.assertEqual([value["baseUrl"] for value in payload["dash"]["audio"]], ["https://cdn.test/a.m4s"])
         self.assertEqual([value["url"] for value in payload["durl"]], ["https://cdn.test/360.mp4"])
+
+    def test_hdr_and_dolby_vision_streams_are_left_out_beside_sdr(self):
+        result = self.inspect("https://www.bilibili.com/video/BV1vip000001")
+        self.assertEqual([value["format_id"] for value in result["formats"]], ["120", "112", "80", "30280"])
+        payload = _map_payload("bilibili", result, "BV1vip000001")
+        # The highest SDR stream comes first: 4K for a 大会员 session.
+        self.assertEqual(payload["dash"]["video"][0]["baseUrl"], "https://cdn.test/120.m4s")
+
+    def test_a_video_with_only_hdr_streams_keeps_them(self):
+        result = self.inspect("https://www.bilibili.com/video/BV1hdr000001")
+        self.assertEqual([value["format_id"] for value in result["formats"]], ["125", "30280"])
 
     def test_selected_part_keeps_part_identity(self):
         result = self.inspect("https://www.bilibili.com/video/BV1live00001?p=2")

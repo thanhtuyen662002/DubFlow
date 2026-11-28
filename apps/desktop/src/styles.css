@@ -520,7 +520,7 @@ button.job.selected { background: var(--select); }
 .subtitle { margin-top: 2px; color: var(--text-3); font-size: 13px; }
 /* Cài đặt sits above other dialogs (it opens from them for an AI key); its own children sit above it. */
 .settings-dialog { z-index: 21; }
-#versions-dialog, #cleanup-dialog, #douyin-dialog { z-index: 22; }
+#versions-dialog, #cleanup-dialog, #douyin-dialog, #bilibili-dialog { z-index: 22; }
 .settings-panel { width: min(900px, 100%); height: min(680px, 100%); }
 .settings-body { display: flex; flex: 1; min-height: 0; }
 .settings-tabs { display: flex; flex: none; flex-direction: column; gap: 2px; width: 196px; padding: 12px 10px; overflow-y: auto; border-right: 1px solid var(--line); background: var(--surface); }

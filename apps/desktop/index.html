@@ -1671,7 +1671,7 @@
             <section id="settings-pane-account" class="settings-pane" role="tabpanel" aria-labelledby="settings-tab-account" tabindex="0">
               <header class="settings-pane-head">
                 <h3>Tài khoản</h3>
-                <p>Khóa AI và tài khoản Douyin DubFlow dùng thay bạn.</p>
+                <p>Khóa AI và tài khoản Douyin, Bilibili DubFlow dùng thay bạn.</p>
               </header>
               <div class="settings-section">
                 <div class="settings-section-head">
@@ -1694,6 +1694,16 @@
                   <div class="settings-actions">
                     <button id="douyin-login" class="btn" type="button">Đăng nhập</button>
                     <button id="douyin-logout" class="btn" type="button" hidden>Đăng xuất</button>
+                  </div>
+                </div>
+                <div class="settings-row">
+                  <div class="settings-text">
+                    <dt>Tài khoản Bilibili</dt>
+                    <dd id="bilibili-account-state">Đang kiểm tra…</dd>
+                  </div>
+                  <div class="settings-actions">
+                    <button id="bilibili-login" class="btn" type="button">Đăng nhập</button>
+                    <button id="bilibili-logout" class="btn" type="button" hidden>Đăng xuất</button>
                   </div>
                 </div>
               </dl>
@@ -2015,6 +2025,22 @@
         </header>
         <p id="douyin-state" class="discover-state douyin-state" role="status"></p>
         <div id="douyin-view" class="douyin-view"><span>Đang mở douyin.com…</span></div>
+      </div>
+    </div>
+    <div id="bilibili-dialog" class="review douyin-dialog" role="dialog" aria-modal="true" aria-labelledby="bilibili-title" hidden>
+      <div class="review-panel douyin-panel">
+        <header class="review-head">
+          <div>
+            <h2 id="bilibili-title">Đăng nhập Bilibili</h2>
+            <p class="subtitle">Đăng nhập để tải video Bilibili 1080p thay vì 480p (tài khoản 大会员: 4K). DubFlow tự giữ phiên.</p>
+          </div>
+          <button id="bilibili-done" class="btn primary" type="button">Xong</button>
+          <button id="bilibili-close" class="icon-btn" type="button" aria-label="Đóng">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          </button>
+        </header>
+        <p id="bilibili-state" class="discover-state douyin-state" role="status"></p>
+        <div id="bilibili-view" class="douyin-view"><span>Đang mở passport.bilibili.com…</span></div>
       </div>
     </div>
     <div id="blur-dialog" class="review" role="dialog" aria-modal="true" aria-labelledby="blur-title" hidden>
