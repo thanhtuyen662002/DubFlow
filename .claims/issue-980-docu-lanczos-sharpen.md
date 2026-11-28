@@ -2,7 +2,7 @@ DUBFLOW_PR_V1
 Issue: #980
 Lease-Owner: Claude/issue-980-docu-lanczos-sharpen
 Lease-Heartbeat: 2026-11-28T17:10:00Z
-Tested-Base-SHA: 1401a664dfee769a55516d3093a05e0d0f50eb53
+Tested-Base-SHA: 468fd0359dd8a65e5a58dd2f2806fc62f7e4b7ff
 Conflict-Domains: documentary-render
 Expected-Paths:
 - .claims/issue-980-docu-lanczos-sharpen.md
