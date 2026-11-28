@@ -12,7 +12,7 @@ import traceback
 from pathlib import Path
 from typing import Any, Callable, TextIO
 
-from engine.dubflow.mcp import sources
+from engine.dubflow.mcp import sources, studio
 from engine.dubflow.mcp.activity import Activity, default_path
 from engine.dubflow.docu import capcut_draft, intake, mcp_tools, overlays, roughcut, visual
 from engine.dubflow.docu.project import DocuError, load_spec, spec_path
@@ -22,7 +22,9 @@ SUPPORTED = ("2025-06-18", "2025-03-26", "2024-11-05")
 SERVER = {"name": "dubflow", "title": "DubFlow", "version": "2"}
 INSTRUCTIONS = ("Tools for DubFlow, the video studio on this computer. Finding footage: search_sources (Bilibili, YouTube and SkyPixel at "
                 "once; add list_footage_suffixes such as 空镜 or 航拍 4K for clean B-roll; get_trends for topics) -> download_video "
-                "(reports the quality it got). Documentary projects (Phim tài liệu): "
+                "(reports the quality it got). Sales videos (Bán hàng): list_vietnamese_voices -> write 1-5 Vietnamese scripts yourself "
+                "-> create_product_video with the product's photos/clips -> get_product_video until COMPLETED. "
+                "Documentary projects (Phim tài liệu): "
                 "search_sources -> download_video (2-15 sources, 6-12 give the richest B-roll) -> "
                 "create_project (speech is recognised when a source has no .srt) -> get_script_brief -> write the script yourself and "
                 "save_script -> narrate -> plan_visuals -> render_rough_cut. An existing one: list_projects, then inspect_timeline_state. "
@@ -128,8 +130,10 @@ TOOLS = [
           {"project": _PROJECT, "time": {"type": "number", "minimum": 0}, "source_id": {"type": "string"}}, ["project", "time"],
           read_only=True),
     *sources.TOOLS,
+    *studio.TOOLS,
 ]
 _SOURCE_TOOLS = {tool["name"] for tool in sources.TOOLS}
+_STUDIO_TOOLS = {tool["name"] for tool in studio.TOOLS}
 
 
 def _project_of(content: list[dict[str, Any]]) -> str | None:
@@ -210,6 +214,16 @@ class Server:
             return _text(intake.discover(args.get("platform"), args.get("query"), args.get("page") or 1))
         if name in _SOURCE_TOOLS:
             return _text(sources.call(name, args))
+        if name == "list_vietnamese_voices":
+            return _text(studio.voices(install.app_root))
+        if name == "create_product_video":
+            return _text(studio.create_product_video(args, install, record_run=studio.record_run(install.model_root.parent),
+                                                     base_default=intake.default_base()))
+        if name == "get_product_video":
+            return _text(studio.product_video(args.get("run")))
+        if name == "list_product_videos":
+            roots = [mcp_tools.output_root(args["root"])] if args.get("root") else self.allowed_roots()
+            return _text(studio.list_product_videos(roots))
         if name == "download_video":
             page = str(args.get("url") or "")
             fetch, extra = sources.resolve_download_url(page)
