@@ -80,6 +80,7 @@ const previewCaptions = [
 ].map((region, index) => ({ ...region, index }));
 const linkFetches = new Map<string, { url: string; title: string | null; startedAt: number }>();
 let douyinSession = false;
+let bilibiliSession = false;
 /** The discovery page "open" in the panel, or null. */
 let previewDiscoveryUrl: string | null = null;
 
@@ -856,6 +857,11 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
     case "douyin_account": return { logged_in: false } as T;
     case "douyin_logout": douyinSession = false; return null as T;
     case "douyin_view_open": case "douyin_view_bounds": case "douyin_view_close": return null as T;
+    case "ensure_bilibili_session": return (bilibiliSession ? "logged_in" : "anonymous") as T;
+    case "bilibili_account": return { logged_in: bilibiliSession } as T;
+    case "bilibili_logout": bilibiliSession = false; return null as T;
+    case "save_bilibili_session": bilibiliSession = true; return 9 as T;
+    case "bilibili_view_open": case "bilibili_view_bounds": case "bilibili_view_close": return null as T;
     case "check_update": return { ok: true, available: true, version: "0.3.0", channel: "candidate", notes: "DubFlow 0.3.0", setup: { size_bytes: 325_000_000 } } as T;
     case "download_update": return { ok: true, path: "C:/Users/preview/AppData/Local/DubFlow/updates/DubFlow-0.3.0-windows-x64-setup.exe", version: "0.3.0" } as T;
     case "install_update": case "restart_app": return null as T;

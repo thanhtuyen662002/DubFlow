@@ -742,6 +742,18 @@ impl Sources {
     /// wait for its receipt. Blocking: call from a worker thread.
     pub fn save_session(self: &Arc<Self>, provider: &str, cookie: String, expires_at: u64,
                         supervisor: &Path, root: &Path, data: &Path) -> Result<(), String> {
+        self.session_command(provider, json!({"command":"session_save", "provider_id":provider, "headers":{"Cookie":cookie}, "expires_at":expires_at}),
+            "ready", supervisor, root, data)
+    }
+
+    /// Remove a provider's protected session (a logout), so its links go out
+    /// without one. Blocking: call from a worker thread.
+    pub fn clear_session(self: &Arc<Self>, provider: &str, supervisor: &Path, root: &Path, data: &Path) -> Result<(), String> {
+        self.session_command(provider, json!({"command":"session_clear", "provider_id":provider}), "missing", supervisor, root, data)
+    }
+
+    fn session_command(self: &Arc<Self>, provider: &str, request: Value, expected: &str,
+                       supervisor: &Path, root: &Path, data: &Path) -> Result<(), String> {
         let _one_at_a_time = self.session_gate.lock().map_err(|_| fail("session gate poisoned"))?;
         // The service refuses session work while a link runs, and every
         // request while it saves: the claim keeps links from starting.
@@ -751,17 +763,17 @@ impl Sources {
                 *self.session.lock().map_err(|_| fail("session lock poisoned"))? = None;
                 Ok(())
             })
-            .and_then(|_| self.send(json!({"command":"session_save", "provider_id":provider, "headers":{"Cookie":cookie}, "expires_at":expires_at})))
-            .and_then(|_| self.session_receipt(provider));
+            .and_then(|_| self.send(request))
+            .and_then(|_| self.session_receipt(provider, expected));
         self.end_session_save();
         result
     }
 
-    fn session_receipt(&self, provider: &str) -> Result<(), String> {
+    fn session_receipt(&self, provider: &str, expected: &str) -> Result<(), String> {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(240);
         while std::time::Instant::now() < deadline {
             if let Some(event) = self.session.lock().map_err(|_| fail("session lock poisoned"))?.take() {
-                return session_result(provider, &event);
+                return session_result(provider, &event, expected);
             }
             let stopped = self.service.lock().map(|mut service| service.as_mut()
                 .is_none_or(|service| !matches!(service.child.try_wait(), Ok(None)))).unwrap_or(true);
@@ -801,8 +813,8 @@ impl Sources {
 }
 
 /// What a session save's answer from the service means for the user.
-fn session_result(provider: &str, event: &Value) -> Result<(), String> {
-    if event["event"] == "source_session" && event["state"] == "ready" {
+fn session_result(provider: &str, event: &Value, expected: &str) -> Result<(), String> {
+    if event["event"] == "source_session" && event["state"] == expected {
         return Ok(());
     }
     if event["event"] == "source_error" {
@@ -952,13 +964,15 @@ mod tests {
         sources.session_waiting.store(true, Ordering::SeqCst);
         sources.on_event(&json!({"event":"source_error", "code":"SOURCE_REQUEST_REJECTED", "retryable":false}));
         let event = sources.session.lock().unwrap().take().expect("rejection reaches the waiting save");
-        let error = session_result("douyin", &event).unwrap_err();
+        let error = session_result("douyin", &event, "ready").unwrap_err();
         assert!(error.contains("bận"), "{error}");
         // Nobody waiting: a stray rejection is not kept for a later save.
         sources.session_waiting.store(false, Ordering::SeqCst);
         sources.on_event(&json!({"event":"source_error", "code":"SOURCE_REQUEST_REJECTED", "retryable":false}));
         assert!(sources.session.lock().unwrap().is_none());
-        assert!(session_result("douyin", &json!({"event":"source_session", "state":"ready"})).is_ok());
+        assert!(session_result("douyin", &json!({"event":"source_session", "state":"ready"}), "ready").is_ok());
+        assert!(session_result("bilibili", &json!({"event":"source_session", "state":"missing"}), "missing").is_ok());
+        assert!(session_result("bilibili", &json!({"event":"source_session", "state":"ready"}), "missing").is_err());
     }
 
     #[test]
