@@ -41,6 +41,13 @@ REUSED_STILL = 1.09
 KEN_BURNS_SLICE = 4.5
 # Sources narrower than this are fitted over a blurred fill instead of cropped to 16:9.
 WIDE = 1.5
+# Resizing the framed picture (#980): lanczos keeps more detail than FFmpeg's default bicubic. A crop with fewer
+# pixels than the film (overscan or a caption zoom on 1080p footage) also gets a light luma-only unsharp, which brings
+# back the edge contrast the upscale softens without sharpening chroma noise; a crop of 4K footage is not sharpened.
+SCALE_FLAGS = "flags=lanczos"
+UPSCALE_SHARPEN = "unsharp=5:5:0.5:5:5:0.0"
+# A scale factor above this counts as an upscale (rounding of even crop sizes stays below it).
+UPSCALE = 1.005
 END_CARD = 6.0
 VIDEO = "documentary.mp4"
 CHAPTER_TITLES = {"HOOK": "The Hook", "PROBLEM": "The Problem", "ENGINEERING_SOLUTION": "The Engineering",
@@ -183,13 +190,17 @@ def video_filter(width: int, height: int, framing: dict[str, Any], *, frames: in
         x, y, crop_w, crop_h = _alt_crop(x, y, crop_w, crop_h, end_zoom if pull else REUSED_STILL, reused)
     steps.append(f"crop={crop_w}:{crop_h}:{x}:{y}")
     if crop_w / crop_h >= WIDE:
-        steps.append(f"scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,crop={WIDTH}:{HEIGHT},setsar=1")
+        # Filling the frame scales by the larger factor.
+        sharpen = f",{UPSCALE_SHARPEN}" if max(WIDTH / crop_w, HEIGHT / crop_h) > UPSCALE else ""
+        steps.append(f"scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase:{SCALE_FLAGS},crop={WIDTH}:{HEIGHT}{sharpen},setsar=1")
         picture = ",".join(steps)
         graph.append(f"[{label}]{picture}[framed]")
     else:
+        # Fitting a narrow picture scales by the smaller factor; its blurred fill needs no detail.
+        sharpen = f",{UPSCALE_SHARPEN}" if min(WIDTH / crop_w, HEIGHT / crop_h) > UPSCALE else ""
         graph.append(f"[{label}]{','.join(steps)},split=2[back][front];"
                      f"[back]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,crop={WIDTH}:{HEIGHT},gblur=sigma=24,setsar=1[fill];"
-                     f"[front]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=decrease,setsar=1[fit];"
+                     f"[front]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=decrease:{SCALE_FLAGS}{sharpen},setsar=1[fit];"
                      f"[fill][fit]overlay=(W-w)/2:(H-h)/2[framed]")
     after = [LOOK]
     # zoompan (d=1) turns each input frame into one output frame: it gets the film's rate first, or 25 fps footage plays
