@@ -2,7 +2,7 @@ DUBFLOW_PR_V1
 Issue: #1002
 Lease-Owner: Claude/issue-1002-mcp-edit
 Lease-Heartbeat: 2026-11-29T01:30:00Z
-Tested-Base-SHA: b44399d96454823357502fc7725d118c585a9f15
+Tested-Base-SHA: 464e831850c1910679186b1d1a86e312557fe36a
 Conflict-Domains: mcp-server, desktop-shell, desktop-editor
 Expected-Paths:
 - .claims/issue-1002-mcp-edit.md

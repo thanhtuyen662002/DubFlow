@@ -20,7 +20,8 @@ type Settings = {
   /** Open the rough cut in the editor; `seed` fills its first draft. */
   edit?(video: { outputPath: string; displayName: string }, seed: (edit: Edit) => Edit): void;
   /** What Claude is doing over MCP now (null when idle), for the rail. */
-  mcpBusy?(label: string | null): void;
+  /** Claude's call running now (label and tool), or null: the app shows where it works (Issue #1004). */
+  mcpBusy?(label: string | null, tool?: string | null): void;
   /** The Vibi.pro voice studio (#632): narration in an ElevenLabs or MiniMax voice. */
   vibi?: VibiStudio;
 };
@@ -793,7 +794,7 @@ export function mountDocu(invoke: Invoke, session: AiSession, settings: Settings
     let activity: McpActivity | null = null;
     try { activity = parseMcpActivity(await invoke("docu_mcp_activity")); } catch { return; }
     const current = activity?.current ?? null;
-    settings.mcpBusy?.(current ? current.label : null);
+    settings.mcpBusy?.(current ? current.label : null, current?.tool ?? null);
     $("#docu-mcp-chip").hidden = !current;
     $("#docu-mcp-chip-text").textContent = current ? `Claude đang làm: ${said(current.label)}` : "";
     if (!activity) return;

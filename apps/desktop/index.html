@@ -1662,6 +1662,10 @@
               <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path d="M12 3.5a8.5 8.5 0 1 0 0 17c1.2 0 1.8-.8 1.8-1.7 0-1.2-1-1.6-1-2.6 0-1 .8-1.7 1.9-1.7h2.1a3.7 3.7 0 0 0 3.7-3.7c0-4.2-3.8-7.3-8.5-7.3z" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linejoin="round"/><circle cx="7.8" cy="11.5" r="1.2" fill="currentColor"/><circle cx="10.5" cy="7.6" r="1.2" fill="currentColor"/><circle cx="15" cy="7.8" r="1.2" fill="currentColor"/></svg>
               <span>Giao diện</span>
             </button>
+            <button id="settings-tab-agent" class="settings-tab" type="button" role="tab" data-tab="agent" aria-controls="settings-pane-agent" aria-selected="false" tabindex="-1">
+              <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><rect x="5" y="8" width="14" height="11" rx="3" stroke="currentColor" stroke-width="1.7" fill="none"/><path d="M12 4.5V8M9.5 13h.01M14.5 13h.01M9.5 16.2h5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" fill="none"/></svg>
+              <span>Agent AI (MCP)</span>
+            </button>
             <button id="settings-tab-update" class="settings-tab" type="button" role="tab" data-tab="update" aria-controls="settings-pane-update" aria-selected="false" tabindex="-1">
               <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3M19.5 4v4.5H15" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
               <span>Cập nhật</span>
@@ -1927,6 +1931,21 @@
                   <button id="layout-reset" class="btn" type="button">Đặt lại cỡ khung</button>
                 </div>
               </dl>
+            </section>
+            <section id="settings-pane-agent" class="settings-pane agent-mcp" role="tabpanel" aria-labelledby="settings-tab-agent" tabindex="0" hidden>
+              <header class="settings-pane-head">
+                <h3>Agent AI (MCP)</h3>
+                <p>Cho Claude (hoặc agent hỗ trợ MCP) điều khiển DubFlow thay bạn: tìm footage trên Bilibili, YouTube, SkyPixel và tải về; làm video bán hàng; làm phim tài liệu; lồng tiếng; cắt Shorts, đổi khung 16:9, đóng gói đăng bài, ghép video; và chỉnh sửa rồi xuất video trong Chỉnh sửa.</p>
+              </header>
+              <p class="hint">Lồng tiếng và chỉnh sửa do agent gửi sẽ chạy trong ứng dụng này: hãy để DubFlow mở. Video của agent vào Hàng đợi và tự chạy lần lượt; bản chỉnh sửa của agent không ghi đè bản nháp của bạn (bản cũ được giữ riêng).</p>
+              <div class="settings-pane-head settings-subhead"><h3>Kết nối</h3><p id="agent-mcp-connect-note">Sau mỗi lần cập nhật DubFlow, hãy thêm lại lệnh này (đường dẫn đổi theo phiên bản).</p></div>
+              <label class="agent-mcp-field">Claude Code<textarea id="agent-mcp-code" rows="3" readonly></textarea></label>
+              <button id="agent-mcp-copy-code" class="btn" type="button">Sao chép lệnh</button>
+              <label class="agent-mcp-field">Claude Desktop (claude_desktop_config.json)<textarea id="agent-mcp-desktop" rows="6" readonly></textarea></label>
+              <button id="agent-mcp-copy-desktop" class="btn" type="button">Sao chép cấu hình</button>
+              <div class="settings-pane-head settings-subhead"><h3>Agent đang làm gì</h3></div>
+              <p id="agent-mcp-current" class="docu-mcp-current" role="status" aria-live="polite">Chưa có hoạt động nào từ agent.</p>
+              <ol id="agent-mcp-recent" class="docu-mcp-recent agent-mcp-recent"></ol>
             </section>
             <section id="settings-pane-update" class="settings-pane" role="tabpanel" aria-labelledby="settings-tab-update" tabindex="0" hidden>
               <header class="settings-pane-head">
