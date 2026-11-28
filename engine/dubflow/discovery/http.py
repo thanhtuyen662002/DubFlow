@@ -52,6 +52,8 @@ REFERERS = {
     "douyin": "https://www.douyin.com/",
     "bilibili": "https://www.bilibili.com/",
     "kuaishou": "https://www.kuaishou.com/",
+    "youtube": "https://www.youtube.com/",
+    "skypixel": "https://www.skypixel.com/",
 }
 USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
               "AppleWebKit/537.36 (KHTML, like Gecko) "

@@ -816,6 +816,27 @@ button.job.selected { background: var(--select); }
 .more-btn { align-self: center; }
 .discover-note { margin-top: auto; font-size: 12px; }
 .topic-row { display: flex; align-items: flex-start; gap: 8px; }
+/* Khám phá "Tất cả nguồn" (#978): suffix chips, YouTube's quality filter, the per-source row and card badges. */
+.suffix-row { align-items: center; flex-wrap: wrap; }
+.suffix-chips { flex: 1 1 360px; min-width: 0; }
+.yt-filter { display: flex; flex: none; align-items: center; gap: 6px; color: var(--text-3); font-size: 12.5px; }
+.yt-filter select { height: 28px; }
+.source-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 16px; }
+.source-filters, .source-pages { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.source-pages .hint { margin: 0; }
+.source-row button { height: 28px; padding: 0 12px; border: 1px solid var(--line); border-radius: 99px; background: var(--surface); color: var(--text-2); font-size: 12.5px; cursor: pointer; }
+.source-row button[aria-pressed="true"] { border-color: var(--accent); color: var(--text); background: oklch(0.66 0.15 var(--accent-h) / .14); }
+.source-row button.failed { border-style: dashed; color: var(--text-3); }
+.source-notes { flex-basis: 100%; margin: 0; }
+.video-card .thumb .badges { position: absolute; z-index: 2; left: 6px; bottom: 6px; display: flex; gap: 4px; }
+.video-card .thumb .badges span { padding: 1px 6px; border-radius: 4px; background: rgba(0,0,0,.68); color: #fff; font-size: 11px; font-weight: 650; }
+.video-card .thumb .badges .src-bilibili { background: #00a1d6; }
+.video-card .thumb .badges .src-youtube { background: #cc0000; }
+.video-card .thumb .badges .src-skypixel { background: #2b2f36; }
+.video-card .thumb .badges .src-douyin, .video-card .thumb .badges .src-kuaishou { background: #222; }
+.video-card .thumb .badges .q { background: oklch(0.66 0.15 var(--accent-h) / .9); color: var(--on-accent); }
+.video-card .thumb .badges .q.unsure { background: rgba(0,0,0,.68); color: #fff; font-style: italic; }
+.video-card .thumb .badges .q.cc { background: #2e7d32; color: #fff; }
 .topic-row .hint { flex: none; margin: 0; padding-top: 4px; }
 .topic-chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .topic-chips button { height: 26px; padding: 0 10px; border: 1px solid var(--line); border-radius: 99px; background: var(--surface); color: var(--text-2); font-size: 12.5px; cursor: pointer; }

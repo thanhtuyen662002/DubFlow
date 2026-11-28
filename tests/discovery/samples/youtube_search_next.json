@@ -1,0 +1,206 @@
+{
+ "name": "youtube_search_next",
+ "platform": "youtube",
+ "at_utc": "2026-11-28T06:22:06.060126+00:00",
+ "method": "POST",
+ "url": "https://www.youtube.com/youtubei/v1/search?prettyPrint=false",
+ "request_body": {
+  "context": {
+   "client": {
+    "clientName": "WEB",
+    "clientVersion": "2.20251120.01.00",
+    "hl": "en",
+    "gl": "US"
+   }
+  },
+  "continuation": "<token>"
+ },
+ "http_status": 200,
+ "content_encoding": "",
+ "response_json": {
+  "onResponseReceivedCommands": [
+   {
+    "appendContinuationItemsAction": {
+     "continuationItems": [
+      {
+       "itemSectionRenderer": {
+        "contents": [
+         {
+          "videoRenderer": {
+           "videoId": "tCPMc_6b2uo",
+           "thumbnail": {
+            "thumbnails": [
+             {
+              "url": "https://i.ytimg.com/vi/tCPMc_6b2uo/hq720.jpg?sqp=-oaymwEcCOgCEMoBSFXyq4qpAw4IARUAAIhCGAFwAcABBg==&rs=AOn4CLAe-jAQUdwEMSyDbrD9zSSHriQxzQ",
+              "width": 360,
+              "height": 202
+             },
+             {
+              "url": "https://i.ytimg.com/vi/tCPMc_6b2uo/hq720.jpg?sqp=-oaymwEcCNAFEJQDSFXyq4qpAw4IARUAAIhCGAFwAcABBg==&rs=AOn4CLDjUhv7XsHEkdNTa3oaw_yacEND3g",
+              "width": 720,
+              "height": 404
+             }
+            ]
+           },
+           "title": {
+            "runs": [
+             {
+              "text": "The Three Gorges Dam On The Yangtze River China"
+             }
+            ],
+            "accessibility": {
+             "accessibilityData": {
+              "label": "The Three Gorges Dam On The Yangtze River China 19 minutes"
+             }
+            }
+           },
+           "lengthText": {
+            "accessibility": {
+             "accessibilityData": {
+              "label": "19 minutes"
+             }
+            },
+            "simpleText": "19:00"
+           },
+           "viewCountText": {
+            "simpleText": "4,128,567 views"
+           },
+           "ownerText": {
+            "runs": [
+             {
+              "text": "Naa Anveshana",
+              "navigationEndpoint": {
+               "clickTrackingParams": "CBcQ3DAYACITCK6W2ZCDqpgDFYGeYwYdHdId0coBBPJULEQ=",
+               "commandMetadata": {
+                "webCommandMetadata": {
+                 "url": "/@NaaAnveshana",
+                 "webPageType": "WEB_PAGE_TYPE_CHANNEL",
+                 "rootVe": 3611,
+                 "apiUrl": "/youtubei/v1/browse"
+                }
+               },
+               "browseEndpoint": {
+                "browseId": "UC-CBQChrXvLzYc9oxpMfFPg",
+                "canonicalBaseUrl": "/@NaaAnveshana"
+               }
+              }
+             }
+            ]
+           },
+           "badges": [
+            {
+             "metadataBadgeRenderer": {
+              "style": "BADGE_STYLE_TYPE_SIMPLE",
+              "label": "4K",
+              "trackingParams": "CBcQ3DAYACITCK6W2ZCDqpgDFYGeYwYdHdId0Q=="
+             }
+            }
+           ],
+           "publishedTimeText": {
+            "simpleText": "3 years ago"
+           }
+          }
+         },
+         {
+          "videoRenderer": {
+           "videoId": "rJAsqIiPmWc",
+           "thumbnail": {
+            "thumbnails": [
+             {
+              "url": "https://i.ytimg.com/vi/rJAsqIiPmWc/hq720.jpg?sqp=-oaymwEcCOgCEMoBSFXyq4qpAw4IARUAAIhCGAFwAcABBg==&rs=AOn4CLDP-MB3Ex5Xc_hhTD6xdqsBnNZ41g",
+              "width": 360,
+              "height": 202
+             },
+             {
+              "url": "https://i.ytimg.com/vi/rJAsqIiPmWc/hq720.jpg?sqp=-oaymwEcCNAFEJQDSFXyq4qpAw4IARUAAIhCGAFwAcABBg==&rs=AOn4CLCp5uxx0GA1FmXP-7Kt3i7hGd8NVA",
+              "width": 720,
+              "height": 404
+             }
+            ]
+           },
+           "title": {
+            "runs": [
+             {
+              "text": "🇳🇵 Walk in Old Streets of Panauti, Kavre - Exploring the Hidden Gem Of Nepal (4K60fps) 2078"
+             }
+            ],
+            "accessibility": {
+             "accessibilityData": {
+              "label": "🇳🇵 Walk in Old Streets of Panauti, Kavre - Exploring the Hidden Gem Of Nepal (4K60fps) 2078 32 minutes"
+             }
+            }
+           },
+           "lengthText": {
+            "accessibility": {
+             "accessibilityData": {
+              "label": "32 minutes, 30 seconds"
+             }
+            },
+            "simpleText": "32:30"
+           },
+           "viewCountText": {
+            "simpleText": "930 views"
+           },
+           "ownerText": {
+            "runs": [
+             {
+              "text": "Walking Firiri",
+              "navigationEndpoint": {
+               "clickTrackingParams": "CBAQ3DAYASITCK6W2ZCDqpgDFYGeYwYdHdId0coBBPJULEQ=",
+               "commandMetadata": {
+                "webCommandMetadata": {
+                 "url": "/@WalkingFiriri",
+                 "webPageType": "WEB_PAGE_TYPE_CHANNEL",
+                 "rootVe": 3611,
+                 "apiUrl": "/youtubei/v1/browse"
+                }
+               },
+               "browseEndpoint": {
+                "browseId": "UCR00N4v3VANtw2MQ40TqXcQ",
+                "canonicalBaseUrl": "/@WalkingFiriri"
+               }
+              }
+             }
+            ]
+           },
+           "badges": [
+            {
+             "metadataBadgeRenderer": {
+              "style": "BADGE_STYLE_TYPE_SIMPLE",
+              "label": "8K",
+              "trackingParams": "CBAQ3DAYASITCK6W2ZCDqpgDFYGeYwYdHdId0Q=="
+             }
+            }
+           ],
+           "publishedTimeText": {
+            "simpleText": "4 years ago"
+           }
+          }
+         }
+        ]
+       }
+      },
+      {
+       "continuationItemRenderer": {
+        "trigger": "CONTINUATION_TRIGGER_ON_ITEM_SHOWN",
+        "continuationEndpoint": {
+         "commandMetadata": {
+          "webCommandMetadata": {
+           "sendPost": true,
+           "apiUrl": "/youtubei/v1/search"
+          }
+         },
+         "continuationCommand": {
+          "token": "EnsSFUJhaWhldGFuIERhbSA0SyBkcm9uZRpiRWdKd0FVZ29nZ0VMZEVOUVRXTmZObUl5ZFctQ0FRdHlTa0Z6Y1VscFVHMVhZNElCQ3pVMVdFMVVTRVpmT1hBd2dnRUxNMEoxUkdwM1RrUnlObEd5QVFZS0JBZ1lFQU0lM0QYgeDoGCILc2VhcmNoLWZlZWQ%3D",
+          "request": "CONTINUATION_REQUEST_TYPE_SEARCH"
+         }
+        }
+       }
+      }
+     ]
+    }
+   }
+  ],
+  "isSafeSearchTriggered": true
+ }
+}

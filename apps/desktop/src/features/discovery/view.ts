@@ -1,11 +1,19 @@
 import {
-  GLOSS_BATCH, PLATFORMS, TITLE_GLOSS_KEY, TOPICS, bilibiliMid, cleanTitle, parseGlosses, discoveryError, formatCount, formatDuration, loadGlossCache,
-  mergeVideos, needsChinese, needsTitleGloss, pageAddress, parseChinese, topicChinese, parseCollected, parseTrends, parseVideos, previewSource, refreshVideos, rememberGloss, saveGlossCache, seenOnPage,
-  type DiscoveredVideo, type Platform, type PreviewSource, type Trend,
+  ALL_SOURCES, GLOSS_BATCH, PAGE_ONLY_SOURCES, PLATFORMS, SOURCE_NAMES, SUFFIXES, TITLE_GLOSS_KEY, TOPICS, YOUTUBE_FILTERS, bilibiliMid, cleanTitle, interleave,
+  joinQuery, parseGlosses, discoveryError, formatCount, formatDuration, loadGlossCache, mergeVideos, needsChinese, needsEnglish, needsTitleGloss, pageAddress,
+  parseChinese, parseMedia, qualityLabel, splitSuffixes, toggleSuffix, topicChinese, parseCollected, parseTrends, parseVideos, previewSource, refreshVideos,
+  rememberGloss, saveGlossCache, seenOnPage,
+  type DiscoveredVideo, type Platform, type PreviewSource, type Source, type Trend,
 } from "./model.ts";
 
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
-type Mode = { kind: "api"; action: "search" | "popular" | "creator"; query: string; mid?: string; page: number } | { kind: "page" } | null;
+type Mode = { kind: "api"; action: "search" | "popular" | "creator"; query: string; mid?: string; page: number; cursor?: string | null }
+  | { kind: "page" } | { kind: "all" } | null;
+/** One source of "Tất cả nguồn": its own query, how far it got and what went wrong. */
+type SourceState = { status: "loading" | "ok" | "error"; query: string; videos: DiscoveredVideo[]; next: { page: number | null; cursor: string | null } | null; message: string };
+/** What a tab showed, kept while the user looks at another tab. */
+type TabMemory = { videos: DiscoveredVideo[]; selected: string[]; mode: Mode; nextPage: number | null; nextCursor: string | null; query: string;
+  sources: Map<Source, SourceState>; sourceFilter: Source | null; state: string };
 
 const $ = <T extends HTMLElement>(selector: string): T => {
   const node = document.querySelector<T>(selector);
@@ -16,6 +24,7 @@ const $ = <T extends HTMLElement>(selector: string): T => {
 const NO_TITLE = "(không có tiêu đề)";
 const HOVER_KEY = "dubflow.discoverHover.v1";
 const AUTO_ZH_KEY = "dubflow.discoverAutoZh.v1";
+const YOUTUBE_FILTER_KEY = "dubflow.discoverYoutubeFilter.v1";
 const HOVER_DELAY_MS = 450;
 const ADDED_NOTE = " Xem tiến độ tải ở Hàng đợi.";
 
@@ -122,8 +131,21 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
   const addButton = $<HTMLButtonElement>("#discover-add");
   const results = $("#discover-results");
   const more = $<HTMLButtonElement>("#discover-more");
+  const suffixRow = $("#suffix-chips");
+  const youtubeFilter = $<HTMLSelectElement>("#discover-yt-filter");
+  const youtubeFilterBox = $("#discover-yt-filter-box");
+  const sourceRow = $("#source-row");
 
-  let platform: Platform = "douyin";
+  // "Tất cả nguồn" first: one search over Bilibili, YouTube and SkyPixel (#978).
+  let platform: Platform = "all";
+  let nextCursor: string | null = null;
+  let sources = new Map<Source, SourceState>();
+  let sourceFilter: Source | null = null;
+  const tabMemory = new Map<Platform, TabMemory>();
+  // Phrase -> English, for YouTube, for this app run.
+  const englishCache = new Map<string, string>();
+  // SkyPixel page -> its MP4 rendition, resolved when added or played.
+  const skypixelMedia = new Map<string, { url: string; quality: string; license: string }>();
   let videos: DiscoveredVideo[] = [];
   const selected = new Set<string>();
   let mode: Mode = null;
@@ -170,6 +192,12 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
   let playing: { video: DiscoveredVideo } | null = null;
 
   const info = () => PLATFORMS.find((entry) => entry.id === platform)!;
+  /** Hot keywords come from the tab's own source, else Bilibili's. */
+  const trendPlatform = (): Platform => (info().trends ? platform : "bilibili");
+  /** Keyword suggestions come from the tab's own source; "Tất cả nguồn" uses Bilibili's (Chinese). */
+  const suggestPlatform = (): Platform | null => (platform === "all" ? "bilibili" : info().suggest ? platform : null);
+  /** The language the suffix chips write in: English on the YouTube tab, Chinese elsewhere. */
+  const suffixLanguage = (): "zh" | "en" => (platform === "youtube" ? "en" : "zh");
 
   function renderTabs(): void {
     tabs.replaceChildren(...PLATFORMS.map((entry) => {
@@ -182,10 +210,91 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
       return button;
     }));
     popular.hidden = platform !== "bilibili";
+    // Channel pages exist only on sources the app's browser can open.
+    if (!info().page) kind.value = "search";
+    kind.hidden = !info().page;
+    youtubeFilterBox.hidden = !(platform === "all" || platform === "youtube");
     query.placeholder = kind.value === "creator"
       ? `Dán link trang kênh ${info().name}`
-      : autoChinese.checked ? "Gõ tiếng Việt hoặc tiếng Trung, ví dụ nuôi lợn, 美食" : "Từ khóa tiếng Trung, ví dụ 仙侠 hoặc 美食";
+      : platform === "youtube" ? "Gõ tiếng Việt, tiếng Trung hoặc tiếng Anh, ví dụ Baihetan dam, cảng tự động"
+        : platform === "all" ? "Một lần tìm trên Bilibili, YouTube, SkyPixel, ví dụ 白鹤滩水电站 hoặc đập thủy điện"
+          : autoChinese.checked ? "Gõ tiếng Việt hoặc tiếng Trung, ví dụ nuôi lợn, 美食" : "Từ khóa tiếng Trung, ví dụ 仙侠 hoặc 美食";
+    renderSuffixes();
+    renderSources();
   }
+
+  function renderSuffixes(): void {
+    const language = suffixLanguage();
+    const active = new Set(splitSuffixes(query.value).suffixes);
+    suffixRow.replaceChildren(...SUFFIXES.map((suffix) => {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      const on = active.has(suffix);
+      chip.setAttribute("aria-pressed", String(on));
+      chip.textContent = suffix[language];
+      chip.title = `${suffix.vi}\nTiếng Trung: ${suffix.zh} · YouTube: ${suffix.en}\n${on ? "Bấm để bỏ khỏi câu tìm" : "Bấm để thêm vào cuối câu tìm"}`;
+      chip.addEventListener("click", () => {
+        query.value = toggleSuffix(query.value, suffix, language);
+        renderSuffixes();
+        query.focus();
+      });
+      return chip;
+    }));
+  }
+
+  /** "Tất cả nguồn": counts and problems per source, a filter by source, and the sources only their page can search. */
+  function renderSources(): void {
+    sourceRow.hidden = platform !== "all" || sources.size === 0;
+    if (sourceRow.hidden) {
+      sourceRow.replaceChildren();
+      return;
+    }
+    const chip = (label: string, pressed: boolean, onClick: () => void, title = "") => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = label;
+      button.title = title;
+      button.setAttribute("aria-pressed", String(pressed));
+      button.addEventListener("click", onClick);
+      return button;
+    };
+    const filters = document.createElement("div");
+    filters.className = "source-filters";
+    filters.append(chip(`Tất cả (${videos.length})`, sourceFilter === null, () => setSourceFilter(null)));
+    for (const source of ALL_SOURCES) {
+      const entry = sources.get(source);
+      if (!entry) continue;
+      const label = entry.status === "loading" ? `${SOURCE_NAMES[source]} …` : entry.status === "error" ? `${SOURCE_NAMES[source]} ⚠` : `${SOURCE_NAMES[source]} (${entry.videos.length})`;
+      const button = chip(label, sourceFilter === source, () => setSourceFilter(sourceFilter === source ? null : source),
+        entry.status === "error" ? entry.message : `Từ khóa gửi tới ${SOURCE_NAMES[source]}: ${entry.query}`);
+      button.dataset.source = source;
+      button.classList.toggle("failed", entry.status === "error");
+      filters.append(button);
+    }
+    const pages = document.createElement("div");
+    pages.className = "source-pages";
+    const hint = document.createElement("span");
+    hint.className = "hint";
+    hint.textContent = "Tìm thêm trên trang:";
+    pages.append(hint, ...PAGE_ONLY_SOURCES.map((source) => chip(SOURCE_NAMES[source], false, () => searchOnPage(source),
+      `Mở trang ${SOURCE_NAMES[source]} với cùng từ khóa; video bạn lướt qua tự vào danh sách`)));
+    const failures = ALL_SOURCES.map((source) => [source, sources.get(source)] as const)
+      .filter(([, entry]) => entry?.status === "error")
+      .map(([source, entry]) => `${SOURCE_NAMES[source]}: ${entry?.message}`);
+    const notes = document.createElement("p");
+    notes.className = "hint source-notes";
+    notes.textContent = failures.join(" · ");
+    notes.hidden = failures.length === 0;
+    sourceRow.replaceChildren(filters, pages, notes);
+  }
+
+  function setSourceFilter(source: Source | null): void {
+    sourceFilter = source;
+    renderResults();
+  }
+
+  /** The cards the grid shows: every result, or one source's in "Tất cả nguồn". */
+  const shownVideos = (): DiscoveredVideo[] => (sourceFilter ? videos.filter((video) => video.source === sourceFilter) : videos);
 
   async function loadGlosses(items: Trend[]): Promise<void> {
     const missing = items.map((trend) => trend.keyword).filter((keyword) => !glosses.has(keyword)).slice(0, 60);
@@ -241,7 +350,8 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
   }
 
   async function loadTrends(force = false): Promise<void> {
-    const cached = trendCache.get(platform);
+    const forPlatform = trendPlatform();
+    const cached = trendCache.get(forPlatform);
     if (!force && cached && Date.now() - cached.at < 5 * 60_000) {
       renderTrends(cached.items);
       trendState.textContent = "";
@@ -249,7 +359,6 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
       return;
     }
     const request = ++trendRequest;
-    const forPlatform = platform;
     trendList.replaceChildren();
     trendState.textContent = "Đang tải xu hướng…";
     try {
@@ -285,7 +394,7 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
     stopPreview();
     hoverCard = null;
     cards.clear();
-    results.replaceChildren(...videos.map((video) => {
+    results.replaceChildren(...shownVideos().map((video) => {
       const card = document.createElement("li");
       card.className = selected.has(video.pageUrl) ? "video-card selected" : "video-card";
       card.tabIndex = 0;
@@ -305,6 +414,33 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
         duration.textContent = formatDuration(video.durationS);
         thumb.append(duration);
       }
+      // Where it comes from (in a mixed list) and how sharp it is, bottom left.
+      const quality = qualityLabel(video);
+      if ((platform === "all" && video.source) || quality) {
+        const badges = document.createElement("span");
+        badges.className = "badges";
+        if (platform === "all" && video.source) {
+          const source = document.createElement("span");
+          source.className = `src src-${video.source}`;
+          source.textContent = SOURCE_NAMES[video.source];
+          badges.append(source);
+        }
+        if (quality) {
+          const label = document.createElement("span");
+          label.className = quality.sure ? "q" : "q unsure";
+          label.textContent = quality.label;
+          label.title = quality.sure ? "Độ phân giải theo nguồn" : "Theo tiêu đề video (chưa chắc)";
+          badges.append(label);
+        }
+        if (video.badges?.includes("CC")) {
+          const cc = document.createElement("span");
+          cc.className = "q cc";
+          cc.textContent = "CC";
+          cc.title = "Creative Commons: chủ video cho phép dùng lại (ghi nguồn)";
+          badges.append(cc);
+        }
+        thumb.append(badges);
+      }
       const check = document.createElement("input");
       check.type = "checkbox";
       check.checked = selected.has(video.pageUrl);
@@ -316,7 +452,8 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
       original.className = "orig";
       const sub = document.createElement("span");
       sub.className = "sub";
-      sub.textContent = [video.author, video.plays !== null ? `${formatCount(video.plays)} lượt xem` : ""].filter(Boolean).join(" · ");
+      sub.textContent = [video.author, video.plays !== null ? `${formatCount(video.plays)} lượt xem` : "",
+        skypixelMedia.get(video.pageUrl)?.license ? `Giấy phép: ${skypixelMedia.get(video.pageUrl)?.license}` : ""].filter(Boolean).join(" · ");
       meta.append(title, original, sub);
       const score = hotScore(video);
       if (score !== null) {
@@ -341,7 +478,7 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
         event.stopPropagation();
         make.disabled = true;
         try {
-          await enqueue(video.fetchUrl, downloadTitle(video));
+          await enqueue(await fetchUrlOf(video), downloadTitle(video));
           make.querySelector("span")!.textContent = "Đã thêm";
           state.textContent = `Đã đưa “${(downloadTitle(video) ?? "video").slice(0, 60)}” về Hàng đợi.${ADDED_NOTE}`;
         } catch (error) {
@@ -374,9 +511,38 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
     }));
     resultBar.hidden = videos.length === 0;
     resultTools.hidden = videos.length === 0;
-    more.hidden = !(mode?.kind === "api" && nextPage !== null);
+    more.hidden = !(mode?.kind === "api" && (nextPage !== null || nextCursor !== null))
+      && !(mode?.kind === "all" && [...sources.values()].some((entry) => entry.next && entry.status === "ok"));
     showResults.textContent = videos.length ? `Xem kết quả (${videos.length})` : "Xem kết quả";
     renderSelection();
+    renderSources();
+  }
+
+  /**
+   * What to download for a card. A SkyPixel page is not a download source: its 1080p MP4 rendition is
+   * looked up when the video is added (and kept for the player and the licence line).
+   */
+  async function fetchUrlOf(video: DiscoveredVideo): Promise<string> {
+    if (video.source !== "skypixel" || video.fetchUrl !== video.pageUrl) return video.fetchUrl;
+    const known = skypixelMedia.get(video.pageUrl) ?? await resolveSkypixel(video);
+    if (!known) throw new Error("Không lấy được bản tải của video SkyPixel này");
+    return known.url;
+  }
+
+  async function resolveSkypixel(video: DiscoveredVideo): Promise<{ url: string; quality: string; license: string } | null> {
+    const slug = decodeURIComponent(new URL(video.pageUrl).pathname.replace(/^\/videos\//, ""));
+    const media = parseMedia(await invoke<unknown>("discover", { platform: "skypixel", action: "media", query: null, page: null, mid: null,
+      cursor: null, filter: null, id: slug }));
+    if (media) {
+      skypixelMedia.set(video.pageUrl, media);
+      video.license = media.license;
+      // The card's line says the licence as soon as it is known.
+      const sub = cards.get(video.pageUrl)?.card.querySelector(".sub");
+      if (sub && media.license && !sub.textContent?.includes(media.license)) {
+        sub.textContent = [sub.textContent, `Giấy phép: ${media.license}`].filter(Boolean).join(" · ");
+      }
+    }
+    return media;
   }
 
   function setSelected(video: DiscoveredVideo, on: boolean): void {
@@ -569,6 +735,17 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
   }
 
   function openPlayer(video: DiscoveredVideo): void {
+    if (video.source === "skypixel" && video.fetchUrl === video.pageUrl) {
+      const known = skypixelMedia.get(video.pageUrl);
+      if (known) {
+        openPlayer({ ...video, fetchUrl: known.url });
+        return;
+      }
+      playerState.textContent = "";
+      void resolveSkypixel(video).then((media) => {
+        if (media && playing?.video.pageUrl === video.pageUrl) openPlayer({ ...video, fetchUrl: media.url });
+      }).catch(() => undefined);
+    }
     stopPreview();
     hoverCard = null;
     playing = { video };
@@ -634,9 +811,10 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
   }
 
   function renderSelection(): void {
+    const shown = shownVideos();
     const count = videos.filter((video) => selected.has(video.pageUrl)).length;
     selectedCount.textContent = videos.length ? `Đã chọn ${count}/${videos.length}` : "";
-    selectAll.checked = videos.length > 0 && count === videos.length;
+    selectAll.checked = shown.length > 0 && shown.every((video) => selected.has(video.pageUrl));
     addButton.disabled = count === 0;
     addButton.textContent = count ? `Thêm ${count} video vào Hàng đợi` : "Thêm vào Hàng đợi";
   }
@@ -646,6 +824,9 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
     videos = [];
     selected.clear();
     nextPage = null;
+    nextCursor = null;
+    sources = new Map();
+    sourceFilter = null;
     renderResults();
   }
 
@@ -741,7 +922,8 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
     if (!forPlatform || !pageShown || seenBusy || Date.now() - seenAt < 2500) return;
     seenBusy = true;
     try {
-      const found = seenOnPage(parseCollected(await host<unknown>("collect_discovery", { platform: forPlatform })));
+      const found = seenOnPage(parseCollected(await host<unknown>("collect_discovery", { platform: forPlatform })))
+        .map((video) => ({ ...video, source: forPlatform as Source }));
       if (forPlatform !== platform || page?.platform !== forPlatform || !found.length) return;
       const refreshed = refreshVideos(videos, found);
       const merged = mergeVideos(refreshed, found);
@@ -811,22 +993,34 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
     void host("discovery_view_close").catch(() => undefined);
   }
 
-  async function runApi(next: Exclude<Mode, { kind: "page" } | null>, append: boolean): Promise<void> {
+  /** The `discover` arguments of a keyword search on one source (YouTube adds its filter and next-page token). */
+  function searchArgs(source: Source, text: string, page: number | null, cursor: string | null): Record<string, unknown> {
+    return { platform: source, action: "search", query: text, page: source === "youtube" ? null : page ?? 1, mid: null,
+      cursor: source === "youtube" ? cursor : null, filter: source === "youtube" ? youtubeFilter.value : null, id: null };
+  }
+
+  async function runApi(next: Exclude<Mode, { kind: "page" } | { kind: "all" } | null>, append: boolean): Promise<void> {
     mode = next;
     closePage();
     state.textContent = "Đang tải…";
     more.disabled = true;
+    const forPlatform = platform;
     try {
-      const value = await invoke<unknown>("discover", { platform, action: next.action, query: next.query || null, page: next.page, mid: next.mid ?? null });
+      const value = await invoke<unknown>("discover", next.action === "search" && forPlatform !== "all"
+        ? searchArgs(forPlatform, next.query, next.page, next.cursor ?? null)
+        : { platform: forPlatform, action: next.action, query: next.query || null, page: next.page, mid: next.mid ?? null, cursor: null, filter: null, id: null });
+      if (forPlatform !== platform) return;
       const result = parseVideos(value);
       if (!result.ok) {
         state.textContent = discoveryError(result.code, platform);
         // Search pages work in the real site even when the API is blocked.
-        if (next.action !== "popular" && (result.code === "BLOCKED" || result.code === "LOGIN_REQUIRED")) await openPage();
+        if (info().page && next.action !== "popular" && (result.code === "BLOCKED" || result.code === "LOGIN_REQUIRED")) await openPage();
         return;
       }
-      videos = append ? mergeVideos(videos, result.items) : result.items;
+      const found = result.items.map((video) => ({ ...video, source: video.source ?? (forPlatform as Source) }));
+      videos = append ? mergeVideos(videos, found) : found;
       nextPage = result.nextPage;
+      nextCursor = result.nextCursor ?? null;
       state.textContent = videos.length ? "" : "Không tìm thấy video.";
       renderResults();
       void translateTitles();
@@ -835,6 +1029,80 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
     } finally {
       more.disabled = false;
     }
+  }
+
+  /**
+   * One search on every source of "Tất cả nguồn" at once (or the next page of each that has one). Each source
+   * shows up as it answers; one that fails says why in the source row and never hides the others.
+   */
+  async function runAll(queries: { zh: string; en: string } | null, append: boolean): Promise<void> {
+    mode = { kind: "all" };
+    closePage();
+    const request = searchRequest;
+    more.disabled = true;
+    const jobs = ALL_SOURCES.map(async (source) => {
+      const previous = sources.get(source);
+      if (append && !(previous?.status === "ok" && previous.next)) return;
+      const text = append ? previous!.query : source === "youtube" ? queries!.en : queries!.zh;
+      const entry: SourceState = { status: "loading", query: text, videos: append ? previous!.videos : [], next: previous?.next ?? null, message: "" };
+      sources.set(source, entry);
+      renderSources();
+      try {
+        const value = await invoke<unknown>("discover", searchArgs(source, text, append ? entry.next?.page ?? 1 : 1, append ? entry.next?.cursor ?? null : null));
+        if (request !== searchRequest || platform !== "all") return;
+        const result = parseVideos(value);
+        if (!result.ok) {
+          sources.set(source, { ...entry, status: "error", message: discoveryError(result.code, source), next: append ? entry.next : null });
+        } else {
+          const found = result.items.map((video) => ({ ...video, source }));
+          const next = result.nextPage !== null || result.nextCursor ? { page: result.nextPage, cursor: result.nextCursor ?? null } : null;
+          sources.set(source, { ...entry, status: "ok", videos: mergeVideos(entry.videos, found), next });
+        }
+      } catch (error) {
+        if (request !== searchRequest || platform !== "all") return;
+        sources.set(source, { ...entry, status: "error", message: String(error).slice(0, 160) });
+      }
+      // Previous pages keep their place; a new page is mixed in after them.
+      videos = append ? mergeVideos(videos, interleave(ALL_SOURCES.map((item) => (sources.get(item)?.videos ?? []).filter((video) => !videos.some((old) => old.pageUrl === video.pageUrl)))))
+        : interleave(ALL_SOURCES.map((item) => sources.get(item)?.videos ?? []));
+      renderResults();
+      void translateTitles();
+    });
+    state.textContent = append ? "Đang tải thêm…" : "Đang tìm trên Bilibili, YouTube và SkyPixel…";
+    await Promise.all(jobs);
+    if (request !== searchRequest || platform !== "all") return;
+    more.disabled = false;
+    const failed = ALL_SOURCES.filter((source) => sources.get(source)?.status === "error");
+    state.textContent = videos.length
+      ? `Tìm thấy ${videos.length} video từ ${ALL_SOURCES.filter((source) => (sources.get(source)?.videos.length ?? 0) > 0).length} nguồn.${failed.length ? ` ${failed.map((source) => SOURCE_NAMES[source]).join(", ")} chưa trả kết quả (xem dòng nguồn).` : ""}`
+      : failed.length === ALL_SOURCES.length ? "Không nguồn nào trả kết quả. Kiểm tra mạng rồi thử lại." : "Không tìm thấy video.";
+    renderResults();
+  }
+
+  /** "Tìm thêm trên trang": the same phrase on a source only its own page can search. */
+  function searchOnPage(source: Source): void {
+    switchPlatform(source);
+    kind.value = "search";
+    renderTabs();
+    void search();
+  }
+
+  /** The English phrase for YouTube: a Chinese phrase translates best (place names), else what was typed. */
+  async function toEnglish(text: string): Promise<string> {
+    if (!needsEnglish(text)) return text;
+    const known = englishCache.get(text);
+    if (known) return known;
+    try {
+      const value = (await invoke<unknown>("translate_query", { text, target: "en" }) ?? {}) as Record<string, unknown>;
+      const english = value.ok === true && typeof value.text === "string" ? value.text.replace(/\s+/g, " ").trim().slice(0, 100) : "";
+      if (english && !needsEnglish(english)) {
+        englishCache.set(text, english);
+        return english;
+      }
+    } catch {
+      // YouTube still gets the phrase as typed.
+    }
+    return text;
   }
 
   /** Open the search or creator page in the panel (navigating the page already there). */
@@ -917,20 +1185,38 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
     }
     const request = ++searchRequest;
     translatedNote.textContent = "";
-    if (kind.value === "search" && autoChinese.checked && needsChinese(text)) {
-      state.textContent = `Đang dịch “${text}” sang tiếng Trung…`;
-      const chinese = await toChinese(text);
+    // Suffix chips stay out of the translation and come back after it, in each source's language.
+    const { base, suffixes } = kind.value === "search" ? splitSuffixes(text) : { base: text, suffixes: [] };
+    let chineseBase = base;
+    if (kind.value === "search" && platform !== "youtube" && autoChinese.checked && base && needsChinese(base)) {
+      state.textContent = `Đang dịch “${base}” sang tiếng Trung…`;
+      const chinese = await toChinese(base);
       // Typed again or switched platform meanwhile: that search wins.
       if (request !== searchRequest) return;
       state.textContent = "";
-      showTranslated(text, chinese);
-      if (chinese) {
-        query.value = chinese;
-        text = chinese;
+      showTranslated(base, chinese);
+      if (chinese) chineseBase = chinese;
+    }
+    if (kind.value === "search" && platform !== "youtube") {
+      text = joinQuery(chineseBase, suffixes, "zh");
+      query.value = text;
+      renderSuffixes();
+    }
+    if (platform === "all" || platform === "youtube") {
+      state.textContent = "Đang chuẩn bị từ khóa tiếng Anh cho YouTube…";
+      const english = joinQuery(await toEnglish(chineseBase || base), suffixes, "en");
+      if (request !== searchRequest) return;
+      state.textContent = "";
+      if (platform === "all") {
+        if (english !== text) translatedNote.append(translatedNote.textContent ? " · " : "", `YouTube: “${english}”`);
+        resetResults();
+        return runAll({ zh: text, en: english }, false);
       }
+      resetResults();
+      return runApi({ kind: "api", action: "search", query: english, page: 1, cursor: null }, false);
     }
     resetResults();
-    if (platform === "bilibili" && kind.value === "search") return runApi({ kind: "api", action: "search", query: text, page: 1 }, false);
+    if ((platform === "bilibili" || platform === "skypixel") && kind.value === "search") return runApi({ kind: "api", action: "search", query: text, page: 1 }, false);
     const mid = platform === "bilibili" && kind.value === "creator" ? bilibiliMid(text) : null;
     if (mid) return runApi({ kind: "api", action: "creator", query: "", mid, page: 1 }, false);
     return openPage();
@@ -946,10 +1232,11 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
   async function suggest(): Promise<void> {
     const text = query.value.trim();
     // Platform suggestions only understand Chinese; Vietnamese is translated on "Tìm".
-    if (!text || kind.value !== "search" || !info().suggest || needsChinese(text)) return hideSuggestions();
+    const from = suggestPlatform();
+    if (!text || kind.value !== "search" || !from || needsChinese(text)) return hideSuggestions();
     const request = ++suggestRequest;
     try {
-      const result = parseTrends(await invoke<unknown>("discover", { platform, action: "suggest", query: text }));
+      const result = parseTrends(await invoke<unknown>("discover", { platform: from, action: "suggest", query: text }));
       if (request !== suggestRequest || !result.ok || !result.items.length) return;
       suggestList.replaceChildren(...result.items.slice(0, 10).map((item) => {
         const option = document.createElement("li");
@@ -971,6 +1258,9 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
   function switchPlatform(next: Platform): void {
     if (next === platform) return;
     stopPreview();
+    // What this tab showed comes back when the user returns to it (until the app closes).
+    tabMemory.set(platform, { videos, selected: [...selected], mode: mode?.kind === "page" ? null : mode, nextPage, nextCursor, query: query.value,
+      sources, sourceFilter, state: mode?.kind === "page" ? "" : state.textContent ?? "" });
     platform = next;
     mode = null;
     searchRequest += 1;
@@ -979,6 +1269,18 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
     state.textContent = "";
     hideSuggestions();
     resetResults();
+    const kept = tabMemory.get(next);
+    if (kept && kept.videos.length) {
+      videos = kept.videos;
+      for (const url of kept.selected) selected.add(url);
+      mode = kept.mode;
+      nextPage = kept.nextPage;
+      nextCursor = kept.nextCursor;
+      sources = kept.sources;
+      sourceFilter = kept.sourceFilter;
+      state.textContent = kept.state;
+      renderResults();
+    }
     renderTabs();
     void loadTrends();
   }
@@ -1004,8 +1306,19 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
     void runApi({ kind: "api", action: "popular", query: "", page: 1 }, false);
   });
   more.addEventListener("click", () => {
-    if (mode?.kind === "api" && nextPage !== null) void runApi({ ...mode, page: nextPage }, true);
+    if (mode?.kind === "all") void runAll(null, true);
+    else if (mode?.kind === "api" && nextCursor !== null) void runApi({ ...mode, cursor: nextCursor }, true);
+    else if (mode?.kind === "api" && nextPage !== null) void runApi({ ...mode, page: nextPage }, true);
   });
+  query.addEventListener("input", () => renderSuffixes());
+  youtubeFilter.replaceChildren(...YOUTUBE_FILTERS.map((filter) => {
+    const option = document.createElement("option");
+    option.value = filter.id;
+    option.textContent = filter.name;
+    return option;
+  }));
+  youtubeFilter.value = YOUTUBE_FILTERS.some((filter) => filter.id === readStorage(YOUTUBE_FILTER_KEY)) ? readStorage(YOUTUBE_FILTER_KEY)! : "4k";
+  youtubeFilter.addEventListener("change", () => writeStorage(YOUTUBE_FILTER_KEY, youtubeFilter.value));
   $("#trends-refresh").addEventListener("click", () => void loadTrends(true));
   const pageAction = (command: string) => () => {
     void host(command).catch((error) => { state.textContent = String(error).slice(0, 200); });
@@ -1035,7 +1348,7 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
     state.textContent = "Đang đọc trang…";
     try {
       const found = parseCollected(await host<unknown>("collect_discovery", { platform: forPlatform }))
-        .map(({ current: _current, ...video }) => video);
+        .map(({ current: _current, ...video }) => ({ ...video, source: forPlatform as Source }));
       if (forPlatform !== platform) return;
       const before = videos.length;
       videos = mergeVideos(refreshVideos(videos, found), found);
@@ -1051,7 +1364,7 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
     }
   });
   selectAll.addEventListener("change", () => {
-    for (const video of videos) {
+    for (const video of shownVideos()) {
       if (selectAll.checked) selected.add(video.pageUrl);
       else selected.delete(video.pageUrl);
     }
@@ -1069,7 +1382,7 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
     for (const video of picks) {
       try {
         // The title as the card shows it names the download and its job.
-        await enqueue(video.fetchUrl, downloadTitle(video));
+        await enqueue(await fetchUrlOf(video), downloadTitle(video));
         added += 1;
         selected.delete(video.pageUrl);
       } catch (error) {
@@ -1116,7 +1429,7 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
     playerDownload.disabled = true;
     playerState.textContent = "Đang thêm vào Hàng đợi…";
     try {
-      await enqueue(video.fetchUrl, downloadTitle(video));
+      await enqueue(await fetchUrlOf(video), downloadTitle(video));
     } catch (error) {
       if (playing?.video === video) {
         playerState.textContent = `Không thêm được: ${String(error).slice(0, 160)}`;
