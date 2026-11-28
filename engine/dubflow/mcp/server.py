@@ -12,14 +12,18 @@ import traceback
 from pathlib import Path
 from typing import Any, Callable, TextIO
 
+from engine.dubflow.mcp import sources
 from engine.dubflow.mcp.activity import Activity, default_path
 from engine.dubflow.docu import capcut_draft, intake, mcp_tools, overlays, roughcut, visual
 from engine.dubflow.docu.project import DocuError, load_spec, spec_path
 
 PROTOCOL = "2025-06-18"
 SUPPORTED = ("2025-06-18", "2025-03-26", "2024-11-05")
-SERVER = {"name": "dubflow", "title": "DubFlow Phim tài liệu", "version": "1"}
-INSTRUCTIONS = ("Tools for DubFlow documentary projects (Phim tài liệu). A new film: discover_videos -> download_video (2-15 sources, 6-12 give the richest B-roll) -> "
+SERVER = {"name": "dubflow", "title": "DubFlow", "version": "2"}
+INSTRUCTIONS = ("Tools for DubFlow, the video studio on this computer. Finding footage: search_sources (Bilibili, YouTube and SkyPixel at "
+                "once; add list_footage_suffixes such as 空镜 or 航拍 4K for clean B-roll; get_trends for topics) -> download_video "
+                "(reports the quality it got). Documentary projects (Phim tài liệu): "
+                "search_sources -> download_video (2-15 sources, 6-12 give the richest B-roll) -> "
                 "create_project (speech is recognised when a source has no .srt) -> get_script_brief -> write the script yourself and "
                 "save_script -> narrate -> plan_visuals -> render_rough_cut. An existing one: list_projects, then inspect_timeline_state. "
                 "Plan edits (replace_timeline_clip, apply_smart_label_overlay, adjust_pacing_and_transitions, set_framing) take effect after "
@@ -41,12 +45,15 @@ _SOURCE = {"type": "object", "additionalProperties": False, "required": ["video"
     "title": {"type": "string", "maxLength": 120}, "url": {"type": "string"}, "creator": {"type": "string"}}}
 
 TOOLS = [
-    _tool("discover_videos", "Search Bilibili, Douyin or Kuaishou for source videos (Chinese keywords work best). Douyin and Kuaishou, "
-          "and Bilibili when it asks for verification, need the in-app Khám phá browser instead.",
+    _tool("discover_videos", "Search one of Bilibili, Douyin or Kuaishou (Chinese keywords). Prefer search_sources, which searches "
+          "Bilibili, YouTube and SkyPixel at once. Douyin and Kuaishou, and Bilibili when it asks for verification, need the in-app "
+          "Khám phá browser instead.",
           {"platform": {"type": "string", "enum": ["bilibili", "douyin", "kuaishou"]}, "query": {"type": "string"},
            "page": {"type": "integer", "minimum": 1}}, ["platform", "query"], read_only=True),
-    _tool("download_video", "Download one video through DubFlow's verified downloader (Bilibili, Douyin with a saved session, direct "
-          "links) into Videos\\DubFlow Sources. Only use footage you have the right to use.",
+    _tool("download_video", "Download one video through DubFlow's verified downloader into Videos\\DubFlow Sources: Bilibili (1080p, "
+          "4K for a 大会员 login saved in DubFlow), YouTube (up to 2160p), SkyPixel pages (their 1080p MP4, with the licence), Douyin "
+          "with a saved session, direct media links. Returns the file and its width, height and quality. Only use footage you have the "
+          "right to use.",
           {"url": {"type": "string"}}, ["url"]),
     _tool("create_project", "Create a documentary project from 2-15 local videos (6-12 give a rich B-roll pool), like the page's Tạo dự án. "
           "A source without subtitles has its speech recognised (faster-whisper on this computer, a few minutes per video).",
@@ -120,7 +127,9 @@ TOOLS = [
     _tool("get_frame", "One frame (PNG, 960 px wide) of the rough cut, or of a source when source_id is given, at a time in seconds.",
           {"project": _PROJECT, "time": {"type": "number", "minimum": 0}, "source_id": {"type": "string"}}, ["project", "time"],
           read_only=True),
+    *sources.TOOLS,
 ]
+_SOURCE_TOOLS = {tool["name"] for tool in sources.TOOLS}
 
 
 def _project_of(content: list[dict[str, Any]]) -> str | None:
@@ -144,6 +153,9 @@ def _summary(tool: str, content: list[dict[str, Any]]) -> str:
         return "Đã xong"
     if tool == "discover_videos":
         return f"{len(value.get('items') or [])} video"
+    if tool == "search_sources":
+        answered = [name for name, state in (value.get("sources") or {}).items() if state.get("count")]
+        return f"{len(value.get('items') or [])} video từ {len(answered)} nguồn"
     if tool == "download_video":
         return f"Đã tải: {value.get('title') or value.get('video')}"
     if tool == "save_script":
@@ -196,9 +208,14 @@ class Server:
         install = self.install
         if name == "discover_videos":
             return _text(intake.discover(args.get("platform"), args.get("query"), args.get("page") or 1))
+        if name in _SOURCE_TOOLS:
+            return _text(sources.call(name, args))
         if name == "download_video":
-            return _text(intake.download(str(args.get("url") or ""), version_root=install.app_root.parent,
-                                         data_root=install.model_root.parent, folder=intake.default_base() / "DubFlow Sources"))
+            page = str(args.get("url") or "")
+            fetch, extra = sources.resolve_download_url(page)
+            got = intake.download(fetch, version_root=install.app_root.parent,
+                                  data_root=install.model_root.parent, folder=intake.default_base() / "DubFlow Sources")
+            return _text({**got, "page_url": page, **extra, **sources.probe_size(install.ffprobe, Path(got["video"]))})
         if name == "list_voices":
             return _text(intake.voices(install.app_root))
         if name == "create_project":
