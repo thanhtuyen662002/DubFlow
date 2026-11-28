@@ -84,9 +84,12 @@ export async function applyAgentEdit(invoke: Invoke, request: EditRequest, host:
     ? { dropped, note: ` Bỏ qua vì không hợp lệ: ${Object.entries(dropped).map(([key, count]) => `${count} ${key}`).join(", ")}.` } : { note: "" };
   const previous = loaded.project && typeof loaded.project === "object" ? loaded.project as Record<string, unknown> : null;
   if (previous?.thumbnail) document.thumbnail = previous.thumbnail;
+  // A draft an agent saved carries `agent` until the user edits it (the editor's own saves leave it out). Only the user's
+  // own draft is set aside (edit.rs replace_draft keeps the last few), so a run of agent edits never pushes it out.
+  const byAgent = !!previous?.agent && typeof previous.agent === "object";
+  document.agent = { id: request.id, saved: new Date().toISOString() };
   try {
-    // keepOld: the user's own draft is set aside beside it first (edit.rs replace_draft), never written over.
-    await invoke("edit_project_save", { outputPath, kind: "job", project: document, keepOld: true });
+    await invoke("edit_project_save", { outputPath, kind: "job", project: document, keepOld: !!previous && !byAgent });
   } catch (error) {
     return { state: "FAILED", message: `Không lưu được bản nháp: ${short(error)}` };
   }

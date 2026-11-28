@@ -33,8 +33,10 @@ Edits go through the running app, through the inbox of ADR-0058:
    - It refuses it while that video is open in Chỉnh sửa.
    - It parses the draft with `parseProject` against `edit_project_load`'s facts, and refuses a draft the editor
      could not open.
-   - It saves the draft with `edit_project_save` and `keepOld`, so the user's previous draft is set aside, never
-     overwritten. The previous draft's thumbnail is kept.
+   - It saves the draft with `edit_project_save`, marked `agent: {id, saved}`. A previous draft the user saved is set
+     aside first (`keepOld`), never overwritten. The editor's own saves leave the mark out, so a draft is the user's
+     again as soon as they edit it. An earlier agent draft is simply replaced, so a run of agent edits never pushes
+     the user's draft out of the few copies the editor keeps. The previous draft's thumbnail is kept.
    - If an export was asked for, it starts `edit_export` with the request Xuất video would build.
 4. The new host command `inbox_report` writes the app's answer to `inbox\results\<id>.json`: `SAVED`, `EXPORTING`
    (with the file it exports to), `REJECTED` or `FAILED`, with a message. It writes only for a request that is in

@@ -58,6 +58,7 @@ const editorHost = (open = null) => ({ openPath: () => open, outputRoot: () => n
   assert.deepEqual(calls.map(([command]) => command), ["edit_project_load", "edit_project_save", "edit_status", "edit_export"]);
   const [, save] = calls[1];
   assert.equal(save.keepOld, true, "the user's previous draft is set aside, never written over");
+  assert.equal(save.project.agent.id, ID, "the draft says an agent saved it");
   assert.equal(save.kind, "job");
   assert.deepEqual(save.project.thumbnail, { at: 3 }, "the draft's thumbnail stays");
   assert.deepEqual(save.project.segments.map(({ start, end }) => [start, end]), [[2, 8]]);
@@ -79,6 +80,16 @@ const editorHost = (open = null) => ({ openPath: () => open, outputRoot: () => n
   const report = await applyAgentEdit(invoke, { id: ID, output_path: OUTPUT, project: draft, export: null }, editorHost());
   assert.equal(report.state, "SAVED");
   assert.deepEqual(calls.map(([command]) => command), ["edit_project_load", "edit_project_save"]);
+}
+{
+  // An agent's own earlier draft is replaced, not set aside: only the user's drafts fill the few kept copies.
+  const loaded = { duration: 10, width: 1920, height: 1080, fps: 30, has_audio: true, cues: [], project: { schema_version: 4, agent: { id: "mcp-20261128-090000-aaaaaaaa" } } };
+  const { calls, invoke } = host({ edit_project_load: loaded });
+  await applyAgentEdit(invoke, { id: ID, output_path: OUTPUT, project: draft, export: null }, editorHost());
+  assert.equal(calls[1][1].keepOld, false);
+  const { calls: none, invoke: fresh } = host({ edit_project_load: { ...loaded, project: null } });
+  await applyAgentEdit(fresh, { id: ID, output_path: OUTPUT, project: draft, export: null }, editorHost());
+  assert.equal(none[1][1].keepOld, false, "no draft yet: nothing to set aside");
 }
 {
   const { calls, invoke } = host();
