@@ -884,6 +884,10 @@ export async function previewInvoke<T>(command: string, args: Record<string, unk
     case "discover": {
       // The real adapters take a second or two; sources answer one after another.
       await new Promise((resolve) => setTimeout(resolve, args.platform === "youtube" ? 900 : args.platform === "skypixel" ? 600 : 300));
+      // A phrase with "chặn" shows Bilibili's risk-control refusal.
+      if (args.platform === "bilibili" && args.action === "search" && /chặn|阻止/.test(String(args.query ?? ""))) {
+        return { ok: false, code: "BLOCKED", message: "preview" } as T;
+      }
       return previewDiscover(String(args.platform), String(args.action), Number(args.page ?? 1), args.cursor ? String(args.cursor) : null, args.id ? String(args.id) : null) as T;
     }
     // The page itself is not shown in a browser: the panel's placeholder box stands in for it.

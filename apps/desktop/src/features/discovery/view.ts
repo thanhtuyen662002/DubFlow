@@ -276,7 +276,15 @@ export function mountDiscovery(invoke: Invoke, enqueue: (url: string, title?: st
     const hint = document.createElement("span");
     hint.className = "hint";
     hint.textContent = "Tìm thêm trên trang:";
-    pages.append(hint, ...PAGE_ONLY_SOURCES.map((source) => chip(SOURCE_NAMES[source], false, () => searchOnPage(source),
+    // A source whose search the site refused (Bilibili's risk control answers BLOCKED now and then) still works in its
+    // own page: it comes first, marked.
+    const refused = ALL_SOURCES.filter((source) => sources.get(source)?.status === "error" && PLATFORMS.some((entry) => entry.id === source && entry.page));
+    pages.append(hint, ...refused.map((source) => {
+      const button = chip(`${SOURCE_NAMES[source]} (mở trang)`, false, () => searchOnPage(source),
+        `${SOURCE_NAMES[source]} tạm chặn tìm tự động; mở trang ${SOURCE_NAMES[source]} với cùng từ khóa`);
+      button.classList.add("refused");
+      return button;
+    }), ...PAGE_ONLY_SOURCES.map((source) => chip(SOURCE_NAMES[source], false, () => searchOnPage(source),
       `Mở trang ${SOURCE_NAMES[source]} với cùng từ khóa; video bạn lướt qua tự vào danh sách`)));
     const failures = ALL_SOURCES.map((source) => [source, sources.get(source)] as const)
       .filter(([, entry]) => entry?.status === "error")
