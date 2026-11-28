@@ -52,6 +52,11 @@ def label(tool: str, args: dict[str, Any]) -> str:
         "list_footage_suffixes": lambda: "Xem các hậu tố tìm footage",
         "get_trends": lambda: f"Xem đề tài hot trên {arg('platform', 20)}",
         "suggest_keywords": lambda: f"Gợi ý từ khóa {arg('platform', 20)}: {arg('query', 60)}",
+        # #996: Bán hàng.
+        "list_vietnamese_voices": lambda: "Xem giọng đọc tiếng Việt",
+        "create_product_video": lambda: f"Tạo video bán hàng “{arg('name', 80)}” ({len(args.get('scripts') or [])} kịch bản)",
+        "get_product_video": lambda: "Xem tiến độ video bán hàng",
+        "list_product_videos": lambda: "Xem danh sách video bán hàng",
     }
     return labels.get(tool, lambda: tool)()
 
