@@ -2,7 +2,7 @@ DUBFLOW_PR_V1
 Issue: #978
 Lease-Owner: Claude/issue-978-multi-source-search
 Lease-Heartbeat: 2026-11-28T16:40:00Z
-Tested-Base-SHA: 696355f6aa061b4276ff933046d42f7961b33db9
+Tested-Base-SHA: 1401a664dfee769a55516d3093a05e0d0f50eb53
 Conflict-Domains: desktop-discovery,discovery-adapters
 Expected-Paths:
 - .claims/issue-978-multi-source-search.md
